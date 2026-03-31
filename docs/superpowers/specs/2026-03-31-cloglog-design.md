@@ -14,28 +14,37 @@ The system has three parts:
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────┐
-│  Host Machine                                        │
-│                                                      │
-│  ┌──────────────┐     ┌──────────────────────────┐  │
-│  │  cloglog      │     │  React Frontend          │  │
-│  │  FastAPI       │◄───│  (Kanban board, project   │  │
-│  │  + PostgreSQL  │     │   selector, doc viewer)  │  │
-│  └──────┬───────┘     └──────────────────────────┘  │
-│         │ REST API                                    │
-│         │ SSE (real-time updates)                     │
-├─────────┼────────────────────────────────────────────┤
-│         ▼                                            │
-│  ┌─────────────────┐  ┌─────────────────┐           │
-│  │  agent-vm (proj1)│  │  agent-vm (proj2)│  ...     │
-│  │                  │  │                  │           │
-│  │  cloglog-mcp ────┼──┼── HTTP POST ────►           │
-│  │  Claude Code     │  │  Claude Code     │           │
-│  │  (worktree A)    │  │  (worktree X)    │           │
-│  │  (worktree B)    │  │  (worktree Y)    │           │
-│  └──────────────────┘  └──────────────────┘           │
-└──────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph Host["Host Machine"]
+        Frontend["React Frontend<br/><i>Kanban board, project selector, doc viewer</i>"]
+        Backend["cloglog FastAPI"]
+        DB[(PostgreSQL)]
+        CLI["cloglog CLI"]
+
+        Frontend -->|"REST API + SSE"| Backend
+        CLI -->|"REST API"| Backend
+        Backend --> DB
+    end
+
+    subgraph VM1["agent-vm (project 1)"]
+        MCP1["cloglog-mcp"]
+        Agent1A["Claude Code<br/><i>worktree A</i>"]
+        Agent1B["Claude Code<br/><i>worktree B</i>"]
+        Agent1A --> MCP1
+        Agent1B --> MCP1
+    end
+
+    subgraph VM2["agent-vm (project 2)"]
+        MCP2["cloglog-mcp"]
+        Agent2X["Claude Code<br/><i>worktree X</i>"]
+        Agent2Y["Claude Code<br/><i>worktree Y</i>"]
+        Agent2X --> MCP2
+        Agent2Y --> MCP2
+    end
+
+    MCP1 -->|"HTTP POST<br/>Bearer API key"| Backend
+    MCP2 -->|"HTTP POST<br/>Bearer API key"| Backend
 ```
 
 Agents inside agent-vm sandboxes communicate with the cloglog service via HTTP. The MCP server reads `CLOGLOG_URL` and `CLOGLOG_API_KEY` from environment variables. agent-vm's networking allows VMs to reach the host.
@@ -64,17 +73,40 @@ Contexts interact through defined service interfaces:
 
 ### Context Map
 
-```
-Gateway (API routing, auth, SSE)
-    │
-    ├── Board (projects, hierarchy, status)
-    │     ▲
-    │     │ TaskAssignmentService
-    │     │ TaskStatusService
-    │     │
-    ├── Agent (worktrees, sessions, lifecycle)
-    │
-    └── Document (append-only doc storage)
+```mermaid
+graph TB
+    Gateway["<b>Gateway</b><br/>API routing, auth, SSE, CLI"]
+
+    Gateway --> Board
+    Gateway --> Agent
+    Gateway --> Document
+
+    subgraph Board["<b>Board Context</b>"]
+        direction TB
+        B_Models["Projects, Epics<br/>Features, Tasks"]
+        B_Services["Status roll-up<br/>Import, CRUD"]
+        B_Interfaces["TaskAssignmentService<br/>TaskStatusService"]
+    end
+
+    subgraph Agent["<b>Agent Context</b>"]
+        direction TB
+        A_Models["Worktrees, Sessions"]
+        A_Services["Registration<br/>Heartbeat, Lifecycle"]
+    end
+
+    subgraph Document["<b>Document Context</b>"]
+        direction TB
+        D_Models["Documents"]
+        D_Services["Append-only storage<br/>Attachment, Retrieval"]
+    end
+
+    Agent -->|"TaskStatusService<br/>TaskAssignmentService"| Board
+    Document -.->|"references task/feature/epic IDs<br/>(opaque, no direct DB access)"| Board
+
+    Shared["<b>Shared Kernel</b><br/>Database, Config, Event Bus"]
+    Board ~~~ Shared
+    Agent ~~~ Shared
+    Document ~~~ Shared
 ```
 
 ## Project Layout
@@ -234,6 +266,153 @@ This report is checked into the repo after each phase so you can track quality o
 
 ## Data Model
 
+### Entity Relationship Diagram
+
+```mermaid
+erDiagram
+    Project ||--o{ Epic : contains
+    Project ||--o{ Worktree : "agents belong to"
+    Project {
+        uuid id PK
+        string name
+        text description
+        string repo_url
+        string api_key_hash
+        enum status "active | paused | completed"
+        timestamp created_at
+    }
+
+    Epic ||--o{ Feature : contains
+    Epic {
+        uuid id PK
+        uuid project_id FK
+        string title
+        text description
+        string bounded_context "optional DDD label"
+        text context_description "optional"
+        enum status "planned | in_progress | done"
+        int position
+        timestamp created_at
+    }
+
+    Feature ||--o{ Task : contains
+    Feature }o--o{ Feature : "depends on"
+    Feature {
+        uuid id PK
+        uuid epic_id FK
+        string title
+        text description
+        enum status "planned | in_progress | review | done"
+        int position
+        timestamp created_at
+    }
+
+    Task ||--o{ Document : "has attached"
+    Task {
+        uuid id PK
+        uuid feature_id FK
+        string title
+        text description
+        enum status "backlog | assigned | in_progress | review | done | blocked"
+        enum priority "normal | expedite"
+        uuid worktree_id FK "nullable"
+        int position
+        timestamp created_at
+        timestamp updated_at
+    }
+
+    Worktree ||--o{ Session : "runs"
+    Worktree ||--o| Task : "currently working on"
+    Worktree {
+        uuid id PK
+        uuid project_id FK
+        string name
+        string worktree_path
+        uuid current_task_id FK "nullable"
+        enum status "active | idle | offline"
+        timestamp last_heartbeat
+        timestamp created_at
+    }
+
+    Session {
+        uuid id PK
+        uuid worktree_id FK
+        timestamp started_at
+        timestamp ended_at "nullable"
+    }
+
+    Document {
+        uuid id PK
+        enum type "spec | plan | design | other"
+        string title
+        text content
+        string source_path
+        enum attached_to_type "epic | feature | task"
+        uuid attached_to_id
+        timestamp created_at
+    }
+```
+
+### Agent Task Lifecycle
+
+```mermaid
+sequenceDiagram
+    participant Agent as Claude Code<br/>(in agent-vm)
+    participant MCP as cloglog-mcp
+    participant API as cloglog API<br/>(host)
+    participant DB as PostgreSQL
+    participant UI as Dashboard<br/>(browser)
+
+    Note over Agent,UI: Session Start
+    Agent->>MCP: register_agent()
+    MCP->>API: POST /agents/register {worktree_path}
+    API->>DB: Upsert Worktree, create Session
+    API-->>MCP: {worktree_id, current_task, resumed}
+    MCP-->>Agent: Registration result
+    API-->>UI: SSE: worktree_online
+
+    Note over Agent,UI: Task Pickup
+    Agent->>MCP: get_my_tasks()
+    MCP->>API: GET /agents/{wt}/tasks
+    API-->>MCP: [{task_id, title, description}, ...]
+    MCP-->>Agent: Task list
+
+    Agent->>MCP: start_task(task_id)
+    MCP->>API: POST /agents/{wt}/start-task
+    API->>DB: Task → in_progress, Feature/Epic roll-up
+    API-->>UI: SSE: task_status_changed
+    MCP-->>Agent: OK
+
+    Note over Agent,UI: Working (periodic heartbeat)
+    loop Every 60s
+        MCP->>API: POST /agents/{wt}/heartbeat
+        API->>DB: Update last_heartbeat
+    end
+
+    Note over Agent,UI: Document Attachment
+    Agent->>MCP: attach_document(file_path)
+    MCP->>MCP: Read file content
+    MCP->>API: POST /agents/{wt}/documents {content, type, title}
+    API->>DB: Insert Document
+    API-->>UI: SSE: document_attached
+
+    Note over Agent,UI: Task Completion
+    Agent->>MCP: complete_task(task_id)
+    MCP->>API: POST /agents/{wt}/complete-task
+    API->>DB: Task → done, Feature/Epic roll-up
+    API-->>MCP: {next_task} or null
+    API-->>UI: SSE: task_status_changed
+    MCP-->>Agent: Next task or "no more tasks"
+
+    Note over Agent,UI: Session End
+    Agent->>MCP: unregister_agent()
+    MCP->>API: POST /agents/{wt}/unregister
+    API->>DB: End Session, Worktree → idle
+    API-->>UI: SSE: worktree_offline
+```
+
+### Detailed Entity Descriptions
+
 ### Project
 
 Top-level entity. Maps 1:1 to a source code repository and an agent-vm instance.
@@ -307,6 +486,22 @@ Agent-sized work unit. This is what appears as a card on the Kanban board.
 | position | int | Display order within column |
 | created_at | timestamp | |
 | updated_at | timestamp | |
+
+#### Task Status Flow
+
+```mermaid
+stateDiagram-v2
+    [*] --> backlog : created via import or manually
+    backlog --> assigned : you assign to a worktree
+    assigned --> in_progress : agent calls start_task
+    in_progress --> review : agent calls update_task_status
+    in_progress --> done : agent calls complete_task
+    in_progress --> blocked : agent calls update_task_status
+    review --> done : you approve or agent completes
+    review --> in_progress : needs more work
+    blocked --> in_progress : blocker resolved
+    done --> [*]
+```
 
 ### Worktree
 
@@ -669,6 +864,63 @@ At the end of each phase, work stops and the user receives:
 The project is built in vertical slices. Each phase delivers a working, testable increment. Work is organized by DDD bounded context so each agent works in its own worktree touching only its own directories, eliminating merge conflicts.
 
 This project itself is developed inside agent-vm. Each worktree below maps to an actual git worktree in the cloglog repo, with an agent running inside the VM.
+
+### Phase Dependency & Parallelism Map
+
+```mermaid
+graph LR
+    P0["<b>Phase 0</b><br/>Scaffold & Contracts<br/><i>1 agent, sequential</i>"]
+
+    P1_board["wt-board<br/>Board context"]
+    P1_gateway["wt-gateway<br/>Gateway context"]
+    P1_frontend["wt-frontend<br/>Frontend shell"]
+    P1_mcp["wt-mcp<br/>MCP scaffold"]
+
+    P2_agent["wt-agent<br/>Agent context"]
+    P2_sse["wt-gateway-sse<br/>SSE + events"]
+    P2_frontend["wt-frontend-live<br/>Live dashboard"]
+    P2_mcp["wt-mcp-tools<br/>MCP tools"]
+
+    P3_doc["wt-document<br/>Document context"]
+    P3_frontend["wt-frontend-docs<br/>Card detail + docs"]
+    P3_mcp["wt-mcp-docs<br/>attach_document"]
+    P3_assign["wt-assign<br/>Assignment"]
+
+    P4_vm["wt-agent-vm<br/>agent-vm integration"]
+    P4_tmpl["wt-claude-md<br/>Templates"]
+    P4_e2e["wt-e2e<br/>E2E tests"]
+
+    P0 --> P1_board & P1_gateway & P1_frontend & P1_mcp
+
+    P1_board --> P1_gateway
+    P1_board --> P2_agent
+    P1_frontend --> P2_frontend
+    P1_mcp --> P2_mcp
+    P1_gateway --> P2_sse
+
+    P2_agent --> P3_doc & P3_assign
+    P2_frontend --> P3_frontend
+    P2_mcp --> P3_mcp
+
+    P3_doc & P3_frontend & P3_mcp & P3_assign --> P4_vm & P4_tmpl & P4_e2e
+
+    style P0 fill:#475569,color:#fff
+    style P1_board fill:#0891b2,color:#fff
+    style P1_gateway fill:#0891b2,color:#fff
+    style P1_frontend fill:#0891b2,color:#fff
+    style P1_mcp fill:#0891b2,color:#fff
+    style P2_agent fill:#d97706,color:#fff
+    style P2_sse fill:#d97706,color:#fff
+    style P2_frontend fill:#d97706,color:#fff
+    style P2_mcp fill:#d97706,color:#fff
+    style P3_doc fill:#8b5cf6,color:#fff
+    style P3_frontend fill:#8b5cf6,color:#fff
+    style P3_mcp fill:#8b5cf6,color:#fff
+    style P3_assign fill:#8b5cf6,color:#fff
+    style P4_vm fill:#059669,color:#fff
+    style P4_tmpl fill:#059669,color:#fff
+    style P4_e2e fill:#059669,color:#fff
+```
 
 ### Phase 0: Scaffold & Contracts (Sequential — single agent, main branch)
 

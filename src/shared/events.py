@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
 
-class EventType(str, Enum):
+class EventType(StrEnum):
     TASK_STATUS_CHANGED = "task_status_changed"
     WORKTREE_ONLINE = "worktree_online"
     WORKTREE_OFFLINE = "worktree_offline"

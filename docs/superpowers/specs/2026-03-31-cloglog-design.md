@@ -188,6 +188,156 @@ The **shared kernel** (`src/shared/`) is set up in Phase 0 and rarely changes af
 
 Test infrastructure is set up in Phase 0, before any feature work begins. Every agent in every worktree can run tests for their context independently.
 
+### User-Level Features & BDD Specs
+
+The following BDD specs define the system's behavior from the user's perspective. All implementation must satisfy these specs.
+
+#### Feature: Project Management
+
+```gherkin
+Feature: Project management
+  As a project manager
+  I want to create and view projects on the dashboard
+  So that I can track all my repositories in one place
+
+  Scenario: Create a new project
+    Given the cloglog service is running
+    When I create a project named "my-app" via the CLI
+    Then a project "my-app" appears in the dashboard sidebar
+    And an API key is returned for agent authentication
+
+  Scenario: View project status
+    Given a project "my-app" exists with 3 active worktrees and 10 tasks
+    When I open the dashboard
+    Then the sidebar shows "my-app" with a green status indicator
+    And the sidebar shows "3 agents · 4/10 done"
+```
+
+#### Feature: Plan Import & Board Population
+
+```gherkin
+Feature: Plan import and board population
+  As a project manager
+  I want to import a structured plan onto the board
+  So that agents can start working on defined tasks
+
+  Scenario: Import a plan from brainstorming
+    Given a project "my-app" exists
+    When I import a plan with 2 epics, 4 features, and 8 tasks
+    Then all 8 tasks appear in the "Backlog" column
+    And each task shows its epic/feature breadcrumb
+    And the board header shows "8 tasks, 0 active, 0% done"
+
+  Scenario: Agent creates tasks after brainstorming
+    Given I am in a terminal session with an agent
+    And we have brainstormed a feature design together
+    When the agent calls create_tasks with the agreed breakdown
+    Then the tasks appear on the board in "Backlog"
+    And each task has the spec and plan documents attached
+```
+
+#### Feature: Agent Task Lifecycle
+
+```gherkin
+Feature: Agent task lifecycle
+  As an autonomous agent
+  I want to register, pick up tasks, and report progress
+  So that the dashboard reflects my current work
+
+  Scenario: Agent registers and resumes work
+    Given a worktree "wt-auth" previously worked on task "Implement OAuth"
+    And the task is in "In Progress"
+    When a new session starts in worktree "wt-auth"
+    And the agent calls register_agent
+    Then the agent receives its worktree ID and current task
+    And the dashboard shows "wt-auth" as active
+
+  Scenario: Agent completes a task and picks up the next
+    Given agent "wt-auth" is working on task "Implement OAuth"
+    When the agent calls complete_task
+    Then task "Implement OAuth" moves to "Done" on the board
+    And the feature status rolls up (if all tasks done, feature is done)
+    And the agent receives the next assigned task
+
+  Scenario: Agent goes offline
+    Given agent "wt-auth" is active with a running heartbeat
+    When the heartbeat stops for 3 minutes
+    Then the dashboard shows "wt-auth" as offline
+    And the task remains in its current column (not reverted)
+
+  Scenario: Agent attaches a design document
+    Given agent "wt-auth" is working on task "Implement OAuth"
+    When the agent generates a spec and calls attach_document
+    Then a "spec" chip appears on the task card in the dashboard
+    And clicking the chip shows the full document content
+```
+
+#### Feature: Collaborative Brainstorming to Board
+
+```gherkin
+Feature: Collaborative brainstorming to board
+  As a project manager working with an agent in a terminal
+  I want our brainstorming results to flow onto the board
+  So that design decisions become trackable work items
+
+  Scenario: Brainstorm a feature and create tasks
+    Given I am in a terminal with an agent on project "my-app"
+    When I say "let's design the auth system"
+    And we brainstorm the design together
+    And I approve the proposed task breakdown
+    Then the agent creates an epic "Auth System" on the board
+    And creates features and tasks under it
+    And attaches the spec and design documents to relevant items
+
+  Scenario: Review and refine agent-created tasks
+    Given an agent has created 5 tasks from our brainstorming session
+    When I open the dashboard and review the tasks
+    Then I can delete tasks that are too granular
+    And I can edit task descriptions for clarity
+    And I can reprioritize by dragging between positions
+```
+
+#### Feature: Real-Time Dashboard
+
+```gherkin
+Feature: Real-time dashboard updates
+  As a project manager
+  I want the dashboard to update in real-time
+  So that I can see agent activity without refreshing
+
+  Scenario: Task status changes appear live
+    Given I have the dashboard open for project "my-app"
+    When an agent moves a task from "In Progress" to "Review"
+    Then the card moves to the "Review" column without page refresh
+    And the board stats update to reflect the change
+
+  Scenario: New agent comes online
+    Given I have the dashboard open
+    When a new agent session starts in worktree "wt-api"
+    Then "wt-api" appears in the agent roster with a pulse indicator
+```
+
+#### Feature: Document Trail
+
+```gherkin
+Feature: Document audit trail
+  As a project manager
+  I want to see all design artifacts attached to tasks
+  So that I can understand the history behind each piece of work
+
+  Scenario: View documents on a task card
+    Given a task has a spec, plan, and design document attached
+    When I view the task on the board
+    Then I see three colored chips: "spec", "plan", "design"
+    And clicking a chip opens the full markdown content
+
+  Scenario: Documents are append-only
+    Given a task has a spec document attached
+    When the agent generates a revised spec
+    Then a new document entry is created (not overwriting the old one)
+    And both versions are visible in the task detail view
+```
+
 ### Backend Testing
 
 - **Framework**: pytest
@@ -236,33 +386,27 @@ cd mcp-server
 make test
 ```
 
-### Quality Dashboard
+### Quality Gate
 
-A `make metrics` command generates a JSON report:
+Before an agent can mark a task as complete or create a PR, it must run `make quality` and verify all checks pass. The output is printed to the terminal:
 
-```json
-{
-  "backend": {
-    "tests_passed": 142,
-    "tests_failed": 0,
-    "coverage_percent": 87.3,
-    "lint_errors": 0,
-    "type_errors": 0
-  },
-  "frontend": {
-    "tests_passed": 38,
-    "tests_failed": 0,
-    "coverage_percent": 82.1
-  },
-  "mcp_server": {
-    "tests_passed": 21,
-    "tests_failed": 0,
-    "coverage_percent": 91.0
-  }
-}
+```
+$ make quality
+── Backend ─────────────────────────────
+  Tests:    142 passed, 0 failed
+  Coverage: 87.3% (min: 80%)  ✓
+  Lint:     0 errors           ✓
+  Types:    0 errors           ✓
+── Frontend ────────────────────────────
+  Tests:    38 passed, 0 failed
+  Coverage: 82.1% (min: 80%)  ✓
+── MCP Server ──────────────────────────
+  Tests:    21 passed, 0 failed
+  Coverage: 91.0% (min: 80%)  ✓
+── Quality gate: PASSED ────────────────
 ```
 
-This report is checked into the repo after each phase so you can track quality over time. Agents run `make quality` before completing any task.
+If any check fails, the agent must fix the issue before proceeding. This is enforced in the agent's CLAUDE.md instructions — `make quality` is a mandatory pre-completion step.
 
 ## Data Model
 
@@ -706,6 +850,7 @@ The API key file lives in `~/.agent-vm/credentials/cloglog-api-key` on the host,
 | `update_task_status` | Move task to a specific column. |
 | `add_task_note` | Append a status note to current task. |
 | `attach_document` | Read a local file and POST its content to cloglog as a document attachment. |
+| `create_tasks` | Create epics/features/tasks on the board from a structured breakdown (used after brainstorming). |
 | `unregister_agent` | Sign off cleanly when session ends. |
 
 ### Agent Instructions (CLAUDE.md)
@@ -715,14 +860,28 @@ Each project's CLAUDE.md includes:
 ```markdown
 ## Task Management
 
-You have cloglog tools for task management. Follow this workflow:
+You have cloglog tools for managing work on the board.
+
+### When brainstorming with the user
+
+If the user asks you to brainstorm, design, or plan a feature:
+1. Call `register_agent` if you haven't already.
+2. Brainstorm and design together in the terminal as normal.
+3. Once the user approves the task breakdown, call `create_tasks` to add
+   epics/features/tasks to the board.
+4. Call `attach_document` to link specs, plans, and design docs to the
+   relevant board items.
+5. Begin execution or wait for further instructions.
+
+### When executing assigned tasks
 
 1. At session start, call `register_agent` to identify yourself.
 2. Call `get_my_tasks` to see your assigned work.
 3. Before starting work, call `start_task` with the task ID.
-4. When you generate specs, plans, or design docs, call `attach_document` to record them.
-5. When done with a task, call `complete_task` — it returns your next task.
-6. If no more tasks, your work is done for this session.
+4. When you generate specs, plans, or design docs, call `attach_document`.
+5. Before completing a task, run `make quality` and verify all checks pass.
+6. When done, call `complete_task` — it returns your next task.
+7. If no more tasks, your work is done for this session.
 ```
 
 ## Frontend
@@ -795,7 +954,20 @@ The import creates all items on the board in `backlog` status. You review them o
 
 ### From Agent Work
 
-Agents may discover sub-tasks during implementation. They can call `add_task_note` to flag this, but they do not create new tasks on the board. Task creation is your prerogative as the quality gate.
+Agents create tasks on the board in two scenarios:
+
+1. **After brainstorming with you**: You discuss a feature in the terminal, agree on the breakdown, and the agent calls `create_tasks` to populate the board. The approval happens in the terminal conversation — you see the proposed breakdown and say yes before it hits the board.
+
+2. **During implementation**: If an agent discovers work that needs its own task (e.g., a prerequisite it didn't anticipate), it can create tasks and flag them for your review. You can review, edit, or delete these on the dashboard.
+
+The MCP server exposes a `create_tasks` tool for this:
+
+```
+POST /api/v1/projects/{id}/tasks/create
+Body: { epic: { title, features: [{ title, tasks: [...] }] } }
+```
+
+This is the same as the `/import` endpoint but available to agents via MCP.
 
 ## Heartbeat & Offline Detection
 
@@ -815,6 +987,22 @@ When the session restarts and calls `register_agent`, the worktree goes back to 
 - **Test-first**: Write testable specs before implementation. Code must satisfy the specs.
 - **Never assume it works**: Every layer must be verified with the appropriate level of testing.
 - **User testing checkpoints**: At the end of each phase, stop and provide precise manual testing instructions.
+
+### Worktree Test Isolation
+
+Multiple agents work in separate git worktrees simultaneously. Their test runs must not interfere with each other.
+
+**Database isolation**: Each test run creates a unique temporary PostgreSQL database named with a random suffix (e.g., `cloglog_test_a3f8b2`). The database is created at the start of the test session and dropped at the end. Two agents running tests at the same time get completely separate databases. This is handled in `tests/conftest.py` via a session-scoped fixture.
+
+**Port isolation**: If tests need to start a test server (e.g., for e2e tests), they bind to port 0 (OS-assigned random port). No hardcoded ports.
+
+**File isolation**: Each worktree has its own working directory. Tests that write temp files use `tmp_path` (pytest fixture) which is unique per test. No tests write to shared locations.
+
+**Migration isolation**: Each test database runs migrations independently. Worktrees may have different migration states if one agent is ahead — this is fine because each has its own database.
+
+**What is shared**: The PostgreSQL server process itself (running via Docker Compose). All worktrees connect to the same PostgreSQL instance but use different databases within it. This is set up once and reused.
+
+**Makefile per-context targets**: Each worktree only runs its own context's tests. `make test-board` runs `pytest tests/board/` — it doesn't touch other contexts' tests, so there's no cross-worktree test interference even at the file level.
 
 ### Test Layers
 
@@ -1063,4 +1251,4 @@ Vertical slice: Full real-world flow inside agent-vm sandboxes.
 - **No document editing through the board**: Documents are append-only audit trail.
 - **No mid-task interruption**: You don't push new work to a running agent session. Assign tasks before the session starts or between sessions.
 - **No Claude Agent SDK**: Agents are Claude Code CLI sessions with `--dangerously-skip-permissions` inside agent-vm. Integration is via MCP tools, not SDK.
-- **Agents don't create tasks**: Only you create tasks (directly or via import). Agents work on what's assigned.
+- **Agent task creation requires supervision**: Agents create tasks on the board after brainstorming with you in the terminal (you approve the breakdown before it's posted), or during implementation when they discover necessary sub-work (you can review/edit/delete on the dashboard).

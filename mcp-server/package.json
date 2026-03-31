@@ -1,0 +1,23 @@
+{
+  "name": "cloglog-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for cloglog agent integration",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "cloglog-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0",
+    "@vitest/coverage-v8": "^2.1.0"
+  }
+}

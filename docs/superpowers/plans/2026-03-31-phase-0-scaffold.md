@@ -8,6 +8,62 @@
 
 **Tech Stack:** Python 3.12+, FastAPI, SQLAlchemy 2.0, Alembic, PostgreSQL 16, React 18, Vite, TypeScript, Vitest, Node.js, ruff, mypy, uv
 
+## Development Environment
+
+cloglog itself runs on the **host machine** (not inside a Lima VM). During development:
+
+- **Phases 0-3**: Backend, frontend, and PostgreSQL all run on the host. Agent API endpoints are tested with `httpx`/`curl` — no VMs needed. The MCP server is tested against a mock HTTP backend.
+- **Phase 4 (agent-vm integration)**: We spin up a real Lima VM via `agent-vm claude` that runs an agent which connects BACK to the cloglog service on the host. This tests the full loop: agent inside VM → cloglog-mcp → HTTP to host → cloglog API → dashboard updates.
+
+The VMs are only needed for the end-to-end integration test, not for developing cloglog itself.
+
+## Parallelism Map
+
+Phase 0 has **three independent tracks** that can run simultaneously:
+
+```mermaid
+graph LR
+    subgraph Track_A["Track A: Python Backend (sequential)"]
+        T1["Task 1: Python init"] --> T3["Task 3: Shared kernel"]
+        T3 --> T4["Task 4: Alembic"]
+        T3 --> T5["Task 5: Interfaces"]
+        T4 --> T7["Task 7: Gateway app"]
+        T5 --> T7
+        T7 --> T6["Task 6: Test infra"]
+        T6 --> T8["Task 8: Sample tests"]
+        T8 --> T9["Task 9: Makefile"]
+    end
+
+    subgraph Track_B["Track B: Frontend (independent)"]
+        T10["Task 10: React frontend"]
+    end
+
+    subgraph Track_C["Track C: MCP Server (independent)"]
+        T11["Task 11: MCP server"]
+    end
+
+    T2["Task 2: Docker Compose"] --> T6
+
+    T9 & T10 & T11 --> T12["Task 12: CLAUDE.md"]
+    T12 --> T13["Task 13: Final quality check"]
+
+    style Track_A fill:#0891b2,color:#fff
+    style Track_B fill:#d97706,color:#fff
+    style Track_C fill:#8b5cf6,color:#fff
+```
+
+**Run with 3 parallel agents:**
+
+| Agent | Track | Tasks | Touches |
+|-------|-------|-------|---------|
+| Agent A | Python backend | 1 → 2 → 3 → 4 → 5 → 7 → 6 → 8 → 9 | `src/`, `tests/`, `pyproject.toml`, `docker-compose.yml`, `alembic.ini`, `Makefile` |
+| Agent B | Frontend | 10 | `frontend/` |
+| Agent C | MCP Server | 11 | `mcp-server/` |
+
+Tasks 12 (CLAUDE.md) and 13 (final check) run after all three tracks merge.
+
+**Merge order:** Agent B and Agent C can merge first (independent). Agent A merges last (largest surface). Then Tasks 12-13 run on main.
+
 ---
 
 ### Task 1: Initialize Python Backend Project

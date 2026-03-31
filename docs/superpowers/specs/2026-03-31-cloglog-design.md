@@ -40,6 +40,198 @@ The system has three parts:
 
 Agents inside agent-vm sandboxes communicate with the cloglog service via HTTP. The MCP server reads `CLOGLOG_URL` and `CLOGLOG_API_KEY` from environment variables. agent-vm's networking allows VMs to reach the host.
 
+## Domain-Driven Design
+
+The backend is organized into bounded contexts. Each context owns its models, services, repository layer, and API routes. Contexts communicate through explicit interfaces (Python protocols/abstract classes), never by reaching into each other's internals or database tables directly.
+
+### Bounded Contexts
+
+| Context | Responsibility | Directory | Owns Tables |
+|---------|---------------|-----------|-------------|
+| **Board** | Projects, Epics, Features, Tasks, status roll-up, import, priority | `src/board/` | projects, epics, features, feature_dependencies, tasks |
+| **Agent** | Worktrees, Sessions, registration, heartbeat, task lifecycle (pick, start, complete) | `src/agent/` | worktrees, sessions |
+| **Document** | Document storage, attachment, retrieval | `src/document/` | documents |
+| **Gateway** | API routing, auth middleware, SSE fan-out, CLI interface | `src/gateway/` | (none — orchestrates other contexts) |
+
+### Context Interfaces
+
+Contexts interact through defined service interfaces:
+
+- **Board → Agent**: Board exposes `TaskAssignmentService` so Agent context can claim/release tasks
+- **Agent → Board**: Agent context calls Board's `TaskStatusService` to move tasks between columns, which triggers roll-up recomputation
+- **Document → Board**: Document context references Board's task/feature/epic IDs but does not query Board tables — it stores `attached_to_type` + `attached_to_id` as opaque references
+- **Gateway → All**: Gateway imports route handlers from each context and composes them into the FastAPI app. Auth middleware lives in Gateway.
+
+### Context Map
+
+```
+Gateway (API routing, auth, SSE)
+    │
+    ├── Board (projects, hierarchy, status)
+    │     ▲
+    │     │ TaskAssignmentService
+    │     │ TaskStatusService
+    │     │
+    ├── Agent (worktrees, sessions, lifecycle)
+    │
+    └── Document (append-only doc storage)
+```
+
+## Project Layout
+
+```
+cloglog/
+├── src/
+│   ├── board/                  # Board bounded context
+│   │   ├── models.py           # SQLAlchemy models: Project, Epic, Feature, Task
+│   │   ├── schemas.py          # Pydantic schemas
+│   │   ├── repository.py       # DB queries
+│   │   ├── services.py         # Business logic, roll-up, import
+│   │   ├── routes.py           # FastAPI routes
+│   │   └── interfaces.py       # Protocols exposed to other contexts
+│   ├── agent/                  # Agent bounded context
+│   │   ├── models.py           # Worktree, Session
+│   │   ├── schemas.py
+│   │   ├── repository.py
+│   │   ├── services.py         # Registration, heartbeat, task lifecycle
+│   │   └── routes.py
+│   ├── document/               # Document bounded context
+│   │   ├── models.py           # Document
+│   │   ├── schemas.py
+│   │   ├── repository.py
+│   │   ├── services.py
+│   │   └── routes.py
+│   ├── gateway/                # Gateway context
+│   │   ├── app.py              # FastAPI app composition
+│   │   ├── auth.py             # API key middleware
+│   │   ├── sse.py              # SSE fan-out
+│   │   └── cli.py              # CLI tool (cloglog command)
+│   ├── shared/                 # Shared kernel (minimal)
+│   │   ├── database.py         # DB engine, session factory
+│   │   ├── config.py           # Settings (env-based)
+│   │   └── events.py           # Internal event bus for SSE
+│   └── alembic/                # DB migrations
+│       └── versions/
+├── tests/
+│   ├── board/                  # Board context tests
+│   ├── agent/                  # Agent context tests
+│   ├── document/               # Document context tests
+│   ├── gateway/                # Gateway + integration tests
+│   ├── e2e/                    # End-to-end tests
+│   └── conftest.py             # Shared fixtures (test DB, client)
+├── frontend/                   # React SPA (separate package)
+│   ├── src/
+│   │   ├── components/
+│   │   ├── hooks/
+│   │   ├── api/
+│   │   └── theme/
+│   └── tests/
+├── mcp-server/                 # cloglog-mcp (Node.js, separate package)
+│   ├── src/
+│   └── tests/
+├── pyproject.toml              # Backend dependencies + test config
+├── Makefile                    # Test runners, quality checks
+└── docs/
+    └── superpowers/specs/
+```
+
+### Worktree Compatibility
+
+Each bounded context and each top-level package (frontend, mcp-server) maps to a separate worktree. Agents in different worktrees touch different directories, avoiding merge conflicts:
+
+| Worktree | Works in | Never touches |
+|----------|----------|---------------|
+| `wt-board` | `src/board/`, `tests/board/` | Other contexts, frontend, mcp-server |
+| `wt-agent` | `src/agent/`, `tests/agent/` | Other contexts, frontend, mcp-server |
+| `wt-document` | `src/document/`, `tests/document/` | Other contexts, frontend, mcp-server |
+| `wt-gateway` | `src/gateway/`, `tests/gateway/` | Other contexts, frontend, mcp-server |
+| `wt-frontend` | `frontend/` | Backend, mcp-server |
+| `wt-mcp` | `mcp-server/` | Backend, frontend |
+
+The **shared kernel** (`src/shared/`) is set up in Phase 0 and rarely changes after that. If it does need changes, one agent makes the change and others rebase.
+
+**Interface contracts** (`interfaces.py` in each context) are also defined in Phase 0. These are the "API" between contexts — Python Protocols that define what each context exposes. Agents code against these interfaces, so their implementations don't conflict.
+
+## Test Infrastructure
+
+Test infrastructure is set up in Phase 0, before any feature work begins. Every agent in every worktree can run tests for their context independently.
+
+### Backend Testing
+
+- **Framework**: pytest
+- **Database**: Each test run gets a fresh PostgreSQL database (via `pytest-postgresql` or Docker)
+- **Coverage**: pytest-cov with enforced minimum threshold (starts at 80%, increases as project matures)
+- **Fixtures**: Shared in `tests/conftest.py` — test DB session, API test client, factory functions for creating test data
+
+```bash
+# Run all tests
+make test
+
+# Run tests for a specific context (what agents do in their worktree)
+make test-board          # pytest tests/board/
+make test-agent          # pytest tests/agent/
+make test-document       # pytest tests/document/
+make test-gateway        # pytest tests/gateway/
+make test-e2e            # pytest tests/e2e/
+
+# Coverage report
+make coverage            # Generates HTML coverage report
+
+# Quality checks
+make lint                # ruff check + ruff format --check
+make typecheck           # mypy src/
+make quality             # lint + typecheck + test + coverage
+```
+
+### Frontend Testing
+
+- **Framework**: Vitest + React Testing Library
+- **Coverage**: v8 coverage via Vitest
+
+```bash
+cd frontend
+make test                # vitest run
+make coverage            # vitest run --coverage
+```
+
+### MCP Server Testing
+
+- **Framework**: Jest or Vitest (Node.js)
+- **Mock server**: Tests run against a mock HTTP backend to verify MCP tools produce correct API calls
+
+```bash
+cd mcp-server
+make test
+```
+
+### Quality Dashboard
+
+A `make metrics` command generates a JSON report:
+
+```json
+{
+  "backend": {
+    "tests_passed": 142,
+    "tests_failed": 0,
+    "coverage_percent": 87.3,
+    "lint_errors": 0,
+    "type_errors": 0
+  },
+  "frontend": {
+    "tests_passed": 38,
+    "tests_failed": 0,
+    "coverage_percent": 82.1
+  },
+  "mcp_server": {
+    "tests_passed": 21,
+    "tests_failed": 0,
+    "coverage_percent": 91.0
+  }
+}
+```
+
+This report is checked into the repo after each phase so you can track quality over time. Agents run `make quality` before completing any task.
+
 ## Data Model
 
 ### Project
@@ -474,75 +666,143 @@ At the end of each phase, work stops and the user receives:
 
 ## Implementation Phases
 
-The project is built in vertical slices. Each phase delivers a working, testable increment. Phases are designed to maximize parallelism — multiple agents can work on independent components simultaneously within each phase.
+The project is built in vertical slices. Each phase delivers a working, testable increment. Work is organized by DDD bounded context so each agent works in its own worktree touching only its own directories, eliminating merge conflicts.
 
-### Phase 1: Foundation
+This project itself is developed inside agent-vm. Each worktree below maps to an actual git worktree in the cloglog repo, with an agent running inside the VM.
 
-Vertical slice: Create a project via API, see it in a minimal frontend.
+### Phase 0: Scaffold & Contracts (Sequential — single agent, main branch)
 
-| Agent | Work | Dependencies |
-|-------|------|-------------|
-| Agent A | Backend: FastAPI project scaffold, PostgreSQL setup, Project model + CRUD endpoints, API key generation | None |
-| Agent B | Frontend: React + Vite scaffold, project list sidebar component (hardcoded data), dark/light theme system with CSS variables, typography setup | None |
-| Agent C | cloglog-mcp: Node.js MCP server scaffold, `register_agent` tool stub that calls a URL | None |
+Before parallel work begins, one agent sets up the project skeleton and defines all interface contracts. This is the shared foundation that all worktrees build on.
 
-**Integration point**: Once A and B are done, connect frontend to backend API. Once C is done, verify it can reach A's endpoints.
+**Work:**
+- Initialize Python project (`pyproject.toml`, `uv`/`poetry`, ruff, mypy config)
+- Initialize React project in `frontend/` (Vite, TypeScript, Vitest)
+- Initialize MCP server in `mcp-server/` (Node.js/TypeScript, Jest/Vitest)
+- Create `src/` directory structure for all bounded contexts (empty `__init__.py` files, module boundaries)
+- Define `src/board/interfaces.py` — `TaskAssignmentService`, `TaskStatusService` protocols
+- Define `src/agent/interfaces.py` — protocols exposed by Agent context
+- Define `src/document/interfaces.py` — protocols exposed by Document context
+- Set up `src/shared/` — database engine, config, event bus stubs
+- Set up Alembic for migrations
+- Set up `tests/conftest.py` with PostgreSQL test fixtures
+- Create `Makefile` with all test/lint/quality targets
+- Create `docker-compose.yml` for PostgreSQL (dev + test)
+- Create sample test in each context to verify the test runner works
+- Write `CLAUDE.md` for this repo with bounded context rules and worktree discipline
 
-**User test**: Start backend, start frontend, create a project via CLI/curl, see it appear in the sidebar.
+**Tests:** `make quality` passes — lint clean, type check clean, all sample tests pass, coverage reporting works.
 
-### Phase 2: Hierarchy & Board
+**User test:** Run `make quality` and verify green. Run `docker compose up -d` and verify PostgreSQL is accessible.
 
-Vertical slice: Import a plan with epics/features/tasks, see them on the Kanban board.
+### Phase 1: Board Context + Frontend Shell + MCP Scaffold
 
-| Agent | Work | Dependencies |
-|-------|------|-------------|
-| Agent A | Backend: Epic, Feature, Task models, CRUD endpoints, `/import` bulk endpoint, status roll-up logic | Phase 1 backend |
-| Agent B | Frontend: Kanban board component, task cards with epic/feature breadcrumb, column rendering, board header with stats | Phase 1 frontend |
-| Agent C | CLI tool: `cloglog projects`, `cloglog import`, `cloglog board` commands | Phase 1 backend |
+Vertical slice: Create a project, import a plan, see the Kanban board.
 
-**Integration point**: Connect board to `/board` API endpoint. Test import → board render.
+| Worktree | Agent | Context | Works in | Work |
+|----------|-------|---------|----------|------|
+| `wt-board` | Agent A | Board | `src/board/`, `tests/board/`, `src/alembic/` | Project, Epic, Feature, Task models. Migrations. Repository layer. Services: CRUD, `/import` bulk, status roll-up. Routes for all management + dashboard-read endpoints. API key generation and hashing. Unit tests for roll-up logic, import parsing. Integration tests for all endpoints. |
+| `wt-gateway` | Agent B | Gateway | `src/gateway/`, `tests/gateway/` | FastAPI app composition, auth middleware (API key validation), CORS, error handling. Integration tests for auth (valid/invalid/wrong-project keys). CLI tool scaffold: `cloglog projects`, `cloglog import`, `cloglog board`. |
+| `wt-frontend` | Agent C | Frontend | `frontend/` | React app scaffold. Theme system (CSS variables, dark/light toggle). Sidebar: project list component, connected to `GET /projects` API. Kanban board component: columns, task cards with epic/feature breadcrumb, board header with stats. Connected to `GET /projects/{id}/board`. Component tests for board, cards, sidebar. |
+| `wt-mcp` | Agent D | MCP | `mcp-server/` | Node.js MCP server scaffold. HTTP client for cloglog API. `register_agent` tool implemented. Tests against mock HTTP server. |
 
-**User test**: Import a sample plan JSON, see epics/features/tasks appear on the board in correct columns. Verify stats are accurate.
+**Merge order:** wt-board first (creates tables), then wt-gateway (depends on board routes), then wt-frontend and wt-mcp (independent).
 
-### Phase 3: Agent Workflow
+**Integration test after merge:** Import a plan via curl → board endpoint returns correct data → frontend renders it.
 
-Vertical slice: Agent registers, picks up a task, updates status, completes it — all visible on the dashboard in real-time.
+**User test:**
+1. `docker compose up -d` (PostgreSQL)
+2. `make run-backend` (FastAPI on :8000)
+3. `curl -X POST localhost:8000/api/v1/projects -d '{"name": "test-project"}' ` → get project ID + API key
+4. `curl -X POST localhost:8000/api/v1/projects/{id}/import -H "Authorization: Bearer <key>" -d @sample-plan.json` → 201
+5. `make run-frontend` (React on :5173)
+6. Open `http://localhost:5173` → see project in sidebar, click it, see Kanban board with imported tasks
+7. `make quality` → all tests pass, coverage meets threshold
 
-| Agent | Work | Dependencies |
-|-------|------|-------------|
-| Agent A | Backend: Worktree + Session models, agent-facing endpoints (register, heartbeat, start-task, complete-task, task-status), SSE stream | Phase 2 backend |
-| Agent B | Frontend: Worktree roster in sidebar, live status indicators with pulse animations, SSE client for real-time updates, card agent assignment display | Phase 2 frontend |
-| Agent C | cloglog-mcp: All MCP tools implemented (register, get_my_tasks, start_task, complete_task, update_task_status, unregister), heartbeat timer | Phase 1 MCP + Phase 2 backend |
+### Phase 2: Agent Context + Live Dashboard
 
-**Integration point**: MCP server → backend → SSE → frontend. Full loop.
+Vertical slice: Agent registers, picks up a task, updates status — dashboard updates in real-time.
 
-**User test**: Start backend + frontend. Use curl to simulate an agent registering, picking a task, moving it through columns. Verify real-time updates in the dashboard. Then test with actual cloglog-mcp if agent-vm integration is ready.
+| Worktree | Agent | Context | Works in | Work |
+|----------|-------|---------|----------|------|
+| `wt-agent` | Agent A | Agent | `src/agent/`, `tests/agent/` | Worktree, Session models. Migrations. Repository layer. Services: registration (upsert worktree, create session), heartbeat, task lifecycle (start, complete, status update via Board's TaskStatusService interface). Agent-facing routes. Unit tests for registration logic, heartbeat timeout, reconnection. Integration tests for full agent workflow. |
+| `wt-gateway-sse` | Agent B | Gateway | `src/gateway/sse.py`, `src/shared/events.py`, `tests/gateway/` | SSE implementation. Internal event bus: when task status changes, emit event. SSE endpoint streams events to connected frontends. Integration test: change task status → SSE delivers event. |
+| `wt-frontend-live` | Agent C | Frontend | `frontend/` | Worktree roster in sidebar (connected to `GET /projects/{id}/worktrees`). Live status indicators with pulse animations. SSE client hook: subscribe to `/projects/{id}/stream`, update board state on events. Card: show assigned worktree with status dot. Component tests with mock SSE. |
+| `wt-mcp-tools` | Agent D | MCP | `mcp-server/` | All remaining MCP tools: `get_my_tasks`, `start_task`, `complete_task`, `update_task_status`, `add_task_note`, `unregister_agent`. Heartbeat timer (starts on register, stops on unregister). Tests for each tool against mock HTTP. |
 
-### Phase 4: Documents & Polish
+**Merge order:** wt-agent first (creates tables), then wt-gateway-sse, then wt-frontend-live and wt-mcp-tools.
 
-Vertical slice: Agents attach documents, documents visible on card detail view. Task assignment from dashboard/CLI.
+**Integration test after merge:** Register agent via curl → start task → update status → complete → verify SSE events fire → frontend updates.
 
-| Agent | Work | Dependencies |
-|-------|------|-------------|
-| Agent A | Backend: Document model, document endpoints (create, list, get), attach_document via agent API | Phase 3 backend |
-| Agent B | Frontend: Document chips on cards, card detail view with document content renderer (markdown), document type filtering | Phase 3 frontend |
-| Agent C | cloglog-mcp: `attach_document` tool (reads local file, posts content), `add_task_note` tool | Phase 3 MCP |
-| Agent D | Backend + CLI: Task assignment endpoints, `cloglog assign` command, worktree assignment from dashboard UI | Phase 3 backend |
+**User test:**
+1. Start backend + frontend (from Phase 1)
+2. Open dashboard in browser
+3. Run this curl sequence and watch the board update in real-time:
+   ```bash
+   # Register agent
+   curl -X POST localhost:8000/api/v1/agents/register \
+     -H "Authorization: Bearer <key>" \
+     -d '{"worktree_path": "/home/user/project/wt-feature-1"}'
+   # Start a task
+   curl -X POST localhost:8000/api/v1/agents/{wt_id}/start-task \
+     -H "Authorization: Bearer <key>" \
+     -d '{"task_id": "<task-uuid>"}'
+   # Complete the task
+   curl -X POST localhost:8000/api/v1/agents/{wt_id}/complete-task \
+     -H "Authorization: Bearer <key>" \
+     -d '{"task_id": "<task-uuid>"}'
+   ```
+4. Verify: worktree appears in sidebar, task moves through columns live, worktree shows as idle after completion
+5. `make quality` → all tests pass
 
-**Integration point**: Agent attaches doc → appears on dashboard card. Assign task via UI → agent picks it up.
+### Phase 3: Document Context + Card Detail + Assignment
 
-**User test**: Full end-to-end flow. Import plan, assign tasks, simulate agent working through tasks with document attachments, verify everything on dashboard. Test card detail view with markdown rendering.
+Vertical slice: Documents attached, viewable in detail. Tasks assignable from UI/CLI.
 
-### Phase 5: agent-vm Integration
+| Worktree | Agent | Context | Works in | Work |
+|----------|-------|---------|----------|------|
+| `wt-document` | Agent A | Document | `src/document/`, `tests/document/` | Document model. Migration. Repository. Service: create (append-only), list by attached entity, get by ID. Routes: agent-facing document POST, dashboard-facing list + get. Unit tests for content storage, polymorphic attachment. Integration tests for create + retrieve. |
+| `wt-frontend-docs` | Agent B | Frontend | `frontend/` | Document chips on task cards (spec/plan/design colored badges). Card detail view: slide-out or modal with full task description, document list, markdown content renderer, task notes. Document type filtering. Component tests. |
+| `wt-mcp-docs` | Agent C | MCP | `mcp-server/` | `attach_document` tool: reads local file, extracts title from frontmatter or filename, POSTs content to cloglog API. `add_task_note` tool. Tests. |
+| `wt-assign` | Agent D | Gateway + Board | `src/gateway/cli.py`, `src/board/routes.py` (assignment endpoint only) | `POST /worktrees/{id}/assign` endpoint. `cloglog assign` CLI command. `cloglog worktrees` command. Dashboard UI: assign task to worktree (dropdown on card). Tests for assignment rules (can't assign to offline worktree, can't double-assign). |
 
-Vertical slice: Everything works inside actual agent-vm sandboxes.
+**Merge order:** wt-document first, then others in any order.
 
-| Agent | Work | Dependencies |
-|-------|------|-------------|
-| Agent A | agent-vm changes: Add cloglog-mcp to `agent-vm.setup.sh`, configure `~/.claude.json`, document credential setup | Phase 4 MCP |
-| Agent B | CLAUDE.md template: Write standard cloglog instructions for project CLAUDE.md files, test that agents follow the workflow | Phase 4 all |
+**Integration test after merge:** Attach document via agent API → document appears on card in dashboard → click card → see full document content rendered as markdown.
 
-**User test**: Full real-world test. Create a project in cloglog, import a small plan, start `agent-vm claude` with cloglog configured, watch the agent register and work through tasks on the live dashboard.
+**User test:**
+1. Start full stack
+2. Simulate agent attaching a document:
+   ```bash
+   curl -X POST localhost:8000/api/v1/agents/{wt_id}/documents \
+     -H "Authorization: Bearer <key>" \
+     -d '{"task_id": "...", "type": "spec", "title": "OAuth Flow Design", "content": "# OAuth Flow\n\n...", "source_path": "docs/specs/oauth.md"}'
+   ```
+3. Open dashboard → find the task card → verify spec chip appears → click card → verify document content renders
+4. Assign a task to a worktree via CLI: `cloglog assign test-project wt-feature-1 <task-id>`
+5. Verify assignment shows on dashboard
+6. `make quality` → all tests pass, `make metrics` → review coverage report
+
+### Phase 4: agent-vm Integration + End-to-End
+
+Vertical slice: Full real-world flow inside agent-vm sandboxes.
+
+| Worktree | Agent | Context | Works in | Work |
+|----------|-------|---------|----------|------|
+| `wt-agent-vm` | Agent A | agent-vm repo | agent-vm repo (separate) | Add `cloglog-mcp` installation to `agent-vm.setup.sh`. Add cloglog MCP config to `~/.claude.json` template. Document credential setup in README. Test that `agent-vm shell` can reach cloglog service on host. |
+| `wt-claude-md` | Agent B | Templates | `docs/templates/` | CLAUDE.md template with cloglog task management instructions. `.agent-vm.runtime.sh` template for cloglog env vars. Sample plan JSON for testing. End-to-end test script that verifies the full flow. |
+| `wt-e2e` | Agent C | Tests | `tests/e2e/` | Full end-to-end test suite: create project → import plan → register agent → work through tasks → attach documents → verify dashboard state. Load test: simulate 5 agents registering and working simultaneously. |
+
+**User test:** This is the real test.
+1. Create a project in cloglog: `cloglog projects create my-project`
+2. Import a plan: `cloglog import my-project sample-plan.json`
+3. Review the board in the dashboard — verify tasks are correct, delete any bad ones
+4. Set up credentials: place API key in `~/.agent-vm/credentials/cloglog-api-key`
+5. Create `.agent-vm.runtime.sh` in the target project with cloglog env vars
+6. Start `agent-vm claude` in the target project directory
+7. Watch the dashboard as the agent registers, picks up tasks, and works through them
+8. Verify documents appear as the agent generates specs/plans
+9. When agent finishes, verify project status reflects completion
+10. Kill the agent VM, verify worktree goes offline on dashboard after heartbeat timeout
 
 ## Constraints & Non-Goals
 

@@ -421,6 +421,129 @@ This handles:
 
 When the session restarts and calls `register_agent`, the worktree goes back to active with its task intact.
 
+## Testing Strategy
+
+### Principles
+
+- **Test-first**: Write testable specs before implementation. Code must satisfy the specs.
+- **Never assume it works**: Every layer must be verified with the appropriate level of testing.
+- **User testing checkpoints**: At the end of each phase, stop and provide precise manual testing instructions.
+
+### Test Layers
+
+**Unit tests** — for all business logic in isolation:
+- Status roll-up computation (task → feature → epic)
+- API key hashing and validation
+- Heartbeat timeout detection
+- Task assignment rules (can't assign to offline worktree, can't assign already-assigned task)
+- Import payload parsing and validation
+
+**Integration tests** — for API endpoints against a real PostgreSQL database:
+- Full CRUD lifecycle for projects, epics, features, tasks
+- Agent registration, task pickup, status update, completion flow
+- Bulk import endpoint with nested hierarchy
+- SSE event delivery when task status changes
+- API key auth (valid key, invalid key, wrong project key)
+- Worktree reconnection after session restart
+
+**MCP server tests** — for the cloglog-mcp tool layer:
+- Each MCP tool correctly maps to the right API call
+- File reading + content posting for `attach_document`
+- Error handling when cloglog service is unreachable
+- Heartbeat timer starts on register, stops on unregister
+
+**Frontend tests** — for the React dashboard:
+- Component rendering (board, cards, sidebar, document viewer)
+- Real-time updates via SSE (mock SSE source, verify board re-renders)
+- Theme switching
+- Project selection and board loading
+
+**End-to-end tests** — full stack verification per phase:
+- Agent registers → picks task → updates status → completes task → dashboard reflects all changes
+- Import plan → tasks appear on board → assign to worktree → agent picks up
+- Document attachment from agent → visible on dashboard card
+
+### User Testing Checkpoints
+
+At the end of each phase, work stops and the user receives:
+1. What was built in this phase
+2. How to start the relevant services
+3. Exact steps to test (URLs to visit, API calls to make, what to verify)
+4. Expected outcomes for each step
+5. Known limitations at this phase
+
+## Implementation Phases
+
+The project is built in vertical slices. Each phase delivers a working, testable increment. Phases are designed to maximize parallelism — multiple agents can work on independent components simultaneously within each phase.
+
+### Phase 1: Foundation
+
+Vertical slice: Create a project via API, see it in a minimal frontend.
+
+| Agent | Work | Dependencies |
+|-------|------|-------------|
+| Agent A | Backend: FastAPI project scaffold, PostgreSQL setup, Project model + CRUD endpoints, API key generation | None |
+| Agent B | Frontend: React + Vite scaffold, project list sidebar component (hardcoded data), dark/light theme system with CSS variables, typography setup | None |
+| Agent C | cloglog-mcp: Node.js MCP server scaffold, `register_agent` tool stub that calls a URL | None |
+
+**Integration point**: Once A and B are done, connect frontend to backend API. Once C is done, verify it can reach A's endpoints.
+
+**User test**: Start backend, start frontend, create a project via CLI/curl, see it appear in the sidebar.
+
+### Phase 2: Hierarchy & Board
+
+Vertical slice: Import a plan with epics/features/tasks, see them on the Kanban board.
+
+| Agent | Work | Dependencies |
+|-------|------|-------------|
+| Agent A | Backend: Epic, Feature, Task models, CRUD endpoints, `/import` bulk endpoint, status roll-up logic | Phase 1 backend |
+| Agent B | Frontend: Kanban board component, task cards with epic/feature breadcrumb, column rendering, board header with stats | Phase 1 frontend |
+| Agent C | CLI tool: `cloglog projects`, `cloglog import`, `cloglog board` commands | Phase 1 backend |
+
+**Integration point**: Connect board to `/board` API endpoint. Test import → board render.
+
+**User test**: Import a sample plan JSON, see epics/features/tasks appear on the board in correct columns. Verify stats are accurate.
+
+### Phase 3: Agent Workflow
+
+Vertical slice: Agent registers, picks up a task, updates status, completes it — all visible on the dashboard in real-time.
+
+| Agent | Work | Dependencies |
+|-------|------|-------------|
+| Agent A | Backend: Worktree + Session models, agent-facing endpoints (register, heartbeat, start-task, complete-task, task-status), SSE stream | Phase 2 backend |
+| Agent B | Frontend: Worktree roster in sidebar, live status indicators with pulse animations, SSE client for real-time updates, card agent assignment display | Phase 2 frontend |
+| Agent C | cloglog-mcp: All MCP tools implemented (register, get_my_tasks, start_task, complete_task, update_task_status, unregister), heartbeat timer | Phase 1 MCP + Phase 2 backend |
+
+**Integration point**: MCP server → backend → SSE → frontend. Full loop.
+
+**User test**: Start backend + frontend. Use curl to simulate an agent registering, picking a task, moving it through columns. Verify real-time updates in the dashboard. Then test with actual cloglog-mcp if agent-vm integration is ready.
+
+### Phase 4: Documents & Polish
+
+Vertical slice: Agents attach documents, documents visible on card detail view. Task assignment from dashboard/CLI.
+
+| Agent | Work | Dependencies |
+|-------|------|-------------|
+| Agent A | Backend: Document model, document endpoints (create, list, get), attach_document via agent API | Phase 3 backend |
+| Agent B | Frontend: Document chips on cards, card detail view with document content renderer (markdown), document type filtering | Phase 3 frontend |
+| Agent C | cloglog-mcp: `attach_document` tool (reads local file, posts content), `add_task_note` tool | Phase 3 MCP |
+| Agent D | Backend + CLI: Task assignment endpoints, `cloglog assign` command, worktree assignment from dashboard UI | Phase 3 backend |
+
+**Integration point**: Agent attaches doc → appears on dashboard card. Assign task via UI → agent picks it up.
+
+**User test**: Full end-to-end flow. Import plan, assign tasks, simulate agent working through tasks with document attachments, verify everything on dashboard. Test card detail view with markdown rendering.
+
+### Phase 5: agent-vm Integration
+
+Vertical slice: Everything works inside actual agent-vm sandboxes.
+
+| Agent | Work | Dependencies |
+|-------|------|-------------|
+| Agent A | agent-vm changes: Add cloglog-mcp to `agent-vm.setup.sh`, configure `~/.claude.json`, document credential setup | Phase 4 MCP |
+| Agent B | CLAUDE.md template: Write standard cloglog instructions for project CLAUDE.md files, test that agents follow the workflow | Phase 4 all |
+
+**User test**: Full real-world test. Create a project in cloglog, import a small plan, start `agent-vm claude` with cloglog configured, watch the agent register and work through tasks on the live dashboard.
+
 ## Constraints & Non-Goals
 
 - **No cross-project agents**: Agents belong to exactly one project. Enforced by API key scoping.

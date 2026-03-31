@@ -53,7 +53,6 @@ def _create_test_database(test_db_name: str) -> None:  # type: ignore[misc]
         await conn.execute(f'DROP DATABASE IF EXISTS "{test_db_name}"')
         await conn.close()
 
-    asyncio.get_event_loop_policy().get_event_loop()
     loop = asyncio.new_event_loop()
     loop.run_until_complete(_setup())
     yield  # type: ignore[misc]

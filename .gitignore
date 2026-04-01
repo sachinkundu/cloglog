@@ -1,1 +1,11 @@
 .superpowers/
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+dist/
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.env

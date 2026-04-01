@@ -15,6 +15,8 @@ DDD bounded contexts — each context owns its own models, services, repository,
 
 Contexts communicate through interfaces defined in `interfaces.py`, never by importing each other's internals.
 
+For the full context map, relationship types, and ubiquitous language glossary, see `docs/ddd-context-map.md`.
+
 ## Worktree Discipline
 
 If you are working in a worktree, you MUST only touch files in your assigned context:
@@ -27,6 +29,8 @@ If you are working in a worktree, you MUST only touch files in your assigned con
 - `wt-mcp` → `mcp-server/`
 
 Do NOT modify files outside your assigned directories. If you need a change in another context, note it and coordinate.
+
+**This is enforced by a Claude Code hook** (`.claude/hooks/protect-worktree-writes.sh`). Writes to files outside your assigned directories will be blocked automatically.
 
 ## Commands
 
@@ -47,6 +51,8 @@ make db-migrate       # Run Alembic migrations
 ## Quality Gate
 
 Before completing any task or creating a PR, run `make quality` and verify it passes.
+
+**This is enforced by a Claude Code hook** (`.claude/hooks/quality-gate-before-commit.sh`). Any `git commit`, `git push`, or `gh pr create` will automatically run `make quality` first and block if it fails.
 
 ## Tech Stack
 

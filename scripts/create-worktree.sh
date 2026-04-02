@@ -1,0 +1,226 @@
+#!/bin/bash
+set -euo pipefail
+
+# Create a worktree for a specific agent track with full setup.
+# Usage: ./scripts/create-worktree.sh <worktree-name> [plan-file] [task-description]
+#
+# Examples:
+#   ./scripts/create-worktree.sh wt-board
+#   ./scripts/create-worktree.sh wt-board docs/superpowers/plans/2026-04-01-phase-1.md "Board context: models, CRUD, import, roll-up"
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+WORKTREE_NAME="${1:?Usage: $0 <worktree-name> [plan-file] [task-description]}"
+PLAN_FILE="${2:-}"
+TASK_DESC="${3:-}"
+
+WORKTREE_DIR="${REPO_ROOT}/.claude/worktrees/${WORKTREE_NAME}"
+BRANCH_NAME="${WORKTREE_NAME}"
+
+# ── Worktree directory mapping ──────────────────────────────
+
+declare -A ALLOWED_DIRS
+ALLOWED_DIRS=(
+  [wt-board]="src/board/, tests/board/, src/alembic/"
+  [wt-agent]="src/agent/, tests/agent/, src/alembic/"
+  [wt-document]="src/document/, tests/document/, src/alembic/"
+  [wt-gateway]="src/gateway/, tests/gateway/"
+  [wt-gateway-sse]="src/gateway/sse.py, src/shared/events.py, tests/gateway/"
+  [wt-frontend]="frontend/"
+  [wt-frontend-live]="frontend/"
+  [wt-frontend-docs]="frontend/"
+  [wt-mcp]="mcp-server/"
+  [wt-mcp-tools]="mcp-server/"
+  [wt-mcp-docs]="mcp-server/"
+  [wt-assign]="src/gateway/cli.py, src/board/routes.py, tests/gateway/, tests/board/"
+  [wt-e2e]="tests/e2e/"
+  [wt-claude-md]="docs/templates/"
+  [wt-agent-vm]="(agent-vm repo)"
+)
+
+declare -A CONTEXT_NAMES
+CONTEXT_NAMES=(
+  [wt-board]="Board bounded context"
+  [wt-agent]="Agent bounded context"
+  [wt-document]="Document bounded context"
+  [wt-gateway]="Gateway context"
+  [wt-gateway-sse]="Gateway SSE + event bus"
+  [wt-frontend]="React frontend"
+  [wt-frontend-live]="React frontend — live dashboard"
+  [wt-frontend-docs]="React frontend — document viewer"
+  [wt-mcp]="MCP server"
+  [wt-mcp-tools]="MCP server — agent tools"
+  [wt-mcp-docs]="MCP server — document attachment"
+  [wt-assign]="Task assignment (Gateway + Board)"
+  [wt-e2e]="End-to-end tests"
+  [wt-claude-md]="CLAUDE.md templates"
+  [wt-agent-vm]="agent-vm integration"
+)
+
+declare -A TEST_COMMANDS
+TEST_COMMANDS=(
+  [wt-board]="make test-board"
+  [wt-agent]="make test-agent"
+  [wt-document]="make test-document"
+  [wt-gateway]="make test-gateway"
+  [wt-gateway-sse]="make test-gateway"
+  [wt-frontend]="cd frontend && make test"
+  [wt-frontend-live]="cd frontend && make test"
+  [wt-frontend-docs]="cd frontend && make test"
+  [wt-mcp]="cd mcp-server && make test"
+  [wt-mcp-tools]="cd mcp-server && make test"
+  [wt-mcp-docs]="cd mcp-server && make test"
+  [wt-assign]="make test-gateway && make test-board"
+  [wt-e2e]="make test-e2e"
+)
+
+DIRS="${ALLOWED_DIRS[$WORKTREE_NAME]:-unknown}"
+CONTEXT="${CONTEXT_NAMES[$WORKTREE_NAME]:-$WORKTREE_NAME}"
+TEST_CMD="${TEST_COMMANDS[$WORKTREE_NAME]:-make test}"
+
+if [[ "$DIRS" == "unknown" ]]; then
+  echo "Warning: unknown worktree name '$WORKTREE_NAME'. No directory restrictions will apply."
+fi
+
+# ── Create worktree ─────────────────────────────────────────
+
+echo "Creating worktree: $WORKTREE_NAME"
+echo "  Branch: $BRANCH_NAME"
+echo "  Path:   $WORKTREE_DIR"
+echo "  Context: $CONTEXT"
+echo ""
+
+if [[ -d "$WORKTREE_DIR" ]]; then
+  echo "Worktree already exists at $WORKTREE_DIR"
+  echo "Use: git worktree remove $WORKTREE_DIR  (to remove)"
+  exit 1
+fi
+
+git worktree add -b "$BRANCH_NAME" "$WORKTREE_DIR" main
+echo "Worktree created."
+
+# ── Install dependencies ────────────────────────────────────
+
+echo ""
+echo "Installing dependencies..."
+
+# Python backend
+if [[ -f "$WORKTREE_DIR/pyproject.toml" ]]; then
+  echo "  Python: uv sync"
+  (cd "$WORKTREE_DIR" && uv sync --all-extras --quiet)
+fi
+
+# Frontend
+if [[ -d "$WORKTREE_DIR/frontend" ]]; then
+  echo "  Frontend: npm install"
+  (cd "$WORKTREE_DIR/frontend" && npm install --silent 2>/dev/null)
+fi
+
+# MCP server
+if [[ -d "$WORKTREE_DIR/mcp-server" ]]; then
+  echo "  MCP server: npm install"
+  (cd "$WORKTREE_DIR/mcp-server" && npm install --silent 2>/dev/null)
+fi
+
+# Copy .env if it exists in main repo
+if [[ -f "$REPO_ROOT/.env" ]]; then
+  cp "$REPO_ROOT/.env" "$WORKTREE_DIR/.env"
+  echo "  Copied .env"
+fi
+
+echo "Dependencies installed."
+
+# ── Generate worktree-specific CLAUDE.md ────────────────────
+
+CLAUDE_MD="$WORKTREE_DIR/CLAUDE.md"
+
+cat > "$CLAUDE_MD" << CLAUDE_EOF
+# Worktree: ${WORKTREE_NAME}
+
+## Identity
+
+You are an autonomous agent working in worktree \`${WORKTREE_NAME}\`.
+Your context is: **${CONTEXT}**.
+
+## Rules
+
+**You MUST only modify files in these directories:**
+${DIRS}
+
+Do NOT touch files outside these directories. The worktree protection hook will block you if you try.
+
+## Your Task
+CLAUDE_EOF
+
+if [[ -n "$TASK_DESC" ]]; then
+  echo "" >> "$CLAUDE_MD"
+  echo "$TASK_DESC" >> "$CLAUDE_MD"
+fi
+
+if [[ -n "$PLAN_FILE" ]]; then
+  cat >> "$CLAUDE_MD" << CLAUDE_EOF
+
+## Plan
+
+Read the implementation plan at \`${PLAN_FILE}\` and find the tasks assigned to \`${WORKTREE_NAME}\`.
+Execute them in order. Each task has exact code, commands, and expected output.
+
+## Workflow
+
+1. Read the plan and find your tasks
+2. For each task:
+   a. Write the failing test first
+   b. Run it to verify it fails
+   c. Write the implementation
+   d. Run tests: \`${TEST_CMD}\`
+   e. Commit with a descriptive message
+3. After all tasks: run \`make quality\` to verify everything passes
+4. Push your branch and create a PR
+
+CLAUDE_EOF
+else
+  cat >> "$CLAUDE_MD" << CLAUDE_EOF
+
+Awaiting task assignment. When you receive instructions, work only within your assigned directories.
+
+## Testing
+
+Run your context tests with: \`${TEST_CMD}\`
+Before any commit, run: \`make quality\`
+
+CLAUDE_EOF
+fi
+
+cat >> "$CLAUDE_MD" << CLAUDE_EOF
+
+## Git
+
+You are on branch \`${BRANCH_NAME}\`. Commit frequently with descriptive messages.
+When done, push and create a PR against main.
+
+## Quality Gate
+
+Before completing work or creating a PR, run \`make quality\` and verify it passes.
+This is enforced by a hook — commits will be blocked if quality fails.
+CLAUDE_EOF
+
+echo ""
+echo "Generated CLAUDE.md for ${WORKTREE_NAME}"
+
+# ── Summary ─────────────────────────────────────────────────
+
+echo ""
+echo "═══════════════════════════════════════════════════"
+echo "  Worktree ready: ${WORKTREE_NAME}"
+echo "  Path: ${WORKTREE_DIR}"
+echo "  Branch: ${BRANCH_NAME}"
+echo "  Context: ${CONTEXT}"
+echo ""
+echo "  To start working:"
+echo "    cd ${WORKTREE_DIR} && claude"
+echo ""
+echo "  To remove when done:"
+echo "    git worktree remove ${WORKTREE_DIR}"
+echo "    git branch -D ${BRANCH_NAME}"
+echo "═══════════════════════════════════════════════════"

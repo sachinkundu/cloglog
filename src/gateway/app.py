@@ -26,8 +26,10 @@ def create_app() -> FastAPI:
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    # Context routes will be included here in Phase 1:
-    # app.include_router(board_router, prefix="/api/v1")
+    # Context routes
+    from src.board.routes import router as board_router
+
+    app.include_router(board_router, prefix="/api/v1")
     # app.include_router(agent_router, prefix="/api/v1")
     # app.include_router(document_router, prefix="/api/v1")
 

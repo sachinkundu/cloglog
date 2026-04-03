@@ -105,7 +105,7 @@ async def test_rollup_feature_in_review(service: BoardService, db_session: Async
 
 
 async def test_import_plan(service: BoardService):
-    project, _ = await service.create_project("import-test", "", "")
+    project, _ = await service.create_project("svc-import-test", "", "")
     plan = ImportPlan(
         epics=[
             {

@@ -8,6 +8,12 @@ export interface CloglogClientConfig {
   apiKey: string
 }
 
+export interface RegisterAgentResult {
+  worktree_id: string
+  current_task: { id: string; title: string } | null
+  resumed: boolean
+}
+
 export class CloglogClient {
   private baseUrl: string
   private apiKey: string
@@ -15,6 +21,12 @@ export class CloglogClient {
   constructor(config: CloglogClientConfig) {
     this.baseUrl = config.baseUrl.replace(/\/$/, '')
     this.apiKey = config.apiKey
+  }
+
+  async registerAgent(worktreePath: string): Promise<RegisterAgentResult> {
+    return this.request('POST', '/api/v1/agents/register', {
+      worktree_path: worktreePath,
+    }) as Promise<RegisterAgentResult>
   }
 
   async request(method: string, path: string, body?: unknown): Promise<unknown> {

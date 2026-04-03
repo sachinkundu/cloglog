@@ -16,8 +16,9 @@
     "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "devDependencies": {
+    "@types/node": "^25.5.0",
+    "@vitest/coverage-v8": "^2.1.0",
     "typescript": "^5.6.0",
-    "vitest": "^2.1.0",
-    "@vitest/coverage-v8": "^2.1.0"
+    "vitest": "^2.1.0"
   }
 }

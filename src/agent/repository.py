@@ -1,0 +1,112 @@
+"""Database queries for the Agent bounded context."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from uuid import UUID
+
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.agent.models import Session, Worktree
+
+
+class AgentRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    # --- Worktree ---
+
+    async def upsert_worktree(
+        self, project_id: UUID, worktree_path: str, branch_name: str
+    ) -> tuple[Worktree, bool]:
+        """Find or create a worktree. Returns (worktree, is_new)."""
+        result = await self._session.execute(
+            select(Worktree).where(
+                Worktree.project_id == project_id,
+                Worktree.worktree_path == worktree_path,
+            )
+        )
+        existing = result.scalar_one_or_none()
+        if existing is not None:
+            existing.status = "online"
+            existing.branch_name = branch_name
+            await self._session.commit()
+            await self._session.refresh(existing)
+            return existing, False
+
+        worktree = Worktree(
+            project_id=project_id,
+            worktree_path=worktree_path,
+            branch_name=branch_name,
+            status="online",
+        )
+        self._session.add(worktree)
+        await self._session.commit()
+        await self._session.refresh(worktree)
+        return worktree, True
+
+    async def get_worktree(self, worktree_id: UUID) -> Worktree | None:
+        return await self._session.get(Worktree, worktree_id)
+
+    async def get_worktrees_for_project(self, project_id: UUID) -> list[Worktree]:
+        result = await self._session.execute(
+            select(Worktree).where(Worktree.project_id == project_id).order_by(Worktree.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def set_worktree_offline(self, worktree_id: UUID) -> None:
+        await self._session.execute(
+            update(Worktree).where(Worktree.id == worktree_id).values(status="offline")
+        )
+        await self._session.commit()
+
+    async def set_worktree_current_task(self, worktree_id: UUID, task_id: UUID | None) -> None:
+        await self._session.execute(
+            update(Worktree).where(Worktree.id == worktree_id).values(current_task_id=task_id)
+        )
+        await self._session.commit()
+
+    # --- Session ---
+
+    async def create_session(self, worktree_id: UUID) -> Session:
+        session = Session(worktree_id=worktree_id)
+        self._session.add(session)
+        await self._session.commit()
+        await self._session.refresh(session)
+        return session
+
+    async def get_active_session(self, worktree_id: UUID) -> Session | None:
+        result = await self._session.execute(
+            select(Session).where(
+                Session.worktree_id == worktree_id,
+                Session.status == "active",
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def update_heartbeat(self, session_id: UUID) -> Session | None:
+        session = await self._session.get(Session, session_id)
+        if session is None:
+            return None
+        session.last_heartbeat = datetime.now(UTC)
+        await self._session.commit()
+        await self._session.refresh(session)
+        return session
+
+    async def end_session(self, session_id: UUID, status: str = "ended") -> None:
+        session = await self._session.get(Session, session_id)
+        if session is not None:
+            session.status = status
+            session.ended_at = datetime.now(UTC)
+            await self._session.commit()
+
+    async def get_timed_out_sessions(self, cutoff: datetime) -> list[Session]:
+        """Find active sessions whose last heartbeat is before the cutoff."""
+        result = await self._session.execute(
+            select(Session).where(
+                Session.status == "active",
+                Session.last_heartbeat < cutoff,
+            )
+        )
+        return list(result.scalars().all())

@@ -1,0 +1,120 @@
+"""FastAPI routes for the Agent bounded context (agent-facing endpoints)."""
+
+from __future__ import annotations
+
+from typing import Annotated
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.agent.repository import AgentRepository
+from src.agent.schemas import (
+    CompleteTaskRequest,
+    CompleteTaskResponse,
+    HeartbeatResponse,
+    RegisterRequest,
+    RegisterResponse,
+    StartTaskRequest,
+    StartTaskResponse,
+    TaskInfo,
+    UpdateTaskStatusRequest,
+    WorktreeResponse,
+)
+from src.agent.services import AgentService
+from src.board.repository import BoardRepository
+from src.shared.database import get_session
+
+router = APIRouter()
+
+
+def _get_service(session: Annotated[AsyncSession, Depends(get_session)]) -> AgentService:
+    return AgentService(AgentRepository(session), BoardRepository(session))
+
+
+ServiceDep = Annotated[AgentService, Depends(_get_service)]
+
+
+@router.post("/agents/register", response_model=RegisterResponse, status_code=201)
+async def register_agent(
+    body: RegisterRequest, service: ServiceDep, request: Request
+) -> dict[str, object]:
+    """Register a worktree agent. Requires project_id from auth context."""
+    project_id = _get_project_id(request)
+    result = await service.register(project_id, body.worktree_path, body.branch_name)
+    return result
+
+
+@router.post("/agents/{worktree_id}/heartbeat", response_model=HeartbeatResponse)
+async def heartbeat(worktree_id: UUID, service: ServiceDep) -> dict[str, object]:
+    try:
+        return await service.heartbeat(worktree_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@router.get("/agents/{worktree_id}/tasks", response_model=list[TaskInfo])
+async def get_tasks(worktree_id: UUID, service: ServiceDep) -> list[TaskInfo]:
+    """Get all tasks assigned to this worktree."""
+    tasks = await service._board_repo.get_tasks_for_worktree(worktree_id)
+    return [TaskInfo.model_validate(t) for t in tasks]
+
+
+@router.post("/agents/{worktree_id}/start-task", response_model=StartTaskResponse)
+async def start_task(
+    worktree_id: UUID, body: StartTaskRequest, service: ServiceDep
+) -> dict[str, object]:
+    try:
+        return await service.start_task(worktree_id, body.task_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@router.post("/agents/{worktree_id}/complete-task", response_model=CompleteTaskResponse)
+async def complete_task(
+    worktree_id: UUID, body: CompleteTaskRequest, service: ServiceDep
+) -> dict[str, object]:
+    try:
+        return await service.complete_task(worktree_id, body.task_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@router.patch("/agents/{worktree_id}/task-status", status_code=204)
+async def update_task_status(
+    worktree_id: UUID, body: UpdateTaskStatusRequest, service: ServiceDep
+) -> None:
+    try:
+        await service.update_task_status(worktree_id, body.task_id, body.status)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@router.post("/agents/{worktree_id}/unregister", status_code=204)
+async def unregister_agent(worktree_id: UUID, service: ServiceDep) -> None:
+    try:
+        await service.unregister(worktree_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@router.get("/projects/{project_id}/worktrees", response_model=list[WorktreeResponse])
+async def list_worktrees(project_id: UUID, service: ServiceDep) -> list[dict[str, object]]:
+    return await service.get_worktrees_for_project(project_id)
+
+
+def _get_project_id(request: Request) -> UUID:
+    """Extract project_id from request state (set by auth middleware).
+
+    For now, falls back to a query parameter for development.
+    """
+    project_id: object = getattr(request.state, "project_id", None)
+    if isinstance(project_id, UUID):
+        return project_id
+
+    # Fallback: query parameter (dev only)
+    qp = request.query_params.get("project_id")
+    if qp is not None:
+        return UUID(qp)
+
+    raise HTTPException(status_code=400, detail="project_id is required")

@@ -1,0 +1,74 @@
+import { useEffect, useState } from 'react'
+import { api } from '../api/client'
+import type { Document, DocumentSummary, TaskCard } from '../api/types'
+import './CardDetail.css'
+
+interface CardDetailProps {
+  task: TaskCard
+  onClose: () => void
+}
+
+export function CardDetail({ task, onClose }: CardDetailProps) {
+  const [docs, setDocs] = useState<DocumentSummary[]>([])
+  const [selectedDoc, setSelectedDoc] = useState<Document | null>(null)
+
+  useEffect(() => {
+    api.getTaskDocuments(task.id).then(setDocs).catch(() => {})
+  }, [task.id])
+
+  const openDoc = async (docId: string) => {
+    const doc = await api.getDocument(docId)
+    setSelectedDoc(doc)
+  }
+
+  return (
+    <div className="card-detail-overlay" onClick={onClose}>
+      <div className="card-detail" onClick={e => e.stopPropagation()}>
+        <div className="card-detail-header">
+          <div className="card-detail-breadcrumb">
+            {task.epic_title} / {task.feature_title}
+          </div>
+          <h2 className="card-detail-title">{task.title}</h2>
+          <div className="card-detail-status">
+            <span className={`status-badge ${task.status}`}>{task.status}</span>
+            {task.priority === 'expedite' && (
+              <span className="status-badge expedite">expedite</span>
+            )}
+          </div>
+          <button className="card-detail-close" onClick={onClose}>x</button>
+        </div>
+
+        {task.description && (
+          <div className="card-detail-section">
+            <h3>Description</h3>
+            <p className="card-detail-description">{task.description}</p>
+          </div>
+        )}
+
+        {docs.length > 0 && (
+          <div className="card-detail-section">
+            <h3>Documents</h3>
+            <div className="doc-chips">
+              {docs.map(doc => (
+                <button
+                  key={doc.id}
+                  className={`doc-chip chip-${doc.type}`}
+                  onClick={() => openDoc(doc.id)}
+                >
+                  {doc.type}: {doc.title}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {selectedDoc && (
+          <div className="card-detail-section">
+            <h3>{selectedDoc.title}</h3>
+            <pre className="doc-content">{selectedDoc.content}</pre>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}

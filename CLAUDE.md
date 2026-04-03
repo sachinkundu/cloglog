@@ -54,6 +54,49 @@ Before completing any task or creating a PR, run `make quality` and verify it pa
 
 **This is enforced by a Claude Code hook** (`.claude/hooks/quality-gate-before-commit.sh`). Any `git commit`, `git push`, or `gh pr create` will automatically run `make quality` first and block if it fails.
 
+## Git Identity & PRs
+
+**All pushes and PRs MUST use the GitHub App bot identity, never the user's personal identity.**
+
+To push and create PRs:
+
+```bash
+# Get a bot token (valid for ~1 hour)
+BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests ~/.agent-vm/credentials/gh-app-token.py)
+
+# Push using the bot token
+git remote set-url origin "https://x-access-token:${BOT_TOKEN}@github.com/sachinkundu/cloglog.git"
+git push -u origin HEAD
+
+# Create PR as the bot
+GH_TOKEN="$BOT_TOKEN" gh pr create --title "feat: ..." --body "..."
+```
+
+Never use `git push` or `gh pr create` without first setting the bot token. The user cannot merge their own PRs — all agent work must appear as authored by the bot.
+
+## Agent Learnings
+
+Hard-won lessons from previous waves. Every agent in every worktree MUST follow these.
+
+### Testing
+- **Every PR must include automated tests.** No exceptions. If you write code, you write tests for it.
+- Frontend work requires component tests (@testing-library/react), not just "it renders" smoke tests. Test interactions, conditional rendering, error states.
+- Backend work requires both unit tests (business logic) and integration tests (API endpoints against real DB).
+- PRs without tests will be rejected in review.
+
+### PR Quality
+- Every PR must include a **Test Report** section showing: what tests were added, test output, coverage.
+- Frontend PRs should include screenshots of the UI.
+- Run the full quality gate (`make quality`) before pushing. Don't assume it passes.
+
+### Git Identity
+- NEVER push or create PRs as the user. Always use the bot identity. See "Git Identity & PRs" section above.
+- If you're unsure whether you're pushing as the bot, check `git remote -v` after setting the URL.
+
+---
+
+*This section is updated after each wave with learnings from PR reviews. If you encounter a new pattern that future agents should know, note it in your PR description so it can be added here.*
+
 ## Tech Stack
 
 - Backend: Python 3.12+, FastAPI, SQLAlchemy 2.0, Alembic, PostgreSQL

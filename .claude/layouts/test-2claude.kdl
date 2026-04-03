@@ -1,0 +1,12 @@
+layout {
+    pane split_direction="vertical" {
+        pane name="claude-1" {
+            command "claude"
+            args "--dangerously-skip-permissions" "Say hello, you are Claude instance 1 in the left pane. Then exit."
+        }
+        pane name="claude-2" {
+            command "claude"
+            args "--dangerously-skip-permissions" "Say hello, you are Claude instance 2 in the right pane. Then exit."
+        }
+    }
+}

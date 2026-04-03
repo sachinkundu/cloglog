@@ -1,0 +1,19 @@
+Address PR review feedback on PR #14 (sachinkundu/cloglog). You are in the wt-frontend worktree.
+
+## Comments to fix
+
+1. "There are no actual tests automated for this work?" — Only App.test.tsx and useSSE.test.ts exist. Add component tests for Sidebar, Board, Column, TaskCard, CardDetail using @testing-library/react with mocked API. Test rendering, click interactions, conditional rendering.
+
+2. "Since this is frontend work, I am also hoping to see some screenshots." — Use any browser automation tools you have, or start the dev server and take screenshots. If you cannot capture screenshots, note this in the PR comment.
+
+3. "What about integration and e2e tests?" — Add integration tests: full App with mocked API data — load projects, select one, board renders, click card, detail opens.
+
+## Steps
+
+1. Write component tests and integration tests in frontend/src/
+2. Run: cd frontend && npx vitest run — make sure they pass
+3. Commit the changes
+4. Push and comment on PR #14 — READ CLAUDE.md FOR BOT IDENTITY INSTRUCTIONS, this is critical
+5. Reply on PR #14 explaining what tests were added, include test output
+
+Only touch files in frontend/. Read CLAUDE.md first for git push instructions.

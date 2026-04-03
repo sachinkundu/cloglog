@@ -197,12 +197,35 @@ cat >> "$CLAUDE_MD" << CLAUDE_EOF
 ## Git
 
 You are on branch \`${BRANCH_NAME}\`. Commit frequently with descriptive messages.
-When done, push and create a PR against main.
+
+**CRITICAL: All pushes and PRs MUST use the GitHub App bot identity.**
+
+When ready to push and create a PR:
+
+\`\`\`bash
+# Get a bot token
+BOT_TOKEN=\$(uv run --with "PyJWT[crypto]" --with requests ~/.agent-vm/credentials/gh-app-token.py)
+
+# Push as the bot
+git remote set-url origin "https://x-access-token:\${BOT_TOKEN}@github.com/sachinkundu/cloglog.git"
+git push -u origin HEAD
+
+# Create PR as the bot
+GH_TOKEN="\$BOT_TOKEN" gh pr create --title "feat: ..." --body "..."
+\`\`\`
+
+**Never push or create PRs as the user's personal identity.** All agent work must come from the bot.
 
 ## Quality Gate
 
 Before completing work or creating a PR, run \`make quality\` and verify it passes.
 This is enforced by a hook — commits will be blocked if quality fails.
+
+## IMPORTANT: Read Agent Learnings
+
+Before starting work, read the **Agent Learnings** section in the root CLAUDE.md.
+It contains hard-won lessons from previous waves that you MUST follow.
+These are not suggestions — they are requirements from PR reviews.
 CLAUDE_EOF
 
 echo ""

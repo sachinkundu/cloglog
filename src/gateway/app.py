@@ -28,8 +28,10 @@ def create_app() -> FastAPI:
 
     # Context routes
     from src.board.routes import router as board_router
+    from src.gateway.routes import router as gateway_router
 
     app.include_router(board_router, prefix="/api/v1")
+    app.include_router(gateway_router, prefix="/api/v1")
     # app.include_router(agent_router, prefix="/api/v1")
     # app.include_router(document_router, prefix="/api/v1")
 

@@ -17,6 +17,7 @@ const mockBacklog: BacklogEpic[] = [
       position: 0,
       created_at: '',
       color: '#7c3aed',
+      number: 1,
     },
     features: [
       {
@@ -28,10 +29,11 @@ const mockBacklog: BacklogEpic[] = [
           status: 'planned',
           position: 0,
           created_at: '',
+          number: 1,
         },
         tasks: [
-          { id: 't1', title: 'Callback handler', status: 'backlog', priority: 'normal' },
-          { id: 't2', title: 'Token refresh', status: 'backlog', priority: 'expedite' },
+          { id: 't1', title: 'Callback handler', status: 'backlog', priority: 'normal', number: 1 },
+          { id: 't2', title: 'Token refresh', status: 'backlog', priority: 'expedite', number: 2 },
         ],
         task_counts: { total: 2, done: 0 },
       },
@@ -53,6 +55,7 @@ const mockWithMixedStatuses: BacklogEpic[] = [
       position: 0,
       created_at: '',
       color: '#7c3aed',
+      number: 2,
     },
     features: [
       {
@@ -64,11 +67,12 @@ const mockWithMixedStatuses: BacklogEpic[] = [
           status: 'in_progress',
           position: 0,
           created_at: '',
+          number: 2,
         },
         tasks: [
-          { id: 't1', title: 'Callback handler', status: 'done', priority: 'normal' },
-          { id: 't2', title: 'Token refresh', status: 'in_progress', priority: 'normal' },
-          { id: 't3', title: 'Session persistence', status: 'backlog', priority: 'normal' },
+          { id: 't1', title: 'Callback handler', status: 'done', priority: 'normal', number: 3 },
+          { id: 't2', title: 'Token refresh', status: 'in_progress', priority: 'normal', number: 4 },
+          { id: 't3', title: 'Session persistence', status: 'backlog', priority: 'normal', number: 5 },
         ],
         task_counts: { total: 3, done: 1 },
       },

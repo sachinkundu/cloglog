@@ -104,3 +104,8 @@
 .backlog-task:hover {
   border-color: var(--text-muted, #888);
 }
+
+.entity-number {
+  color: var(--text-muted, #666);
+  font-size: 0.9em;
+}

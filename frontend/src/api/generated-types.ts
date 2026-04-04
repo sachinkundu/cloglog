@@ -426,6 +426,8 @@ export interface components {
             status: string;
             /** Priority */
             priority: string;
+            /** Number */
+            number?: number;
         };
         /** BoardColumn */
         BoardColumn: {
@@ -578,6 +580,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Number */
+            number?: number;
         };
         /** FeatureCreate */
         FeatureCreate: {
@@ -619,6 +623,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Number */
+            number?: number;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -848,6 +854,8 @@ export interface components {
              * @default
              */
             epic_color: string;
+            /** Number */
+            number?: number;
         };
         /** TaskCounts */
         TaskCounts: {

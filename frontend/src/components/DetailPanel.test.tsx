@@ -14,6 +14,7 @@ describe('DetailPanel', () => {
           color: '#7c3aed',
           bounded_context: 'Agent',
           task_counts: { total: 8, done: 2 },
+          number: 1,
           features: [
             { title: 'OAuth', task_counts: { total: 3, done: 1 } },
             { title: 'Session', task_counts: { total: 5, done: 1 } },
@@ -38,6 +39,7 @@ describe('DetailPanel', () => {
           description: 'OAuth implementation',
           epic: { title: 'Auth System', id: 'e1', color: '#7c3aed' },
           task_counts: { total: 3, done: 1 },
+          number: 2,
           tasks: [
             { id: 't1', title: 'Callback', status: 'done' },
             { id: 't2', title: 'Token refresh', status: 'backlog' },
@@ -64,6 +66,7 @@ describe('DetailPanel', () => {
           epic: { title: 'Auth System', id: 'e1', color: '#7c3aed' },
           feature: { title: 'OAuth', id: 'f1' },
           worktree_id: null,
+          number: 37,
         }}
         onClose={vi.fn()}
         onNavigate={vi.fn()}

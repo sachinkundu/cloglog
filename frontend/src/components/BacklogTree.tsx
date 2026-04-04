@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { BacklogEpic } from '../api/types'
+import { formatEntityNumber } from '../utils/format'
 import './BacklogTree.css'
 
 interface BacklogTreeProps {
@@ -76,6 +77,7 @@ export function BacklogTree({ backlog, onItemClick }: BacklogTreeProps) {
                 style={{ color: epic.color }}
                 onClick={() => onItemClick('epic', epic.id)}
               >
+                {epic.number != null && epic.number > 0 && <span className="entity-number">{formatEntityNumber('epic', epic.number)} </span>}
                 {epic.title}
               </span>
               <SegmentedProgress tasks={allTasks} />
@@ -97,6 +99,7 @@ export function BacklogTree({ backlog, onItemClick }: BacklogTreeProps) {
                       className="backlog-feature-title"
                       onClick={() => onItemClick('feature', feature.id)}
                     >
+                      {feature.number != null && feature.number > 0 && <span className="entity-number">{formatEntityNumber('feature', feature.number)} </span>}
                       {feature.title}
                     </span>
                     <SegmentedProgress tasks={tasks} />
@@ -110,6 +113,7 @@ export function BacklogTree({ backlog, onItemClick }: BacklogTreeProps) {
                           className="backlog-task"
                           onClick={() => onItemClick('task', task.id)}
                         >
+                          {task.number != null && task.number > 0 && <span className="entity-number">{formatEntityNumber('task', task.number)} </span>}
                           {task.title}
                         </div>
                       ))}

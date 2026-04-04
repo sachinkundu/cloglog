@@ -30,6 +30,7 @@ export default function App() {
             color: entry.epic.color,
             bounded_context: entry.epic.bounded_context,
             task_counts: entry.task_counts,
+            number: entry.epic.number,
             features: entry.features.map(f => ({
               title: f.feature.title,
               task_counts: f.task_counts,
@@ -48,6 +49,7 @@ export default function App() {
               description: feat.feature.description,
               epic: { title: entry.epic.title, id: entry.epic.id, color: entry.epic.color },
               task_counts: feat.task_counts,
+              number: feat.feature.number,
               tasks: feat.tasks.map(t => ({ id: t.id, title: t.title, status: t.status })),
             },
           })
@@ -72,6 +74,7 @@ export default function App() {
                 epic: epicInfo,
                 feature: featureInfo,
                 worktree_id: task.worktree_id,
+                number: task.number,
               },
             })
             return
@@ -93,6 +96,7 @@ export default function App() {
                 epic: { title: entry.epic.title, id: entry.epic.id, color: entry.epic.color },
                 feature: { title: feat.feature.title, id: feat.feature.id },
                 worktree_id: null,
+                number: t.number,
               },
             })
             return

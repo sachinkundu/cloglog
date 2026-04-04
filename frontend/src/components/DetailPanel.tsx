@@ -1,4 +1,5 @@
 import { BreadcrumbPills } from './BreadcrumbPills'
+import { formatEntityNumber } from '../utils/format'
 import './DetailPanel.css'
 
 interface EpicData {
@@ -8,6 +9,7 @@ interface EpicData {
   bounded_context: string
   task_counts: { total: number; done: number }
   features: Array<{ title: string; task_counts: { total: number; done: number } }>
+  number?: number
 }
 
 interface FeatureData {
@@ -16,6 +18,7 @@ interface FeatureData {
   epic: { title: string; id: string; color: string }
   task_counts: { total: number; done: number }
   tasks: Array<{ id: string; title: string; status: string }>
+  number?: number
 }
 
 interface TaskData {
@@ -26,6 +29,7 @@ interface TaskData {
   epic: { title: string; id: string; color: string }
   feature: { title: string; id: string }
   worktree_id: string | null
+  number?: number
 }
 
 type DetailPanelProps = {
@@ -67,7 +71,10 @@ function EpicDetail({ data }: { data: EpicData }) {
   return (
     <>
       <div className="detail-header" style={{ borderLeftColor: data.color }}>
-        <h2 className="detail-title">{data.title}</h2>
+        <h2 className="detail-title">
+          {data.number != null && data.number > 0 && <span className="entity-number">{formatEntityNumber('epic', data.number)} </span>}
+          {data.title}
+        </h2>
         {data.bounded_context && (
           <span className="detail-badge">{data.bounded_context}</span>
         )}
@@ -100,7 +107,10 @@ function FeatureDetail({ data, onNavigate }: { data: FeatureData; onNavigate: (t
         >
           {data.epic.title}
         </span>
-        <h2 className="detail-title">{data.title}</h2>
+        <h2 className="detail-title">
+          {data.number != null && data.number > 0 && <span className="entity-number">{formatEntityNumber('feature', data.number)} </span>}
+          {data.title}
+        </h2>
       </div>
       <ProgressBar done={data.task_counts.done} total={data.task_counts.total} />
       {data.description && <p className="detail-description">{data.description}</p>}
@@ -130,7 +140,10 @@ function TaskDetail({ data, onNavigate }: { data: TaskData; onNavigate: (type: '
           onEpicClick={() => onNavigate('epic', data.epic.id)}
           onFeatureClick={() => onNavigate('feature', data.feature.id)}
         />
-        <h2 className="detail-title">{data.title}</h2>
+        <h2 className="detail-title">
+          {data.number != null && data.number > 0 && <span className="entity-number">{formatEntityNumber('task', data.number)} </span>}
+          {data.title}
+        </h2>
         <div className="detail-meta">
           <span className={`detail-status status-${data.status}`}>{data.status}</span>
           {data.priority === 'expedite' && <span className="detail-badge expedite">expedite</span>}

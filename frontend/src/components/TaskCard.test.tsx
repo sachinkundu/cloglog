@@ -17,13 +17,15 @@ const baseTask: TaskCardType = {
   updated_at: '',
   epic_title: 'Auth',
   feature_title: 'User Login',
+  epic_color: '#7c3aed',
 }
 
 describe('TaskCard', () => {
-  it('renders task title and breadcrumb', () => {
+  it('renders task title and breadcrumb pills', () => {
     render(<TaskCard task={baseTask} onClick={vi.fn()} />)
     expect(screen.getByText('Implement login')).toBeInTheDocument()
-    expect(screen.getByText('Auth / User Login')).toBeInTheDocument()
+    expect(screen.getByText('Auth')).toBeInTheDocument()
+    expect(screen.getByText('User Login')).toBeInTheDocument()
   })
 
   it('calls onClick when clicked', async () => {
@@ -55,5 +57,17 @@ describe('TaskCard', () => {
   it('does not show agent assigned badge when no worktree', () => {
     render(<TaskCard task={baseTask} onClick={vi.fn()} />)
     expect(screen.queryByText('agent assigned')).not.toBeInTheDocument()
+  })
+
+  it('renders breadcrumb pills with epic color', () => {
+    render(<TaskCard task={{ ...baseTask, epic_title: 'Auth', feature_title: 'OAuth', epic_color: '#7c3aed' }} onClick={vi.fn()} />)
+    expect(screen.getByText('Auth')).toBeInTheDocument()
+    expect(screen.getByText('OAuth')).toBeInTheDocument()
+  })
+
+  it('shows blocked badge and red border for blocked tasks', () => {
+    const { container } = render(<TaskCard task={{ ...baseTask, status: 'blocked' }} onClick={vi.fn()} />)
+    expect(screen.getByText('blocked')).toBeInTheDocument()
+    expect(container.querySelector('.task-card-blocked')).toBeTruthy()
   })
 })

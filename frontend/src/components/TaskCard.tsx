@@ -1,4 +1,5 @@
 import type { TaskCard as TaskCardType } from '../api/types'
+import { BreadcrumbPills } from './BreadcrumbPills'
 import './TaskCard.css'
 
 interface TaskCardProps {
@@ -8,12 +9,22 @@ interface TaskCardProps {
 
 export function TaskCard({ task, onClick }: TaskCardProps) {
   return (
-    <div className="task-card" onClick={onClick} role="button" tabIndex={0}>
-      <div className="task-breadcrumb">
-        {task.epic_title} / {task.feature_title}
-      </div>
+    <div
+      className={`task-card ${task.status === 'blocked' ? 'task-card-blocked' : ''}`}
+      onClick={onClick}
+      role="button"
+      tabIndex={0}
+    >
+      <BreadcrumbPills
+        epicTitle={task.epic_title}
+        featureTitle={task.feature_title}
+        epicColor={task.epic_color}
+      />
       <div className="task-title">{task.title}</div>
       <div className="task-meta">
+        {task.status === 'blocked' && (
+          <span className="task-badge task-badge-blocked">blocked</span>
+        )}
         {task.priority === 'expedite' && (
           <span className="task-priority">expedite</span>
         )}

@@ -54,3 +54,15 @@
   background: var(--bg-tertiary);
   color: var(--text-secondary);
 }
+
+.task-card-blocked {
+  border-left: 3px solid var(--danger, #ef4444);
+}
+
+.task-badge-blocked {
+  background: var(--danger, #ef4444);
+  color: white;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 10px;
+}

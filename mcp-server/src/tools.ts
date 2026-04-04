@@ -19,6 +19,18 @@ export interface ToolHandlers {
     }>
   }): Promise<unknown>
   unregister_agent(args: { worktree_id: string }): Promise<unknown>
+
+  // New tools for API parity
+  get_project(args: Record<string, never>): Promise<unknown>
+  create_epic(args: { project_id: string; title: string; description?: string; bounded_context?: string }): Promise<unknown>
+  list_epics(args: { project_id: string }): Promise<unknown>
+  create_feature(args: { project_id: string; epic_id: string; title: string; description?: string }): Promise<unknown>
+  list_features(args: { project_id: string; epic_id: string }): Promise<unknown>
+  create_task(args: { project_id: string; feature_id: string; title: string; description?: string; priority?: string }): Promise<unknown>
+  get_backlog(args: { project_id: string }): Promise<unknown>
+  get_board(args: { project_id: string }): Promise<unknown>
+  update_task(args: { task_id: string; title?: string; description?: string; priority?: string }): Promise<unknown>
+  delete_task(args: { task_id: string }): Promise<unknown>
 }
 
 export function createToolHandlers(client: CloglogClient): ToolHandlers {
@@ -59,6 +71,63 @@ export function createToolHandlers(client: CloglogClient): ToolHandlers {
 
     async unregister_agent({ worktree_id }) {
       return client.request('POST', `/api/v1/agents/${worktree_id}/unregister`)
+    },
+
+    // New tools for API parity
+
+    async get_project() {
+      return client.request('GET', '/api/v1/gateway/me')
+    },
+
+    async create_epic({ project_id, title, description, bounded_context }) {
+      return client.request('POST', `/api/v1/projects/${project_id}/epics`, {
+        title,
+        description: description ?? '',
+        bounded_context: bounded_context ?? '',
+      })
+    },
+
+    async list_epics({ project_id }) {
+      return client.request('GET', `/api/v1/projects/${project_id}/epics`)
+    },
+
+    async create_feature({ project_id, epic_id, title, description }) {
+      return client.request('POST', `/api/v1/projects/${project_id}/epics/${epic_id}/features`, {
+        title,
+        description: description ?? '',
+      })
+    },
+
+    async list_features({ project_id, epic_id }) {
+      return client.request('GET', `/api/v1/projects/${project_id}/epics/${epic_id}/features`)
+    },
+
+    async create_task({ project_id, feature_id, title, description, priority }) {
+      return client.request('POST', `/api/v1/projects/${project_id}/features/${feature_id}/tasks`, {
+        title,
+        description: description ?? '',
+        priority: priority ?? 'normal',
+      })
+    },
+
+    async get_backlog({ project_id }) {
+      return client.request('GET', `/api/v1/projects/${project_id}/backlog`)
+    },
+
+    async get_board({ project_id }) {
+      return client.request('GET', `/api/v1/projects/${project_id}/board`)
+    },
+
+    async update_task({ task_id, title, description, priority }) {
+      const fields: Record<string, string> = {}
+      if (title !== undefined) fields.title = title
+      if (description !== undefined) fields.description = description
+      if (priority !== undefined) fields.priority = priority
+      return client.request('PATCH', `/api/v1/tasks/${task_id}`, fields)
+    },
+
+    async delete_task({ task_id }) {
+      return client.request('DELETE', `/api/v1/tasks/${task_id}`)
     },
   }
 }

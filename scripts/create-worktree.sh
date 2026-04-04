@@ -149,9 +149,10 @@ if [[ -n "$CONTRACT_FILE" ]]; then
   echo ""
   echo "Setting up API contract..."
 
-  # Copy contract into worktree for easy reference
+  # Copy contract into worktree for easy reference (not for committing)
   cp "$CONTRACT_FILE" "$WORKTREE_DIR/CONTRACT.yaml"
-  echo "  Copied contract: $(basename "$CONTRACT_FILE") → CONTRACT.yaml"
+  echo "CONTRACT.yaml" >> "$WORKTREE_DIR/.gitignore"
+  echo "  Copied contract: $(basename "$CONTRACT_FILE") → CONTRACT.yaml (gitignored)"
 
   # Generate TypeScript types for frontend worktrees
   if [[ "$WORKTREE_NAME" == wt-frontend* ]]; then

@@ -129,6 +129,12 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 - If you need to change the API shape, STOP and update the contract first — don't work around it.
 - `make quality` validates contract compliance automatically. Your commit will be blocked if your implementation drifts from the contract.
 
+### Worktree Hygiene
+- **Never commit CONTRACT.yaml.** It's a local reference file copied by `create-worktree.sh`. It is in `.gitignore`.
+- **Task lifecycle in worktrees:** Move tasks through `in_progress → testing → review` using `update_task_status` MCP tool. Add test evidence notes at the testing stage. Add review instructions at the review stage.
+- **PR merge detection:** After creating a PR and starting a `/loop`, check `gh pr view --json state` to detect when the PR is merged. When merged: mark all tasks as done via `complete_task`, call `unregister_agent`, then exit cleanly.
+- **SSE events are live:** The board updates in real-time via SSE. When you change task status, the dashboard reflects it immediately.
+
 ---
 
 *This section is updated after each wave with learnings from PR reviews. If you encounter a new pattern that future agents should know, note it in your PR description so it can be added here.*

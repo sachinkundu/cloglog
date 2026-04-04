@@ -181,6 +181,9 @@ async def get_board(project_id: UUID, service: ServiceDep) -> BoardResponse:
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    # Self-healing: assign colors to epics created before the color feature
+    await service._repo.backfill_epic_colors(project_id, EPIC_COLOR_PALETTE)
+
     tasks = await service._repo.get_board_tasks(project_id)
 
     columns: dict[str, list[TaskCard]] = {col: [] for col in BOARD_COLUMNS}
@@ -215,6 +218,9 @@ async def get_backlog(project_id: UUID, service: ServiceDep) -> list[BacklogEpic
     project = await service._repo.get_project(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    # Self-healing: assign colors to epics created before the color feature
+    await service._repo.backfill_epic_colors(project_id, EPIC_COLOR_PALETTE)
 
     epics = await service._repo.get_backlog_tree(project_id)
     result = []

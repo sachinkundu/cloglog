@@ -75,6 +75,28 @@ class BoardRepository:
         await self._session.refresh(epic)
         return epic
 
+    async def backfill_epic_colors(self, project_id: UUID, palette: list[str]) -> int:
+        """Assign colors to epics that have an empty color field. Returns count updated."""
+        result = await self._session.execute(
+            select(Epic)
+            .where(Epic.project_id == project_id, Epic.color == "")
+            .order_by(Epic.position)
+        )
+        epics = list(result.scalars().all())
+        if not epics:
+            return 0
+        # Count existing colored epics to continue the palette rotation
+        count_result = await self._session.execute(
+            select(func.count())
+            .select_from(Epic)
+            .where(Epic.project_id == project_id, Epic.color != "")
+        )
+        offset = count_result.scalar_one()
+        for i, epic in enumerate(epics):
+            epic.color = palette[(offset + i) % len(palette)]
+        await self._session.commit()
+        return len(epics)
+
     async def list_epics(self, project_id: UUID) -> list[Epic]:
         result = await self._session.execute(
             select(Epic).where(Epic.project_id == project_id).order_by(Epic.position)

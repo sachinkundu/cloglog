@@ -341,3 +341,24 @@ async def test_backlog_counts_done_tasks(client: AsyncClient):
     assert data[0]["task_counts"]["total"] == 2
     assert data[0]["task_counts"]["done"] == 1
     assert data[0]["features"][0]["task_counts"]["done"] == 1
+
+
+async def test_backlog_backfills_empty_epic_colors(client: AsyncClient):
+    """Epics with empty color get auto-assigned on backlog fetch."""
+    project = (await client.post("/api/v1/projects", json={"name": "backfill-test"})).json()
+    # Create epic via import (simulating pre-color-feature creation)
+    await client.post(
+        f"/api/v1/projects/{project['id']}/import",
+        json={
+            "epics": [
+                {"title": "Old Epic", "features": [{"title": "Feat", "tasks": [{"title": "Task"}]}]}
+            ]
+        },
+    )
+
+    # Fetch backlog — should trigger backfill
+    resp = await client.get(f"/api/v1/projects/{project['id']}/backlog")
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["epic"]["color"].startswith("#")
+    assert len(data[0]["epic"]["color"]) == 7

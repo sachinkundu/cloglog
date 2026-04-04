@@ -203,6 +203,34 @@ async def test_epics_get_distinct_colors(client: AsyncClient):
     assert len(set(colors)) == 4
 
 
+async def test_board_tasks_include_epic_color(client: AsyncClient):
+    project = (await client.post("/api/v1/projects", json={"name": "board-color"})).json()
+    epic = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics",
+            json={"title": "Colored Epic"},
+        )
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
+    await client.post(
+        f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+        json={"title": "Task"},
+    )
+
+    resp = await client.get(f"/api/v1/projects/{project['id']}/board")
+    assert resp.status_code == 200
+    board = resp.json()
+    backlog_tasks = [c for c in board["columns"] if c["status"] == "backlog"][0]["tasks"]
+    assert len(backlog_tasks) >= 1
+    assert "epic_color" in backlog_tasks[0]
+    assert backlog_tasks[0]["epic_color"] == epic["color"]
+
+
 async def test_import_plan(client: AsyncClient):
     project = (await client.post("/api/v1/projects", json={"name": "import-test"})).json()
     plan = {

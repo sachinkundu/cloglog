@@ -187,6 +187,7 @@ async def get_board(project_id: UUID, service: ServiceDep) -> BoardResponse:
             **TaskResponse.model_validate(task).model_dump(),
             epic_title=task.feature.epic.title,
             feature_title=task.feature.title,
+            epic_color=task.feature.epic.color,
         )
         if task.status in columns:
             columns[task.status].append(card)

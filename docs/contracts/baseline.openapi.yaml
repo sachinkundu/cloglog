@@ -771,6 +771,9 @@ components:
           type: string
           format: uuid
           title: Id
+        number:
+          type: integer
+          title: Number
         title:
           type: string
           title: Title
@@ -783,6 +786,7 @@ components:
       type: object
       required:
       - id
+      - number
       - title
       - status
       - priority
@@ -982,6 +986,9 @@ components:
         color:
           type: string
           title: Color
+        number:
+          type: integer
+          title: Number
         created_at:
           type: string
           format: date-time
@@ -997,6 +1004,7 @@ components:
       - status
       - position
       - color
+      - number
       - created_at
       title: EpicResponse
     FeatureCreate:
@@ -1038,6 +1046,9 @@ components:
         position:
           type: integer
           title: Position
+        number:
+          type: integer
+          title: Number
         created_at:
           type: string
           format: date-time
@@ -1050,6 +1061,7 @@ components:
       - description
       - status
       - position
+      - number
       - created_at
       title: FeatureResponse
     HTTPValidationError:
@@ -1319,6 +1331,9 @@ components:
         position:
           type: integer
           title: Position
+        number:
+          type: integer
+          title: Number
         created_at:
           type: string
           format: date-time
@@ -1349,6 +1364,7 @@ components:
       - priority
       - worktree_id
       - position
+      - number
       - created_at
       - updated_at
       title: TaskCard
@@ -1444,6 +1460,9 @@ components:
         position:
           type: integer
           title: Position
+        number:
+          type: integer
+          title: Number
         created_at:
           type: string
           format: date-time
@@ -1462,6 +1481,7 @@ components:
       - priority
       - worktree_id
       - position
+      - number
       - created_at
       - updated_at
       title: TaskResponse

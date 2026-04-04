@@ -113,6 +113,14 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 - Features on the board represent work to be planned, not pre-decomposed task lists. The implementation tasks emerge from the planning process.
 - If you need to note a feature idea, create the feature on the board but leave it empty. The planning pipeline fills in the tasks.
 
+### Execution Workflow (Mandatory)
+- **Always use subagent-driven development** — never ask which execution approach; subagent-driven is always the choice.
+- **After writing an implementation plan, before dispatching any subagent:**
+  1. Register with cloglog via `register_agent` MCP tool (if not already registered)
+  2. Create one board task per plan task using `create_task` MCP tool under the correct feature
+  3. For each task: call `start_task` before dispatching the subagent, call `complete_task` after it finishes
+- This is non-negotiable. The board must reflect what is being worked on in real-time. Never batch-implement without tracking on the board.
+
 ### API Contract Enforcement
 - **Every wave must have an API contract** designed before worktrees launch. The contract is an OpenAPI YAML file at `docs/contracts/<wave-name>.openapi.yaml`.
 - The contract is designed by the DDD Architect agent and reviewed by the DDD Reviewer agent during the planning phase. These agents enforce DDD principles: aggregate boundaries, ubiquitous language, context boundary respect, and consumer sufficiency.

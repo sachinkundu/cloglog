@@ -99,6 +99,13 @@
   }
 }
 
+.project-stats {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 0 16px 4px 32px;
+}
+
 .worktree-item {
   display: flex;
   align-items: center;

@@ -2,13 +2,19 @@ import { useNavigate } from 'react-router-dom'
 import type { Project, Worktree } from '../api/types'
 import './Sidebar.css'
 
+interface BoardStats {
+  total_tasks: number
+  done_count: number
+}
+
 interface SidebarProps {
   projects: Project[]
   selectedProjectId: string | null
   worktrees: Worktree[]
+  boardStats?: BoardStats | null
 }
 
-export function Sidebar({ projects, selectedProjectId, worktrees }: SidebarProps) {
+export function Sidebar({ projects, selectedProjectId, worktrees, boardStats }: SidebarProps) {
   const navigate = useNavigate()
 
   return (
@@ -29,6 +35,11 @@ export function Sidebar({ projects, selectedProjectId, worktrees }: SidebarProps
                 <span className={`status-dot ${p.status}`} />
                 <span className="project-name">{p.name}</span>
               </button>
+              {p.id === selectedProjectId && boardStats && (
+                <div className="project-stats">
+                  {worktrees.length} agent{worktrees.length !== 1 ? 's' : ''} · {boardStats.done_count}/{boardStats.total_tasks} done
+                </div>
+              )}
             </li>
           ))}
         </ul>

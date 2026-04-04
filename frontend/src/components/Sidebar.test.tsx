@@ -77,6 +77,34 @@ describe('Sidebar', () => {
     expect(screen.getByText('wt-frontend')).toBeInTheDocument()
   })
 
+  it('shows project stats for the selected project', () => {
+    render(
+      <MemoryRouter>
+        <Sidebar
+          projects={mockProjects}
+          selectedProjectId="p1"
+          worktrees={mockWorktrees}
+          boardStats={{ total_tasks: 10, done_count: 3 }}
+        />
+      </MemoryRouter>
+    )
+    expect(screen.getByText('2 agents · 3/10 done')).toBeInTheDocument()
+  })
+
+  it('does not show stats when no board data', () => {
+    render(
+      <MemoryRouter>
+        <Sidebar
+          projects={mockProjects}
+          selectedProjectId="p1"
+          worktrees={mockWorktrees}
+        />
+      </MemoryRouter>
+    )
+    // No stats line should render
+    expect(screen.queryByText(/done/)).not.toBeInTheDocument()
+  })
+
   it('applies pulse class to online worktree dots', () => {
     render(
       <MemoryRouter>

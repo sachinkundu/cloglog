@@ -55,6 +55,7 @@ export default function App() {
       projects={projects}
       selectedProjectId={selectedProjectId}
       worktrees={worktrees}
+      boardStats={board ? { total_tasks: board.total_tasks, done_count: board.done_count } : null}
     >
       {!selectedProjectId && (
         <div style={{

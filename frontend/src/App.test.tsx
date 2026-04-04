@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi } from 'vitest'
 import App from './App'
 
@@ -22,12 +23,20 @@ vi.stubGlobal('EventSource', class {
 
 describe('App', () => {
   it('renders the sidebar title', () => {
-    render(<App />)
+    render(
+      <MemoryRouter>
+        <App />
+      </MemoryRouter>
+    )
     expect(screen.getByText('cloglog')).toBeInTheDocument()
   })
 
   it('shows select prompt when no project selected', async () => {
-    render(<App />)
+    render(
+      <MemoryRouter>
+        <App />
+      </MemoryRouter>
+    )
     expect(await screen.findByText('select a project')).toBeInTheDocument()
   })
 })

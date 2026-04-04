@@ -1,10 +1,11 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useMemo } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
 import { Board } from './components/Board'
 import { DetailPanel } from './components/DetailPanel'
 import { Layout } from './components/Layout'
 import { useBoard } from './hooks/useBoard'
 import { useProjects } from './hooks/useProjects'
-import type { BacklogEpic } from './api/types'
+import type { BacklogEpic, BoardResponse } from './api/types'
 
 type DetailState =
   | { type: 'epic'; data: any }
@@ -13,98 +14,37 @@ type DetailState =
   | null
 
 export default function App() {
+  const { projectId, epicId, featureId, taskId } = useParams<{
+    projectId?: string
+    epicId?: string
+    featureId?: string
+    taskId?: string
+  }>()
+  const navigate = useNavigate()
+
+  const selectedProjectId = projectId ?? null
   const { projects, loading: projectsLoading } = useProjects()
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const { board, backlog, worktrees, loading: boardLoading } = useBoard(selectedProjectId)
-  const [detail, setDetail] = useState<DetailState>(null)
+
+  const detail = useMemo<DetailState>(() => {
+    if (!selectedProjectId) return null
+    if (epicId) return buildEpicDetail(backlog, epicId)
+    if (featureId) return buildFeatureDetail(backlog, featureId)
+    if (taskId) return buildTaskDetail(backlog, board, taskId)
+    return null
+  }, [selectedProjectId, epicId, featureId, taskId, backlog, board])
 
   const openDetail = useCallback((type: 'epic' | 'feature' | 'task', id: string) => {
-    if (type === 'epic') {
-      const entry = backlog.find(e => e.epic.id === id)
-      if (entry) {
-        setDetail({
-          type: 'epic',
-          data: {
-            title: entry.epic.title,
-            description: entry.epic.description,
-            color: entry.epic.color,
-            bounded_context: entry.epic.bounded_context,
-            task_counts: entry.task_counts,
-            number: entry.epic.number,
-            features: entry.features.map(f => ({
-              title: f.feature.title,
-              task_counts: f.task_counts,
-            })),
-          },
-        })
-      }
-    } else if (type === 'feature') {
-      for (const entry of backlog) {
-        const feat = entry.features.find(f => f.feature.id === id)
-        if (feat) {
-          setDetail({
-            type: 'feature',
-            data: {
-              title: feat.feature.title,
-              description: feat.feature.description,
-              epic: { title: entry.epic.title, id: entry.epic.id, color: entry.epic.color },
-              task_counts: feat.task_counts,
-              number: feat.feature.number,
-              tasks: feat.tasks.map(t => ({ id: t.id, title: t.title, status: t.status })),
-            },
-          })
-          break
-        }
-      }
-    } else {
-      // Task — search in board columns first, then backlog
-      if (board) {
-        for (const col of board.columns) {
-          const task = col.tasks.find(t => t.id === id)
-          if (task) {
-            const epicInfo = findEpicForTask(backlog, id, task.epic_title, task.epic_color)
-            const featureInfo = findFeatureForTask(backlog, id, task.feature_title)
-            setDetail({
-              type: 'task',
-              data: {
-                title: task.title,
-                description: task.description,
-                status: task.status,
-                priority: task.priority,
-                epic: epicInfo,
-                feature: featureInfo,
-                worktree_id: task.worktree_id,
-                number: task.number,
-              },
-            })
-            return
-          }
-        }
-      }
-      // Search backlog
-      for (const entry of backlog) {
-        for (const feat of entry.features) {
-          const t = feat.tasks.find(bt => bt.id === id)
-          if (t) {
-            setDetail({
-              type: 'task',
-              data: {
-                title: t.title,
-                description: '',
-                status: t.status,
-                priority: t.priority,
-                epic: { title: entry.epic.title, id: entry.epic.id, color: entry.epic.color },
-                feature: { title: feat.feature.title, id: feat.feature.id },
-                worktree_id: null,
-                number: t.number,
-              },
-            })
-            return
-          }
-        }
-      }
+    if (!selectedProjectId) return
+    const segment = type === 'epic' ? 'epics' : type === 'feature' ? 'features' : 'tasks'
+    navigate(`/projects/${selectedProjectId}/${segment}/${id}`)
+  }, [selectedProjectId, navigate])
+
+  const closeDetail = useCallback(() => {
+    if (selectedProjectId) {
+      navigate(`/projects/${selectedProjectId}`)
     }
-  }, [backlog, board])
+  }, [selectedProjectId, navigate])
 
   const handleTaskClick = useCallback((taskId: string) => {
     openDetail('task', taskId)
@@ -114,7 +54,6 @@ export default function App() {
     <Layout
       projects={projects}
       selectedProjectId={selectedProjectId}
-      onSelectProject={setSelectedProjectId}
       worktrees={worktrees}
     >
       {!selectedProjectId && (
@@ -148,12 +87,100 @@ export default function App() {
         <DetailPanel
           type={detail.type}
           data={detail.data}
-          onClose={() => setDetail(null)}
+          onClose={closeDetail}
           onNavigate={openDetail}
         />
       )}
     </Layout>
   )
+}
+
+function buildEpicDetail(backlog: BacklogEpic[], epicId: string): DetailState {
+  const entry = backlog.find(e => e.epic.id === epicId)
+  if (!entry) return null
+  return {
+    type: 'epic',
+    data: {
+      title: entry.epic.title,
+      description: entry.epic.description,
+      color: entry.epic.color,
+      bounded_context: entry.epic.bounded_context,
+      task_counts: entry.task_counts,
+      number: entry.epic.number,
+      features: entry.features.map(f => ({
+        title: f.feature.title,
+        task_counts: f.task_counts,
+      })),
+    },
+  }
+}
+
+function buildFeatureDetail(backlog: BacklogEpic[], featureId: string): DetailState {
+  for (const entry of backlog) {
+    const feat = entry.features.find(f => f.feature.id === featureId)
+    if (feat) {
+      return {
+        type: 'feature',
+        data: {
+          title: feat.feature.title,
+          description: feat.feature.description,
+          epic: { title: entry.epic.title, id: entry.epic.id, color: entry.epic.color },
+          task_counts: feat.task_counts,
+          number: feat.feature.number,
+          tasks: feat.tasks.map(t => ({ id: t.id, title: t.title, status: t.status })),
+        },
+      }
+    }
+  }
+  return null
+}
+
+function buildTaskDetail(backlog: BacklogEpic[], board: BoardResponse | null, taskId: string): DetailState {
+  // Search board columns first
+  if (board) {
+    for (const col of board.columns) {
+      const task = col.tasks.find(t => t.id === taskId)
+      if (task) {
+        const epicInfo = findEpicForTask(backlog, taskId, task.epic_title, task.epic_color)
+        const featureInfo = findFeatureForTask(backlog, taskId, task.feature_title)
+        return {
+          type: 'task',
+          data: {
+            title: task.title,
+            description: task.description,
+            status: task.status,
+            priority: task.priority,
+            epic: epicInfo,
+            feature: featureInfo,
+            worktree_id: task.worktree_id,
+            number: task.number,
+          },
+        }
+      }
+    }
+  }
+  // Search backlog
+  for (const entry of backlog) {
+    for (const feat of entry.features) {
+      const t = feat.tasks.find(bt => bt.id === taskId)
+      if (t) {
+        return {
+          type: 'task',
+          data: {
+            title: t.title,
+            description: '',
+            status: t.status,
+            priority: t.priority,
+            epic: { title: entry.epic.title, id: entry.epic.id, color: entry.epic.color },
+            feature: { title: feat.feature.title, id: feat.feature.id },
+            worktree_id: null,
+            number: t.number,
+          },
+        }
+      }
+    }
+  }
+  return null
 }
 
 function findEpicForTask(backlog: BacklogEpic[], taskId: string, fallbackTitle: string, fallbackColor: string) {

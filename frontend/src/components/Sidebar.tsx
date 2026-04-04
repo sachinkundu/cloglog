@@ -1,14 +1,16 @@
+import { useNavigate } from 'react-router-dom'
 import type { Project, Worktree } from '../api/types'
 import './Sidebar.css'
 
 interface SidebarProps {
   projects: Project[]
   selectedProjectId: string | null
-  onSelectProject: (id: string) => void
   worktrees: Worktree[]
 }
 
-export function Sidebar({ projects, selectedProjectId, onSelectProject, worktrees }: SidebarProps) {
+export function Sidebar({ projects, selectedProjectId, worktrees }: SidebarProps) {
+  const navigate = useNavigate()
+
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
@@ -22,7 +24,7 @@ export function Sidebar({ projects, selectedProjectId, onSelectProject, worktree
             <li key={p.id}>
               <button
                 className={`project-item ${p.id === selectedProjectId ? 'selected' : ''}`}
-                onClick={() => onSelectProject(p.id)}
+                onClick={() => navigate(`/projects/${p.id}`)}
               >
                 <span className={`status-dot ${p.status}`} />
                 <span className="project-name">{p.name}</span>

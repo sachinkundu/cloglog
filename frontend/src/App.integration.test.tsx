@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import App from './App'
 import { api } from './api/client'
@@ -85,6 +86,19 @@ const board: BoardResponse = {
   done_count: 0,
 }
 
+const routes = [
+  { path: '/projects', element: <App /> },
+  { path: '/projects/:projectId', element: <App /> },
+  { path: '/projects/:projectId/tasks/:taskId', element: <App /> },
+  { path: '/projects/:projectId/epics/:epicId', element: <App /> },
+  { path: '/projects/:projectId/features/:featureId', element: <App /> },
+]
+
+function renderWithRouter(initialEntries: string[] = ['/projects']) {
+  const router = createMemoryRouter(routes, { initialEntries })
+  return render(<RouterProvider router={router} />)
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   mockApi.listProjects.mockResolvedValue(projects)
@@ -96,7 +110,7 @@ beforeEach(() => {
 
 describe('App integration', () => {
   it('loads projects and shows select prompt', async () => {
-    render(<App />)
+    renderWithRouter()
     expect(await screen.findByText('select a project')).toBeInTheDocument()
     expect(screen.getByText('Frontend App')).toBeInTheDocument()
     expect(screen.getByText('Backend API')).toBeInTheDocument()
@@ -104,7 +118,7 @@ describe('App integration', () => {
 
   it('selecting a project loads the board', async () => {
     const user = userEvent.setup()
-    render(<App />)
+    renderWithRouter()
 
     await screen.findByText('Frontend App')
     await user.click(screen.getByText('Frontend App'))
@@ -120,7 +134,7 @@ describe('App integration', () => {
 
   it('displays board columns after project selection', async () => {
     const user = userEvent.setup()
-    render(<App />)
+    renderWithRouter()
 
     await screen.findByText('Frontend App')
     await user.click(screen.getByText('Frontend App'))
@@ -132,7 +146,7 @@ describe('App integration', () => {
 
   it('shows worktrees in sidebar after selecting a project', async () => {
     const user = userEvent.setup()
-    render(<App />)
+    renderWithRouter()
 
     await screen.findByText('Frontend App')
     await user.click(screen.getByText('Frontend App'))
@@ -146,7 +160,7 @@ describe('App integration', () => {
 
   it('clicking a task card opens the detail panel', async () => {
     const user = userEvent.setup()
-    render(<App />)
+    renderWithRouter()
 
     await screen.findByText('Frontend App')
     await user.click(screen.getByText('Frontend App'))
@@ -162,7 +176,7 @@ describe('App integration', () => {
 
   it('closing detail panel returns to board view', async () => {
     const user = userEvent.setup()
-    render(<App />)
+    renderWithRouter()
 
     await screen.findByText('Frontend App')
     await user.click(screen.getByText('Frontend App'))
@@ -187,7 +201,7 @@ describe('App integration', () => {
 
   it('shows board header stats', async () => {
     const user = userEvent.setup()
-    render(<App />)
+    renderWithRouter()
 
     await screen.findByText('Frontend App')
     await user.click(screen.getByText('Frontend App'))
@@ -200,13 +214,11 @@ describe('App integration', () => {
 
   it('detail panel shows expedite badge for expedite task', async () => {
     const user = userEvent.setup()
-    render(<App />)
+    renderWithRouter()
 
     await screen.findByText('Frontend App')
     await user.click(screen.getByText('Frontend App'))
 
-    // Build login page is in backlog column but not rendered as a card in flow columns
-    // Instead, click the in_progress task first to verify detail works
     const taskCard = await screen.findByText('Setup CI pipeline')
     await user.click(taskCard)
 

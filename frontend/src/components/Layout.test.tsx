@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react'
-import { describe, it, expect, vi } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
+import { describe, it, expect } from 'vitest'
 import { Layout } from './Layout'
 import type { Project, Worktree } from '../api/types'
 
@@ -14,27 +15,33 @@ const worktrees: Worktree[] = [
 describe('Layout', () => {
   it('renders sidebar with projects', () => {
     render(
-      <Layout projects={projects} selectedProjectId={null} onSelectProject={vi.fn()} worktrees={[]}>
-        <div>content</div>
-      </Layout>
+      <MemoryRouter>
+        <Layout projects={projects} selectedProjectId={null} worktrees={[]}>
+          <div>content</div>
+        </Layout>
+      </MemoryRouter>
     )
     expect(screen.getByText('Alpha')).toBeInTheDocument()
   })
 
   it('renders children in main content area', () => {
     render(
-      <Layout projects={projects} selectedProjectId={null} onSelectProject={vi.fn()} worktrees={[]}>
-        <div>My board content</div>
-      </Layout>
+      <MemoryRouter>
+        <Layout projects={projects} selectedProjectId={null} worktrees={[]}>
+          <div>My board content</div>
+        </Layout>
+      </MemoryRouter>
     )
     expect(screen.getByText('My board content')).toBeInTheDocument()
   })
 
   it('renders theme toggle', () => {
     render(
-      <Layout projects={projects} selectedProjectId={null} onSelectProject={vi.fn()} worktrees={worktrees}>
-        <div>content</div>
-      </Layout>
+      <MemoryRouter>
+        <Layout projects={projects} selectedProjectId={null} worktrees={worktrees}>
+          <div>content</div>
+        </Layout>
+      </MemoryRouter>
     )
     expect(screen.getByRole('button', { name: 'Toggle theme' })).toBeInTheDocument()
   })

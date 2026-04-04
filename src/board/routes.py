@@ -31,6 +31,7 @@ from src.board.schemas import (
 )
 from src.board.services import EPIC_COLOR_PALETTE, BoardService
 from src.shared.database import get_session
+from src.shared.events import Event, EventType, event_bus
 
 router = APIRouter()
 
@@ -160,12 +161,34 @@ async def create_task(
 @router.patch("/tasks/{task_id}", response_model=TaskResponse)
 async def update_task(task_id: UUID, body: TaskUpdate, service: ServiceDep) -> TaskResponse:
     fields = body.model_dump(exclude_unset=True)
+    # Capture old status before update for event emission
+    old_status: str | None = None
+    if "status" in fields:
+        existing = await service._repo.get_task(task_id)
+        if existing is not None:
+            old_status = existing.status
     task = await service._repo.update_task(task_id, **fields)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     # Trigger roll-up if status changed
     if "status" in fields:
         await service.recompute_rollup(task.feature_id)
+        # Emit event for SSE fan-out
+        feature = await service._repo.get_feature(task.feature_id)
+        assert feature is not None
+        epic = await service._repo.get_epic(feature.epic_id)
+        assert epic is not None
+        await event_bus.publish(
+            Event(
+                type=EventType.TASK_STATUS_CHANGED,
+                project_id=epic.project_id,
+                data={
+                    "task_id": str(task.id),
+                    "old_status": old_status,
+                    "new_status": fields["status"],
+                },
+            )
+        )
     return TaskResponse.model_validate(task)
 
 

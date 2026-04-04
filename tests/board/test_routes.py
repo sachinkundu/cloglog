@@ -1,3 +1,5 @@
+from unittest.mock import AsyncMock, patch
+
 from httpx import AsyncClient
 
 # --- Project endpoints ---
@@ -118,6 +120,68 @@ async def test_update_task(client: AsyncClient):
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "in_progress"
+
+
+async def test_update_task_status_emits_event(client: AsyncClient):
+    """When task status changes, a TASK_STATUS_CHANGED event is published."""
+    project = (await client.post("/api/v1/projects", json={"name": "event-test"})).json()
+    epic = (
+        await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "Epic"})
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
+    task = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "Task"},
+        )
+    ).json()
+
+    with patch("src.board.routes.event_bus.publish", new_callable=AsyncMock) as mock_publish:
+        resp = await client.patch(
+            f"/api/v1/tasks/{task['id']}",
+            json={"status": "in_progress"},
+        )
+        assert resp.status_code == 200
+        mock_publish.assert_called_once()
+        event = mock_publish.call_args[0][0]
+        assert event.type == "task_status_changed"
+        assert str(event.project_id) == project["id"]
+        assert event.data["task_id"] == task["id"]
+        assert event.data["old_status"] == "backlog"
+        assert event.data["new_status"] == "in_progress"
+
+
+async def test_update_task_no_event_when_no_status_change(client: AsyncClient):
+    """No event emitted when updating non-status fields."""
+    project = (await client.post("/api/v1/projects", json={"name": "no-event-test"})).json()
+    epic = (
+        await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "Epic"})
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
+    task = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "Task"},
+        )
+    ).json()
+
+    with patch("src.board.routes.event_bus.publish", new_callable=AsyncMock) as mock_publish:
+        resp = await client.patch(
+            f"/api/v1/tasks/{task['id']}",
+            json={"title": "Updated Title"},
+        )
+        assert resp.status_code == 200
+        mock_publish.assert_not_called()
 
 
 async def test_delete_task(client: AsyncClient):

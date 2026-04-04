@@ -1,0 +1,31 @@
+.breadcrumb-pills {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.pill {
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.pill-epic {
+  background: color-mix(in srgb, var(--pill-color) 20%, transparent);
+  color: var(--pill-color);
+}
+
+.pill-feature {
+  background: color-mix(in srgb, var(--pill-color) 10%, transparent);
+  color: color-mix(in srgb, var(--pill-color) 70%, white);
+}
+
+.pill[role="button"] {
+  cursor: pointer;
+}
+
+.pill[role="button"]:hover {
+  filter: brightness(1.2);
+}

@@ -362,3 +362,56 @@ async def test_backlog_backfills_empty_epic_colors(client: AsyncClient):
     assert len(data) == 1
     assert data[0]["epic"]["color"].startswith("#")
     assert len(data[0]["epic"]["color"]) == 7
+
+
+# --- Entity number tests ---
+
+
+async def test_epic_response_includes_number(client: AsyncClient):
+    project = (await client.post("/api/v1/projects", json={"name": "num-test"})).json()
+    epic = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics",
+            json={"title": "First Epic"},
+        )
+    ).json()
+    assert "number" in epic
+    assert epic["number"] == 1
+
+
+async def test_entity_numbers_auto_increment(client: AsyncClient):
+    project = (await client.post("/api/v1/projects", json={"name": "num-incr"})).json()
+    e1 = (await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "E1"})).json()
+    e2 = (await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "E2"})).json()
+    assert e1["number"] == 1
+    assert e2["number"] == 2
+
+    f1 = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{e1['id']}/features",
+            json={"title": "F1"},
+        )
+    ).json()
+    f2 = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{e2['id']}/features",
+            json={"title": "F2"},
+        )
+    ).json()
+    assert f1["number"] == 1
+    assert f2["number"] == 2
+
+    t1 = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{f1['id']}/tasks",
+            json={"title": "T1"},
+        )
+    ).json()
+    t2 = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{f2['id']}/tasks",
+            json={"title": "T2"},
+        )
+    ).json()
+    assert t1["number"] == 1
+    assert t2["number"] == 2

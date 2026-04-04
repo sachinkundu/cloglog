@@ -63,6 +63,7 @@ class EpicResponse(BaseModel):
     status: str
     position: int
     color: str
+    number: int
     created_at: datetime
 
 
@@ -84,6 +85,7 @@ class FeatureResponse(BaseModel):
     description: str
     status: str
     position: int
+    number: int
     created_at: datetime
 
 
@@ -117,6 +119,7 @@ class TaskResponse(BaseModel):
     priority: str
     worktree_id: UUID | None
     position: int
+    number: int
     created_at: datetime
     updated_at: datetime
 
@@ -150,6 +153,7 @@ class BoardResponse(BaseModel):
 
 class BacklogTask(BaseModel):
     id: UUID
+    number: int
     title: str
     status: str
     priority: str

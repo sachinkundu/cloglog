@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
+from sqlalchemy.sql.functions import coalesce
 
 from src.board.models import Epic, Feature, Project, Task
 
@@ -51,6 +52,31 @@ class BoardRepository:
         )
         return result.scalar_one()
 
+    async def next_epic_number(self, project_id: UUID) -> int:
+        result = await self._session.execute(
+            select(coalesce(func.max(Epic.number), 0)).where(Epic.project_id == project_id)
+        )
+        return result.scalar_one() + 1
+
+    async def next_feature_number(self, project_id: UUID) -> int:
+        result = await self._session.execute(
+            select(coalesce(func.max(Feature.number), 0))
+            .select_from(Feature)
+            .join(Epic, Feature.epic_id == Epic.id)
+            .where(Epic.project_id == project_id)
+        )
+        return result.scalar_one() + 1
+
+    async def next_task_number(self, project_id: UUID) -> int:
+        result = await self._session.execute(
+            select(coalesce(func.max(Task.number), 0))
+            .select_from(Task)
+            .join(Feature, Task.feature_id == Feature.id)
+            .join(Epic, Feature.epic_id == Epic.id)
+            .where(Epic.project_id == project_id)
+        )
+        return result.scalar_one() + 1
+
     async def create_epic(
         self,
         project_id: UUID,
@@ -60,6 +86,7 @@ class BoardRepository:
         context_description: str,
         position: int,
         color: str = "",
+        number: int = 0,
     ) -> Epic:
         epic = Epic(
             project_id=project_id,
@@ -69,6 +96,7 @@ class BoardRepository:
             context_description=context_description,
             position=position,
             color=color,
+            number=number,
         )
         self._session.add(epic)
         await self._session.commit()
@@ -109,9 +137,15 @@ class BoardRepository:
     # --- Feature ---
 
     async def create_feature(
-        self, epic_id: UUID, title: str, description: str, position: int
+        self, epic_id: UUID, title: str, description: str, position: int, number: int = 0
     ) -> Feature:
-        feature = Feature(epic_id=epic_id, title=title, description=description, position=position)
+        feature = Feature(
+            epic_id=epic_id,
+            title=title,
+            description=description,
+            position=position,
+            number=number,
+        )
         self._session.add(feature)
         await self._session.commit()
         await self._session.refresh(feature)
@@ -135,6 +169,7 @@ class BoardRepository:
         description: str,
         priority: str,
         position: int,
+        number: int = 0,
     ) -> Task:
         task = Task(
             feature_id=feature_id,
@@ -142,6 +177,7 @@ class BoardRepository:
             description=description,
             priority=priority,
             position=position,
+            number=number,
         )
         self._session.add(task)
         await self._session.commit()

@@ -84,6 +84,7 @@ async def create_epic(project_id: UUID, body: EpicCreate, service: ServiceDep) -
         raise HTTPException(status_code=404, detail="Project not found")
     existing_count = await service._repo.count_epics(project_id)
     color = EPIC_COLOR_PALETTE[existing_count % len(EPIC_COLOR_PALETTE)]
+    number = await service._repo.next_epic_number(project_id)
     epic = await service._repo.create_epic(
         project_id,
         body.title,
@@ -92,6 +93,7 @@ async def create_epic(project_id: UUID, body: EpicCreate, service: ServiceDep) -
         body.context_description,
         body.position,
         color=color,
+        number=number,
     )
     return EpicResponse.model_validate(epic)
 
@@ -116,8 +118,9 @@ async def create_feature(
     epic = await service._repo.get_epic(epic_id)
     if epic is None:
         raise HTTPException(status_code=404, detail="Epic not found")
+    number = await service._repo.next_feature_number(project_id)
     feature = await service._repo.create_feature(
-        epic_id, body.title, body.description, body.position
+        epic_id, body.title, body.description, body.position, number=number
     )
     return FeatureResponse.model_validate(feature)
 
@@ -147,8 +150,9 @@ async def create_task(
     feature = await service._repo.get_feature(feature_id)
     if feature is None:
         raise HTTPException(status_code=404, detail="Feature not found")
+    number = await service._repo.next_task_number(project_id)
     task = await service._repo.create_task(
-        feature_id, body.title, body.description, body.priority, body.position
+        feature_id, body.title, body.description, body.priority, body.position, number=number
     )
     return TaskResponse.model_validate(task)
 
@@ -243,6 +247,7 @@ async def get_backlog(project_id: UUID, service: ServiceDep) -> list[BacklogEpic
                     tasks=[
                         BacklogTask(
                             id=t.id,
+                            number=t.number,
                             title=t.title,
                             status=t.status,
                             priority=t.priority,

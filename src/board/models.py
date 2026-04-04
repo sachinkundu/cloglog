@@ -43,6 +43,7 @@ class Epic(Base):
     status: Mapped[str] = mapped_column(String(20), default="planned")
     position: Mapped[int] = mapped_column(default=0)
     color: Mapped[str] = mapped_column(String(7), default="")
+    number: Mapped[int] = mapped_column(default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
@@ -64,6 +65,7 @@ class Feature(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(20), default="planned")
     position: Mapped[int] = mapped_column(default=0)
+    number: Mapped[int] = mapped_column(default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
@@ -92,6 +94,7 @@ class Task(Base):
     priority: Mapped[str] = mapped_column(String(20), default="normal")
     worktree_id: Mapped[_uuid.UUID | None] = mapped_column(default=None)
     position: Mapped[int] = mapped_column(default=0)
+    number: Mapped[int] = mapped_column(default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )

@@ -100,6 +100,10 @@ class BoardService:
         tasks_created = 0
 
         existing_count = await self._repo.count_epics(project_id)
+        next_epic_num = await self._repo.next_epic_number(project_id)
+        next_feat_num = await self._repo.next_feature_number(project_id)
+        next_task_num = await self._repo.next_task_number(project_id)
+
         for epic_pos, epic_data in enumerate(plan.epics):
             color = EPIC_COLOR_PALETTE[(existing_count + epic_pos) % len(EPIC_COLOR_PALETTE)]
             epic = await self._repo.create_epic(
@@ -110,7 +114,9 @@ class BoardService:
                 context_description="",
                 position=epic_pos,
                 color=color,
+                number=next_epic_num,
             )
+            next_epic_num += 1
             epics_created += 1
 
             for feat_pos, feat_data in enumerate(epic_data.features):
@@ -119,7 +125,9 @@ class BoardService:
                     title=feat_data.title,
                     description=feat_data.description,
                     position=feat_pos,
+                    number=next_feat_num,
                 )
+                next_feat_num += 1
                 features_created += 1
 
                 for task_pos, task_data in enumerate(feat_data.tasks):
@@ -129,7 +137,9 @@ class BoardService:
                         description=task_data.description,
                         priority=task_data.priority,
                         position=task_pos,
+                        number=next_task_num,
                     )
+                    next_task_num += 1
                     tasks_created += 1
 
         return {

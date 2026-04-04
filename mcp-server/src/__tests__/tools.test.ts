@@ -75,20 +75,21 @@ describe('Tool Handlers', () => {
     )
   })
 
-  it('attach_document calls POST /agents/{wt}/documents', async () => {
+  it('attach_document calls POST /documents with entity_type and entity_id', async () => {
     await handlers.attach_document({
-      worktree_id: 'wt-123',
-      task_id: 't1',
+      entity_type: 'feature',
+      entity_id: 'f1',
       type: 'spec',
       title: 'Auth Spec',
       content: '# Auth\n\nSpec content.',
       source_path: 'docs/auth.md',
     })
     expect(client.request).toHaveBeenCalledWith(
-      'POST', '/api/v1/agents/wt-123/documents',
+      'POST', '/api/v1/documents',
       {
-        task_id: 't1',
-        type: 'spec',
+        attached_to_type: 'feature',
+        attached_to_id: 'f1',
+        doc_type: 'spec',
         title: 'Auth Spec',
         content: '# Auth\n\nSpec content.',
         source_path: 'docs/auth.md',

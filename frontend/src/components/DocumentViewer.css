@@ -1,0 +1,155 @@
+.doc-viewer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.doc-viewer {
+  width: 720px;
+  max-width: 90vw;
+  max-height: 85vh;
+  background: var(--bg, #1a1a2e);
+  border: 1px solid var(--border, #2a2a4a);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.doc-viewer-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: none;
+  border: 1px solid var(--border, #2a2a4a);
+  color: var(--text-muted, #888);
+  border-radius: 4px;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  z-index: 1;
+}
+
+.doc-viewer-close:hover {
+  background: var(--surface, #2a2a4a);
+}
+
+.doc-viewer-header {
+  padding: 24px 24px 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.doc-viewer-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text, #e0e0e0);
+  margin: 0;
+}
+
+.doc-viewer-content {
+  padding: 20px 24px 24px;
+  overflow-y: auto;
+  flex: 1;
+  color: var(--text, #e0e0e0);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.doc-viewer-content h1 {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 24px 0 12px;
+  color: var(--text, #e0e0e0);
+}
+
+.doc-viewer-content h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 20px 0 10px;
+  color: var(--text, #e0e0e0);
+}
+
+.doc-viewer-content h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 16px 0 8px;
+  color: var(--text, #e0e0e0);
+}
+
+.doc-viewer-content p {
+  margin: 0 0 12px;
+}
+
+.doc-viewer-content ul, .doc-viewer-content ol {
+  margin: 0 0 12px;
+  padding-left: 24px;
+}
+
+.doc-viewer-content li {
+  margin-bottom: 4px;
+}
+
+.doc-viewer-content code {
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+  background: var(--surface, #2a2a4a);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.doc-viewer-content pre {
+  background: var(--surface, #2a2a4a);
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+  padding: 16px;
+  overflow-x: auto;
+  margin: 0 0 12px;
+}
+
+.doc-viewer-content pre code {
+  background: none;
+  padding: 0;
+}
+
+.doc-viewer-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 12px;
+}
+
+.doc-viewer-content th, .doc-viewer-content td {
+  border: 1px solid var(--border, #2a2a4a);
+  padding: 8px 12px;
+  text-align: left;
+  font-size: 13px;
+}
+
+.doc-viewer-content th {
+  background: var(--surface, #2a2a4a);
+}
+
+.doc-viewer-content blockquote {
+  border-left: 3px solid var(--active, #10b981);
+  margin: 0 0 12px;
+  padding: 8px 16px;
+  color: var(--text-muted, #888);
+}
+
+.doc-viewer-loading, .doc-viewer-error {
+  padding: 40px;
+  text-align: center;
+  color: var(--text-muted, #888);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.doc-viewer-error {
+  color: var(--danger, #ef4444);
+}

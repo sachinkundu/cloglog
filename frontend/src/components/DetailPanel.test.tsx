@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi } from 'vitest'
 import { DetailPanel } from './DetailPanel'
@@ -9,6 +9,7 @@ describe('DetailPanel', () => {
       <DetailPanel
         type="epic"
         data={{
+          id: 'e1',
           title: 'Auth System',
           description: 'Authentication epic',
           color: '#7c3aed',
@@ -35,6 +36,7 @@ describe('DetailPanel', () => {
       <DetailPanel
         type="feature"
         data={{
+          id: 'f1',
           title: 'OAuth Provider',
           description: 'OAuth implementation',
           epic: { title: 'Auth System', id: 'e1', color: '#7c3aed' },
@@ -84,6 +86,7 @@ describe('DetailPanel', () => {
       <DetailPanel
         type="epic"
         data={{
+          id: 'e1',
           title: 'Test',
           description: '',
           color: '#000',
@@ -97,6 +100,59 @@ describe('DetailPanel', () => {
     )
     await user.click(screen.getByTestId('detail-overlay'))
     expect(onClose).toHaveBeenCalled()
+  })
+
+  it('shows document chips for epic detail', async () => {
+    const { api } = await import('../api/client')
+    vi.spyOn(api, 'getEpicDocuments').mockResolvedValue([
+      { id: 'd1', doc_type: 'spec', title: 'Auth Spec', created_at: '' },
+    ])
+    render(
+      <DetailPanel
+        type="epic"
+        data={{
+          id: 'e1',
+          title: 'Auth System',
+          description: '',
+          color: '#7c3aed',
+          bounded_context: '',
+          task_counts: { total: 0, done: 0 },
+          features: [],
+        }}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    )
+    await waitFor(() => {
+      expect(screen.getByText('spec: Auth Spec')).toBeInTheDocument()
+    })
+    vi.restoreAllMocks()
+  })
+
+  it('shows document chips for feature detail', async () => {
+    const { api } = await import('../api/client')
+    vi.spyOn(api, 'getFeatureDocuments').mockResolvedValue([
+      { id: 'd2', doc_type: 'plan', title: 'OAuth Plan', created_at: '' },
+    ])
+    render(
+      <DetailPanel
+        type="feature"
+        data={{
+          id: 'f1',
+          title: 'OAuth Provider',
+          description: '',
+          epic: { title: 'Auth', id: 'e1', color: '#7c3aed' },
+          task_counts: { total: 0, done: 0 },
+          tasks: [],
+        }}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+      />
+    )
+    await waitFor(() => {
+      expect(screen.getByText('plan: OAuth Plan')).toBeInTheDocument()
+    })
+    vi.restoreAllMocks()
   })
 
   it('calls onNavigate when epic pill is clicked in task detail', async () => {

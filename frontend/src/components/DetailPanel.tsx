@@ -1,8 +1,13 @@
+import { useEffect, useState } from 'react'
+import { api } from '../api/client'
+import type { DocumentSummary } from '../api/types'
 import { BreadcrumbPills } from './BreadcrumbPills'
+import { DocumentViewer } from './DocumentViewer'
 import { formatEntityNumber } from '../utils/format'
 import './DetailPanel.css'
 
 interface EpicData {
+  id: string
   title: string
   description: string
   color: string
@@ -13,6 +18,7 @@ interface EpicData {
 }
 
 interface FeatureData {
+  id: string
   title: string
   description: string
   epic: { title: string; id: string; color: string }
@@ -67,7 +73,46 @@ function ProgressBar({ done, total }: { done: number; total: number }) {
   )
 }
 
+function useDocuments(entityType: 'epic' | 'feature', entityId: string) {
+  const [docs, setDocs] = useState<DocumentSummary[]>([])
+  useEffect(() => {
+    const fetcher = entityType === 'epic'
+      ? api.getEpicDocuments(entityId)
+      : api.getFeatureDocuments(entityId)
+    fetcher.then(setDocs).catch(() => {})
+  }, [entityType, entityId])
+  return docs
+}
+
+function DocumentChips({ docs }: { docs: DocumentSummary[] }) {
+  const [viewingDocId, setViewingDocId] = useState<string | null>(null)
+  if (docs.length === 0) return null
+  return (
+    <div className="detail-section">
+      <h3>Documents</h3>
+      <div className="doc-chips">
+        {docs.map(doc => (
+          <button
+            key={doc.id}
+            className={`doc-chip chip-${doc.doc_type}`}
+            onClick={() => setViewingDocId(doc.id)}
+          >
+            {doc.doc_type}: {doc.title}
+          </button>
+        ))}
+      </div>
+      {viewingDocId && (
+        <DocumentViewer
+          documentId={viewingDocId}
+          onClose={() => setViewingDocId(null)}
+        />
+      )}
+    </div>
+  )
+}
+
 function EpicDetail({ data }: { data: EpicData }) {
+  const docs = useDocuments('epic', data.id)
   return (
     <>
       <div className="detail-header" style={{ borderLeftColor: data.color }}>
@@ -81,6 +126,7 @@ function EpicDetail({ data }: { data: EpicData }) {
       </div>
       <ProgressBar done={data.task_counts.done} total={data.task_counts.total} />
       {data.description && <p className="detail-description">{data.description}</p>}
+      <DocumentChips docs={docs} />
       {data.features.length > 0 && (
         <div className="detail-section">
           <h3>Features</h3>
@@ -97,6 +143,7 @@ function EpicDetail({ data }: { data: EpicData }) {
 }
 
 function FeatureDetail({ data, onNavigate }: { data: FeatureData; onNavigate: (type: 'epic' | 'feature' | 'task', id: string) => void }) {
+  const docs = useDocuments('feature', data.id)
   return (
     <>
       <div className="detail-header">
@@ -114,6 +161,7 @@ function FeatureDetail({ data, onNavigate }: { data: FeatureData; onNavigate: (t
       </div>
       <ProgressBar done={data.task_counts.done} total={data.task_counts.total} />
       {data.description && <p className="detail-description">{data.description}</p>}
+      <DocumentChips docs={docs} />
       {data.tasks.length > 0 && (
         <div className="detail-section">
           <h3>Tasks</h3>

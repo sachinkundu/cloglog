@@ -136,29 +136,29 @@ export function createServer(client: CloglogClient): McpServer {
 
   server.tool(
     'attach_document',
-    'Read a local file and POST its content to cloglog as a document attachment.',
+    'Read a local file and attach it as a document to an epic, feature, or task.',
     {
-      task_id: z.string().describe('UUID of the task to attach to'),
+      entity_type: z.enum(['epic', 'feature', 'task']).describe('Type of entity to attach to'),
+      entity_id: z.string().describe('UUID of the epic, feature, or task'),
       file_path: z.string().describe('Absolute path to the file to attach'),
       type: z.enum(['spec', 'plan', 'design', 'other']).describe('Document type'),
       title: z.string().optional().describe('Document title (defaults to filename)'),
     },
-    async ({ task_id, file_path, type, title }) => {
-      const wt = requireRegistered()
-      if (typeof wt !== 'string') return wt
+    async ({ entity_type, entity_id, file_path, type, title }) => {
+      requireRegistered()
       const fs = await import('node:fs/promises')
       const path = await import('node:path')
       const content = await fs.readFile(file_path, 'utf-8')
       const docTitle = title ?? path.basename(file_path)
       await handlers.attach_document({
-        worktree_id: wt,
-        task_id,
+        entity_type,
+        entity_id,
         type,
         title: docTitle,
         content,
         source_path: file_path,
       })
-      return { content: [{ type: 'text' as const, text: `Document "${docTitle}" attached.` }] }
+      return { content: [{ type: 'text' as const, text: `Document "${docTitle}" attached to ${entity_type} ${entity_id}.` }] }
     }
   )
 

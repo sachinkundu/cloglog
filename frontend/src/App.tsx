@@ -102,6 +102,7 @@ function buildEpicDetail(backlog: BacklogEpic[], epicId: string): DetailState {
   return {
     type: 'epic',
     data: {
+      id: epicId,
       title: entry.epic.title,
       description: entry.epic.description,
       color: entry.epic.color,
@@ -123,6 +124,7 @@ function buildFeatureDetail(backlog: BacklogEpic[], featureId: string): DetailSt
       return {
         type: 'feature',
         data: {
+          id: featureId,
           title: feat.feature.title,
           description: feat.feature.description,
           epic: { title: entry.epic.title, id: entry.epic.id, color: entry.epic.color },

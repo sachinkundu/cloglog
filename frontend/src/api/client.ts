@@ -1,4 +1,4 @@
-import type { BoardResponse, Document, DocumentSummary, Project, Worktree } from './types'
+import type { BacklogEpic, BoardResponse, Document, DocumentSummary, Project, Worktree } from './types'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api/v1'
 
@@ -24,9 +24,16 @@ export const api = {
   // Worktrees
   getWorktrees: (projectId: string) => fetchJSON<Worktree[]>(`/projects/${projectId}/worktrees`),
 
+  // Backlog tree
+  getBacklog: (projectId: string) => fetchJSON<BacklogEpic[]>(`/projects/${projectId}/backlog`),
+
   // Documents
   getTaskDocuments: (taskId: string) => fetchJSON<DocumentSummary[]>(`/tasks/${taskId}/documents`),
   getDocument: (id: string) => fetchJSON<Document>(`/documents/${id}`),
+  getEpicDocuments: (epicId: string) =>
+    fetchJSON<DocumentSummary[]>(`/documents?attached_to_type=epic&attached_to_id=${epicId}`),
+  getFeatureDocuments: (featureId: string) =>
+    fetchJSON<DocumentSummary[]>(`/documents?attached_to_type=feature&attached_to_id=${featureId}`),
 
   // SSE stream URL (not a fetch — used by EventSource)
   streamUrl: (projectId: string) => `${BASE_URL}/projects/${projectId}/stream`,

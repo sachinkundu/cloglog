@@ -324,6 +324,34 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/projects/{project_id}/backlog:
+    get:
+      summary: Get Backlog
+      operationId: get_backlog_api_v1_projects__project_id__backlog_get
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Project Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BacklogEpic'
+                title: Response Get Backlog Api V1 Projects  Project Id  Backlog Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/projects/{project_id}/import:
     post:
       summary: Import Plan
@@ -703,6 +731,62 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
+    BacklogEpic:
+      properties:
+        epic:
+          $ref: '#/components/schemas/EpicResponse'
+        features:
+          items:
+            $ref: '#/components/schemas/BacklogFeature'
+          type: array
+          title: Features
+        task_counts:
+          $ref: '#/components/schemas/TaskCounts'
+      type: object
+      required:
+      - epic
+      - features
+      - task_counts
+      title: BacklogEpic
+    BacklogFeature:
+      properties:
+        feature:
+          $ref: '#/components/schemas/FeatureResponse'
+        tasks:
+          items:
+            $ref: '#/components/schemas/BacklogTask'
+          type: array
+          title: Tasks
+        task_counts:
+          $ref: '#/components/schemas/TaskCounts'
+      type: object
+      required:
+      - feature
+      - tasks
+      - task_counts
+      title: BacklogFeature
+    BacklogTask:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        title:
+          type: string
+          title: Title
+        status:
+          type: string
+          title: Status
+        priority:
+          type: string
+          title: Priority
+      type: object
+      required:
+      - id
+      - title
+      - status
+      - priority
+      title: BacklogTask
     BoardColumn:
       properties:
         status:
@@ -895,6 +979,9 @@ components:
         position:
           type: integer
           title: Position
+        color:
+          type: string
+          title: Color
         created_at:
           type: string
           format: date-time
@@ -909,6 +996,7 @@ components:
       - context_description
       - status
       - position
+      - color
       - created_at
       title: EpicResponse
     FeatureCreate:
@@ -1247,6 +1335,10 @@ components:
           type: string
           title: Feature Title
           default: ''
+        epic_color:
+          type: string
+          title: Epic Color
+          default: ''
       type: object
       required:
       - id
@@ -1261,6 +1353,19 @@ components:
       - updated_at
       title: TaskCard
       description: Task with breadcrumb info for the Kanban board.
+    TaskCounts:
+      properties:
+        total:
+          type: integer
+          title: Total
+        done:
+          type: integer
+          title: Done
+      type: object
+      required:
+      - total
+      - done
+      title: TaskCounts
     TaskCreate:
       properties:
         title:

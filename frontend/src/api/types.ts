@@ -18,6 +18,12 @@ export type DocumentSummary = Pick<
 >
 export type Document = components['schemas']['DocumentResponse']
 
+// Backlog tree types
+export type BacklogEpic = components['schemas']['BacklogEpic']
+export type BacklogFeature = components['schemas']['BacklogFeature']
+export type BacklogTask = components['schemas']['BacklogTask']
+export type TaskCounts = components['schemas']['TaskCounts']
+
 // Frontend-only types (not from API)
 export interface BoardColumn {
   status: string

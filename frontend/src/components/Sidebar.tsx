@@ -14,6 +14,13 @@ interface SidebarProps {
   boardStats?: BoardStats | null
 }
 
+function getProjectHealth(worktrees: Worktree[], boardStats: BoardStats | null | undefined): 'green' | 'yellow' | 'red' {
+  const hasOnlineAgents = worktrees.some(wt => wt.status === 'online')
+  if (!hasOnlineAgents) return 'red'
+  const hasTasksProgressing = worktrees.some(wt => wt.current_task_id !== null)
+  return hasTasksProgressing ? 'green' : 'yellow'
+}
+
 export function Sidebar({ projects, selectedProjectId, worktrees, boardStats }: SidebarProps) {
   const navigate = useNavigate()
 
@@ -32,7 +39,11 @@ export function Sidebar({ projects, selectedProjectId, worktrees, boardStats }: 
                 className={`project-item ${p.id === selectedProjectId ? 'selected' : ''}`}
                 onClick={() => navigate(`/projects/${p.id}`)}
               >
-                <span className={`status-dot ${p.status}`} />
+                {p.id === selectedProjectId && boardStats ? (
+                  <span className={`status-dot project-health health-${getProjectHealth(worktrees, boardStats)}`} />
+                ) : (
+                  <span className={`status-dot ${p.status}`} />
+                )}
                 <span className="project-name">{p.name}</span>
               </button>
               {p.id === selectedProjectId && boardStats && (

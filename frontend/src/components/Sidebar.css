@@ -99,6 +99,21 @@
   }
 }
 
+.project-health.health-green {
+  background: var(--active);
+  box-shadow: 0 0 6px rgba(16, 185, 129, 0.5);
+}
+
+.project-health.health-yellow {
+  background: var(--working);
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.5);
+}
+
+.project-health.health-red {
+  background: var(--danger);
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.4);
+}
+
 .project-stats {
   font-family: var(--font-mono);
   font-size: 11px;

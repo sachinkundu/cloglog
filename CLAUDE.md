@@ -19,14 +19,7 @@ For the full context map, relationship types, and ubiquitous language glossary, 
 
 ## Worktree Discipline
 
-If you are working in a worktree, you MUST only touch files in your assigned context:
-
-- `wt-board` → `src/board/`, `tests/board/`
-- `wt-agent` → `src/agent/`, `tests/agent/`
-- `wt-document` → `src/document/`, `tests/document/`
-- `wt-gateway` → `src/gateway/`, `tests/gateway/`
-- `wt-frontend` → `frontend/`
-- `wt-mcp` → `mcp-server/`
+If you are working in a worktree (`wt-*` branch), you MUST only touch files in your assigned context. The directory mappings are defined in `scripts/create-worktree.sh` — that is the source of truth.
 
 Do NOT modify files outside your assigned directories. If you need a change in another context, note it and coordinate.
 
@@ -46,6 +39,22 @@ make typecheck        # mypy type checking
 make run-backend      # Start FastAPI dev server
 make db-up            # Start PostgreSQL via Docker Compose
 make db-migrate       # Run Alembic migrations
+make contract-check   # Validate backend matches API contract
+```
+
+### Frontend
+
+```bash
+cd frontend && make test    # Frontend tests (Vitest)
+cd frontend && make lint    # TypeScript type check
+cd frontend && npm run dev  # Start Vite dev server
+```
+
+### MCP Server
+
+```bash
+cd mcp-server && make test   # MCP server tests
+cd mcp-server && make build  # Build TypeScript
 ```
 
 ## Quality Gate

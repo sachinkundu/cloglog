@@ -10,6 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.board.repository import BoardRepository
 from src.board.schemas import (
+    BacklogEpic,
+    BacklogFeature,
+    BacklogTask,
     BoardColumn,
     BoardResponse,
     EpicCreate,
@@ -21,6 +24,7 @@ from src.board.schemas import (
     ProjectResponse,
     ProjectWithKey,
     TaskCard,
+    TaskCounts,
     TaskCreate,
     TaskResponse,
     TaskUpdate,
@@ -201,6 +205,57 @@ async def get_board(project_id: UUID, service: ServiceDep) -> BoardResponse:
         total_tasks=len(tasks),
         done_count=done_count,
     )
+
+
+# --- Backlog ---
+
+
+@router.get("/projects/{project_id}/backlog", response_model=list[BacklogEpic])
+async def get_backlog(project_id: UUID, service: ServiceDep) -> list[BacklogEpic]:
+    project = await service._repo.get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    epics = await service._repo.get_backlog_tree(project_id)
+    result = []
+
+    for epic in epics:
+        epic_total = 0
+        epic_done = 0
+        features = []
+
+        for feature in sorted(epic.features, key=lambda f: f.position):
+            tasks = sorted(feature.tasks, key=lambda t: t.position)
+            feat_total = len(tasks)
+            feat_done = sum(1 for t in tasks if t.status == "done")
+            epic_total += feat_total
+            epic_done += feat_done
+
+            features.append(
+                BacklogFeature(
+                    feature=FeatureResponse.model_validate(feature),
+                    tasks=[
+                        BacklogTask(
+                            id=t.id,
+                            title=t.title,
+                            status=t.status,
+                            priority=t.priority,
+                        )
+                        for t in tasks
+                    ],
+                    task_counts=TaskCounts(total=feat_total, done=feat_done),
+                )
+            )
+
+        result.append(
+            BacklogEpic(
+                epic=EpicResponse.model_validate(epic),
+                features=features,
+                task_counts=TaskCounts(total=epic_total, done=epic_done),
+            )
+        )
+
+    return result
 
 
 # --- Import ---

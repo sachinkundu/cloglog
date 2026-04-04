@@ -264,3 +264,80 @@ async def test_import_plan(client: AsyncClient):
     assert data["epics_created"] == 1
     assert data["features_created"] == 2
     assert data["tasks_created"] == 3
+
+
+# --- Backlog endpoint ---
+
+
+async def test_backlog_returns_tree(client: AsyncClient):
+    project = (await client.post("/api/v1/projects", json={"name": "backlog-test"})).json()
+    epic = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics",
+            json={"title": "Auth"},
+        )
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "OAuth"},
+        )
+    ).json()
+    await client.post(
+        f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+        json={"title": "Callback handler"},
+    )
+    await client.post(
+        f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+        json={"title": "Token refresh"},
+    )
+
+    resp = await client.get(f"/api/v1/projects/{project['id']}/backlog")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert len(data) == 1
+    assert data[0]["epic"]["title"] == "Auth"
+    assert data[0]["epic"]["color"].startswith("#")
+    assert data[0]["task_counts"]["total"] == 2
+    assert data[0]["task_counts"]["done"] == 0
+
+    features = data[0]["features"]
+    assert len(features) == 1
+    assert features[0]["feature"]["title"] == "OAuth"
+    assert features[0]["task_counts"]["total"] == 2
+    assert len(features[0]["tasks"]) == 2
+    assert features[0]["tasks"][0]["title"] == "Callback handler"
+
+
+async def test_backlog_counts_done_tasks(client: AsyncClient):
+    project = (await client.post("/api/v1/projects", json={"name": "backlog-done"})).json()
+    epic = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics",
+            json={"title": "Epic"},
+        )
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
+    task = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "Task 1"},
+        )
+    ).json()
+    await client.post(
+        f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+        json={"title": "Task 2"},
+    )
+    await client.patch(f"/api/v1/tasks/{task['id']}", json={"status": "done"})
+
+    resp = await client.get(f"/api/v1/projects/{project['id']}/backlog")
+    data = resp.json()
+    assert data[0]["task_counts"]["total"] == 2
+    assert data[0]["task_counts"]["done"] == 1
+    assert data[0]["features"][0]["task_counts"]["done"] == 1

@@ -145,6 +145,33 @@ class BoardResponse(BaseModel):
     done_count: int
 
 
+# --- Backlog tree view ---
+
+
+class BacklogTask(BaseModel):
+    id: UUID
+    title: str
+    status: str
+    priority: str
+
+
+class TaskCounts(BaseModel):
+    total: int
+    done: int
+
+
+class BacklogFeature(BaseModel):
+    feature: FeatureResponse
+    tasks: list[BacklogTask]
+    task_counts: TaskCounts
+
+
+class BacklogEpic(BaseModel):
+    epic: EpicResponse
+    features: list[BacklogFeature]
+    task_counts: TaskCounts
+
+
 # --- Import ---
 
 

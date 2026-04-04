@@ -160,6 +160,16 @@ class BoardRepository:
         )
         return list(result.unique().scalars().all())
 
+    async def get_backlog_tree(self, project_id: UUID) -> list[Epic]:
+        """Get all epics with features and tasks eager-loaded for the backlog tree."""
+        result = await self._session.execute(
+            select(Epic)
+            .where(Epic.project_id == project_id)
+            .options(joinedload(Epic.features).joinedload(Feature.tasks))
+            .order_by(Epic.position)
+        )
+        return list(result.unique().scalars().all())
+
     async def get_tasks_for_feature(self, feature_id: UUID) -> list[Task]:
         result = await self._session.execute(
             select(Task).where(Task.feature_id == feature_id).order_by(Task.position)

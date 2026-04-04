@@ -1,52 +1,24 @@
-export interface Project {
-  id: string
-  name: string
-  description: string
-  repo_url: string
-  status: string
-  created_at: string
-}
+// Re-export generated API types as app-friendly names.
+// DO NOT hand-write API response types here — they come from the OpenAPI contract.
+// Only add frontend-only types (not API responses) in this file.
+// Regenerate with: ./scripts/generate-contract-types.sh docs/contracts/baseline.openapi.yaml
 
-export interface ProjectWithKey extends Project {
-  api_key: string
-}
+import type { components } from './generated-types'
 
-export interface Epic {
-  id: string
-  project_id: string
-  title: string
-  description: string
-  bounded_context: string
-  status: string
-  position: number
-  created_at: string
-}
+// API response types — derived from OpenAPI contract
+export type Project = components['schemas']['ProjectResponse']
+export type ProjectWithKey = components['schemas']['ProjectWithKey']
+export type Epic = components['schemas']['EpicResponse']
+export type Feature = components['schemas']['FeatureResponse']
+export type TaskCard = components['schemas']['TaskCard']
+export type Worktree = components['schemas']['WorktreeResponse']
+export type DocumentSummary = Pick<
+  components['schemas']['DocumentResponse'],
+  'id' | 'doc_type' | 'title' | 'created_at'
+>
+export type Document = components['schemas']['DocumentResponse']
 
-export interface Feature {
-  id: string
-  epic_id: string
-  title: string
-  description: string
-  status: string
-  position: number
-  created_at: string
-}
-
-export interface TaskCard {
-  id: string
-  feature_id: string
-  title: string
-  description: string
-  status: string
-  priority: string
-  worktree_id: string | null
-  position: number
-  created_at: string
-  updated_at: string
-  epic_title: string
-  feature_title: string
-}
-
+// Frontend-only types (not from API)
 export interface BoardColumn {
   status: string
   tasks: TaskCard[]
@@ -58,29 +30,6 @@ export interface BoardResponse {
   columns: BoardColumn[]
   total_tasks: number
   done_count: number
-}
-
-export interface Worktree {
-  id: string
-  name: string
-  worktree_path: string
-  status: string
-  current_task_id: string | null
-  last_heartbeat: string
-}
-
-export interface DocumentSummary {
-  id: string
-  type: string
-  title: string
-  created_at: string
-}
-
-export interface Document extends DocumentSummary {
-  content: string
-  source_path: string
-  attached_to_type: string
-  attached_to_id: string
 }
 
 export type SSEEvent = {

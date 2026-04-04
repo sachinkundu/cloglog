@@ -52,10 +52,10 @@ export function CardDetail({ task, onClose }: CardDetailProps) {
               {docs.map(doc => (
                 <button
                   key={doc.id}
-                  className={`doc-chip chip-${doc.type}`}
+                  className={`doc-chip chip-${doc.doc_type}`}
                   onClick={() => openDoc(doc.id)}
                 >
-                  {doc.type}: {doc.title}
+                  {doc.doc_type}: {doc.title}
                 </button>
               ))}
             </div>

@@ -30,13 +30,13 @@ const baseTask: TaskCard = {
 }
 
 const mockDocs: DocumentSummary[] = [
-  { id: 'd1', type: 'spec', title: 'Auth Spec', created_at: '' },
-  { id: 'd2', type: 'plan', title: 'Auth Plan', created_at: '' },
+  { id: 'd1', doc_type: 'spec', title: 'Auth Spec', created_at: '' },
+  { id: 'd2', doc_type: 'plan', title: 'Auth Plan', created_at: '' },
 ]
 
 const mockFullDoc: Document = {
   id: 'd1',
-  type: 'spec',
+  doc_type: 'spec',
   title: 'Auth Spec',
   created_at: '',
   content: 'Spec content goes here',

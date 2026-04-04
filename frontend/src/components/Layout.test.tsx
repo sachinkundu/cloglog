@@ -8,7 +8,7 @@ const projects: Project[] = [
 ]
 
 const worktrees: Worktree[] = [
-  { id: 'wt1', name: 'wt-api', worktree_path: '/tmp', status: 'active', current_task_id: null, last_heartbeat: '' },
+  { id: 'wt1', project_id: 'p1', name: 'wt-api', worktree_path: '/tmp', branch_name: 'main', status: 'online', current_task_id: null, last_heartbeat: null, created_at: '2024-01-01T00:00:00Z' },
 ]
 
 describe('Layout', () => {

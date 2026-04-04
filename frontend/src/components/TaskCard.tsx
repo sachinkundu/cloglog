@@ -1,4 +1,5 @@
 import type { TaskCard as TaskCardType } from '../api/types'
+import { formatEntityNumber } from '../utils/format'
 import { BreadcrumbPills } from './BreadcrumbPills'
 import './TaskCard.css'
 
@@ -20,7 +21,10 @@ export function TaskCard({ task, onClick }: TaskCardProps) {
         featureTitle={task.feature_title}
         epicColor={task.epic_color}
       />
-      <div className="task-title">{task.title}</div>
+      <div className="task-title">
+        {task.number > 0 && <span className="entity-number">{formatEntityNumber('task', task.number)} </span>}
+        {task.title}
+      </div>
       <div className="task-meta">
         {task.status === 'blocked' && (
           <span className="task-badge task-badge-blocked">blocked</span>

@@ -99,6 +99,14 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 - **Auth consistency:** All agent-facing endpoints use `Authorization: Bearer <api-key>`. Dashboard-facing endpoints are public (no auth). Never use query parameters for auth. Use the `CurrentProject` dependency from `src/gateway/auth.py`.
 - **Model imports in tests:** All model classes must be imported in `tests/conftest.py` so `Base.metadata.create_all` creates all tables. If you add a new model, verify the import exists.
 
+### API Contract Enforcement
+- **Every wave must have an API contract** designed before worktrees launch. The contract is an OpenAPI YAML file at `docs/contracts/<wave-name>.openapi.yaml`.
+- The contract is designed by the DDD Architect agent and reviewed by the DDD Reviewer agent during the planning phase. These agents enforce DDD principles: aggregate boundaries, ubiquitous language, context boundary respect, and consumer sufficiency.
+- **Frontend worktrees**: Import API types from `generated-types.ts` (auto-generated from the contract). NEVER hand-write API response types.
+- **Backend worktrees**: Implement endpoints matching the contract exactly. Run `make contract-check` before committing.
+- If you need to change the API shape, STOP and update the contract first — don't work around it.
+- `make quality` validates contract compliance automatically. Your commit will be blocked if your implementation drifts from the contract.
+
 ---
 
 *This section is updated after each wave with learnings from PR reviews. If you encounter a new pattern that future agents should know, note it in your PR description so it can be added here.*

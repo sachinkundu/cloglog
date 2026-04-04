@@ -76,4 +76,21 @@ describe('Sidebar', () => {
     expect(screen.getByText('wt-backend')).toBeInTheDocument()
     expect(screen.getByText('wt-frontend')).toBeInTheDocument()
   })
+
+  it('applies pulse class to online worktree dots', () => {
+    render(
+      <MemoryRouter>
+        <Sidebar projects={mockProjects} selectedProjectId="p1" worktrees={mockWorktrees} />
+      </MemoryRouter>
+    )
+    // wt-backend is online — its dot should have the pulse class
+    const backendItem = screen.getByText('wt-backend').closest('.worktree-item')
+    const dot = backendItem!.querySelector('.status-dot')
+    expect(dot).toHaveClass('pulse')
+
+    // wt-frontend is offline — no pulse
+    const frontendItem = screen.getByText('wt-frontend').closest('.worktree-item')
+    const offlineDot = frontendItem!.querySelector('.status-dot')
+    expect(offlineDot).not.toHaveClass('pulse')
+  })
 })

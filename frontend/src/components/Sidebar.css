@@ -82,6 +82,23 @@
 .status-dot.idle { background: var(--text-muted); }
 .status-dot.offline { background: var(--danger); }
 
+.status-dot.pulse {
+  animation: agent-pulse 2s ease-in-out infinite;
+  box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6);
+}
+
+@keyframes agent-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(16, 185, 129, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
+}
+
 .worktree-item {
   display: flex;
   align-items: center;

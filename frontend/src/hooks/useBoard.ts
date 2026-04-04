@@ -69,6 +69,19 @@ export function useBoard(projectId: string | null) {
         const doneCount = updatedColumns.find(c => c.status === 'done')?.tasks.length ?? 0
         return { ...prev, columns: updatedColumns, done_count: doneCount }
       })
+    } else if (event.type === 'worktree_online' || event.type === 'worktree_offline') {
+      const newStatus = event.type === 'worktree_online' ? 'online' : 'offline'
+      setWorktrees(prev => {
+        const wtId = event.data.worktree_id
+        const found = prev.some(wt => wt.id === wtId)
+        if (!found) {
+          fetchBoard()
+          return prev
+        }
+        return prev.map(wt =>
+          wt.id === wtId ? { ...wt, status: newStatus } : wt
+        )
+      })
     } else {
       fetchBoard()
     }

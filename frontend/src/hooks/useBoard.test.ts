@@ -132,7 +132,58 @@ describe('useBoard', () => {
     expect(reviewCol!.tasks[0].id).toBe('t1')
   })
 
-  it('falls back to full refetch for non-task SSE events', async () => {
+  it('updates worktree status in-place on worktree_online SSE event', async () => {
+    const board = makeBoard([{ status: 'backlog', tasks: [] }])
+    const wts: Worktree[] = [
+      { id: 'wt1', project_id: 'p1', name: 'wt-ui', worktree_path: '/tmp', branch_name: 'main', status: 'offline', current_task_id: null, last_heartbeat: null, created_at: '' },
+    ]
+    mockApi.getBoard.mockResolvedValue(board)
+    mockApi.getBacklog.mockResolvedValue([])
+    mockApi.getWorktrees.mockResolvedValue(wts)
+
+    const { result } = renderHook(() => useBoard('p1'))
+
+    await waitFor(() => {
+      expect(result.current.worktrees).toHaveLength(1)
+    })
+
+    mockApi.getBoard.mockClear()
+
+    act(() => {
+      sseHandler!({ type: 'worktree_online', data: { worktree_id: 'wt1' } })
+    })
+
+    // Should NOT refetch — update in-place
+    expect(mockApi.getBoard).not.toHaveBeenCalled()
+    expect(result.current.worktrees[0].status).toBe('online')
+  })
+
+  it('updates worktree status on worktree_offline SSE event', async () => {
+    const board = makeBoard([{ status: 'backlog', tasks: [] }])
+    const wts: Worktree[] = [
+      { id: 'wt1', project_id: 'p1', name: 'wt-ui', worktree_path: '/tmp', branch_name: 'main', status: 'online', current_task_id: null, last_heartbeat: null, created_at: '' },
+    ]
+    mockApi.getBoard.mockResolvedValue(board)
+    mockApi.getBacklog.mockResolvedValue([])
+    mockApi.getWorktrees.mockResolvedValue(wts)
+
+    const { result } = renderHook(() => useBoard('p1'))
+
+    await waitFor(() => {
+      expect(result.current.worktrees).toHaveLength(1)
+    })
+
+    mockApi.getBoard.mockClear()
+
+    act(() => {
+      sseHandler!({ type: 'worktree_offline', data: { worktree_id: 'wt1' } })
+    })
+
+    expect(mockApi.getBoard).not.toHaveBeenCalled()
+    expect(result.current.worktrees[0].status).toBe('offline')
+  })
+
+  it('falls back to full refetch for unknown worktree SSE events', async () => {
     const board = makeBoard([{ status: 'backlog', tasks: [] }])
     mockApi.getBoard.mockResolvedValue(board)
     mockApi.getBacklog.mockResolvedValue([])
@@ -147,10 +198,30 @@ describe('useBoard', () => {
     mockApi.getBoard.mockClear()
 
     act(() => {
-      sseHandler!({ type: 'worktree_online', data: { worktree_id: 'wt1' } })
+      sseHandler!({ type: 'worktree_online', data: { worktree_id: 'unknown-wt' } })
     })
 
-    // Non-task events should trigger a full refetch
+    expect(mockApi.getBoard).toHaveBeenCalled()
+  })
+
+  it('falls back to full refetch for document_attached SSE events', async () => {
+    const board = makeBoard([{ status: 'backlog', tasks: [] }])
+    mockApi.getBoard.mockResolvedValue(board)
+    mockApi.getBacklog.mockResolvedValue([])
+    mockApi.getWorktrees.mockResolvedValue(worktrees)
+
+    const { result } = renderHook(() => useBoard('p1'))
+
+    await waitFor(() => {
+      expect(result.current.board).not.toBeNull()
+    })
+
+    mockApi.getBoard.mockClear()
+
+    act(() => {
+      sseHandler!({ type: 'document_attached', data: { document_id: 'd1' } })
+    })
+
     expect(mockApi.getBoard).toHaveBeenCalled()
   })
 

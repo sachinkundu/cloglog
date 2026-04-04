@@ -375,6 +375,64 @@ async def test_import_plan(client: AsyncClient):
 # --- Backlog endpoint ---
 
 
+async def test_delete_epic(client: AsyncClient):
+    project = (await client.post("/api/v1/projects", json={"name": "epic-del-test"})).json()
+    epic = (
+        await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "Epic"})
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
+    await client.post(
+        f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+        json={"title": "Task"},
+    )
+    resp = await client.delete(f"/api/v1/epics/{epic['id']}")
+    assert resp.status_code == 204
+    # Verify cascade: features and tasks are gone
+    epics_resp = await client.get(f"/api/v1/projects/{project['id']}/epics")
+    assert len(epics_resp.json()) == 0
+
+
+async def test_delete_epic_not_found(client: AsyncClient):
+    resp = await client.delete("/api/v1/epics/00000000-0000-0000-0000-000000000000")
+    assert resp.status_code == 404
+
+
+async def test_delete_feature(client: AsyncClient):
+    project = (await client.post("/api/v1/projects", json={"name": "feat-del-test"})).json()
+    epic = (
+        await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "Epic"})
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
+    await client.post(
+        f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+        json={"title": "Task"},
+    )
+    resp = await client.delete(f"/api/v1/features/{feature['id']}")
+    assert resp.status_code == 204
+    # Verify cascade: tasks are gone, epic still exists
+    features_resp = await client.get(
+        f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features"
+    )
+    assert len(features_resp.json()) == 0
+    epics_resp = await client.get(f"/api/v1/projects/{project['id']}/epics")
+    assert len(epics_resp.json()) == 1
+
+
+async def test_delete_feature_not_found(client: AsyncClient):
+    resp = await client.delete("/api/v1/features/00000000-0000-0000-0000-000000000000")
+    assert resp.status_code == 404
+
+
 async def test_backlog_returns_tree(client: AsyncClient):
     project = (await client.post("/api/v1/projects", json={"name": "backlog-test"})).json()
     epic = (

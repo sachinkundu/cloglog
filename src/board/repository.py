@@ -135,6 +135,14 @@ class BoardRepository:
     async def get_epic(self, epic_id: UUID) -> Epic | None:
         return await self._session.get(Epic, epic_id)
 
+    async def delete_epic(self, epic_id: UUID) -> bool:
+        epic = await self._session.get(Epic, epic_id)
+        if epic is None:
+            return False
+        await self._session.delete(epic)
+        await self._session.commit()
+        return True
+
     # --- Feature ---
 
     async def create_feature(
@@ -160,6 +168,14 @@ class BoardRepository:
 
     async def get_feature(self, feature_id: UUID) -> Feature | None:
         return await self._session.get(Feature, feature_id)
+
+    async def delete_feature(self, feature_id: UUID) -> bool:
+        feature = await self._session.get(Feature, feature_id)
+        if feature is None:
+            return False
+        await self._session.delete(feature)
+        await self._session.commit()
+        return True
 
     # --- Task ---
 

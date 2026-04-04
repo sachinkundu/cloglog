@@ -105,6 +105,13 @@ async def list_epics(project_id: UUID, service: ServiceDep) -> list[EpicResponse
     return [EpicResponse.model_validate(e) for e in epics]
 
 
+@router.delete("/epics/{epic_id}", status_code=204)
+async def delete_epic(epic_id: UUID, service: ServiceDep) -> None:
+    deleted = await service._repo.delete_epic(epic_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Epic not found")
+
+
 # --- Features ---
 
 
@@ -135,6 +142,13 @@ async def list_features(
 ) -> list[FeatureResponse]:
     features = await service._repo.list_features(epic_id)
     return [FeatureResponse.model_validate(f) for f in features]
+
+
+@router.delete("/features/{feature_id}", status_code=204)
+async def delete_feature(feature_id: UUID, service: ServiceDep) -> None:
+    deleted = await service._repo.delete_feature(feature_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Feature not found")
 
 
 # --- Tasks ---

@@ -109,7 +109,7 @@ export function createServer(client: CloglogClient): McpServer {
     'Move task to a specific column (e.g., review, blocked).',
     {
       task_id: z.string().describe('UUID of the task'),
-      status: z.string().describe('Target status: backlog, assigned, in_progress, review, done, blocked'),
+      status: z.string().describe('Target status: backlog, assigned, in_progress, testing, review, done, blocked'),
     },
     async ({ task_id, status }) => {
       const wt = requireRegistered()

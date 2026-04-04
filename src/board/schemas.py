@@ -106,6 +106,7 @@ class TaskUpdate(BaseModel):
     priority: str | None = None
     worktree_id: UUID | None = None
     position: int | None = None
+    archived: bool | None = None
 
 
 class TaskResponse(BaseModel):
@@ -120,6 +121,7 @@ class TaskResponse(BaseModel):
     worktree_id: UUID | None
     position: int
     number: int
+    archived: bool
     created_at: datetime
     updated_at: datetime
 

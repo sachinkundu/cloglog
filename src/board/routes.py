@@ -34,7 +34,7 @@ from src.shared.database import get_session
 
 router = APIRouter()
 
-BOARD_COLUMNS = ["backlog", "assigned", "in_progress", "review", "done", "blocked"]
+BOARD_COLUMNS = ["backlog", "assigned", "in_progress", "testing", "review", "done", "blocked"]
 
 
 def _get_service(session: Annotated[AsyncSession, Depends(get_session)]) -> BoardService:

@@ -1,36 +1,40 @@
 import { useState } from 'react'
 import type { BoardColumn as BoardColumnType } from '../api/types'
+import { api } from '../api/client'
 import { TaskCard } from './TaskCard'
 import './Column.css'
 
 interface ColumnProps {
   column: BoardColumnType
   onTaskClick: (taskId: string) => void
+  onRefresh?: () => void
 }
 
 const COLUMN_LABELS: Record<string, string> = {
   backlog: 'Backlog',
   assigned: 'Assigned',
   in_progress: 'In Progress',
+  testing: 'Testing',
   review: 'Review',
   done: 'Done',
   blocked: 'Blocked',
 }
 
-export function Column({ column, onTaskClick }: ColumnProps) {
-  const [archivedIds, setArchivedIds] = useState<Set<string>>(new Set())
+export function Column({ column, onTaskClick, onRefresh }: ColumnProps) {
   const [showArchived, setShowArchived] = useState(false)
   const isDone = column.status === 'done'
 
   const visibleTasks = isDone
-    ? column.tasks.filter(t => !archivedIds.has(t.id))
+    ? column.tasks.filter(t => !t.archived)
     : column.tasks
   const archivedTasks = isDone
-    ? column.tasks.filter(t => archivedIds.has(t.id))
+    ? column.tasks.filter(t => t.archived)
     : []
 
-  const archiveAll = () => {
-    setArchivedIds(new Set(column.tasks.map(t => t.id)))
+  const archiveAll = async () => {
+    const unarchived = column.tasks.filter(t => !t.archived)
+    await Promise.all(unarchived.map(t => api.archiveTask(t.id)))
+    onRefresh?.()
   }
 
   return (

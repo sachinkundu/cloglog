@@ -35,6 +35,13 @@ export const api = {
   getFeatureDocuments: (featureId: string) =>
     fetchJSON<DocumentSummary[]>(`/documents?attached_to_type=feature&attached_to_id=${featureId}`),
 
+  // Tasks
+  archiveTask: (taskId: string) =>
+    fetchJSON(`/tasks/${taskId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ archived: true }),
+    }),
+
   // SSE stream URL (not a fetch — used by EventSource)
   streamUrl: (projectId: string) => `${BASE_URL}/projects/${projectId}/stream`,
 }

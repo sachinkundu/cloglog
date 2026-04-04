@@ -98,6 +98,7 @@ class Task(Base):
     worktree_id: Mapped[_uuid.UUID | None] = mapped_column(default=None)
     position: Mapped[int] = mapped_column(default=0)
     number: Mapped[int] = mapped_column(default=0)
+    archived: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )

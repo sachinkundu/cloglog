@@ -173,6 +173,48 @@ async def test_get_board(client: AsyncClient):
     assert len(backlog["tasks"]) == 2
 
 
+async def test_get_board_includes_testing_column(client: AsyncClient):
+    project = (await client.post("/api/v1/projects", json={"name": "testing-col-test"})).json()
+    resp = await client.get(f"/api/v1/projects/{project['id']}/board")
+    assert resp.status_code == 200
+    data = resp.json()
+    statuses = [c["status"] for c in data["columns"]]
+    assert "testing" in statuses
+    assert statuses.index("testing") == statuses.index("in_progress") + 1
+    assert statuses.index("testing") == statuses.index("review") - 1
+
+
+async def test_archive_task_persists(client: AsyncClient):
+    project = (await client.post("/api/v1/projects", json={"name": "archive-test"})).json()
+    epic = (
+        await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "Epic"})
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
+    task = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "T1"},
+        )
+    ).json()
+
+    # Mark as done then archive
+    await client.patch(f"/api/v1/tasks/{task['id']}", json={"status": "done"})
+    resp = await client.patch(f"/api/v1/tasks/{task['id']}", json={"archived": True})
+    assert resp.status_code == 200
+    assert resp.json()["archived"] is True
+
+    # Verify archived persists through board fetch
+    board = (await client.get(f"/api/v1/projects/{project['id']}/board")).json()
+    done_col = next(c for c in board["columns"] if c["status"] == "done")
+    archived_task = next(t for t in done_col["tasks"] if t["id"] == task["id"])
+    assert archived_task["archived"] is True
+
+
 # --- Import endpoint ---
 
 

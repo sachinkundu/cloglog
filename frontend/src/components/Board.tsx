@@ -9,9 +9,10 @@ interface BoardProps {
   backlog: BacklogEpic[]
   onTaskClick: (taskId: string) => void
   onItemClick: (type: 'epic' | 'feature' | 'task', id: string) => void
+  onRefresh?: () => void
 }
 
-export function Board({ board, backlog, onTaskClick, onItemClick }: BoardProps) {
+export function Board({ board, backlog, onTaskClick, onItemClick, onRefresh }: BoardProps) {
   const flowColumns = board.columns.filter(col => col.status !== 'backlog')
 
   return (
@@ -29,7 +30,7 @@ export function Board({ board, backlog, onTaskClick, onItemClick }: BoardProps) 
           <BacklogTree backlog={backlog} onItemClick={onItemClick} />
         </div>
         {flowColumns.map(col => (
-          <Column key={col.status} column={col} onTaskClick={onTaskClick} />
+          <Column key={col.status} column={col} onTaskClick={onTaskClick} onRefresh={onRefresh} />
         ))}
       </div>
     </div>

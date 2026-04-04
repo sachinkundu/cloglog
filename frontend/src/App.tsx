@@ -24,7 +24,7 @@ export default function App() {
 
   const selectedProjectId = projectId ?? null
   const { projects, loading: projectsLoading } = useProjects()
-  const { board, backlog, worktrees, loading: boardLoading } = useBoard(selectedProjectId)
+  const { board, backlog, worktrees, loading: boardLoading, refetch } = useBoard(selectedProjectId)
 
   const detail = useMemo<DetailState>(() => {
     if (!selectedProjectId) return null
@@ -80,6 +80,7 @@ export default function App() {
           backlog={backlog}
           onTaskClick={handleTaskClick}
           onItemClick={openDetail}
+          onRefresh={refetch}
         />
       )}
 

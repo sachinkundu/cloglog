@@ -23,6 +23,7 @@
 .column-dot.col-backlog { background: var(--col-backlog); }
 .column-dot.col-assigned { background: var(--col-assigned); }
 .column-dot.col-in_progress { background: var(--col-in-progress); }
+.column-dot.col-testing { background: var(--col-testing); }
 .column-dot.col-review { background: var(--col-review); }
 .column-dot.col-done { background: var(--col-done); }
 .column-dot.col-blocked { background: var(--col-blocked); }

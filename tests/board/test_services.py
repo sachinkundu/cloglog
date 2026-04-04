@@ -101,6 +101,28 @@ async def test_rollup_feature_in_review(service: BoardService, db_session: Async
     assert feature.status == "review"
 
 
+async def test_rollup_feature_testing_counts_as_in_progress(
+    service: BoardService, db_session: AsyncSession
+):
+    project, _ = await service.create_project("rollup-testing-test", "", "")
+    epic = Epic(project_id=project.id, title="Epic", position=0)
+    db_session.add(epic)
+    await db_session.flush()
+
+    feature = Feature(epic_id=epic.id, title="Feature", position=0)
+    db_session.add(feature)
+    await db_session.flush()
+
+    t1 = Task(feature_id=feature.id, title="T1", status="testing", position=0)
+    t2 = Task(feature_id=feature.id, title="T2", status="done", position=1)
+    db_session.add_all([t1, t2])
+    await db_session.commit()
+
+    await service.recompute_rollup(feature.id)
+    await db_session.refresh(feature)
+    assert feature.status == "in_progress"
+
+
 # --- Import ---
 
 

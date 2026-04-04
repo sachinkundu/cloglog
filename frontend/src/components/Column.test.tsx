@@ -4,7 +4,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { Column } from './Column'
 import type { BoardColumn } from '../api/types'
 
-const makeTask = (id: string, title: string, status: string) => ({
+const makeTask = (id: string, title: string, status: string, archived = false) => ({
   id,
   feature_id: 'f1',
   title,
@@ -14,6 +14,7 @@ const makeTask = (id: string, title: string, status: string) => ({
   worktree_id: null,
   position: 0,
   number: 1,
+  archived,
   created_at: '',
   updated_at: '',
   epic_title: 'Epic',
@@ -26,6 +27,12 @@ describe('Column', () => {
     const column: BoardColumn = { status: 'in_progress', tasks: [] }
     render(<Column column={column} onTaskClick={vi.fn()} />)
     expect(screen.getByText('In Progress')).toBeInTheDocument()
+  })
+
+  it('renders Testing label for testing status', () => {
+    const column: BoardColumn = { status: 'testing', tasks: [] }
+    render(<Column column={column} onTaskClick={vi.fn()} />)
+    expect(screen.getByText('Testing')).toBeInTheDocument()
   })
 
   it('falls back to raw status for unknown statuses', () => {
@@ -91,32 +98,46 @@ describe('Column', () => {
     expect(screen.queryByText('Archive')).not.toBeInTheDocument()
   })
 
-  it('archives done tasks and shows collapsed archived section', async () => {
-    const user = userEvent.setup()
+  it('separates archived and non-archived done tasks', () => {
     const column: BoardColumn = {
       status: 'done',
-      tasks: [makeTask('t1', 'Done Task', 'done')],
+      tasks: [
+        makeTask('t1', 'Active Task', 'done', false),
+        makeTask('t2', 'Hidden Task', 'done', true),
+      ],
     }
     render(<Column column={column} onTaskClick={vi.fn()} />)
-
-    await user.click(screen.getByText('Archive'))
-    // Task should be hidden from main list
-    expect(screen.queryByText('Done Task')).not.toBeInTheDocument()
-    // Archived section should appear
+    expect(screen.getByText('Active Task')).toBeInTheDocument()
+    expect(screen.queryByText('Hidden Task')).not.toBeInTheDocument()
     expect(screen.getByText('Archived (1)')).toBeInTheDocument()
   })
 
-  it('expands archived section to show strikethrough tasks', async () => {
+  it('expands archived section to show archived tasks', async () => {
     const user = userEvent.setup()
     const column: BoardColumn = {
       status: 'done',
-      tasks: [makeTask('t1', 'Done Task', 'done')],
+      tasks: [makeTask('t1', 'Hidden Task', 'done', true)],
     }
     render(<Column column={column} onTaskClick={vi.fn()} />)
 
-    await user.click(screen.getByText('Archive'))
     await user.click(screen.getByText('Archived (1)'))
-    // Task should now be visible again in archived section
-    expect(screen.getByText('Done Task')).toBeInTheDocument()
+    expect(screen.getByText('Hidden Task')).toBeInTheDocument()
+  })
+
+  it('calls API and onRefresh when archiving', async () => {
+    const user = userEvent.setup()
+    const { api } = await import('../api/client')
+    const archiveSpy = vi.spyOn(api, 'archiveTask').mockResolvedValue({})
+    const onRefresh = vi.fn()
+    const column: BoardColumn = {
+      status: 'done',
+      tasks: [makeTask('t1', 'Done Task', 'done', false)],
+    }
+    render(<Column column={column} onTaskClick={vi.fn()} onRefresh={onRefresh} />)
+
+    await user.click(screen.getByText('Archive'))
+    expect(archiveSpy).toHaveBeenCalledWith('t1')
+    expect(onRefresh).toHaveBeenCalled()
+    archiveSpy.mockRestore()
   })
 })

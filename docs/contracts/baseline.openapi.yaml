@@ -1334,6 +1334,9 @@ components:
         number:
           type: integer
           title: Number
+        archived:
+          type: boolean
+          title: Archived
         created_at:
           type: string
           format: date-time
@@ -1365,6 +1368,7 @@ components:
       - worktree_id
       - position
       - number
+      - archived
       - created_at
       - updated_at
       title: TaskCard
@@ -1463,6 +1467,9 @@ components:
         number:
           type: integer
           title: Number
+        archived:
+          type: boolean
+          title: Archived
         created_at:
           type: string
           format: date-time
@@ -1482,6 +1489,7 @@ components:
       - worktree_id
       - position
       - number
+      - archived
       - created_at
       - updated_at
       title: TaskResponse
@@ -1518,6 +1526,11 @@ components:
           - type: integer
           - type: 'null'
           title: Position
+        archived:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Archived
       type: object
       title: TaskUpdate
     UpdateTaskStatusRequest:

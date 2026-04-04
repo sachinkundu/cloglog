@@ -420,14 +420,14 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Number */
+            number: number;
             /** Title */
             title: string;
             /** Status */
             status: string;
             /** Priority */
             priority: string;
-            /** Number */
-            number?: number;
         };
         /** BoardColumn */
         BoardColumn: {
@@ -575,13 +575,13 @@ export interface components {
             position: number;
             /** Color */
             color: string;
+            /** Number */
+            number: number;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
-            /** Number */
-            number?: number;
         };
         /** FeatureCreate */
         FeatureCreate: {
@@ -618,13 +618,13 @@ export interface components {
             status: string;
             /** Position */
             position: number;
+            /** Number */
+            number: number;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
-            /** Number */
-            number?: number;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -829,6 +829,10 @@ export interface components {
             worktree_id: string | null;
             /** Position */
             position: number;
+            /** Number */
+            number: number;
+            /** Archived */
+            archived: boolean;
             /**
              * Created At
              * Format: date-time
@@ -854,8 +858,6 @@ export interface components {
              * @default
              */
             epic_color: string;
-            /** Number */
-            number?: number;
         };
         /** TaskCounts */
         TaskCounts: {
@@ -924,6 +926,10 @@ export interface components {
             worktree_id: string | null;
             /** Position */
             position: number;
+            /** Number */
+            number: number;
+            /** Archived */
+            archived: boolean;
             /**
              * Created At
              * Format: date-time
@@ -949,6 +955,8 @@ export interface components {
             worktree_id?: string | null;
             /** Position */
             position?: number | null;
+            /** Archived */
+            archived?: boolean | null;
         };
         /** UpdateTaskStatusRequest */
         UpdateTaskStatusRequest: {

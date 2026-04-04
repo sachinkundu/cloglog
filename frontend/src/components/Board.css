@@ -12,3 +12,11 @@
   overflow-x: auto;
   flex: 1;
 }
+
+.board-backlog {
+  width: 280px;
+  min-width: 280px;
+  border-right: 1px solid var(--border, #2a2a4a);
+  padding: 12px;
+  overflow-y: auto;
+}

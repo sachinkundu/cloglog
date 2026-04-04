@@ -24,6 +24,7 @@ const mockBoard: BoardResponse = {
           updated_at: '',
           epic_title: 'Epic A',
           feature_title: 'Feature A',
+          epic_color: '#7c3aed',
         },
       ],
     },
@@ -43,6 +44,7 @@ const mockBoard: BoardResponse = {
           updated_at: '',
           epic_title: 'Epic B',
           feature_title: 'Feature B',
+          epic_color: '#2563eb',
         },
       ],
     },
@@ -57,35 +59,44 @@ const mockBoard: BoardResponse = {
 
 describe('Board', () => {
   it('renders the board header with project name', () => {
-    render(<Board board={mockBoard} onTaskClick={vi.fn()} />)
+    render(<Board board={mockBoard} backlog={[]} onTaskClick={vi.fn()} onItemClick={vi.fn()} />)
     expect(screen.getByText('Test Project')).toBeInTheDocument()
   })
 
-  it('renders all columns', () => {
-    render(<Board board={mockBoard} onTaskClick={vi.fn()} />)
+  it('renders backlog column and flow columns', () => {
+    render(<Board board={mockBoard} backlog={[]} onTaskClick={vi.fn()} onItemClick={vi.fn()} />)
     expect(screen.getByText('Backlog')).toBeInTheDocument()
     expect(screen.getByText('In Progress')).toBeInTheDocument()
     expect(screen.getByText('Done')).toBeInTheDocument()
   })
 
-  it('renders tasks inside their columns', () => {
-    render(<Board board={mockBoard} onTaskClick={vi.fn()} />)
-    expect(screen.getByText('Task One')).toBeInTheDocument()
+  it('renders flow column tasks (not backlog tasks as cards)', () => {
+    render(<Board board={mockBoard} backlog={[]} onTaskClick={vi.fn()} onItemClick={vi.fn()} />)
+    // Task Two is in in_progress column, should render as a card
     expect(screen.getByText('Task Two')).toBeInTheDocument()
   })
 
-  it('calls onTaskClick when a task card is clicked', async () => {
+  it('calls onTaskClick when a flow column task card is clicked', async () => {
     const user = userEvent.setup()
     const onTaskClick = vi.fn()
-    render(<Board board={mockBoard} onTaskClick={onTaskClick} />)
+    render(<Board board={mockBoard} backlog={[]} onTaskClick={onTaskClick} onItemClick={vi.fn()} />)
 
-    await user.click(screen.getByText('Task One'))
-    expect(onTaskClick).toHaveBeenCalledWith('t1')
+    await user.click(screen.getByText('Task Two'))
+    expect(onTaskClick).toHaveBeenCalledWith('t2')
   })
 
   it('displays task stats in header', () => {
-    render(<Board board={mockBoard} onTaskClick={vi.fn()} />)
+    render(<Board board={mockBoard} backlog={[]} onTaskClick={vi.fn()} onItemClick={vi.fn()} />)
     expect(screen.getByText(/2 tasks/)).toBeInTheDocument()
     expect(screen.getByText(/0 done/)).toBeInTheDocument()
+  })
+
+  it('shows backlog task count from board data', () => {
+    render(<Board board={mockBoard} backlog={[]} onTaskClick={vi.fn()} onItemClick={vi.fn()} />)
+    // The backlog column should exist with its count
+    const backlogSection = document.querySelector('.board-backlog')
+    expect(backlogSection).toBeTruthy()
+    const countEl = backlogSection!.querySelector('.column-count')
+    expect(countEl?.textContent).toBe('1')
   })
 })

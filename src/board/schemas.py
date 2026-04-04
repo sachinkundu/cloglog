@@ -62,6 +62,7 @@ class EpicResponse(BaseModel):
     context_description: str
     status: str
     position: int
+    color: str
     created_at: datetime
 
 

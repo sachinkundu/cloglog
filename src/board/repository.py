@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -45,6 +45,12 @@ class BoardRepository:
 
     # --- Epic ---
 
+    async def count_epics(self, project_id: UUID) -> int:
+        result = await self._session.execute(
+            select(func.count()).select_from(Epic).where(Epic.project_id == project_id)
+        )
+        return result.scalar_one()
+
     async def create_epic(
         self,
         project_id: UUID,
@@ -53,6 +59,7 @@ class BoardRepository:
         bounded_context: str,
         context_description: str,
         position: int,
+        color: str = "",
     ) -> Epic:
         epic = Epic(
             project_id=project_id,
@@ -61,6 +68,7 @@ class BoardRepository:
             bounded_context=bounded_context,
             context_description=context_description,
             position=position,
+            color=color,
         )
         self._session.add(epic)
         await self._session.commit()

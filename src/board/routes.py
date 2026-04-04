@@ -25,7 +25,7 @@ from src.board.schemas import (
     TaskResponse,
     TaskUpdate,
 )
-from src.board.services import BoardService
+from src.board.services import EPIC_COLOR_PALETTE, BoardService
 from src.shared.database import get_session
 
 router = APIRouter()
@@ -78,6 +78,8 @@ async def create_epic(project_id: UUID, body: EpicCreate, service: ServiceDep) -
     project = await service._repo.get_project(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
+    existing_count = await service._repo.count_epics(project_id)
+    color = EPIC_COLOR_PALETTE[existing_count % len(EPIC_COLOR_PALETTE)]
     epic = await service._repo.create_epic(
         project_id,
         body.title,
@@ -85,6 +87,7 @@ async def create_epic(project_id: UUID, body: EpicCreate, service: ServiceDep) -
         body.bounded_context,
         body.context_description,
         body.position,
+        color=color,
     )
     return EpicResponse.model_validate(epic)
 

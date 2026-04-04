@@ -42,6 +42,7 @@ class Epic(Base):
     context_description: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(20), default="planned")
     position: Mapped[int] = mapped_column(default=0)
+    color: Mapped[str] = mapped_column(String(7), default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )

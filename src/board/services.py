@@ -10,6 +10,19 @@ from src.board.models import Project
 from src.board.repository import BoardRepository
 from src.board.schemas import ImportPlan
 
+EPIC_COLOR_PALETTE = [
+    "#7c3aed",  # purple
+    "#0ea5e9",  # cyan
+    "#f59e0b",  # amber
+    "#10b981",  # emerald
+    "#ef4444",  # red
+    "#ec4899",  # pink
+    "#6366f1",  # indigo
+    "#14b8a6",  # teal
+    "#f97316",  # orange
+    "#8b5cf6",  # violet
+]
+
 
 class BoardService:
     def __init__(self, repo: BoardRepository) -> None:
@@ -86,7 +99,9 @@ class BoardService:
         features_created = 0
         tasks_created = 0
 
+        existing_count = await self._repo.count_epics(project_id)
         for epic_pos, epic_data in enumerate(plan.epics):
+            color = EPIC_COLOR_PALETTE[(existing_count + epic_pos) % len(EPIC_COLOR_PALETTE)]
             epic = await self._repo.create_epic(
                 project_id=project_id,
                 title=epic_data.title,
@@ -94,6 +109,7 @@ class BoardService:
                 bounded_context=epic_data.bounded_context,
                 context_description="",
                 position=epic_pos,
+                color=color,
             )
             epics_created += 1
 

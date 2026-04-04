@@ -176,6 +176,33 @@ async def test_get_board(client: AsyncClient):
 # --- Import endpoint ---
 
 
+async def test_create_epic_auto_assigns_color(client: AsyncClient):
+    project = (await client.post("/api/v1/projects", json={"name": "color-test"})).json()
+    epic = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics",
+            json={"title": "Epic 1"},
+        )
+    ).json()
+    assert "color" in epic
+    assert epic["color"].startswith("#")
+    assert len(epic["color"]) == 7
+
+
+async def test_epics_get_distinct_colors(client: AsyncClient):
+    project = (await client.post("/api/v1/projects", json={"name": "multi-color"})).json()
+    colors = []
+    for i in range(4):
+        epic = (
+            await client.post(
+                f"/api/v1/projects/{project['id']}/epics",
+                json={"title": f"Epic {i}"},
+            )
+        ).json()
+        colors.append(epic["color"])
+    assert len(set(colors)) == 4
+
+
 async def test_import_plan(client: AsyncClient):
     project = (await client.post("/api/v1/projects", json={"name": "import-test"})).json()
     plan = {

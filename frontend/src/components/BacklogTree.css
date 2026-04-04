@@ -35,10 +35,33 @@
   width: 12px;
 }
 
-.backlog-count {
-  color: var(--text-muted, #888);
-  font-size: 11px;
+.seg-progress {
   margin-left: auto;
+  width: 48px;
+  flex-shrink: 0;
+}
+
+.seg-bar {
+  height: 4px;
+  background: var(--surface, #333);
+  border-radius: 2px;
+  display: flex;
+  overflow: hidden;
+}
+
+.seg-done {
+  background: var(--active, #10b981);
+  height: 100%;
+}
+
+.seg-active {
+  background: var(--warning, #f59e0b);
+  height: 100%;
+}
+
+.seg-blocked {
+  background: var(--danger, #ef4444);
+  height: 100%;
 }
 
 .backlog-feature {

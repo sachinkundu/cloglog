@@ -1,4 +1,4 @@
-.PHONY: help install test test-board test-agent test-document test-gateway test-e2e lint typecheck coverage quality run-backend
+.PHONY: help install test test-board test-agent test-document test-gateway test-e2e lint typecheck coverage contract-check quality run-backend
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -38,6 +38,13 @@ typecheck: ## Run type checker
 coverage: ## Run tests with coverage report
 	uv run pytest tests/ --cov=src --cov-report=term-missing --cov-fail-under=80
 
+contract-check: ## Validate backend matches API contract
+	@if ls docs/contracts/*.openapi.yaml 1>/dev/null 2>&1; then \
+		uv run python scripts/check-contract.py; \
+	else \
+		echo "  No contract files, skipping"; \
+	fi
+
 quality: ## Run full quality gate (lint + typecheck + test + coverage)
 	@echo "── Backend ─────────────────────────────"
 	@echo ""
@@ -49,6 +56,9 @@ quality: ## Run full quality gate (lint + typecheck + test + coverage)
 	@echo ""
 	@echo "  Tests + Coverage:"
 	@uv run pytest tests/ --cov=src --cov-report=term-missing --cov-fail-under=80 -q 2>&1 | tail -5
+	@echo ""
+	@echo "  Contract:"
+	@$(MAKE) --no-print-directory contract-check && echo "    compliant          ✓" || (echo "    FAILED ✗" && exit 1)
 	@echo ""
 	@echo "── Quality gate: PASSED ────────────────"
 

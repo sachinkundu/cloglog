@@ -47,6 +47,10 @@ export class CloglogClient {
       throw new Error(`cloglog API error: ${response.status} ${text}`)
     }
 
+    if (response.status === 204 || response.headers.get('content-length') === '0') {
+      return { ok: true }
+    }
+
     return response.json()
   }
 }

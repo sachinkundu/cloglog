@@ -22,6 +22,9 @@ class Project(Base):
     repo_url: Mapped[str] = mapped_column(String(500), default="")
     api_key_hash: Mapped[str] = mapped_column(String(255), default="")
     status: Mapped[str] = mapped_column(String(20), default="active")
+    next_epic_num: Mapped[int] = mapped_column(default=1)
+    next_feature_num: Mapped[int] = mapped_column(default=1)
+    next_task_num: Mapped[int] = mapped_column(default=1)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )

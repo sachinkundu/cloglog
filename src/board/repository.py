@@ -7,7 +7,6 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
-from sqlalchemy.sql.functions import coalesce
 
 from src.board.models import Epic, Feature, Project, Task
 
@@ -53,29 +52,31 @@ class BoardRepository:
         return result.scalar_one()
 
     async def next_epic_number(self, project_id: UUID) -> int:
-        result = await self._session.execute(
-            select(coalesce(func.max(Epic.number), 0)).where(Epic.project_id == project_id)
-        )
-        return result.scalar_one() + 1
+        """Get and increment the monotonic epic counter on the project."""
+        project = await self._session.get(Project, project_id)
+        assert project is not None
+        num = project.next_epic_num
+        project.next_epic_num = num + 1
+        await self._session.flush()
+        return num
 
     async def next_feature_number(self, project_id: UUID) -> int:
-        result = await self._session.execute(
-            select(coalesce(func.max(Feature.number), 0))
-            .select_from(Feature)
-            .join(Epic, Feature.epic_id == Epic.id)
-            .where(Epic.project_id == project_id)
-        )
-        return result.scalar_one() + 1
+        """Get and increment the monotonic feature counter on the project."""
+        project = await self._session.get(Project, project_id)
+        assert project is not None
+        num = project.next_feature_num
+        project.next_feature_num = num + 1
+        await self._session.flush()
+        return num
 
     async def next_task_number(self, project_id: UUID) -> int:
-        result = await self._session.execute(
-            select(coalesce(func.max(Task.number), 0))
-            .select_from(Task)
-            .join(Feature, Task.feature_id == Feature.id)
-            .join(Epic, Feature.epic_id == Epic.id)
-            .where(Epic.project_id == project_id)
-        )
-        return result.scalar_one() + 1
+        """Get and increment the monotonic task counter on the project."""
+        project = await self._session.get(Project, project_id)
+        assert project is not None
+        num = project.next_task_num
+        project.next_task_num = num + 1
+        await self._session.flush()
+        return num
 
     async def create_epic(
         self,

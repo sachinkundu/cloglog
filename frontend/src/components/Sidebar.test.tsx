@@ -76,4 +76,123 @@ describe('Sidebar', () => {
     expect(screen.getByText('wt-backend')).toBeInTheDocument()
     expect(screen.getByText('wt-frontend')).toBeInTheDocument()
   })
+
+  it('shows project stats for the selected project', () => {
+    render(
+      <MemoryRouter>
+        <Sidebar
+          projects={mockProjects}
+          selectedProjectId="p1"
+          worktrees={mockWorktrees}
+          boardStats={{ total_tasks: 10, done_count: 3 }}
+        />
+      </MemoryRouter>
+    )
+    expect(screen.getByText('2 agents · 3/10 done')).toBeInTheDocument()
+  })
+
+  it('does not show stats when no board data', () => {
+    render(
+      <MemoryRouter>
+        <Sidebar
+          projects={mockProjects}
+          selectedProjectId="p1"
+          worktrees={mockWorktrees}
+        />
+      </MemoryRouter>
+    )
+    // No stats line should render
+    expect(screen.queryByText(/done/)).not.toBeInTheDocument()
+  })
+
+  it('applies pulse class to online worktree dots', () => {
+    render(
+      <MemoryRouter>
+        <Sidebar projects={mockProjects} selectedProjectId="p1" worktrees={mockWorktrees} />
+      </MemoryRouter>
+    )
+    // wt-backend is online — its dot should have the pulse class
+    const backendItem = screen.getByText('wt-backend').closest('.worktree-item')
+    const dot = backendItem!.querySelector('.status-dot')
+    expect(dot).toHaveClass('pulse')
+
+    // wt-frontend is offline — no pulse
+    const frontendItem = screen.getByText('wt-frontend').closest('.worktree-item')
+    const offlineDot = frontendItem!.querySelector('.status-dot')
+    expect(offlineDot).not.toHaveClass('pulse')
+  })
+
+  it('shows green project-health dot when agents are online and tasks progressing', () => {
+    const onlineWorktrees: Worktree[] = [
+      { id: 'wt1', project_id: 'p1', name: 'wt-1', worktree_path: '/tmp', branch_name: 'main', status: 'online', current_task_id: 't1', last_heartbeat: null, created_at: '' },
+    ]
+    render(
+      <MemoryRouter>
+        <Sidebar
+          projects={mockProjects}
+          selectedProjectId="p1"
+          worktrees={onlineWorktrees}
+          boardStats={{ total_tasks: 5, done_count: 2 }}
+        />
+      </MemoryRouter>
+    )
+    const button = screen.getByText('Alpha').closest('button')
+    const dot = button!.querySelector('.project-health')
+    expect(dot).toHaveClass('health-green')
+  })
+
+  it('shows yellow project-health dot when agents online but no tasks progressing', () => {
+    const onlineWorktrees: Worktree[] = [
+      { id: 'wt1', project_id: 'p1', name: 'wt-1', worktree_path: '/tmp', branch_name: 'main', status: 'online', current_task_id: null, last_heartbeat: null, created_at: '' },
+    ]
+    render(
+      <MemoryRouter>
+        <Sidebar
+          projects={mockProjects}
+          selectedProjectId="p1"
+          worktrees={onlineWorktrees}
+          boardStats={{ total_tasks: 5, done_count: 0 }}
+        />
+      </MemoryRouter>
+    )
+    const button = screen.getByText('Alpha').closest('button')
+    const dot = button!.querySelector('.project-health')
+    expect(dot).toHaveClass('health-yellow')
+  })
+
+  it('shows red project-health dot when no agents are online', () => {
+    const offlineWorktrees: Worktree[] = [
+      { id: 'wt1', project_id: 'p1', name: 'wt-1', worktree_path: '/tmp', branch_name: 'main', status: 'offline', current_task_id: null, last_heartbeat: null, created_at: '' },
+    ]
+    render(
+      <MemoryRouter>
+        <Sidebar
+          projects={mockProjects}
+          selectedProjectId="p1"
+          worktrees={offlineWorktrees}
+          boardStats={{ total_tasks: 5, done_count: 0 }}
+        />
+      </MemoryRouter>
+    )
+    const button = screen.getByText('Alpha').closest('button')
+    const dot = button!.querySelector('.project-health')
+    expect(dot).toHaveClass('health-red')
+  })
+
+  it('does not show project-health dot for unselected projects', () => {
+    render(
+      <MemoryRouter>
+        <Sidebar
+          projects={mockProjects}
+          selectedProjectId="p1"
+          worktrees={mockWorktrees}
+          boardStats={{ total_tasks: 5, done_count: 2 }}
+        />
+      </MemoryRouter>
+    )
+    // Beta (p2) is not selected — should not have a health dot
+    const betaButton = screen.getByText('Beta').closest('button')
+    const dot = betaButton!.querySelector('.project-health')
+    expect(dot).toBeNull()
+  })
 })

@@ -2,13 +2,26 @@ import { useNavigate } from 'react-router-dom'
 import type { Project, Worktree } from '../api/types'
 import './Sidebar.css'
 
+interface BoardStats {
+  total_tasks: number
+  done_count: number
+}
+
 interface SidebarProps {
   projects: Project[]
   selectedProjectId: string | null
   worktrees: Worktree[]
+  boardStats?: BoardStats | null
 }
 
-export function Sidebar({ projects, selectedProjectId, worktrees }: SidebarProps) {
+function getProjectHealth(worktrees: Worktree[], boardStats: BoardStats | null | undefined): 'green' | 'yellow' | 'red' {
+  const hasOnlineAgents = worktrees.some(wt => wt.status === 'online')
+  if (!hasOnlineAgents) return 'red'
+  const hasTasksProgressing = worktrees.some(wt => wt.current_task_id !== null)
+  return hasTasksProgressing ? 'green' : 'yellow'
+}
+
+export function Sidebar({ projects, selectedProjectId, worktrees, boardStats }: SidebarProps) {
   const navigate = useNavigate()
 
   return (
@@ -26,9 +39,18 @@ export function Sidebar({ projects, selectedProjectId, worktrees }: SidebarProps
                 className={`project-item ${p.id === selectedProjectId ? 'selected' : ''}`}
                 onClick={() => navigate(`/projects/${p.id}`)}
               >
-                <span className={`status-dot ${p.status}`} />
+                {p.id === selectedProjectId && boardStats ? (
+                  <span className={`status-dot project-health health-${getProjectHealth(worktrees, boardStats)}`} />
+                ) : (
+                  <span className={`status-dot ${p.status}`} />
+                )}
                 <span className="project-name">{p.name}</span>
               </button>
+              {p.id === selectedProjectId && boardStats && (
+                <div className="project-stats">
+                  {worktrees.length} agent{worktrees.length !== 1 ? 's' : ''} · {boardStats.done_count}/{boardStats.total_tasks} done
+                </div>
+              )}
             </li>
           ))}
         </ul>

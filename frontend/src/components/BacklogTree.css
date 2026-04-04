@@ -1,0 +1,83 @@
+.backlog-tree {
+  overflow-y: auto;
+}
+
+.backlog-epic {
+  margin-bottom: 16px;
+}
+
+.backlog-epic-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--surface, #2a2a4a) 80%, transparent);
+  border-left: 3px solid;
+  border-radius: 0 6px 6px 0;
+  margin-bottom: 4px;
+}
+
+.backlog-epic-title {
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.backlog-epic-title:hover {
+  filter: brightness(1.2);
+}
+
+.backlog-toggle {
+  font-size: 10px;
+  color: var(--text-muted, #888);
+  cursor: pointer;
+  user-select: none;
+  width: 12px;
+}
+
+.backlog-count {
+  color: var(--text-muted, #888);
+  font-size: 11px;
+  margin-left: auto;
+}
+
+.backlog-feature {
+  margin-left: 12px;
+  margin-bottom: 4px;
+}
+
+.backlog-feature-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+}
+
+.backlog-feature-title {
+  font-size: 12px;
+  color: var(--text, #ccc);
+  cursor: pointer;
+}
+
+.backlog-feature-title:hover {
+  color: var(--text-bright, #fff);
+}
+
+.backlog-tasks {
+  margin-left: 20px;
+}
+
+.backlog-task {
+  padding: 8px 10px;
+  background: var(--surface, #ffffff08);
+  border-radius: 6px;
+  margin-bottom: 4px;
+  border: 1px solid var(--border, #ffffff0a);
+  font-size: 12px;
+  color: var(--text, #ddd);
+  cursor: pointer;
+}
+
+.backlog-task:hover {
+  border-color: var(--text-muted, #888);
+}

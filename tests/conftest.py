@@ -13,6 +13,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+import src.agent.models  # noqa: F401  # Register models with Base.metadata
+import src.board.models  # noqa: F401
+import src.document.models  # noqa: F401
 from src.shared.database import Base, get_session
 
 # Base connection URL (without database name) for creating test databases

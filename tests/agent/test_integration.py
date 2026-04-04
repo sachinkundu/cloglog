@@ -10,6 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.board.models import Epic, Feature, Task
 
 
+def _auth(api_key: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {api_key}"}
+
+
 async def _create_project_via_api(client: AsyncClient) -> dict:
     """Create a project through the API and return the response."""
     resp = await client.post(
@@ -50,10 +54,12 @@ async def _create_task_via_db(db_session: AsyncSession, project_id: str) -> str:
 class TestAgentRegistrationAPI:
     async def test_register_new_agent(self, client: AsyncClient) -> None:
         project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
 
         resp = await client.post(
-            f"/api/v1/agents/register?project_id={project['id']}",
+            "/api/v1/agents/register",
             json={"worktree_path": "/repo/wt-auth", "branch_name": "wt-auth"},
+            headers=h,
         )
         assert resp.status_code == 201
         data = resp.json()
@@ -64,10 +70,12 @@ class TestAgentRegistrationAPI:
 
     async def test_register_reconnects(self, client: AsyncClient) -> None:
         project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
 
         r1 = await client.post(
-            f"/api/v1/agents/register?project_id={project['id']}",
+            "/api/v1/agents/register",
             json={"worktree_path": "/repo/wt-auth", "branch_name": "wt-auth"},
+            headers=h,
         )
         wt_id = r1.json()["worktree_id"]
 
@@ -76,27 +84,30 @@ class TestAgentRegistrationAPI:
 
         # Re-register
         r2 = await client.post(
-            f"/api/v1/agents/register?project_id={project['id']}",
+            "/api/v1/agents/register",
             json={"worktree_path": "/repo/wt-auth", "branch_name": "wt-auth"},
+            headers=h,
         )
         assert r2.status_code == 201
         assert r2.json()["resumed"] is True
         assert r2.json()["worktree_id"] == wt_id
 
-    async def test_register_requires_project_id(self, client: AsyncClient) -> None:
+    async def test_register_requires_auth(self, client: AsyncClient) -> None:
         resp = await client.post(
             "/api/v1/agents/register",
             json={"worktree_path": "/repo/wt-auth"},
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 401
 
 
 class TestHeartbeatAPI:
     async def test_heartbeat_success(self, client: AsyncClient) -> None:
         project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
         reg = await client.post(
-            f"/api/v1/agents/register?project_id={project['id']}",
+            "/api/v1/agents/register",
             json={"worktree_path": "/repo/wt-auth", "branch_name": "wt-auth"},
+            headers=h,
         )
         wt_id = reg.json()["worktree_id"]
 
@@ -114,12 +125,14 @@ class TestTaskLifecycleAPI:
     async def test_full_task_lifecycle(self, client: AsyncClient, db_session: AsyncSession) -> None:
         """Full flow: register → start task → complete task."""
         project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
         task_id = await _create_task_via_db(db_session, project["id"])
 
         # Register
         reg = await client.post(
-            f"/api/v1/agents/register?project_id={project['id']}",
+            "/api/v1/agents/register",
             json={"worktree_path": "/repo/wt-auth", "branch_name": "wt-auth"},
+            headers=h,
         )
         wt_id = reg.json()["worktree_id"]
 
@@ -154,11 +167,13 @@ class TestTaskLifecycleAPI:
 
     async def test_update_task_status(self, client: AsyncClient, db_session: AsyncSession) -> None:
         project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
         task_id = await _create_task_via_db(db_session, project["id"])
 
         reg = await client.post(
-            f"/api/v1/agents/register?project_id={project['id']}",
+            "/api/v1/agents/register",
             json={"worktree_path": "/repo/wt-auth", "branch_name": "wt-auth"},
+            headers=h,
         )
         wt_id = reg.json()["worktree_id"]
 
@@ -179,15 +194,18 @@ class TestTaskLifecycleAPI:
 class TestWorktreeListAPI:
     async def test_list_worktrees(self, client: AsyncClient) -> None:
         project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
 
         # Register two worktrees
         await client.post(
-            f"/api/v1/agents/register?project_id={project['id']}",
+            "/api/v1/agents/register",
             json={"worktree_path": "/repo/wt-auth", "branch_name": "wt-auth"},
+            headers=h,
         )
         await client.post(
-            f"/api/v1/agents/register?project_id={project['id']}",
+            "/api/v1/agents/register",
             json={"worktree_path": "/repo/wt-api", "branch_name": "wt-api"},
+            headers=h,
         )
 
         resp = await client.get(f"/api/v1/projects/{project['id']}/worktrees")
@@ -201,10 +219,12 @@ class TestWorktreeListAPI:
 class TestUnregisterAPI:
     async def test_unregister(self, client: AsyncClient) -> None:
         project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
 
         reg = await client.post(
-            f"/api/v1/agents/register?project_id={project['id']}",
+            "/api/v1/agents/register",
             json={"worktree_path": "/repo/wt-auth", "branch_name": "wt-auth"},
+            headers=h,
         )
         wt_id = reg.json()["worktree_id"]
 

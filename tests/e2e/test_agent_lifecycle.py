@@ -18,6 +18,10 @@ def _unique_name(prefix: str = "agent-e2e") -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
 
 
+def _auth(api_key: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {api_key}"}
+
+
 async def _setup_project_with_task(client: AsyncClient) -> tuple[dict, str]:
     """Create a project with one task, return (project_dict, task_id)."""
     project = (
@@ -50,10 +54,12 @@ async def _setup_project_with_task(client: AsyncClient) -> tuple[dict, str]:
 
 async def test_agent_register(client: AsyncClient) -> None:
     project, _ = await _setup_project_with_task(client)
+    h = _auth(project["api_key"])
 
     resp = await client.post(
-        f"/api/v1/agents/register?project_id={project['id']}",
+        "/api/v1/agents/register",
         json={"worktree_path": "/repo/wt-auth", "branch_name": "wt-auth"},
+        headers=h,
     )
     assert resp.status_code == 201
     data = resp.json()
@@ -64,13 +70,14 @@ async def test_agent_register(client: AsyncClient) -> None:
 
 async def test_agent_register_resumes_existing(client: AsyncClient) -> None:
     project, _ = await _setup_project_with_task(client)
-    pid = project["id"]
+    h = _auth(project["api_key"])
     wt_path = f"/repo/wt-resume-{uuid.uuid4().hex[:6]}"
 
     # First registration
     r1 = await client.post(
-        f"/api/v1/agents/register?project_id={pid}",
+        "/api/v1/agents/register",
         json={"worktree_path": wt_path, "branch_name": "wt-resume"},
+        headers=h,
     )
     assert r1.status_code == 201
     wt_id = r1.json()["worktree_id"]
@@ -80,8 +87,9 @@ async def test_agent_register_resumes_existing(client: AsyncClient) -> None:
 
     # Re-register same path
     r2 = await client.post(
-        f"/api/v1/agents/register?project_id={pid}",
+        "/api/v1/agents/register",
         json={"worktree_path": wt_path, "branch_name": "wt-resume"},
+        headers=h,
     )
     assert r2.status_code == 201
     assert r2.json()["worktree_id"] == wt_id
@@ -93,10 +101,12 @@ async def test_agent_register_resumes_existing(client: AsyncClient) -> None:
 
 async def test_agent_heartbeat(client: AsyncClient) -> None:
     project, _ = await _setup_project_with_task(client)
+    h = _auth(project["api_key"])
 
     reg = await client.post(
-        f"/api/v1/agents/register?project_id={project['id']}",
+        "/api/v1/agents/register",
         json={"worktree_path": "/repo/wt-hb", "branch_name": "wt-hb"},
+        headers=h,
     )
     wt_id = reg.json()["worktree_id"]
 
@@ -111,10 +121,12 @@ async def test_agent_heartbeat(client: AsyncClient) -> None:
 
 async def test_agent_list_tasks(client: AsyncClient) -> None:
     project, task_id = await _setup_project_with_task(client)
+    h = _auth(project["api_key"])
 
     reg = await client.post(
-        f"/api/v1/agents/register?project_id={project['id']}",
+        "/api/v1/agents/register",
         json={"worktree_path": "/repo/wt-list", "branch_name": "wt-list"},
+        headers=h,
     )
     wt_id = reg.json()["worktree_id"]
 
@@ -126,10 +138,12 @@ async def test_agent_list_tasks(client: AsyncClient) -> None:
 
 async def test_agent_start_and_complete_task(client: AsyncClient) -> None:
     project, task_id = await _setup_project_with_task(client)
+    h = _auth(project["api_key"])
 
     reg = await client.post(
-        f"/api/v1/agents/register?project_id={project['id']}",
+        "/api/v1/agents/register",
         json={"worktree_path": "/repo/wt-lifecycle", "branch_name": "wt-lifecycle"},
+        headers=h,
     )
     wt_id = reg.json()["worktree_id"]
 
@@ -154,10 +168,12 @@ async def test_agent_start_and_complete_task(client: AsyncClient) -> None:
 
 async def test_agent_update_task_status(client: AsyncClient) -> None:
     project, task_id = await _setup_project_with_task(client)
+    h = _auth(project["api_key"])
 
     reg = await client.post(
-        f"/api/v1/agents/register?project_id={project['id']}",
+        "/api/v1/agents/register",
         json={"worktree_path": "/repo/wt-status", "branch_name": "wt-status"},
+        headers=h,
     )
     wt_id = reg.json()["worktree_id"]
 
@@ -179,18 +195,20 @@ async def test_agent_update_task_status(client: AsyncClient) -> None:
 
 async def test_list_project_worktrees(client: AsyncClient) -> None:
     project, _ = await _setup_project_with_task(client)
-    pid = project["id"]
+    h = _auth(project["api_key"])
 
     await client.post(
-        f"/api/v1/agents/register?project_id={pid}",
+        "/api/v1/agents/register",
         json={"worktree_path": "/repo/wt-a", "branch_name": "wt-a"},
+        headers=h,
     )
     await client.post(
-        f"/api/v1/agents/register?project_id={pid}",
+        "/api/v1/agents/register",
         json={"worktree_path": "/repo/wt-b", "branch_name": "wt-b"},
+        headers=h,
     )
 
-    resp = await client.get(f"/api/v1/projects/{pid}/worktrees")
+    resp = await client.get(f"/api/v1/projects/{project['id']}/worktrees")
     assert resp.status_code == 200
     worktrees = resp.json()
     assert len(worktrees) >= 2
@@ -204,10 +222,12 @@ async def test_list_project_worktrees(client: AsyncClient) -> None:
 
 async def test_agent_unregister(client: AsyncClient) -> None:
     project, _ = await _setup_project_with_task(client)
+    h = _auth(project["api_key"])
 
     reg = await client.post(
-        f"/api/v1/agents/register?project_id={project['id']}",
+        "/api/v1/agents/register",
         json={"worktree_path": "/repo/wt-unreg", "branch_name": "wt-unreg"},
+        headers=h,
     )
     wt_id = reg.json()["worktree_id"]
 

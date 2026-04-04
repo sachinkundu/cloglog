@@ -1,0 +1,17 @@
+Complete the MCP server implementation. You are in worktree wt-mcp.
+
+Read CLAUDE.md first for Agent Learnings and Git Identity instructions.
+
+## Current state
+The server already has: register_agent tool, CloglogClient with registerAgent method, basic tests.
+
+## What's missing (from the plan at docs/superpowers/plans/2026-04-02-phase-1-mcp.md)
+
+1. **Heartbeat timer** — 60s interval, starts on register, stops on unregister, survives callback errors
+2. **Remaining tools** — get_my_tasks, start_task, complete_task, update_task_status, add_task_note, attach_document (reads local file), create_tasks, unregister_agent
+3. **Client methods** — add typed methods to CloglogClient for each API call
+4. **Tests** — heartbeat timer tests (fake timers), tool handler tests (mock client)
+
+Follow TDD: write failing tests first, then implement. The plan has exact code.
+
+When done: run tests (cd mcp-server && npx vitest run), commit, push as bot, create PR with Test Report.

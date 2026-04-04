@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agent.repository import AgentRepository
@@ -23,6 +23,7 @@ from src.agent.schemas import (
 )
 from src.agent.services import AgentService
 from src.board.repository import BoardRepository
+from src.gateway.auth import CurrentProject
 from src.shared.database import get_session
 
 router = APIRouter()
@@ -37,11 +38,10 @@ ServiceDep = Annotated[AgentService, Depends(_get_service)]
 
 @router.post("/agents/register", response_model=RegisterResponse, status_code=201)
 async def register_agent(
-    body: RegisterRequest, service: ServiceDep, request: Request
+    body: RegisterRequest, service: ServiceDep, project: CurrentProject
 ) -> dict[str, object]:
-    """Register a worktree agent. Requires project_id from auth context."""
-    project_id = _get_project_id(request)
-    result = await service.register(project_id, body.worktree_path, body.branch_name)
+    """Register a worktree agent. Requires valid API key."""
+    result = await service.register(project.id, body.worktree_path, body.branch_name)
     return result
 
 
@@ -101,20 +101,3 @@ async def unregister_agent(worktree_id: UUID, service: ServiceDep) -> None:
 @router.get("/projects/{project_id}/worktrees", response_model=list[WorktreeResponse])
 async def list_worktrees(project_id: UUID, service: ServiceDep) -> list[dict[str, object]]:
     return await service.get_worktrees_for_project(project_id)
-
-
-def _get_project_id(request: Request) -> UUID:
-    """Extract project_id from request state (set by auth middleware).
-
-    For now, falls back to a query parameter for development.
-    """
-    project_id: object = getattr(request.state, "project_id", None)
-    if isinstance(project_id, UUID):
-        return project_id
-
-    # Fallback: query parameter (dev only)
-    qp = request.query_params.get("project_id")
-    if qp is not None:
-        return UUID(qp)
-
-    raise HTTPException(status_code=400, detail="project_id is required")

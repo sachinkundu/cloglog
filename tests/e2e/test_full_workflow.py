@@ -35,7 +35,8 @@ async def test_full_workflow(client: AsyncClient) -> None:
     assert project["status"] == "active"
 
     # ── 2. Verify auth works (Gateway context) ───────────────
-    me = (await client.get("/api/v1/gateway/me", headers={"X-API-Key": api_key})).json()
+    auth_headers = {"Authorization": f"Bearer {api_key}"}
+    me = (await client.get("/api/v1/gateway/me", headers=auth_headers)).json()
     assert me["id"] == pid
 
     # ── 3. Import plan with epics/features/tasks (Board) ─────
@@ -99,8 +100,9 @@ async def test_full_workflow(client: AsyncClient) -> None:
     # ── 5. Agent registers (Agent context) ───────────────────
     reg = (
         await client.post(
-            f"/api/v1/agents/register?project_id={pid}",
+            "/api/v1/agents/register",
             json={"worktree_path": "/repo/wt-board", "branch_name": "wt-board"},
+            headers=auth_headers,
         )
     ).json()
     wt_id = reg["worktree_id"]

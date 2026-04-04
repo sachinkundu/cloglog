@@ -34,7 +34,10 @@ def create_app() -> FastAPI:
     app.include_router(board_router, prefix="/api/v1")
     app.include_router(gateway_router, prefix="/api/v1")
     app.include_router(sse_router, prefix="/api/v1")
-    # app.include_router(agent_router, prefix="/api/v1")
+
+    from src.agent.routes import router as agent_router
+
+    app.include_router(agent_router, prefix="/api/v1")
 
     from src.document.routes import router as document_router
 

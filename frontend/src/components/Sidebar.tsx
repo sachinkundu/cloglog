@@ -38,7 +38,7 @@ export function Sidebar({ projects, selectedProjectId, onSelectProject, worktree
           <ul className="worktree-list">
             {worktrees.map(wt => (
               <li key={wt.id} className="worktree-item">
-                <span className={`status-dot ${wt.status} ${wt.status === 'active' ? 'pulse' : ''}`} />
+                <span className={`status-dot ${wt.status} ${wt.status === 'online' ? 'pulse' : ''}`} />
                 <span className="worktree-name">{wt.name}</span>
                 <span className="worktree-status">{wt.status}</span>
               </li>

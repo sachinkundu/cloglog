@@ -55,6 +55,16 @@ class AgentRepository:
         )
         return list(result.scalars().all())
 
+    async def get_latest_heartbeat(self, worktree_id: UUID) -> datetime | None:
+        """Get the most recent heartbeat for a worktree's active session."""
+        result = await self._session.execute(
+            select(Session.last_heartbeat)
+            .where(Session.worktree_id == worktree_id)
+            .order_by(Session.last_heartbeat.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def set_worktree_offline(self, worktree_id: UUID) -> None:
         await self._session.execute(
             update(Worktree).where(Worktree.id == worktree_id).values(status="offline")

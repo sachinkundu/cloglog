@@ -81,10 +81,12 @@ class WorktreeResponse(BaseModel):
 
     id: UUID
     project_id: UUID
+    name: str
     worktree_path: str
     branch_name: str
     status: str
     current_task_id: UUID | None
+    last_heartbeat: datetime | None
     created_at: datetime
 
 

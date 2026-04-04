@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "cloglog": {
+      "command": "node",
+      "args": ["/home/sachin/code/cloglog/mcp-server/dist/index.js"],
+      "env": {
+        "CLOGLOG_URL": "http://localhost:8000",
+        "CLOGLOG_API_KEY": "518b273d7429045608eb0d8ae507051f29c9e8ec6c836ab881881f11b54f72ae"
+      }
+    }
+  }
+}

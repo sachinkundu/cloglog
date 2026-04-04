@@ -76,6 +76,7 @@
 }
 
 .status-dot.active { background: var(--active); }
+.status-dot.online { background: var(--active); }
 .status-dot.paused { background: var(--working); }
 .status-dot.completed { background: var(--text-muted); }
 .status-dot.idle { background: var(--text-muted); }

@@ -213,18 +213,23 @@ class AgentService:
 
     async def get_worktrees_for_project(self, project_id: UUID) -> list[dict[str, object]]:
         worktrees = await self._repo.get_worktrees_for_project(project_id)
-        return [
-            {
-                "id": w.id,
-                "project_id": w.project_id,
-                "worktree_path": w.worktree_path,
-                "branch_name": w.branch_name,
-                "status": w.status,
-                "current_task_id": w.current_task_id,
-                "created_at": w.created_at,
-            }
-            for w in worktrees
-        ]
+        result = []
+        for w in worktrees:
+            last_hb = await self._repo.get_latest_heartbeat(w.id)
+            result.append(
+                {
+                    "id": w.id,
+                    "project_id": w.project_id,
+                    "name": w.branch_name or w.worktree_path.rsplit("/", 1)[-1],
+                    "worktree_path": w.worktree_path,
+                    "branch_name": w.branch_name,
+                    "status": w.status,
+                    "current_task_id": w.current_task_id,
+                    "last_heartbeat": last_hb,
+                    "created_at": w.created_at,
+                }
+            )
+        return result
 
     async def get_worktree(self, worktree_id: UUID) -> dict[str, object] | None:
         w = await self._repo.get_worktree(worktree_id)

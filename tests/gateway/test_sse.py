@@ -14,28 +14,11 @@ from src.shared.events import Event, EventType, event_bus
 
 
 @pytest.mark.asyncio
-async def test_sse_requires_auth(client: AsyncClient) -> None:
-    """SSE endpoint requires a valid API key."""
-    response = await client.get("/api/v1/gateway/events/00000000-0000-0000-0000-000000000000")
-    assert response.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_sse_rejects_wrong_project(client: AsyncClient) -> None:
-    """SSE endpoint rejects requests for a project not matching the API key."""
-    create_resp = await client.post(
-        "/api/v1/projects",
-        json={"name": "sse-wrong-project", "description": "test"},
-    )
-    assert create_resp.status_code == 201
-    api_key = create_resp.json()["api_key"]
-
-    fake_project_id = "00000000-0000-0000-0000-000000000001"
-    response = await client.get(
-        f"/api/v1/gateway/events/{fake_project_id}",
-        headers={"X-API-Key": api_key},
-    )
-    assert response.status_code == 403
+async def test_sse_returns_404_for_unknown_project(client: AsyncClient) -> None:
+    """SSE endpoint returns 404 for a project that doesn't exist."""
+    fake_id = "00000000-0000-0000-0000-000000000000"
+    response = await client.get(f"/api/v1/projects/{fake_id}/stream")
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio

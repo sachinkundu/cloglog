@@ -198,7 +198,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/gateway/events/{project_id}": {
+    "/api/v1/projects/{project_id}/stream": {
         parameters: {
             query?: never;
             header?: never;
@@ -207,9 +207,9 @@ export interface paths {
         };
         /**
          * Stream Events
-         * @description Stream real-time events for a project via SSE.
+         * @description Stream real-time events for a project via SSE. Public endpoint.
          */
-        get: operations["stream_events_api_v1_gateway_events__project_id__get"];
+        get: operations["stream_events_api_v1_projects__project_id__stream_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1479,7 +1479,7 @@ export interface operations {
             };
         };
     };
-    stream_events_api_v1_gateway_events__project_id__get: {
+    stream_events_api_v1_projects__project_id__stream_get: {
         parameters: {
             query?: never;
             header?: never;

@@ -400,13 +400,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProjectResponse'
-  /api/v1/gateway/events/{project_id}:
+  /api/v1/projects/{project_id}/stream:
     get:
       tags:
-      - gateway
+      - sse
       summary: Stream Events
-      description: Stream real-time events for a project via SSE.
-      operationId: stream_events_api_v1_gateway_events__project_id__get
+      description: Stream real-time events for a project via SSE. Public endpoint.
+      operationId: stream_events_api_v1_projects__project_id__stream_get
       parameters:
       - name: project_id
         in: path

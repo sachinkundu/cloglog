@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncGenerator
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
-from src.gateway.auth import CurrentProject
+from src.board.repository import BoardRepository
+from src.shared.database import get_session
 from src.shared.events import Event, event_bus
 
-router = APIRouter(prefix="/gateway", tags=["gateway"])
+router = APIRouter(tags=["sse"])
 
 
 async def _event_generator(
@@ -31,13 +34,15 @@ async def _event_generator(
         event_bus.unsubscribe(project_id, queue)
 
 
-@router.get("/events/{project_id}")
+@router.get("/projects/{project_id}/stream")
 async def stream_events(
     project_id: UUID,
-    project: CurrentProject,
+    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> EventSourceResponse:
-    """Stream real-time events for a project via SSE."""
-    if project.id != project_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this project")
+    """Stream real-time events for a project via SSE. Public endpoint."""
+    repo = BoardRepository(session)
+    project = await repo.get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
 
     return EventSourceResponse(_event_generator(project_id))

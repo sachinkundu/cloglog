@@ -131,6 +131,38 @@ fi
 
 echo "Dependencies installed."
 
+# ── Contract setup ─────────────────────────────────────────
+
+CONTRACTS_DIR="${REPO_ROOT}/docs/contracts"
+CONTRACT_FLAG="${4:-}"  # Optional: explicit contract file path
+
+if [[ -n "$CONTRACT_FLAG" ]]; then
+  CONTRACT_FILE="$CONTRACT_FLAG"
+elif ls "$CONTRACTS_DIR"/*.openapi.yaml 1>/dev/null 2>&1; then
+  # Use the most recently modified contract
+  CONTRACT_FILE="$(ls -t "$CONTRACTS_DIR"/*.openapi.yaml | head -1)"
+else
+  CONTRACT_FILE=""
+fi
+
+if [[ -n "$CONTRACT_FILE" ]]; then
+  echo ""
+  echo "Setting up API contract..."
+
+  # Copy contract into worktree for easy reference
+  cp "$CONTRACT_FILE" "$WORKTREE_DIR/CONTRACT.yaml"
+  echo "  Copied contract: $(basename "$CONTRACT_FILE") → CONTRACT.yaml"
+
+  # Generate TypeScript types for frontend worktrees
+  if [[ "$WORKTREE_NAME" == wt-frontend* ]]; then
+    echo "  Generating TypeScript types from contract..."
+    (cd "$WORKTREE_DIR" && "$REPO_ROOT/scripts/generate-contract-types.sh" "$WORKTREE_DIR/CONTRACT.yaml" "$WORKTREE_DIR/frontend/src/api")
+    echo "  Generated: frontend/src/api/generated-types.ts"
+  fi
+
+  echo "Contract setup complete."
+fi
+
 # ── Generate worktree-specific CLAUDE.md ────────────────────
 
 CLAUDE_MD="$WORKTREE_DIR/CLAUDE.md"
@@ -190,6 +222,38 @@ Run your context tests with: \`${TEST_CMD}\`
 Before any commit, run: \`make quality\`
 
 CLAUDE_EOF
+fi
+
+# Add contract section to CLAUDE.md if a contract exists
+if [[ -n "$CONTRACT_FILE" ]]; then
+  if [[ "$WORKTREE_NAME" == wt-frontend* ]]; then
+    cat >> "$CLAUDE_MD" << 'CONTRACT_EOF'
+
+## API Contract
+
+This wave has a strict API contract at `CONTRACT.yaml`.
+Generated TypeScript types are at `frontend/src/api/generated-types.ts`.
+
+**Rules:**
+- Import ALL API response types from `../api/generated-types.ts` via the re-exports in `../api/types.ts`
+- NEVER hand-write API response interfaces — they come from the OpenAPI contract
+- If you need a field that doesn't exist in the generated types, STOP — the contract must be updated first, not worked around
+- TypeScript compilation will fail if you use wrong field names or types
+CONTRACT_EOF
+  else
+    cat >> "$CLAUDE_MD" << 'CONTRACT_EOF'
+
+## API Contract
+
+This wave has a strict API contract at `CONTRACT.yaml`.
+
+**Rules:**
+- All new/modified endpoints MUST match the contract exactly: path, method, field names, field types, enum values
+- Pydantic response schemas must produce JSON that matches the contract's response schemas
+- Run `make contract-check` before committing to verify compliance
+- If you need to change the API shape, STOP — the contract must be updated first
+CONTRACT_EOF
+  fi
 fi
 
 cat >> "$CLAUDE_MD" << CLAUDE_EOF

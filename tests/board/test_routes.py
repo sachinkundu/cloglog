@@ -597,3 +597,49 @@ async def test_create_epic_emits_event(client: AsyncClient):
         assert event.type == "epic_created"
         assert str(event.project_id) == project["id"]
         assert event.data["title"] == "New Epic"
+
+
+async def test_create_feature_emits_event(client: AsyncClient):
+    """Creating a feature emits a FEATURE_CREATED event."""
+    project = (await client.post("/api/v1/projects", json={"name": "feat-event-test"})).json()
+    epic = (
+        await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "Epic"})
+    ).json()
+
+    with patch("src.board.routes.event_bus.publish", new_callable=AsyncMock) as mock_publish:
+        resp = await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "New Feature"},
+        )
+        assert resp.status_code == 201
+        mock_publish.assert_called_once()
+        event = mock_publish.call_args[0][0]
+        assert event.type == "feature_created"
+        assert str(event.project_id) == project["id"]
+        assert event.data["title"] == "New Feature"
+
+
+async def test_create_task_emits_event(client: AsyncClient):
+    """Creating a task emits a TASK_CREATED event."""
+    project = (await client.post("/api/v1/projects", json={"name": "task-event-test"})).json()
+    epic = (
+        await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "Epic"})
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
+
+    with patch("src.board.routes.event_bus.publish", new_callable=AsyncMock) as mock_publish:
+        resp = await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "New Task"},
+        )
+        assert resp.status_code == 201
+        mock_publish.assert_called_once()
+        event = mock_publish.call_args[0][0]
+        assert event.type == "task_created"
+        assert str(event.project_id) == project["id"]
+        assert event.data["title"] == "New Task"

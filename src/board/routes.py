@@ -96,6 +96,13 @@ async def create_epic(project_id: UUID, body: EpicCreate, service: ServiceDep) -
         color=color,
         number=number,
     )
+    await event_bus.publish(
+        Event(
+            type=EventType.EPIC_CREATED,
+            project_id=project_id,
+            data={"epic_id": str(epic.id), "title": body.title},
+        )
+    )
     return EpicResponse.model_validate(epic)
 
 
@@ -129,6 +136,13 @@ async def create_feature(
     number = await service._repo.next_feature_number(project_id)
     feature = await service._repo.create_feature(
         epic_id, body.title, body.description, body.position, number=number
+    )
+    await event_bus.publish(
+        Event(
+            type=EventType.FEATURE_CREATED,
+            project_id=epic.project_id,
+            data={"feature_id": str(feature.id), "title": body.title},
+        )
     )
     return FeatureResponse.model_validate(feature)
 
@@ -168,6 +182,15 @@ async def create_task(
     number = await service._repo.next_task_number(project_id)
     task = await service._repo.create_task(
         feature_id, body.title, body.description, body.priority, body.position, number=number
+    )
+    epic = await service._repo.get_epic(feature.epic_id)
+    assert epic is not None
+    await event_bus.publish(
+        Event(
+            type=EventType.TASK_CREATED,
+            project_id=epic.project_id,
+            data={"task_id": str(task.id), "title": body.title},
+        )
     )
     return TaskResponse.model_validate(task)
 

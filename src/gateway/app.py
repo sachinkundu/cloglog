@@ -3,8 +3,24 @@
 Composes routes from all bounded contexts into a single app.
 """
 
+import asyncio
+import contextlib
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    from src.gateway.notification_listener import run_notification_listener
+
+    task = asyncio.create_task(run_notification_listener())
+    yield
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
 
 def create_app() -> FastAPI:
@@ -12,6 +28,7 @@ def create_app() -> FastAPI:
         title="cloglog",
         description="Multi-project Kanban dashboard for managing autonomous AI coding agents",
         version="0.1.0",
+        lifespan=lifespan,
     )
 
     app.add_middleware(

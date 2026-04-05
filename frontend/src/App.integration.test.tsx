@@ -15,6 +15,10 @@ vi.mock('./api/client', () => ({
     getTaskDocuments: vi.fn(),
     getTaskNotes: vi.fn(),
     getDocument: vi.fn(),
+    getNotifications: vi.fn(),
+    markNotificationRead: vi.fn(),
+    markAllNotificationsRead: vi.fn(),
+    dismissTaskNotification: vi.fn(),
     streamUrl: vi.fn().mockReturnValue('http://test/stream'),
   },
 }))
@@ -108,6 +112,8 @@ beforeEach(() => {
   mockApi.getWorktrees.mockResolvedValue(worktrees)
   mockApi.getTaskDocuments.mockResolvedValue([])
   mockApi.getTaskNotes.mockResolvedValue([])
+  mockApi.getNotifications.mockResolvedValue([])
+  mockApi.dismissTaskNotification.mockResolvedValue({ dismissed: true })
 })
 
 describe('App integration', () => {

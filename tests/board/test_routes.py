@@ -712,3 +712,28 @@ async def test_delete_task_emits_event(client: AsyncClient):
         assert event.type == "task_deleted"
         assert str(event.project_id) == project["id"]
         assert event.data["task_id"] == task["id"]
+
+
+# --- Notification endpoints ---
+
+
+async def test_get_notifications_returns_unread(client: AsyncClient):
+    """GET /notifications returns unread notifications (empty initially)."""
+    project = (await client.post("/api/v1/projects", json={"name": "notif-test"})).json()
+    resp = await client.get(f"/api/v1/projects/{project['id']}/notifications")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+async def test_mark_notification_read_404(client: AsyncClient):
+    """PATCH /notifications/{id}/read returns 404 for non-existent notification."""
+    resp = await client.patch("/api/v1/notifications/00000000-0000-0000-0000-000000000000/read")
+    assert resp.status_code == 404
+
+
+async def test_mark_all_notifications_read(client: AsyncClient):
+    """POST /notifications/read-all marks all as read."""
+    project = (await client.post("/api/v1/projects", json={"name": "notif-readall"})).json()
+    resp = await client.post(f"/api/v1/projects/{project['id']}/notifications/read-all")
+    assert resp.status_code == 200
+    assert resp.json()["marked_read"] == 0

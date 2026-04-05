@@ -1,4 +1,4 @@
-import type { BacklogEpic, BoardResponse, Document, DocumentSummary, Project, TaskNote, Worktree } from './types'
+import type { AppNotification, BacklogEpic, BoardResponse, Document, DocumentSummary, Project, TaskNote, Worktree } from './types'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api/v1'
 
@@ -42,6 +42,21 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ archived: true }),
     }),
+
+  // Notifications
+  getNotifications: (projectId: string) =>
+    fetchJSON<AppNotification[]>(`/projects/${projectId}/notifications`),
+  markNotificationRead: (notificationId: string) =>
+    fetchJSON<AppNotification>(`/notifications/${notificationId}/read`, { method: 'PATCH' }),
+  markAllNotificationsRead: (projectId: string) =>
+    fetchJSON<{ marked_read: number }>(`/projects/${projectId}/notifications/read-all`, {
+      method: 'POST',
+    }),
+  dismissTaskNotification: (projectId: string, taskId: string) =>
+    fetchJSON<{ dismissed: boolean }>(
+      `/projects/${projectId}/notifications/dismiss-task/${taskId}`,
+      { method: 'POST' },
+    ),
 
   // SSE stream URL (not a fetch — used by EventSource)
   streamUrl: (projectId: string) => `${BASE_URL}/projects/${projectId}/stream`,

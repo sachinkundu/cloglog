@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import type { Project, Worktree } from '../api/types'
+import { NotificationBell } from './NotificationBell'
 import { Sidebar } from './Sidebar'
 import { ThemeToggle } from './ThemeToggle'
 import './Layout.css'
@@ -14,10 +15,11 @@ interface LayoutProps {
   selectedProjectId: string | null
   worktrees: Worktree[]
   boardStats?: BoardStats | null
+  onNavigate?: (type: 'epic' | 'feature' | 'task', id: string) => void
   children: ReactNode
 }
 
-export function Layout({ projects, selectedProjectId, worktrees, boardStats, children }: LayoutProps) {
+export function Layout({ projects, selectedProjectId, worktrees, boardStats, onNavigate, children }: LayoutProps) {
   return (
     <div className="layout">
       <Sidebar
@@ -28,6 +30,9 @@ export function Layout({ projects, selectedProjectId, worktrees, boardStats, chi
       />
       <main className="main-content">
         <div className="main-header">
+          {onNavigate && (
+            <NotificationBell projectId={selectedProjectId} onNavigate={onNavigate} />
+          )}
           <ThemeToggle />
         </div>
         {children}

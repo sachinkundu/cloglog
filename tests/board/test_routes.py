@@ -643,3 +643,72 @@ async def test_create_task_emits_event(client: AsyncClient):
         assert event.type == "task_created"
         assert str(event.project_id) == project["id"]
         assert event.data["title"] == "New Task"
+
+
+async def test_delete_epic_emits_event(client: AsyncClient):
+    """Deleting an epic emits an EPIC_DELETED event."""
+    project = (await client.post("/api/v1/projects", json={"name": "del-epic-test"})).json()
+    epic = (
+        await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "Epic"})
+    ).json()
+
+    with patch("src.board.routes.event_bus.publish", new_callable=AsyncMock) as mock_publish:
+        resp = await client.delete(f"/api/v1/epics/{epic['id']}")
+        assert resp.status_code == 204
+        mock_publish.assert_called_once()
+        event = mock_publish.call_args[0][0]
+        assert event.type == "epic_deleted"
+        assert str(event.project_id) == project["id"]
+        assert event.data["epic_id"] == epic["id"]
+
+
+async def test_delete_feature_emits_event(client: AsyncClient):
+    """Deleting a feature emits a FEATURE_DELETED event."""
+    project = (await client.post("/api/v1/projects", json={"name": "del-feat-test"})).json()
+    epic = (
+        await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "Epic"})
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
+
+    with patch("src.board.routes.event_bus.publish", new_callable=AsyncMock) as mock_publish:
+        resp = await client.delete(f"/api/v1/features/{feature['id']}")
+        assert resp.status_code == 204
+        mock_publish.assert_called_once()
+        event = mock_publish.call_args[0][0]
+        assert event.type == "feature_deleted"
+        assert str(event.project_id) == project["id"]
+        assert event.data["feature_id"] == feature["id"]
+
+
+async def test_delete_task_emits_event(client: AsyncClient):
+    """Deleting a task emits a TASK_DELETED event."""
+    project = (await client.post("/api/v1/projects", json={"name": "del-task-test"})).json()
+    epic = (
+        await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "Epic"})
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
+    task = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "Task"},
+        )
+    ).json()
+
+    with patch("src.board.routes.event_bus.publish", new_callable=AsyncMock) as mock_publish:
+        resp = await client.delete(f"/api/v1/tasks/{task['id']}")
+        assert resp.status_code == 204
+        mock_publish.assert_called_once()
+        event = mock_publish.call_args[0][0]
+        assert event.type == "task_deleted"
+        assert str(event.project_id) == project["id"]
+        assert event.data["task_id"] == task["id"]

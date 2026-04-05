@@ -114,9 +114,20 @@ async def list_epics(project_id: UUID, service: ServiceDep) -> list[EpicResponse
 
 @router.delete("/epics/{epic_id}", status_code=204)
 async def delete_epic(epic_id: UUID, service: ServiceDep) -> None:
+    epic = await service._repo.get_epic(epic_id)
+    if epic is None:
+        raise HTTPException(status_code=404, detail="Epic not found")
+    project_id = epic.project_id
     deleted = await service._repo.delete_epic(epic_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Epic not found")
+    await event_bus.publish(
+        Event(
+            type=EventType.EPIC_DELETED,
+            project_id=project_id,
+            data={"epic_id": str(epic_id)},
+        )
+    )
 
 
 # --- Features ---
@@ -160,9 +171,22 @@ async def list_features(
 
 @router.delete("/features/{feature_id}", status_code=204)
 async def delete_feature(feature_id: UUID, service: ServiceDep) -> None:
+    feature = await service._repo.get_feature(feature_id)
+    if feature is None:
+        raise HTTPException(status_code=404, detail="Feature not found")
+    epic = await service._repo.get_epic(feature.epic_id)
+    assert epic is not None
+    project_id = epic.project_id
     deleted = await service._repo.delete_feature(feature_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Feature not found")
+    await event_bus.publish(
+        Event(
+            type=EventType.FEATURE_DELETED,
+            project_id=project_id,
+            data={"feature_id": str(feature_id)},
+        )
+    )
 
 
 # --- Tasks ---
@@ -231,9 +255,24 @@ async def update_task(task_id: UUID, body: TaskUpdate, service: ServiceDep) -> T
 
 @router.delete("/tasks/{task_id}", status_code=204)
 async def delete_task(task_id: UUID, service: ServiceDep) -> None:
+    task = await service._repo.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    feature = await service._repo.get_feature(task.feature_id)
+    assert feature is not None
+    epic = await service._repo.get_epic(feature.epic_id)
+    assert epic is not None
+    project_id = epic.project_id
     deleted = await service._repo.delete_task(task_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Task not found")
+    await event_bus.publish(
+        Event(
+            type=EventType.TASK_DELETED,
+            project_id=project_id,
+            data={"task_id": str(task_id)},
+        )
+    )
 
 
 @router.get("/tasks/{task_id}/notes")

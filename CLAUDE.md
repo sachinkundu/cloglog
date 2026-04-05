@@ -108,6 +108,7 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 - Backend work requires both unit tests (business logic) and integration tests (API endpoints against real DB).
 - PRs without tests will be rejected in review.
 - **Frontend worktrees need `cd frontend && npm install`** before tests will run — node_modules are not shared across worktrees.
+- **Cross-feature integration tests:** When modifying a component that was recently changed by another feature, write at least one test covering both features together. Check `git log --oneline <file>` to see recent changes. Two features that independently modify the same component can break each other in ways neither feature's tests catch.
 
 ### PR Quality
 - Every PR must include a **Test Report** section showing: what tests were added, test output, coverage.

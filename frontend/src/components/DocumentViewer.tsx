@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Markdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import mermaid from 'mermaid'
 import { api } from '../api/client'
 import type { Document } from '../api/types'
@@ -68,7 +69,7 @@ export function DocumentViewer({ documentId, onClose }: DocumentViewerProps) {
               <h2 className="doc-viewer-title">{doc.title}</h2>
             </div>
             <div className="doc-viewer-content">
-              <Markdown components={{ code: renderCode }}>{doc.content}</Markdown>
+              <Markdown remarkPlugins={[remarkGfm]} components={{ code: renderCode }}>{doc.content}</Markdown>
             </div>
           </>
         )}

@@ -577,3 +577,23 @@ async def test_entity_numbers_auto_increment(client: AsyncClient):
     ).json()
     assert t1["number"] == 1
     assert t2["number"] == 2
+
+
+# --- SSE event emission tests ---
+
+
+async def test_create_epic_emits_event(client: AsyncClient):
+    """Creating an epic emits an EPIC_CREATED event."""
+    project = (await client.post("/api/v1/projects", json={"name": "epic-event-test"})).json()
+
+    with patch("src.board.routes.event_bus.publish", new_callable=AsyncMock) as mock_publish:
+        resp = await client.post(
+            f"/api/v1/projects/{project['id']}/epics",
+            json={"title": "New Epic"},
+        )
+        assert resp.status_code == 201
+        mock_publish.assert_called_once()
+        event = mock_publish.call_args[0][0]
+        assert event.type == "epic_created"
+        assert str(event.project_id) == project["id"]
+        assert event.data["title"] == "New Epic"

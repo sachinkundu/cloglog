@@ -12,6 +12,14 @@ class EventType(StrEnum):
     WORKTREE_ONLINE = "worktree_online"
     WORKTREE_OFFLINE = "worktree_offline"
     DOCUMENT_ATTACHED = "document_attached"
+    EPIC_CREATED = "epic_created"
+    EPIC_DELETED = "epic_deleted"
+    FEATURE_CREATED = "feature_created"
+    FEATURE_DELETED = "feature_deleted"
+    TASK_CREATED = "task_created"
+    TASK_DELETED = "task_deleted"
+    TASK_NOTE_ADDED = "task_note_added"
+    BULK_IMPORT = "bulk_import"
 
 
 @dataclass

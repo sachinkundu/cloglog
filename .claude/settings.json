@@ -30,6 +30,11 @@
             "type": "command",
             "command": ".claude/hooks/quality-gate-before-commit.sh",
             "timeout": 120
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/prefer-mcp-over-api.sh",
+            "timeout": 5
           }
         ]
       },

@@ -28,6 +28,7 @@ export function useSSE(
       'task_deleted',
       'task_note_added',
       'bulk_import',
+      'notification_created',
     ] as const
 
     for (const type of eventTypes) {

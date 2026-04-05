@@ -32,6 +32,18 @@ export interface TaskNote {
   created_at: string
 }
 
+// Notifications (not yet in OpenAPI contract)
+// Using AppNotification to avoid collision with browser's built-in Notification API
+export interface AppNotification {
+  id: string
+  project_id: string
+  task_id: string
+  task_title: string
+  task_number: number
+  read: boolean
+  created_at: string
+}
+
 // Frontend-only types (not from API)
 export interface BoardColumn {
   status: string
@@ -60,5 +72,6 @@ export type SSEEvent = {
     | 'task_deleted'
     | 'task_note_added'
     | 'bulk_import'
+    | 'notification_created'
   data: Record<string, string>
 }

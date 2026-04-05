@@ -43,13 +43,14 @@ interface TaskData {
 type DetailPanelProps = {
   onClose: () => void
   onNavigate: (type: 'epic' | 'feature' | 'task', id: string) => void
+  projectId?: string
 } & (
   | { type: 'epic'; data: EpicData }
   | { type: 'feature'; data: FeatureData }
   | { type: 'task'; data: TaskData }
 )
 
-export function DetailPanel({ type, data, onClose, onNavigate }: DetailPanelProps) {
+export function DetailPanel({ type, data, onClose, onNavigate, projectId }: DetailPanelProps) {
   return (
     <div className="detail-overlay" data-testid="detail-overlay" onClick={onClose}>
       <div className="detail-panel" onClick={e => e.stopPropagation()}>
@@ -57,7 +58,7 @@ export function DetailPanel({ type, data, onClose, onNavigate }: DetailPanelProp
 
         {type === 'epic' && <EpicDetail data={data as EpicData} />}
         {type === 'feature' && <FeatureDetail data={data as FeatureData} onNavigate={onNavigate} />}
-        {type === 'task' && <TaskDetail data={data as TaskData} onNavigate={onNavigate} />}
+        {type === 'task' && <TaskDetail data={data as TaskData} onNavigate={onNavigate} projectId={projectId} />}
       </div>
     </div>
   )
@@ -179,11 +180,19 @@ function FeatureDetail({ data, onNavigate }: { data: FeatureData; onNavigate: (t
   )
 }
 
-function TaskDetail({ data, onNavigate }: { data: TaskData; onNavigate: (type: 'epic' | 'feature' | 'task', id: string) => void }) {
+function TaskDetail({ data, onNavigate, projectId }: { data: TaskData; onNavigate: (type: 'epic' | 'feature' | 'task', id: string) => void; projectId?: string }) {
   const [notes, setNotes] = useState<TaskNote[]>([])
   useEffect(() => {
     api.getTaskNotes(data.id).then(setNotes).catch(() => {})
   }, [data.id])
+
+  useEffect(() => {
+    if (!projectId) return
+    api.dismissTaskNotification(projectId, data.id).then(() => {
+      const refresh = (window as any).__notificationBellRefresh
+      if (typeof refresh === 'function') refresh()
+    }).catch(() => {})
+  }, [projectId, data.id])
 
   return (
     <>

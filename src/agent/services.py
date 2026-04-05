@@ -154,7 +154,7 @@ class AgentService:
                 data={
                     "task_id": str(task_id),
                     "worktree_id": str(worktree_id),
-                    "status": status,
+                    "new_status": status,
                 },
             )
         )

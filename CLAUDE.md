@@ -138,6 +138,14 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 - **Task lifecycle in worktrees:** Move tasks through `in_progress → review` using `update_task_status` MCP tool. Before moving to review, add a structured test report via `add_task_note` covering: (1) **Pre-existing tests** — how many existed, were any affected? (2) **Modified tests** — which tests changed and why? (3) **New tests** — what was added, what edge cases covered? (4) **Testing strategy** — why these tests, what risks considered? (5) **Results** — final pass/fail with clear delta (e.g., "3 modified, 1 new, 0 removed"). This is a demo of your testing judgment, not just a pass count.
 - **PR merge detection:** After creating a PR and starting a `/loop`, check `gh pr view --json state` to detect when the PR is merged. When merged: mark all tasks as done via `complete_task`, call `unregister_agent`, then exit cleanly.
 - **SSE events are live:** The board updates in real-time via SSE. When you change task status, the dashboard reflects it immediately.
+- **Worktree removal:** Use `./scripts/manage-worktrees.sh remove <name>` to remove a single worktree after its PR merges. Use `./scripts/manage-worktrees.sh close <wave-name> <name> [name...]` to close a full wave (generates work log, removes all worktrees, updates main).
+
+### Agent Shutdown
+- **Agents deregister themselves.** When all tasks are complete (`get_my_tasks` returns empty), generate shutdown artifacts and call `unregister-by-path`. Never rely on the master agent or scripts to deregister.
+- **All tasks must be assigned before launch.** The master agent must assign all tasks to a worktree before launching the agent. The agent exits when its task queue is empty — incremental assignment after launch risks premature exit.
+- **SessionEnd hook handles SIGTERM.** If killed externally, the `.claude/hooks/agent-shutdown.sh` hook generates work logs and calls unregister automatically.
+- **Artifact handoff is explicit.** The unregister call includes paths to `shutdown-artifacts/work-log.md` and `shutdown-artifacts/learnings.md`. The `WORKTREE_OFFLINE` event carries these paths for the main agent to consolidate.
+- **Main agent consolidation.** On receiving `WORKTREE_OFFLINE` with artifacts: read the files, copy work log to `docs/superpowers/work-logs/`, merge learnings into CLAUDE.md, commit, then run `./scripts/manage-worktrees.sh remove {name}`.
 
 ---
 

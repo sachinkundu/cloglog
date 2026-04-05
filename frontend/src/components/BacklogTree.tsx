@@ -110,8 +110,10 @@ export function BacklogTree({ backlog, onItemClick, onReorderEpics, onReorderFea
     const { active, over } = event
     if (!over || active.id === over.id) return
 
-    const oldIndex = visibleBacklog.findIndex(e => e.epic.id === active.id)
-    const newIndex = visibleBacklog.findIndex(e => e.epic.id === over.id)
+    // Find indices in localBacklog (not visibleBacklog) to avoid index mismatch
+    // when completed epics are hidden
+    const oldIndex = localBacklog.findIndex(e => e.epic.id === active.id)
+    const newIndex = localBacklog.findIndex(e => e.epic.id === over.id)
     if (oldIndex === -1 || newIndex === -1) return
 
     const newOrder = arrayMove(localBacklog, oldIndex, newIndex)
@@ -119,7 +121,7 @@ export function BacklogTree({ backlog, onItemClick, onReorderEpics, onReorderFea
 
     const items = newOrder.map((e, i) => ({ id: e.epic.id, position: i * 1000 }))
     onReorderEpics?.(items)
-  }, [visibleBacklog, localBacklog, onReorderEpics])
+  }, [localBacklog, onReorderEpics])
 
   const handleFeatureDragEnd = useCallback((epicId: string, event: DragEndEvent) => {
     const { active, over } = event

@@ -4,6 +4,10 @@ import { describe, it, expect, vi } from 'vitest'
 import { Board } from './Board'
 import type { BoardResponse } from '../api/types'
 
+vi.mock('../hooks/useSearch', () => ({
+  useSearch: () => ({ results: [], loading: false, search: vi.fn(), clear: vi.fn() }),
+}))
+
 const mockBoard: BoardResponse = {
   project_id: 'p1',
   project_name: 'Test Project',
@@ -59,19 +63,19 @@ const mockBoard: BoardResponse = {
 
 describe('Board', () => {
   it('renders the board header with project name', () => {
-    render(<Board board={mockBoard} backlog={[]} onTaskClick={vi.fn()} onItemClick={vi.fn()} />)
+    render(<Board board={mockBoard} backlog={[]} projectId="p1" onTaskClick={vi.fn()} onItemClick={vi.fn()} />)
     expect(screen.getByText('Test Project')).toBeInTheDocument()
   })
 
   it('renders backlog column and flow columns', () => {
-    render(<Board board={mockBoard} backlog={[]} onTaskClick={vi.fn()} onItemClick={vi.fn()} />)
+    render(<Board board={mockBoard} backlog={[]} projectId="p1" onTaskClick={vi.fn()} onItemClick={vi.fn()} />)
     expect(screen.getByText('Backlog')).toBeInTheDocument()
     expect(screen.getByText('In Progress')).toBeInTheDocument()
     expect(screen.getByText('Done')).toBeInTheDocument()
   })
 
   it('renders flow column tasks (not backlog tasks as cards)', () => {
-    render(<Board board={mockBoard} backlog={[]} onTaskClick={vi.fn()} onItemClick={vi.fn()} />)
+    render(<Board board={mockBoard} backlog={[]} projectId="p1" onTaskClick={vi.fn()} onItemClick={vi.fn()} />)
     // Task Two is in in_progress column, should render as a card
     expect(screen.getByText('Task Two')).toBeInTheDocument()
   })
@@ -86,17 +90,22 @@ describe('Board', () => {
   })
 
   it('displays task stats in header', () => {
-    render(<Board board={mockBoard} backlog={[]} onTaskClick={vi.fn()} onItemClick={vi.fn()} />)
+    render(<Board board={mockBoard} backlog={[]} projectId="p1" onTaskClick={vi.fn()} onItemClick={vi.fn()} />)
     expect(screen.getByText(/2 tasks/)).toBeInTheDocument()
     expect(screen.getByText(/0 done/)).toBeInTheDocument()
   })
 
   it('shows backlog task count from board data', () => {
-    render(<Board board={mockBoard} backlog={[]} onTaskClick={vi.fn()} onItemClick={vi.fn()} />)
+    render(<Board board={mockBoard} backlog={[]} projectId="p1" onTaskClick={vi.fn()} onItemClick={vi.fn()} />)
     // The backlog column should exist with its count
     const backlogSection = document.querySelector('.board-backlog')
     expect(backlogSection).toBeTruthy()
     const countEl = backlogSection!.querySelector('.column-count')
     expect(countEl?.textContent).toBe('1')
+  })
+
+  it('renders search widget in header', () => {
+    render(<Board board={mockBoard} backlog={[]} projectId="p1" onTaskClick={vi.fn()} onItemClick={vi.fn()} />)
+    expect(screen.getByPlaceholderText('Search epics, features, tasks...')).toBeInTheDocument()
   })
 })

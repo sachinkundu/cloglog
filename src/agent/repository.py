@@ -77,6 +77,12 @@ class AgentRepository:
         )
         await self._session.commit()
 
+    async def request_shutdown(self, worktree_id: UUID) -> None:
+        await self._session.execute(
+            update(Worktree).where(Worktree.id == worktree_id).values(shutdown_requested=True)
+        )
+        await self._session.commit()
+
     async def get_worktree_by_path(self, project_id: UUID, worktree_path: str) -> Worktree | None:
         result = await self._session.execute(
             select(Worktree).where(

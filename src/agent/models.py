@@ -28,6 +28,7 @@ class Worktree(Base):
     worktree_path: Mapped[str] = mapped_column(String(500))
     branch_name: Mapped[str] = mapped_column(String(255), default="")
     status: Mapped[str] = mapped_column(String(20), default="offline")  # online, offline
+    shutdown_requested: Mapped[bool] = mapped_column(default=False)
     current_task_id: Mapped[_uuid.UUID | None] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)

@@ -69,7 +69,15 @@ class AgentService:
 
         updated = await self._repo.update_heartbeat(session.id)
         assert updated is not None
-        return {"status": "ok", "last_heartbeat": updated.last_heartbeat}
+
+        worktree = await self._repo.get_worktree(worktree_id)
+        shutdown = worktree.shutdown_requested if worktree else False
+
+        return {
+            "status": "ok",
+            "last_heartbeat": updated.last_heartbeat,
+            "shutdown_requested": shutdown,
+        }
 
     # --- Task Lifecycle ---
 

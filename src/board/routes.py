@@ -385,4 +385,16 @@ async def import_plan(project_id: UUID, body: ImportPlan, service: ServiceDep) -
     project = await service._repo.get_project(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    return await service.import_plan(project_id, body)
+    result = await service.import_plan(project_id, body)
+    await event_bus.publish(
+        Event(
+            type=EventType.BULK_IMPORT,
+            project_id=project_id,
+            data={
+                "epics_created": result["epics_created"],
+                "features_created": result["features_created"],
+                "tasks_created": result["tasks_created"],
+            },
+        )
+    )
+    return result

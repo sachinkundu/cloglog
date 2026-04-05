@@ -125,3 +125,50 @@
   color: var(--text-muted, #666);
   font-size: 0.9em;
 }
+
+/* Drag handles */
+.drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  font-size: 14px;
+  color: var(--text-muted, #666);
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+  user-select: none;
+  touch-action: none;
+}
+
+.drag-handle:hover {
+  color: var(--text-secondary, #aaa);
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+/* Show handle on row hover */
+.backlog-epic:hover > .drag-handle,
+.backlog-feature:hover > .drag-handle,
+.backlog-task:hover > .drag-handle,
+div:hover > .drag-handle {
+  opacity: 1;
+}
+
+/* Always show on touch devices */
+@media (hover: none) {
+  .drag-handle {
+    opacity: 0.5;
+  }
+}
+
+/* Dragging state */
+.sortable-dragging {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
+  background: var(--surface, #2a2a4a);
+  z-index: 10;
+}

@@ -21,6 +21,9 @@ class EventType(StrEnum):
     TASK_NOTE_ADDED = "task_note_added"
     BULK_IMPORT = "bulk_import"
     NOTIFICATION_CREATED = "notification_created"
+    EPIC_REORDERED = "epic_reordered"
+    FEATURE_REORDERED = "feature_reordered"
+    TASK_REORDERED = "task_reordered"
 
 
 @dataclass

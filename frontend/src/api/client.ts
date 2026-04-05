@@ -65,6 +65,25 @@ export const api = {
       { signal },
     ),
 
+  // Reorder
+  reorderEpics: (projectId: string, items: { id: string; position: number }[]) =>
+    fetchJSON(`/projects/${projectId}/epics/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ items }),
+    }),
+
+  reorderFeatures: (projectId: string, epicId: string, items: { id: string; position: number }[]) =>
+    fetchJSON(`/projects/${projectId}/epics/${epicId}/features/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ items }),
+    }),
+
+  reorderTasks: (featureId: string, items: { id: string; position: number }[]) =>
+    fetchJSON(`/features/${featureId}/tasks/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ items }),
+    }),
+
   // SSE stream URL (not a fetch — used by EventSource)
   streamUrl: (projectId: string) => `${BASE_URL}/projects/${projectId}/stream`,
 }

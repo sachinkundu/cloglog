@@ -1,11 +1,30 @@
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  TouchSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+  arrayMove,
+} from '@dnd-kit/sortable'
+import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
 import type { BacklogEpic } from '../api/types'
 import { formatEntityNumber } from '../utils/format'
+import { SortableItem } from './SortableItem'
 import './BacklogTree.css'
 
 interface BacklogTreeProps {
   backlog: BacklogEpic[]
   onItemClick: (type: 'epic' | 'feature' | 'task', id: string) => void
+  onReorderEpics?: (items: { id: string; position: number }[]) => void
+  onReorderFeatures?: (epicId: string, items: { id: string; position: number }[]) => void
+  onReorderTasks?: (featureId: string, items: { id: string; position: number }[]) => void
 }
 
 const ACTIVE_STATUSES = new Set(['in_progress', 'review'])
@@ -30,7 +49,7 @@ function isFullyDone(counts: { total: number; done: number }) {
   return counts.total > 0 && counts.done === counts.total
 }
 
-export function BacklogTree({ backlog, onItemClick }: BacklogTreeProps) {
+export function BacklogTree({ backlog, onItemClick, onReorderEpics, onReorderFeatures, onReorderTasks }: BacklogTreeProps) {
   const [showCompleted, setShowCompleted] = useState(
     () => localStorage.getItem('backlog-show-completed') === 'true'
   )
@@ -39,6 +58,17 @@ export function BacklogTree({ backlog, onItemClick }: BacklogTreeProps) {
   )
   const [expandedFeatures, setExpandedFeatures] = useState<Set<string>>(
     new Set(backlog.flatMap(e => e.features.map(f => f.feature.id)))
+  )
+  const [localBacklog, setLocalBacklog] = useState(backlog)
+
+  // Sync local state when backlog prop changes (e.g. SSE refresh)
+  if (backlog !== localBacklog && JSON.stringify(backlog) !== JSON.stringify(localBacklog)) {
+    setLocalBacklog(backlog)
+  }
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
   )
 
   const toggleShowCompleted = () => {
@@ -50,8 +80,8 @@ export function BacklogTree({ backlog, onItemClick }: BacklogTreeProps) {
   }
 
   const visibleBacklog = showCompleted
-    ? backlog
-    : backlog.filter(e => !isFullyDone(e.task_counts))
+    ? localBacklog
+    : localBacklog.filter(e => !isFullyDone(e.task_counts))
 
   const toggleEpic = (id: string) => {
     setExpandedEpics(prev => {
@@ -71,8 +101,66 @@ export function BacklogTree({ backlog, onItemClick }: BacklogTreeProps) {
     })
   }
 
-  const completedEpics = backlog.filter(e => isFullyDone(e.task_counts)).length
-  const completedFeatures = backlog.reduce(
+  const handleEpicDragEnd = useCallback((event: DragEndEvent) => {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+
+    const oldIndex = visibleBacklog.findIndex(e => e.epic.id === active.id)
+    const newIndex = visibleBacklog.findIndex(e => e.epic.id === over.id)
+    if (oldIndex === -1 || newIndex === -1) return
+
+    const newOrder = arrayMove(localBacklog, oldIndex, newIndex)
+    setLocalBacklog(newOrder)
+
+    const items = newOrder.map((e, i) => ({ id: e.epic.id, position: i * 1000 }))
+    onReorderEpics?.(items)
+  }, [visibleBacklog, localBacklog, onReorderEpics])
+
+  const handleFeatureDragEnd = useCallback((epicId: string, event: DragEndEvent) => {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+
+    setLocalBacklog(prev => {
+      const next = prev.map(epicEntry => {
+        if (epicEntry.epic.id !== epicId) return epicEntry
+        const features = [...epicEntry.features]
+        const oldIdx = features.findIndex(f => f.feature.id === active.id)
+        const newIdx = features.findIndex(f => f.feature.id === over.id)
+        if (oldIdx === -1 || newIdx === -1) return epicEntry
+        const reordered = arrayMove(features, oldIdx, newIdx)
+        const items = reordered.map((f, i) => ({ id: f.feature.id, position: i * 1000 }))
+        onReorderFeatures?.(epicId, items)
+        return { ...epicEntry, features: reordered }
+      })
+      return next
+    })
+  }, [onReorderFeatures])
+
+  const handleTaskDragEnd = useCallback((featureId: string, event: DragEndEvent) => {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+
+    setLocalBacklog(prev => {
+      const next = prev.map(epicEntry => ({
+        ...epicEntry,
+        features: epicEntry.features.map(featEntry => {
+          if (featEntry.feature.id !== featureId) return featEntry
+          const tasks = [...featEntry.tasks]
+          const oldIdx = tasks.findIndex(t => t.id === active.id)
+          const newIdx = tasks.findIndex(t => t.id === over.id)
+          if (oldIdx === -1 || newIdx === -1) return featEntry
+          const reordered = arrayMove(tasks, oldIdx, newIdx)
+          const items = reordered.map((t, i) => ({ id: t.id, position: i * 1000 }))
+          onReorderTasks?.(featureId, items)
+          return { ...featEntry, tasks: reordered }
+        }),
+      }))
+      return next
+    })
+  }, [onReorderTasks])
+
+  const completedEpics = localBacklog.filter(e => isFullyDone(e.task_counts)).length
+  const completedFeatures = localBacklog.reduce(
     (sum, e) => sum + e.features.filter(f => isFullyDone(f.task_counts)).length, 0
   )
   const completedCount = completedEpics + completedFeatures
@@ -84,77 +172,120 @@ export function BacklogTree({ backlog, onItemClick }: BacklogTreeProps) {
           {showCompleted ? 'Hide' : 'Show'} completed ({completedCount})
         </button>
       )}
-      {visibleBacklog.map(({ epic, features }) => {
-        const visibleFeatures = showCompleted
-          ? features
-          : features.filter(f => !isFullyDone(f.task_counts))
-        const allTasks = visibleFeatures.flatMap(f => f.tasks)
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        modifiers={[restrictToVerticalAxis]}
+        onDragEnd={handleEpicDragEnd}
+      >
+        <SortableContext
+          items={visibleBacklog.map(e => e.epic.id)}
+          strategy={verticalListSortingStrategy}
+        >
+          {visibleBacklog.map(({ epic, features, task_counts }) => {
+            const visibleFeatures = showCompleted
+              ? features
+              : features.filter(f => !isFullyDone(f.task_counts))
+            const allTasks = visibleFeatures.flatMap(f => f.tasks)
 
-        return (
-          <div key={epic.id} className="backlog-epic">
-            <div
-              className="backlog-epic-header"
-              style={{ borderLeftColor: epic.color }}
-            >
-              <span
-                className="backlog-toggle"
-                onClick={() => toggleEpic(epic.id)}
-              >
-                {expandedEpics.has(epic.id) ? '\u25BC' : '\u25B6'}
-              </span>
-              <span
-                className="backlog-epic-title"
-                style={{ color: epic.color }}
-                onClick={() => onItemClick('epic', epic.id)}
-              >
-                {epic.number != null && epic.number > 0 && <span className="entity-number">{formatEntityNumber('epic', epic.number)} </span>}
-                {epic.title}
-              </span>
-              <SegmentedProgress tasks={allTasks} />
-            </div>
-
-            {expandedEpics.has(epic.id) && visibleFeatures.map(({ feature, tasks }) => {
-              const backlogTasks = tasks.filter(t => t.status === 'backlog')
-
-              return (
-                <div key={feature.id} className="backlog-feature">
-                  <div className="backlog-feature-header">
+            return (
+              <SortableItem key={epic.id} id={epic.id}>
+                <div className="backlog-epic">
+                  <div
+                    className="backlog-epic-header"
+                    style={{ borderLeftColor: epic.color }}
+                  >
                     <span
                       className="backlog-toggle"
-                      onClick={() => toggleFeature(feature.id)}
+                      onClick={() => toggleEpic(epic.id)}
                     >
-                      {expandedFeatures.has(feature.id) ? '\u25BC' : '\u25B6'}
+                      {expandedEpics.has(epic.id) ? '\u25BC' : '\u25B6'}
                     </span>
                     <span
-                      className="backlog-feature-title"
-                      onClick={() => onItemClick('feature', feature.id)}
+                      className="backlog-epic-title"
+                      style={{ color: epic.color }}
+                      onClick={() => onItemClick('epic', epic.id)}
                     >
-                      {feature.number != null && feature.number > 0 && <span className="entity-number">{formatEntityNumber('feature', feature.number)} </span>}
-                      {feature.title}
+                      {epic.number != null && epic.number > 0 && <span className="entity-number">{formatEntityNumber('epic', epic.number)} </span>}
+                      {epic.title}
                     </span>
-                    <SegmentedProgress tasks={tasks} />
+                    <SegmentedProgress tasks={allTasks} />
                   </div>
 
-                  {expandedFeatures.has(feature.id) && backlogTasks.length > 0 && (
-                    <div className="backlog-tasks">
-                      {backlogTasks.map(task => (
-                        <div
-                          key={task.id}
-                          className="backlog-task"
-                          onClick={() => onItemClick('task', task.id)}
-                        >
-                          {task.number != null && task.number > 0 && <span className="entity-number">{formatEntityNumber('task', task.number)} </span>}
-                          {task.title}
-                        </div>
-                      ))}
-                    </div>
+                  {expandedEpics.has(epic.id) && (
+                    <DndContext
+                      sensors={sensors}
+                      collisionDetection={closestCenter}
+                      modifiers={[restrictToVerticalAxis]}
+                      onDragEnd={(event) => handleFeatureDragEnd(epic.id, event)}
+                    >
+                      <SortableContext
+                        items={visibleFeatures.map(f => f.feature.id)}
+                        strategy={verticalListSortingStrategy}
+                      >
+                        {visibleFeatures.map(({ feature, tasks }) => {
+                          const backlogTasks = tasks.filter(t => t.status === 'backlog')
+
+                          return (
+                            <SortableItem key={feature.id} id={feature.id}>
+                              <div className="backlog-feature">
+                                <div className="backlog-feature-header">
+                                  <span
+                                    className="backlog-toggle"
+                                    onClick={() => toggleFeature(feature.id)}
+                                  >
+                                    {expandedFeatures.has(feature.id) ? '\u25BC' : '\u25B6'}
+                                  </span>
+                                  <span
+                                    className="backlog-feature-title"
+                                    onClick={() => onItemClick('feature', feature.id)}
+                                  >
+                                    {feature.number != null && feature.number > 0 && <span className="entity-number">{formatEntityNumber('feature', feature.number)} </span>}
+                                    {feature.title}
+                                  </span>
+                                  <SegmentedProgress tasks={tasks} />
+                                </div>
+
+                                {expandedFeatures.has(feature.id) && backlogTasks.length > 0 && (
+                                  <DndContext
+                                    sensors={sensors}
+                                    collisionDetection={closestCenter}
+                                    modifiers={[restrictToVerticalAxis]}
+                                    onDragEnd={(event) => handleTaskDragEnd(feature.id, event)}
+                                  >
+                                    <SortableContext
+                                      items={backlogTasks.map(t => t.id)}
+                                      strategy={verticalListSortingStrategy}
+                                    >
+                                      <div className="backlog-tasks">
+                                        {backlogTasks.map(task => (
+                                          <SortableItem key={task.id} id={task.id}>
+                                            <div
+                                              className="backlog-task"
+                                              onClick={() => onItemClick('task', task.id)}
+                                            >
+                                              {task.number != null && task.number > 0 && <span className="entity-number">{formatEntityNumber('task', task.number)} </span>}
+                                              {task.title}
+                                            </div>
+                                          </SortableItem>
+                                        ))}
+                                      </div>
+                                    </SortableContext>
+                                  </DndContext>
+                                )}
+                              </div>
+                            </SortableItem>
+                          )
+                        })}
+                      </SortableContext>
+                    </DndContext>
                   )}
                 </div>
-              )
-            })}
-          </div>
-        )
-      })}
+              </SortableItem>
+            )
+          })}
+        </SortableContext>
+      </DndContext>
     </div>
   )
 }

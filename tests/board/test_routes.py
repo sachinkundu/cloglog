@@ -908,3 +908,88 @@ async def test_search_returns_all_entity_types(client: AsyncClient):
     types = {r["type"] for r in data["results"]}
     assert types == {"epic", "feature", "task"}
     assert data["total"] == 3
+
+
+# --- Reorder endpoints ---
+
+
+async def test_reorder_epics(client: AsyncClient):
+    """Reorder epics and verify via backlog endpoint."""
+    project = (await client.post("/api/v1/projects", json={"name": "reorder-epics"})).json()
+    e1 = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics", json={"title": "Epic A", "position": 0}
+        )
+    ).json()
+    e2 = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics", json={"title": "Epic B", "position": 1}
+        )
+    ).json()
+
+    # Swap order
+    resp = await client.post(
+        f"/api/v1/projects/{project['id']}/epics/reorder",
+        json={"items": [{"id": e2["id"], "position": 0}, {"id": e1["id"], "position": 1}]},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+    # Verify via backlog
+    backlog = (await client.get(f"/api/v1/projects/{project['id']}/backlog")).json()
+    assert backlog[0]["epic"]["id"] == e2["id"]
+    assert backlog[1]["epic"]["id"] == e1["id"]
+
+
+async def test_reorder_tasks(client: AsyncClient):
+    """Reorder tasks within a feature and verify via backlog."""
+    project = (await client.post("/api/v1/projects", json={"name": "reorder-tasks"})).json()
+    epic = (
+        await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "Epic"})
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
+    t1 = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "Task A", "position": 0},
+        )
+    ).json()
+    t2 = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "Task B", "position": 1},
+        )
+    ).json()
+
+    # Swap order
+    resp = await client.post(
+        f"/api/v1/features/{feature['id']}/tasks/reorder",
+        json={"items": [{"id": t2["id"], "position": 0}, {"id": t1["id"], "position": 1}]},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+    # Verify via backlog
+    backlog = (await client.get(f"/api/v1/projects/{project['id']}/backlog")).json()
+    tasks = backlog[0]["features"][0]["tasks"]
+    assert tasks[0]["id"] == t2["id"]
+    assert tasks[1]["id"] == t1["id"]
+
+
+async def test_reorder_invalid_ids(client: AsyncClient):
+    """Reorder with invalid IDs returns 400."""
+    project = (await client.post("/api/v1/projects", json={"name": "reorder-invalid"})).json()
+    resp = await client.post(
+        f"/api/v1/projects/{project['id']}/epics/reorder",
+        json={
+            "items": [
+                {"id": "00000000-0000-0000-0000-000000000000", "position": 0},
+            ]
+        },
+    )
+    assert resp.status_code == 400

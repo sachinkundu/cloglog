@@ -82,6 +82,12 @@ export function useBoard(projectId: string | null) {
           wt.id === wtId ? { ...wt, status: newStatus } : wt
         )
       })
+    } else if (
+      event.type === 'epic_reordered' ||
+      event.type === 'feature_reordered' ||
+      event.type === 'task_reordered'
+    ) {
+      api.getBacklog(projectId!).then(setBacklog)
     } else {
       fetchBoard()
     }

@@ -437,3 +437,47 @@ class BoardRepository:
         ]
 
         return results, total
+
+    # --- Reorder ---
+
+    async def reorder_epics(self, project_id: UUID, positions: list[tuple[UUID, int]]) -> None:
+        """Reorder epics within a project by updating their positions."""
+        ids = [pid for pid, _ in positions]
+        result = await self._session.execute(
+            select(Epic).where(Epic.project_id == project_id, Epic.id.in_(ids))
+        )
+        epics = {e.id: e for e in result.scalars().all()}
+        if len(epics) != len(ids):
+            missing = set(ids) - set(epics.keys())
+            raise ValueError(f"Epic IDs not found in project: {missing}")
+        for epic_id, pos in positions:
+            epics[epic_id].position = pos
+        await self._session.commit()
+
+    async def reorder_features(self, epic_id: UUID, positions: list[tuple[UUID, int]]) -> None:
+        """Reorder features within an epic by updating their positions."""
+        ids = [pid for pid, _ in positions]
+        result = await self._session.execute(
+            select(Feature).where(Feature.epic_id == epic_id, Feature.id.in_(ids))
+        )
+        features = {f.id: f for f in result.scalars().all()}
+        if len(features) != len(ids):
+            missing = set(ids) - set(features.keys())
+            raise ValueError(f"Feature IDs not found in epic: {missing}")
+        for feature_id, pos in positions:
+            features[feature_id].position = pos
+        await self._session.commit()
+
+    async def reorder_tasks(self, feature_id: UUID, positions: list[tuple[UUID, int]]) -> None:
+        """Reorder tasks within a feature by updating their positions."""
+        ids = [pid for pid, _ in positions]
+        result = await self._session.execute(
+            select(Task).where(Task.feature_id == feature_id, Task.id.in_(ids))
+        )
+        tasks = {t.id: t for t in result.scalars().all()}
+        if len(tasks) != len(ids):
+            missing = set(ids) - set(tasks.keys())
+            raise ValueError(f"Task IDs not found in feature: {missing}")
+        for task_id, pos in positions:
+            tasks[task_id].position = pos
+        await self._session.commit()

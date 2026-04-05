@@ -183,6 +183,37 @@ describe('BacklogTree', () => {
     expect(screen.getByText('Hide completed (2)')).toBeInTheDocument()
   })
 
+  it('renders drag handles for each epic', () => {
+    render(<BacklogTree backlog={mockBacklog} onItemClick={vi.fn()} />)
+    const handles = screen.getAllByLabelText('Reorder')
+    // At minimum one handle per epic, feature, and task
+    expect(handles.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('still navigates on title click with drag handles present', async () => {
+    const user = userEvent.setup()
+    const onClick = vi.fn()
+    render(<BacklogTree backlog={mockBacklog} onItemClick={onClick} />)
+    await user.click(screen.getByText('Auth System'))
+    expect(onClick).toHaveBeenCalledWith('epic', 'e1')
+  })
+
+  it('passes reorder callbacks without error', () => {
+    const onReorderEpics = vi.fn()
+    const onReorderFeatures = vi.fn()
+    const onReorderTasks = vi.fn()
+    render(
+      <BacklogTree
+        backlog={mockBacklog}
+        onItemClick={vi.fn()}
+        onReorderEpics={onReorderEpics}
+        onReorderFeatures={onReorderFeatures}
+        onReorderTasks={onReorderTasks}
+      />
+    )
+    expect(screen.getByText('Auth System')).toBeInTheDocument()
+  })
+
   it('hides completed features within a visible epic', () => {
     const backlogMixed: BacklogEpic[] = [{
       epic: {

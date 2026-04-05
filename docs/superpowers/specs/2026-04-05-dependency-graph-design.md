@@ -15,11 +15,12 @@ A `FeatureDependency` table already exists in the database (`feature_id` depends
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Dependency scope | Feature-level only | Features are the planning unit. Epics are grouping, tasks are execution. Feature-level keeps the graph manageable (dozens of nodes, not hundreds). Task-level blocking can be added independently via F-11. |
-| Visualization library | Mermaid (already installed) | `mermaid@^11.14.0` is already in `package.json`. Renders flowcharts as SVG. No new dependencies needed. Avoids adding react-flow/d3/cytoscape for what is fundamentally a static directed graph. |
-| Graph layout | Mermaid `flowchart LR` (left-to-right DAG) | Natural reading direction for dependency chains. Mermaid handles layout automatically via dagre. |
+| Visualization library | Mermaid-to-Excalidraw | `mermaid@^11.14.0` already installed. Add `@excalidraw/excalidraw` + `@excalidraw/mermaid-to-excalidraw`. Excalidraw's hand-drawn aesthetic is vastly better than Mermaid's default SVG. Flowcharts get full native shape conversion (not image fallback). |
+| Graph layout | Mermaid `flowchart LR` → Excalidraw canvas | Define graph in Mermaid syntax (left-to-right DAG), convert to Excalidraw elements via `parseMermaidToExcalidraw()`. Excalidraw handles rendering with pan/zoom built-in. |
+| Bundle size | Lazy-load Excalidraw component | `@excalidraw/excalidraw` is ~47MB unpacked. Mitigate with `React.lazy()` + code splitting — only loaded when user navigates to the Dependencies tab. No impact on initial board load. |
 | UI placement | New "Dependencies" tab alongside the existing board view | The board has a tabbed structure conceptually (backlog tree + kanban columns). Adding a dependency graph as a peer view keeps the existing board clean. Accessible via URL routing (`/projects/:id/dependencies`). |
-| Node styling | Color-coded by epic, status shown via node shape | Reuse existing epic colors for grouping. Rounded nodes = done, hexagons = in-progress, default rectangles = planned/backlog. Provides at-a-glance status. |
-| Node interaction | Click node to open detail panel | Reuse existing `onItemClick('feature', id)` handler. The detail panel already shows feature info. No new panel needed. |
+| Node styling | Color-coded by epic, status shown via node shape | Reuse existing epic colors for grouping. Excalidraw renders with hand-drawn aesthetic. Status conveyed through Mermaid class definitions that map to fill colors (green=done, blue=in-progress, gray=planned). |
+| Node interaction | Click node to open detail panel | Excalidraw's `onLinkOpen` callback fires when users click nodes with links. Map feature IDs to the existing `onItemClick('feature', id)` handler. Excalidraw provides built-in pan/zoom. |
 | Dependency CRUD | API endpoints + detail panel UI | Add/remove dependencies from the feature detail panel. Simple dropdown to select target feature. No drag-to-connect in the graph (complexity not justified). |
 | Cycle detection | Server-side on create | Reject dependency creation if it would form a cycle. Simple DFS from the target back to the source. Prevents impossible dependency chains. |
 | SSE integration | Emit events on dependency changes | `dependency_added` and `dependency_removed` events trigger graph refetch. Follows existing SSE pattern. |
@@ -162,17 +163,35 @@ async def get_dependency_graph(self, project_id: UUID) -> dict:
 
 ## Frontend: Dependency Graph View
 
+### New Dependencies
+
+```json
+{
+  "@excalidraw/excalidraw": "^0.18.0",
+  "@excalidraw/mermaid-to-excalidraw": "^1.1.0"
+}
+```
+
 ### New Component: `DependencyGraph.tsx`
 
-Renders the dependency graph using Mermaid's flowchart syntax.
+Converts a Mermaid flowchart definition to Excalidraw elements and renders them on an interactive canvas.
 
-**Mermaid generation logic:**
-1. Group features by epic
-2. Generate Mermaid `flowchart LR` with subgraphs per epic
-3. Style nodes by status (CSS classes)
-4. Render edges as `B --> A` (B blocks A)
+**Pipeline:**
+1. Build Mermaid `flowchart LR` string from graph API response (nodes grouped by epic, edges for dependencies)
+2. Call `parseMermaidToExcalidraw(mermaidDef)` to get Excalidraw element skeletons
+3. Convert skeletons to full elements using `convertToExcalidrawElements()`
+4. Render via `<Excalidraw>` component in view-only mode
 
-**Example generated Mermaid:**
+**Lazy loading:**
+```typescript
+const Excalidraw = React.lazy(() =>
+  import("@excalidraw/excalidraw").then(mod => ({ default: mod.Excalidraw }))
+)
+```
+
+The component is wrapped in `<Suspense fallback={<LoadingSpinner />}>` so the ~47MB Excalidraw bundle only loads when the user navigates to the Dependencies tab. No impact on board load time.
+
+**Mermaid definition generation:**
 ```
 flowchart LR
   subgraph E1["Board Redesign"]
@@ -193,10 +212,12 @@ flowchart LR
   classDef planned fill:#374151,stroke:#4b5563,color:#d1d5db
 ```
 
+This Mermaid definition is passed to `parseMermaidToExcalidraw()` which produces native Excalidraw rectangles, arrows, and text — rendered with Excalidraw's hand-drawn visual style.
+
 **Interaction:**
-- Click a node: calls `onItemClick('feature', featureId)` to open the detail panel
-- Mermaid supports click callbacks via `click F18 callback` syntax
-- Pan/zoom: wrap in a scrollable container with CSS `overflow: auto`
+- **Pan/zoom:** Built into Excalidraw canvas (scroll to zoom, drag to pan)
+- **Click a node:** Excalidraw supports link callbacks via `onLinkOpen`. Mermaid `click` directives are converted to Excalidraw links. Intercept `onLinkOpen` to call `onItemClick('feature', featureId)` and open the detail panel.
+- **Read-only mode:** `viewModeEnabled={true}` prevents users from editing the graph. The graph is a computed visualization, not a user-editable canvas.
 
 ### Component Props:
 ```typescript
@@ -291,9 +312,10 @@ class FeatureDependencyResponse(BaseModel):
 ### Frontend Tests
 
 **DependencyGraph component:**
-- Renders Mermaid output for a graph with nodes and edges
+- Generates correct Mermaid definition from graph data
+- Renders Excalidraw canvas (lazy-loaded) with nodes and edges
 - Shows empty state when no features exist
-- Click callback fires `onItemClick` with correct feature ID
+- Click callback fires `onItemClick` with correct feature ID via `onLinkOpen`
 
 **useDependencyGraph hook:**
 - Fetches graph data on mount

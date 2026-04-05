@@ -35,10 +35,17 @@ class EventBus:
 
     def __init__(self) -> None:
         self._subscribers: dict[UUID, list[asyncio.Queue[Event]]] = {}
+        self._global_subscribers: list[asyncio.Queue[Event]] = []
 
     def subscribe(self, project_id: UUID) -> asyncio.Queue[Event]:
         queue: asyncio.Queue[Event] = asyncio.Queue()
         self._subscribers.setdefault(project_id, []).append(queue)
+        return queue
+
+    def subscribe_all(self) -> asyncio.Queue[Event]:
+        """Subscribe to events from all projects."""
+        queue: asyncio.Queue[Event] = asyncio.Queue()
+        self._global_subscribers.append(queue)
         return queue
 
     def unsubscribe(self, project_id: UUID, queue: asyncio.Queue[Event]) -> None:
@@ -47,8 +54,13 @@ class EventBus:
                 q for q in self._subscribers[project_id] if q is not queue
             ]
 
+    def unsubscribe_all(self, queue: asyncio.Queue[Event]) -> None:
+        self._global_subscribers = [q for q in self._global_subscribers if q is not queue]
+
     async def publish(self, event: Event) -> None:
         for queue in self._subscribers.get(event.project_id, []):
+            await queue.put(event)
+        for queue in self._global_subscribers:
             await queue.put(event)
 
 

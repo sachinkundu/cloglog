@@ -117,11 +117,13 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 
 ### Execution Workflow (Mandatory)
 - **Always use subagent-driven development** — never ask which execution approach; subagent-driven is always the choice.
-- **After writing an implementation plan, before dispatching any subagent:**
-  1. Register with cloglog via `register_agent` MCP tool (if not already registered)
-  2. Create one board task per plan task using `create_task` MCP tool under the correct feature
-  3. For each task: call `start_task` before dispatching the subagent, call `complete_task` after it finishes
-- This is non-negotiable. The board must reflect what is being worked on in real-time. Never batch-implement without tracking on the board.
+- **Every phase of a feature needs a board task** — not just implementation. The full pipeline creates these tasks under the feature via `create_task` MCP tool:
+  1. **"Write design spec for F-N"** — move to `review` when spec PR is created, `done` when merged
+  2. **"Write implementation plan for F-N"** — move to `review` when plan PR is created, `done` when merged
+  3. **"Implement F-N"** — move to `review` when implementation PR is created, `done` when merged
+- The notification system fires when tasks move to `review`. Without board tasks, the user gets no notification and doesn't know work is ready for their review.
+- For the implementation task, use internal session tasks (TaskCreate/TaskUpdate) to track subagent progress. The board task is the high-level "implementation is done, please review."
+- This is non-negotiable. The board must reflect what is being worked on in real-time.
 
 ### API Contract Enforcement
 - **Every wave must have an API contract** designed before worktrees launch. The contract is an OpenAPI YAML file at `docs/contracts/<wave-name>.openapi.yaml`.

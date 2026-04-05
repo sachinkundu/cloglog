@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agent.repository import AgentRepository
 from src.agent.schemas import (
+    AddTaskNoteRequest,
     CompleteTaskRequest,
     CompleteTaskResponse,
     HeartbeatResponse,
@@ -88,6 +89,22 @@ async def update_task_status(
         await service.update_task_status(worktree_id, body.task_id, body.status)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@router.post("/agents/{worktree_id}/task-note", status_code=201)
+async def add_task_note(
+    worktree_id: UUID, body: AddTaskNoteRequest, service: ServiceDep
+) -> dict[str, object]:
+    task = await service._board_repo.get_task(body.task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    note = await service._board_repo.add_task_note(body.task_id, body.note)
+    return {
+        "id": note.id,
+        "task_id": note.task_id,
+        "note": note.note,
+        "created_at": note.created_at,
+    }
 
 
 @router.post("/agents/{worktree_id}/unregister", status_code=204)

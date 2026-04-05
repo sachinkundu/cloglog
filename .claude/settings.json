@@ -20,6 +20,16 @@
             "timeout": 120
           }
         ]
+      },
+      {
+        "matcher": "mcp__cloglog__update_task_status|mcp__cloglog__complete_task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/enforce-task-transitions.sh",
+            "timeout": 10
+          }
+        ]
       }
     ]
   }

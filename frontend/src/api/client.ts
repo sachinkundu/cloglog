@@ -1,4 +1,4 @@
-import type { BacklogEpic, BoardResponse, Document, DocumentSummary, Project, Worktree } from './types'
+import type { BacklogEpic, BoardResponse, Document, DocumentSummary, Project, TaskNote, Worktree } from './types'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api/v1'
 
@@ -29,6 +29,7 @@ export const api = {
 
   // Documents
   getTaskDocuments: (taskId: string) => fetchJSON<DocumentSummary[]>(`/tasks/${taskId}/documents`),
+  getTaskNotes: (taskId: string) => fetchJSON<TaskNote[]>(`/tasks/${taskId}/notes`),
   getDocument: (id: string) => fetchJSON<Document>(`/documents/${id}`),
   getEpicDocuments: (epicId: string) =>
     fetchJSON<DocumentSummary[]>(`/documents?attached_to_type=epic&attached_to_id=${epicId}`),

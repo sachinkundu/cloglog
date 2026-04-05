@@ -8,7 +8,7 @@ interface BacklogTreeProps {
   onItemClick: (type: 'epic' | 'feature' | 'task', id: string) => void
 }
 
-const ACTIVE_STATUSES = new Set(['assigned', 'in_progress', 'review'])
+const ACTIVE_STATUSES = new Set(['in_progress', 'review'])
 
 function SegmentedProgress({ tasks }: { tasks: Array<{ status: string }> }) {
   const total = tasks.length
@@ -16,14 +16,11 @@ function SegmentedProgress({ tasks }: { tasks: Array<{ status: string }> }) {
 
   const done = tasks.filter(t => t.status === 'done').length
   const active = tasks.filter(t => ACTIVE_STATUSES.has(t.status)).length
-  const blocked = tasks.filter(t => t.status === 'blocked').length
-
   return (
-    <div className="seg-progress" title={`${done} done · ${active} active · ${blocked ? blocked + ' blocked · ' : ''}${total - done - active - blocked} remaining`}>
+    <div className="seg-progress" title={`${done} done · ${active} active · ${total - done - active} remaining`}>
       <div className="seg-bar">
         {done > 0 && <div className="seg-done" style={{ width: `${(done / total) * 100}%` }} />}
         {active > 0 && <div className="seg-active" style={{ width: `${(active / total) * 100}%` }} />}
-        {blocked > 0 && <div className="seg-blocked" style={{ width: `${(blocked / total) * 100}%` }} />}
       </div>
     </div>
   )

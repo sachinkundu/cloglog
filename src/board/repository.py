@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from src.board.models import Epic, Feature, Project, Task
+from src.board.models import Epic, Feature, Project, Task, TaskNote
 
 
 class BoardRepository:
@@ -254,5 +254,20 @@ class BoardRepository:
     async def get_tasks_for_worktree(self, worktree_id: UUID) -> list[Task]:
         result = await self._session.execute(
             select(Task).where(Task.worktree_id == worktree_id).order_by(Task.position)
+        )
+        return list(result.scalars().all())
+
+    # --- Task Notes ---
+
+    async def add_task_note(self, task_id: UUID, note: str) -> TaskNote:
+        task_note = TaskNote(task_id=task_id, note=note)
+        self._session.add(task_note)
+        await self._session.commit()
+        await self._session.refresh(task_note)
+        return task_note
+
+    async def get_task_notes(self, task_id: UUID) -> list[TaskNote]:
+        result = await self._session.execute(
+            select(TaskNote).where(TaskNote.task_id == task_id).order_by(TaskNote.created_at)
         )
         return list(result.scalars().all())

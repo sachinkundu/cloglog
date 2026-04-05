@@ -150,6 +150,7 @@ function buildTaskDetail(backlog: BacklogEpic[], board: BoardResponse | null, ta
         return {
           type: 'task',
           data: {
+            id: taskId,
             title: task.title,
             description: task.description,
             status: task.status,
@@ -171,6 +172,7 @@ function buildTaskDetail(backlog: BacklogEpic[], board: BoardResponse | null, ta
         return {
           type: 'task',
           data: {
+            id: taskId,
             title: t.title,
             description: '',
             status: t.status,

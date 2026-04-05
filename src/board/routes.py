@@ -35,7 +35,7 @@ from src.shared.events import Event, EventType, event_bus
 
 router = APIRouter()
 
-BOARD_COLUMNS = ["backlog", "assigned", "in_progress", "testing", "review", "done", "blocked"]
+BOARD_COLUMNS = ["backlog", "in_progress", "review", "done"]
 
 
 def _get_service(session: Annotated[AsyncSession, Depends(get_session)]) -> BoardService:
@@ -211,6 +211,15 @@ async def delete_task(task_id: UUID, service: ServiceDep) -> None:
     deleted = await service._repo.delete_task(task_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Task not found")
+
+
+@router.get("/tasks/{task_id}/notes")
+async def get_task_notes(task_id: UUID, service: ServiceDep) -> list[dict[str, object]]:
+    notes = await service._repo.get_task_notes(task_id)
+    return [
+        {"id": n.id, "task_id": n.task_id, "note": n.note, "created_at": n.created_at}
+        for n in notes
+    ]
 
 
 # --- Board ---

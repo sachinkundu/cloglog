@@ -88,6 +88,8 @@ Never use `git push` or `gh pr create` without first setting the bot token. The 
 Hard-won lessons from previous waves. Every agent in every worktree MUST follow these.
 
 ### Testing
+- **Run all tests FIRST, before writing any code.** Establish a green baseline so you know any failures are caused by your changes, not pre-existing issues.
+- **Before adding a dependency, check what's already installed.** Search `package.json` / `pyproject.toml` first. If the dependency is already used elsewhere, check how existing tests handle it — don't add unnecessary mocks or workarounds.
 - **Every PR must include automated tests.** No exceptions. If you write code, you write tests for it.
 - Frontend work requires component tests (@testing-library/react), not just "it renders" smoke tests. Test interactions, conditional rendering, error states.
 - Backend work requires both unit tests (business logic) and integration tests (API endpoints against real DB).
@@ -131,7 +133,7 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 
 ### Worktree Hygiene
 - **Never commit CONTRACT.yaml.** It's a local reference file copied by `create-worktree.sh`. It is in `.gitignore`.
-- **Task lifecycle in worktrees:** Move tasks through `in_progress → testing → review` using `update_task_status` MCP tool. Add test evidence notes at the testing stage. Add review instructions at the review stage.
+- **Task lifecycle in worktrees:** Move tasks through `in_progress → review` using `update_task_status` MCP tool. Before moving to review, add a structured test report via `add_task_note` covering: (1) **Pre-existing tests** — how many existed, were any affected? (2) **Modified tests** — which tests changed and why? (3) **New tests** — what was added, what edge cases covered? (4) **Testing strategy** — why these tests, what risks considered? (5) **Results** — final pass/fail with clear delta (e.g., "3 modified, 1 new, 0 removed"). This is a demo of your testing judgment, not just a pass count.
 - **PR merge detection:** After creating a PR and starting a `/loop`, check `gh pr view --json state` to detect when the PR is merged. When merged: mark all tasks as done via `complete_task`, call `unregister_agent`, then exit cleanly.
 - **SSE events are live:** The board updates in real-time via SSE. When you change task status, the dashboard reflects it immediately.
 

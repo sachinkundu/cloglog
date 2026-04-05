@@ -35,12 +35,9 @@
 
   /* Column colors */
   --col-backlog: #64748b;
-  --col-assigned: #22d3ee;
   --col-in-progress: #f59e0b;
-  --col-testing: #06b6d4;
   --col-review: #a78bfa;
   --col-done: #10b981;
-  --col-blocked: #f97316;
 
   /* Doc chip colors */
   --chip-spec: #22d3ee;

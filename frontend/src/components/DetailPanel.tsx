@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
+import Markdown from 'react-markdown'
 import { api } from '../api/client'
-import type { DocumentSummary } from '../api/types'
+import type { DocumentSummary, TaskNote } from '../api/types'
 import { BreadcrumbPills } from './BreadcrumbPills'
 import { DocumentViewer } from './DocumentViewer'
 import { formatEntityNumber } from '../utils/format'
@@ -28,6 +29,7 @@ interface FeatureData {
 }
 
 interface TaskData {
+  id: string
   title: string
   description: string
   status: string
@@ -125,7 +127,7 @@ function EpicDetail({ data }: { data: EpicData }) {
         )}
       </div>
       <ProgressBar done={data.task_counts.done} total={data.task_counts.total} />
-      {data.description && <p className="detail-description">{data.description}</p>}
+      {data.description && <div className="detail-description"><Markdown>{data.description}</Markdown></div>}
       <DocumentChips docs={docs} />
       {data.features.length > 0 && (
         <div className="detail-section">
@@ -160,7 +162,7 @@ function FeatureDetail({ data, onNavigate }: { data: FeatureData; onNavigate: (t
         </h2>
       </div>
       <ProgressBar done={data.task_counts.done} total={data.task_counts.total} />
-      {data.description && <p className="detail-description">{data.description}</p>}
+      {data.description && <div className="detail-description"><Markdown>{data.description}</Markdown></div>}
       <DocumentChips docs={docs} />
       {data.tasks.length > 0 && (
         <div className="detail-section">
@@ -178,6 +180,11 @@ function FeatureDetail({ data, onNavigate }: { data: FeatureData; onNavigate: (t
 }
 
 function TaskDetail({ data, onNavigate }: { data: TaskData; onNavigate: (type: 'epic' | 'feature' | 'task', id: string) => void }) {
+  const [notes, setNotes] = useState<TaskNote[]>([])
+  useEffect(() => {
+    api.getTaskNotes(data.id).then(setNotes).catch(() => {})
+  }, [data.id])
+
   return (
     <>
       <div className="detail-header">
@@ -198,7 +205,20 @@ function TaskDetail({ data, onNavigate }: { data: TaskData; onNavigate: (type: '
           {data.worktree_id && <span className="detail-agent">agent assigned</span>}
         </div>
       </div>
-      {data.description && <p className="detail-description">{data.description}</p>}
+      {data.description && <div className="detail-description"><Markdown>{data.description}</Markdown></div>}
+      {notes.length > 0 && (
+        <div className="detail-section">
+          <h3>Notes</h3>
+          <div className="detail-notes">
+            {notes.map(n => (
+              <div key={n.id} className="detail-note">
+                <div className="detail-note-time">{new Date(n.created_at).toLocaleString()}</div>
+                <div className="detail-description"><Markdown>{n.note}</Markdown></div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </>
   )
 }

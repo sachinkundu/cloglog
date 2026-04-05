@@ -11,7 +11,7 @@ interface TaskCardProps {
 export function TaskCard({ task, onClick }: TaskCardProps) {
   return (
     <div
-      className={`task-card ${task.status === 'blocked' ? 'task-card-blocked' : ''}`}
+      className="task-card"
       onClick={onClick}
       role="button"
       tabIndex={0}
@@ -26,9 +26,6 @@ export function TaskCard({ task, onClick }: TaskCardProps) {
         {task.title}
       </div>
       <div className="task-meta">
-        {task.status === 'blocked' && (
-          <span className="task-badge task-badge-blocked">blocked</span>
-        )}
         {task.priority === 'expedite' && (
           <span className="task-priority">expedite</span>
         )}

@@ -12,12 +12,9 @@ interface ColumnProps {
 
 const COLUMN_LABELS: Record<string, string> = {
   backlog: 'Backlog',
-  assigned: 'Assigned',
   in_progress: 'In Progress',
-  testing: 'Testing',
   review: 'Review',
   done: 'Done',
-  blocked: 'Blocked',
 }
 
 export function Column({ column, onTaskClick, onRefresh }: ColumnProps) {

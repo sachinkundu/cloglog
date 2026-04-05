@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import Markdown from 'react-markdown'
 import { api } from '../api/client'
 import type { Document, DocumentSummary, TaskCard } from '../api/types'
 import './CardDetail.css'
@@ -41,7 +42,7 @@ export function CardDetail({ task, onClose }: CardDetailProps) {
         {task.description && (
           <div className="card-detail-section">
             <h3>Description</h3>
-            <p className="card-detail-description">{task.description}</p>
+            <div className="card-detail-description"><Markdown>{task.description}</Markdown></div>
           </div>
         )}
 

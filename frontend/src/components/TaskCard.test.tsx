@@ -65,9 +65,8 @@ describe('TaskCard', () => {
     expect(screen.getByText('OAuth')).toBeInTheDocument()
   })
 
-  it('shows blocked badge and red border for blocked tasks', () => {
-    const { container } = render(<TaskCard task={{ ...baseTask, status: 'blocked' }} onClick={vi.fn()} />)
-    expect(screen.getByText('blocked')).toBeInTheDocument()
-    expect(container.querySelector('.task-card-blocked')).toBeTruthy()
+  it('renders expedite priority badge', () => {
+    render(<TaskCard task={{ ...baseTask, priority: 'expedite' }} onClick={vi.fn()} />)
+    expect(screen.getByText('expedite')).toBeInTheDocument()
   })
 })

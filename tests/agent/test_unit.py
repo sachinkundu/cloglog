@@ -251,7 +251,7 @@ class TestAgentService:
             description="Next thing",
             priority="normal",
             position=1,
-            status="assigned",
+            status="backlog",
         )
         db_session.add(task2)
         await db_session.commit()

@@ -127,7 +127,7 @@ class AgentService:
         tasks = await self._board_repo.get_tasks_for_worktree(worktree_id)
         next_task = None
         for t in tasks:
-            if t.status in ("assigned", "backlog"):
+            if t.status == "backlog":
                 next_task = {
                     "id": t.id,
                     "title": t.title,

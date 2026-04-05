@@ -67,7 +67,7 @@ class BoardService:
             feature.status = "done"
         elif any(s == "review" for s in statuses):
             feature.status = "review"
-        elif any(s in ("in_progress", "assigned", "testing") for s in statuses):
+        elif any(s == "in_progress" for s in statuses):
             feature.status = "in_progress"
         else:
             feature.status = "planned"

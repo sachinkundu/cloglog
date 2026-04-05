@@ -29,10 +29,10 @@ describe('Column', () => {
     expect(screen.getByText('In Progress')).toBeInTheDocument()
   })
 
-  it('renders Testing label for testing status', () => {
-    const column: BoardColumn = { status: 'testing', tasks: [] }
+  it('renders Review label for review status', () => {
+    const column: BoardColumn = { status: 'review', tasks: [] }
     render(<Column column={column} onTaskClick={vi.fn()} />)
-    expect(screen.getByText('Testing')).toBeInTheDocument()
+    expect(screen.getByText('Review')).toBeInTheDocument()
   })
 
   it('falls back to raw status for unknown statuses', () => {

@@ -24,6 +24,14 @@ export type BacklogFeature = components['schemas']['BacklogFeature']
 export type BacklogTask = components['schemas']['BacklogTask']
 export type TaskCounts = components['schemas']['TaskCounts']
 
+// Task notes (not yet in OpenAPI contract)
+export interface TaskNote {
+  id: string
+  task_id: string
+  note: string
+  created_at: string
+}
+
 // Frontend-only types (not from API)
 export interface BoardColumn {
   status: string

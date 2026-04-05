@@ -109,3 +109,21 @@ class Task(Base):
     )
 
     feature: Mapped[Feature] = relationship(back_populates="tasks")
+    notes: Mapped[list[TaskNote]] = relationship(
+        back_populates="task", cascade="all, delete-orphan", order_by="TaskNote.created_at"
+    )
+
+
+class TaskNote(Base):
+    __tablename__ = "task_notes"
+
+    id: Mapped[_uuid.UUID] = mapped_column(
+        primary_key=True, default=_uuid.uuid4, server_default=text("gen_random_uuid()")
+    )
+    task_id: Mapped[_uuid.UUID] = mapped_column(ForeignKey("tasks.id"))
+    note: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+    task: Mapped[Task] = relationship(back_populates="notes")

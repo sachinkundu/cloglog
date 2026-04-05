@@ -13,6 +13,7 @@ vi.mock('./api/client', () => ({
     getBacklog: vi.fn(),
     getWorktrees: vi.fn(),
     getTaskDocuments: vi.fn(),
+    getTaskNotes: vi.fn(),
     getDocument: vi.fn(),
     streamUrl: vi.fn().mockReturnValue('http://test/stream'),
   },
@@ -106,6 +107,7 @@ beforeEach(() => {
   mockApi.getBacklog.mockResolvedValue([])
   mockApi.getWorktrees.mockResolvedValue(worktrees)
   mockApi.getTaskDocuments.mockResolvedValue([])
+  mockApi.getTaskNotes.mockResolvedValue([])
 })
 
 describe('App integration', () => {

@@ -101,10 +101,10 @@ async def test_rollup_feature_in_review(service: BoardService, db_session: Async
     assert feature.status == "review"
 
 
-async def test_rollup_feature_testing_counts_as_in_progress(
+async def test_rollup_feature_partial_done_is_in_progress(
     service: BoardService, db_session: AsyncSession
 ):
-    project, _ = await service.create_project("rollup-testing-test", "", "")
+    project, _ = await service.create_project("rollup-partial-done-test", "", "")
     epic = Epic(project_id=project.id, title="Epic", position=0)
     db_session.add(epic)
     await db_session.flush()
@@ -113,7 +113,7 @@ async def test_rollup_feature_testing_counts_as_in_progress(
     db_session.add(feature)
     await db_session.flush()
 
-    t1 = Task(feature_id=feature.id, title="T1", status="testing", position=0)
+    t1 = Task(feature_id=feature.id, title="T1", status="in_progress", position=0)
     t2 = Task(feature_id=feature.id, title="T2", status="done", position=1)
     db_session.add_all([t1, t2])
     await db_session.commit()

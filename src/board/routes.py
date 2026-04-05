@@ -284,6 +284,62 @@ async def get_task_notes(task_id: UUID, service: ServiceDep) -> list[dict[str, o
     ]
 
 
+# --- Notifications ---
+
+
+@router.get("/projects/{project_id}/notifications")
+async def get_notifications(project_id: UUID, service: ServiceDep) -> list[dict[str, object]]:
+    notifications = await service._repo.get_unread_notifications(project_id)
+    return [
+        {
+            "id": n.id,
+            "project_id": n.project_id,
+            "task_id": n.task_id,
+            "task_title": n.task_title,
+            "task_number": n.task_number,
+            "read": n.read,
+            "created_at": n.created_at,
+        }
+        for n in notifications
+    ]
+
+
+@router.patch("/notifications/{notification_id}/read")
+async def mark_notification_read(notification_id: UUID, service: ServiceDep) -> dict[str, object]:
+    notif = await service._repo.mark_notification_read(notification_id)
+    if notif is None:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return {
+        "id": notif.id,
+        "project_id": notif.project_id,
+        "task_id": notif.task_id,
+        "task_title": notif.task_title,
+        "task_number": notif.task_number,
+        "read": notif.read,
+        "created_at": notif.created_at,
+    }
+
+
+@router.post("/projects/{project_id}/notifications/read-all")
+async def mark_all_notifications_read(project_id: UUID, service: ServiceDep) -> dict[str, int]:
+    count = await service._repo.mark_all_notifications_read(project_id)
+    return {"marked_read": count}
+
+
+@router.post(
+    "/projects/{project_id}/notifications/dismiss-task/{task_id}",
+    status_code=200,
+)
+async def dismiss_task_notification(
+    project_id: UUID, task_id: UUID, service: ServiceDep
+) -> dict[str, bool]:
+    notif = await service._repo.get_unread_notification_for_task(project_id, task_id)
+    if notif is not None:
+        await service._repo.mark_notification_read(notif.id)
+        return {"dismissed": True}
+    return {"dismissed": False}
+
+
 # --- Board ---
 
 

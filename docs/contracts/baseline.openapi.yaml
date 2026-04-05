@@ -299,6 +299,118 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/projects/{project_id}/epics/reorder:
+    post:
+      summary: Reorder Epics
+      operationId: reorder_epics_api_v1_projects__project_id__epics_reorder_post
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Project Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReorderRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                title: ReorderResponse
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/projects/{project_id}/epics/{epic_id}/features/reorder:
+    post:
+      summary: Reorder Features
+      operationId: reorder_features_api_v1_projects__project_id__epics__epic_id__features_reorder_post
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Project Id
+      - name: epic_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Epic Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReorderRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                title: ReorderResponse
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/features/{feature_id}/tasks/reorder:
+    post:
+      summary: Reorder Tasks
+      operationId: reorder_tasks_api_v1_features__feature_id__tasks_reorder_post
+      parameters:
+      - name: feature_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Feature Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReorderRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                title: ReorderResponse
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/projects/{project_id}/board:
     get:
       summary: Get Board
@@ -1157,6 +1269,31 @@ components:
       required:
       - title
       title: ImportTask
+    ReorderItem:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        position:
+          type: integer
+          title: Position
+      type: object
+      required:
+      - id
+      - position
+      title: ReorderItem
+    ReorderRequest:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/ReorderItem'
+          type: array
+          title: Items
+      type: object
+      required:
+      - items
+      title: ReorderRequest
     ProjectCreate:
       properties:
         name:

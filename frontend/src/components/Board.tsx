@@ -1,4 +1,6 @@
+import { useCallback } from 'react'
 import type { BacklogEpic, BoardResponse } from '../api/types'
+import { api } from '../api/client'
 import { BacklogTree } from './BacklogTree'
 import { BoardHeader } from './BoardHeader'
 import { Column } from './Column'
@@ -16,6 +18,18 @@ interface BoardProps {
 export function Board({ board, backlog, projectId, onTaskClick, onItemClick, onRefresh }: BoardProps) {
   const flowColumns = board.columns.filter(col => col.status !== 'backlog')
 
+  const handleReorderEpics = useCallback((items: { id: string; position: number }[]) => {
+    api.reorderEpics(projectId, items).catch(() => onRefresh?.())
+  }, [projectId, onRefresh])
+
+  const handleReorderFeatures = useCallback((epicId: string, items: { id: string; position: number }[]) => {
+    api.reorderFeatures(projectId, epicId, items).catch(() => onRefresh?.())
+  }, [projectId, onRefresh])
+
+  const handleReorderTasks = useCallback((featureId: string, items: { id: string; position: number }[]) => {
+    api.reorderTasks(featureId, items).catch(() => onRefresh?.())
+  }, [onRefresh])
+
   return (
     <div className="board">
       <BoardHeader board={board} projectId={projectId} onItemClick={onItemClick} />
@@ -28,7 +42,13 @@ export function Board({ board, backlog, projectId, onTaskClick, onItemClick, onR
               {board.columns.find(c => c.status === 'backlog')?.tasks.length ?? 0}
             </span>
           </div>
-          <BacklogTree backlog={backlog} onItemClick={onItemClick} />
+          <BacklogTree
+            backlog={backlog}
+            onItemClick={onItemClick}
+            onReorderEpics={handleReorderEpics}
+            onReorderFeatures={handleReorderFeatures}
+            onReorderTasks={handleReorderTasks}
+          />
         </div>
         {flowColumns.map(col => (
           <Column key={col.status} column={col} onTaskClick={onTaskClick} onRefresh={onRefresh} />

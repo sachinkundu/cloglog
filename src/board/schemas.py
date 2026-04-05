@@ -222,3 +222,15 @@ class ImportEpic(BaseModel):
 
 class ImportPlan(BaseModel):
     epics: list[ImportEpic]
+
+
+# --- Reorder ---
+
+
+class ReorderItem(BaseModel):
+    id: UUID
+    position: int
+
+
+class ReorderRequest(BaseModel):
+    items: list[ReorderItem]

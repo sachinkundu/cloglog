@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { AnchorHTMLAttributes } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import mermaid from 'mermaid'
@@ -69,7 +70,7 @@ export function DocumentViewer({ documentId, onClose }: DocumentViewerProps) {
               <h2 className="doc-viewer-title">{doc.title}</h2>
             </div>
             <div className="doc-viewer-content">
-              <Markdown remarkPlugins={[remarkGfm]} components={{ code: renderCode }}>{doc.content}</Markdown>
+              <Markdown remarkPlugins={[remarkGfm]} components={{ code: renderCode, a: (props: AnchorHTMLAttributes<HTMLAnchorElement>) => <a {...props} target="_blank" rel="noopener noreferrer" /> }}>{doc.content}</Markdown>
             </div>
           </>
         )}

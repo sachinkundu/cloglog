@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react'
+import type { AnchorHTMLAttributes } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+
+const mdComponents = {
+  a: (props: AnchorHTMLAttributes<HTMLAnchorElement>) => (
+    <a {...props} target="_blank" rel="noopener noreferrer" />
+  ),
+}
 import { api } from '../api/client'
 import type { DocumentSummary, TaskNote } from '../api/types'
 import { BreadcrumbPills } from './BreadcrumbPills'
@@ -129,7 +136,7 @@ function EpicDetail({ data }: { data: EpicData }) {
         )}
       </div>
       <ProgressBar done={data.task_counts.done} total={data.task_counts.total} />
-      {data.description && <div className="detail-description"><Markdown remarkPlugins={[remarkGfm]}>{data.description}</Markdown></div>}
+      {data.description && <div className="detail-description"><Markdown remarkPlugins={[remarkGfm]} components={mdComponents}>{data.description}</Markdown></div>}
       <DocumentChips docs={docs} />
       {data.features.length > 0 && (
         <div className="detail-section">
@@ -164,7 +171,7 @@ function FeatureDetail({ data, onNavigate }: { data: FeatureData; onNavigate: (t
         </h2>
       </div>
       <ProgressBar done={data.task_counts.done} total={data.task_counts.total} />
-      {data.description && <div className="detail-description"><Markdown remarkPlugins={[remarkGfm]}>{data.description}</Markdown></div>}
+      {data.description && <div className="detail-description"><Markdown remarkPlugins={[remarkGfm]} components={mdComponents}>{data.description}</Markdown></div>}
       <DocumentChips docs={docs} />
       {data.tasks.length > 0 && (
         <div className="detail-section">
@@ -215,7 +222,7 @@ function TaskDetail({ data, onNavigate, projectId }: { data: TaskData; onNavigat
           {data.worktree_id && <span className="detail-agent">agent assigned</span>}
         </div>
       </div>
-      {data.description && <div className="detail-description"><Markdown remarkPlugins={[remarkGfm]}>{data.description}</Markdown></div>}
+      {data.description && <div className="detail-description"><Markdown remarkPlugins={[remarkGfm]} components={mdComponents}>{data.description}</Markdown></div>}
       {notes.length > 0 && (
         <div className="detail-section">
           <h3>Notes</h3>
@@ -223,7 +230,7 @@ function TaskDetail({ data, onNavigate, projectId }: { data: TaskData; onNavigat
             {notes.map(n => (
               <div key={n.id} className="detail-note">
                 <div className="detail-note-time">{new Date(n.created_at).toLocaleString()}</div>
-                <div className="detail-description"><Markdown remarkPlugins={[remarkGfm]}>{n.note.replace(/\\n/g, '\n')}</Markdown></div>
+                <div className="detail-description"><Markdown remarkPlugins={[remarkGfm]} components={mdComponents}>{n.note.replace(/\\n/g, '\n')}</Markdown></div>
               </div>
             ))}
           </div>

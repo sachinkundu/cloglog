@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react'
+import type { AnchorHTMLAttributes } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+
+const mdComponents = {
+  a: (props: AnchorHTMLAttributes<HTMLAnchorElement>) => (
+    <a {...props} target="_blank" rel="noopener noreferrer" />
+  ),
+}
 import { api } from '../api/client'
 import type { Document, DocumentSummary, TaskCard } from '../api/types'
 import './CardDetail.css'
@@ -43,7 +50,7 @@ export function CardDetail({ task, onClose }: CardDetailProps) {
         {task.description && (
           <div className="card-detail-section">
             <h3>Description</h3>
-            <div className="card-detail-description"><Markdown remarkPlugins={[remarkGfm]}>{task.description}</Markdown></div>
+            <div className="card-detail-description"><Markdown remarkPlugins={[remarkGfm]} components={mdComponents}>{task.description}</Markdown></div>
           </div>
         )}
 

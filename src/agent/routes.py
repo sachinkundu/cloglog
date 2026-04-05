@@ -19,6 +19,7 @@ from src.agent.schemas import (
     StartTaskRequest,
     StartTaskResponse,
     TaskInfo,
+    UnregisterByPathRequest,
     UpdateTaskStatusRequest,
     WorktreeResponse,
 )
@@ -117,6 +118,22 @@ async def add_task_note(
         "note": note.note,
         "created_at": note.created_at,
     }
+
+
+@router.post("/agents/unregister-by-path", status_code=204)
+async def unregister_by_path(
+    body: UnregisterByPathRequest, service: ServiceDep, project: CurrentProject
+) -> None:
+    artifacts = None
+    if body.artifacts is not None:
+        artifacts = {
+            "work_log": body.artifacts.work_log,
+            "learnings": body.artifacts.learnings,
+        }
+    try:
+        await service.unregister_by_path(project.id, body.worktree_path, artifacts=artifacts)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.post("/agents/{worktree_id}/unregister", status_code=204)

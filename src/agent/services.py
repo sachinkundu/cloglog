@@ -161,8 +161,10 @@ class AgentService:
 
     # --- Unregister ---
 
-    async def unregister(self, worktree_id: UUID) -> None:
-        """End the active session and mark worktree offline."""
+    async def unregister(
+        self, worktree_id: UUID, artifacts: dict[str, str | None] | None = None
+    ) -> None:
+        """End the active session and delete worktree record."""
         worktree = await self._repo.get_worktree(worktree_id)
         if worktree is None:
             raise ValueError(f"Worktree {worktree_id} not found")
@@ -171,15 +173,34 @@ class AgentService:
         if session is not None:
             await self._repo.end_session(session.id)
 
-        await self._repo.set_worktree_offline(worktree_id)
+        event_data: dict[str, object] = {
+            "worktree_id": str(worktree_id),
+            "worktree_path": worktree.worktree_path,
+        }
+        if artifacts is not None:
+            event_data["artifacts"] = artifacts
 
         await event_bus.publish(
             Event(
                 type=EventType.WORKTREE_OFFLINE,
                 project_id=worktree.project_id,
-                data={"worktree_id": str(worktree_id)},
+                data=event_data,
             )
         )
+
+        await self._repo.delete_worktree(worktree_id)
+
+    async def unregister_by_path(
+        self,
+        project_id: UUID,
+        worktree_path: str,
+        artifacts: dict[str, str | None] | None = None,
+    ) -> None:
+        """Resolve worktree by path and unregister it."""
+        worktree = await self._repo.get_worktree_by_path(project_id, worktree_path)
+        if worktree is None:
+            raise ValueError(f"Worktree not found for path: {worktree_path}")
+        await self.unregister(worktree.id, artifacts=artifacts)
 
     # --- Heartbeat Timeout ---
 

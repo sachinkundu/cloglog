@@ -69,6 +69,7 @@ async def test_agent_register(client: AsyncClient) -> None:
 
 
 async def test_agent_register_resumes_existing(client: AsyncClient) -> None:
+    """After unregister (which deletes the record), re-registering creates a fresh worktree."""
     project, _ = await _setup_project_with_task(client)
     h = _auth(project["api_key"])
     wt_path = f"/repo/wt-resume-{uuid.uuid4().hex[:6]}"
@@ -82,18 +83,19 @@ async def test_agent_register_resumes_existing(client: AsyncClient) -> None:
     assert r1.status_code == 201
     wt_id = r1.json()["worktree_id"]
 
-    # Unregister
-    await client.post(f"/api/v1/agents/{wt_id}/unregister")
+    # Unregister (now deletes the worktree record)
+    unr = await client.post(f"/api/v1/agents/{wt_id}/unregister")
+    assert unr.status_code == 204
 
-    # Re-register same path
+    # Re-register same path — creates a brand-new worktree, not a resume
     r2 = await client.post(
         "/api/v1/agents/register",
         json={"worktree_path": wt_path, "branch_name": "wt-resume"},
         headers=h,
     )
     assert r2.status_code == 201
-    assert r2.json()["worktree_id"] == wt_id
-    assert r2.json()["resumed"] is True
+    assert r2.json()["worktree_id"] is not None
+    assert r2.json()["resumed"] is False
 
 
 # ── Heartbeat ────────────────────────────────────────────────

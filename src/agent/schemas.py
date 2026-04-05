@@ -73,6 +73,16 @@ class AddTaskNoteRequest(BaseModel):
     note: str
 
 
+class ArtifactPaths(BaseModel):
+    work_log: str | None = None
+    learnings: str | None = None
+
+
+class UnregisterByPathRequest(BaseModel):
+    worktree_path: str
+    artifacts: ArtifactPaths | None = None
+
+
 # --- Worktree ---
 
 

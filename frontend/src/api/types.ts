@@ -47,6 +47,18 @@ export interface BoardResponse {
 }
 
 export type SSEEvent = {
-  type: 'task_status_changed' | 'worktree_online' | 'worktree_offline' | 'document_attached'
+  type:
+    | 'task_status_changed'
+    | 'worktree_online'
+    | 'worktree_offline'
+    | 'document_attached'
+    | 'epic_created'
+    | 'epic_deleted'
+    | 'feature_created'
+    | 'feature_deleted'
+    | 'task_created'
+    | 'task_deleted'
+    | 'task_note_added'
+    | 'bulk_import'
   data: Record<string, string>
 }

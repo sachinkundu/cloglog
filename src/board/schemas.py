@@ -224,6 +224,34 @@ class ImportPlan(BaseModel):
     epics: list[ImportEpic]
 
 
+# --- Dependencies ---
+
+
+class DependencyCreate(BaseModel):
+    depends_on_id: UUID
+
+
+class DependencyGraphNode(BaseModel):
+    id: UUID
+    number: int
+    title: str
+    status: str
+    epic_title: str
+    epic_color: str
+
+
+class DependencyGraphEdge(BaseModel):
+    from_id: UUID
+    to_id: UUID
+    from_number: int
+    to_number: int
+
+
+class DependencyGraphResponse(BaseModel):
+    nodes: list[DependencyGraphNode]
+    edges: list[DependencyGraphEdge]
+
+
 # --- Reorder ---
 
 

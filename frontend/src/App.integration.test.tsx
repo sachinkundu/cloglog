@@ -19,6 +19,7 @@ vi.mock('./api/client', () => ({
     markNotificationRead: vi.fn(),
     markAllNotificationsRead: vi.fn(),
     dismissTaskNotification: vi.fn(),
+    getDependencyGraph: vi.fn(),
     streamUrl: vi.fn().mockReturnValue('http://test/stream'),
   },
 }))
@@ -114,6 +115,7 @@ beforeEach(() => {
   mockApi.getTaskNotes.mockResolvedValue([])
   mockApi.getNotifications.mockResolvedValue([])
   mockApi.dismissTaskNotification.mockResolvedValue({ dismissed: true })
+  mockApi.getDependencyGraph.mockResolvedValue({ nodes: [], edges: [] })
 })
 
 describe('App integration', () => {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState, useEffect } from 'react'
 import type { AnchorHTMLAttributes } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -34,6 +34,9 @@ interface FeatureData {
   task_counts: { total: number; done: number }
   tasks: Array<{ id: string; title: string; status: string }>
   number?: number
+  dependencies?: Array<{ id: string; title: string; number: number }>
+  dependents?: Array<{ id: string; title: string; number: number }>
+  all_features?: Array<{ id: string; title: string; number: number }>
 }
 
 interface TaskData {
@@ -153,6 +156,109 @@ function EpicDetail({ data }: { data: EpicData }) {
   )
 }
 
+function FeatureDependencies({ data, onNavigate }: { data: FeatureData; onNavigate: (type: 'epic' | 'feature' | 'task', id: string) => void }) {
+  const [adding, setAdding] = useState(false)
+  const [selectedId, setSelectedId] = useState('')
+  const [deps, setDeps] = useState(data.dependencies ?? [])
+  const [dependents] = useState(data.dependents ?? [])
+
+  const handleRemove = async (depId: string) => {
+    await api.removeDependency(data.id, depId)
+    setDeps(prev => prev.filter(d => d.id !== depId))
+  }
+
+  const handleAdd = async () => {
+    if (!selectedId) return
+    await api.addDependency(data.id, selectedId)
+    const added = data.all_features?.find(f => f.id === selectedId)
+    if (added) setDeps(prev => [...prev, added])
+    setAdding(false)
+    setSelectedId('')
+  }
+
+  const availableFeatures = (data.all_features ?? []).filter(
+    f => f.id !== data.id && !deps.some(d => d.id === f.id)
+  )
+
+  return (
+    <div className="detail-section">
+      <h3>Dependencies</h3>
+      {deps.length > 0 && (
+        <div>
+          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>Depends on</div>
+          {deps.map(d => (
+            <div key={d.id} className="detail-list-item">
+              <span onClick={() => onNavigate('feature', d.id)} style={{ cursor: 'pointer' }}>
+                F-{d.number} {d.title}
+              </span>
+              <button
+                onClick={() => handleRemove(d.id)}
+                style={{
+                  background: 'none', border: 'none', color: 'var(--text-muted)',
+                  cursor: 'pointer', fontSize: '12px', padding: '2px 6px',
+                }}
+              >x</button>
+            </div>
+          ))}
+        </div>
+      )}
+      {dependents.length > 0 && (
+        <div style={{ marginTop: '8px' }}>
+          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>Blocks</div>
+          {dependents.map(d => (
+            <div key={d.id} className="detail-list-item">
+              <span onClick={() => onNavigate('feature', d.id)} style={{ cursor: 'pointer' }}>
+                F-{d.number} {d.title}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {!adding && availableFeatures.length > 0 && (
+        <button
+          onClick={() => setAdding(true)}
+          style={{
+            marginTop: '8px', background: 'none', border: '1px solid var(--border)',
+            color: 'var(--text-muted)', cursor: 'pointer', padding: '4px 10px',
+            borderRadius: '4px', fontSize: '12px', fontFamily: 'var(--font-mono)',
+          }}
+        >+ Add dependency</button>
+      )}
+      {adding && (
+        <div style={{ marginTop: '8px', display: 'flex', gap: '8px' }}>
+          <select
+            value={selectedId}
+            onChange={e => setSelectedId(e.target.value)}
+            style={{
+              flex: 1, background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+              color: 'var(--text-primary)', padding: '4px 8px', borderRadius: '4px',
+              fontSize: '12px', fontFamily: 'var(--font-mono)',
+            }}
+          >
+            <option value="">Select feature...</option>
+            {availableFeatures.map(f => (
+              <option key={f.id} value={f.id}>F-{f.number} {f.title}</option>
+            ))}
+          </select>
+          <button onClick={handleAdd} style={{
+            background: 'var(--accent)', border: 'none', color: '#fff',
+            cursor: 'pointer', padding: '4px 10px', borderRadius: '4px', fontSize: '12px',
+          }}>Add</button>
+          <button onClick={() => { setAdding(false); setSelectedId('') }} style={{
+            background: 'none', border: '1px solid var(--border)', color: 'var(--text-muted)',
+            cursor: 'pointer', padding: '4px 10px', borderRadius: '4px', fontSize: '12px',
+          }}>Cancel</button>
+        </div>
+      )}
+      {deps.length === 0 && dependents.length === 0 && !adding && (
+        <div style={{ color: 'var(--text-muted)', fontSize: '12px', fontFamily: 'var(--font-mono)' }}>
+          No dependencies
+        </div>
+      )}
+    </div>
+  )
+}
+
 function FeatureDetail({ data, onNavigate }: { data: FeatureData; onNavigate: (type: 'epic' | 'feature' | 'task', id: string) => void }) {
   const docs = useDocuments('feature', data.id)
   return (
@@ -173,6 +279,7 @@ function FeatureDetail({ data, onNavigate }: { data: FeatureData; onNavigate: (t
       <ProgressBar done={data.task_counts.done} total={data.task_counts.total} />
       {data.description && <div className="detail-description"><Markdown remarkPlugins={[remarkGfm]} components={mdComponents}>{data.description}</Markdown></div>}
       <DocumentChips docs={docs} />
+      <FeatureDependencies data={data} onNavigate={onNavigate} />
       {data.tasks.length > 0 && (
         <div className="detail-section">
           <h3>Tasks</h3>

@@ -91,6 +91,73 @@ class BoardService:
 
         await session.commit()
 
+    # --- Dependencies ---
+
+    async def has_cycle(self, feature_id: UUID, depends_on_id: UUID) -> bool:
+        """DFS from depends_on_id's own dependencies. If we reach feature_id, there's a cycle."""
+        visited: set[UUID] = set()
+        stack = [depends_on_id]
+        while stack:
+            current = stack.pop()
+            if current == feature_id:
+                return True
+            if current in visited:
+                continue
+            visited.add(current)
+            deps = await self._repo.get_feature_dependencies(current)
+            stack.extend(deps)
+        return False
+
+    async def add_dependency(self, feature_id: UUID, depends_on_id: UUID) -> None:
+        if feature_id == depends_on_id:
+            raise ValueError("A feature cannot depend on itself")
+        feature = await self._repo.get_feature(feature_id)
+        depends_on = await self._repo.get_feature(depends_on_id)
+        if feature is None or depends_on is None:
+            raise ValueError("Feature not found")
+        epic_a = await self._repo.get_epic(feature.epic_id)
+        epic_b = await self._repo.get_epic(depends_on.epic_id)
+        assert epic_a is not None and epic_b is not None
+        if epic_a.project_id != epic_b.project_id:
+            raise ValueError("Features must be in the same project")
+        if await self._repo.get_dependency_exists(feature_id, depends_on_id):
+            raise ValueError("DUPLICATE")
+        if await self.has_cycle(feature_id, depends_on_id):
+            raise ValueError("Adding this dependency would create a cycle")
+        await self._repo.add_dependency(feature_id, depends_on_id)
+
+    async def remove_dependency(self, feature_id: UUID, depends_on_id: UUID) -> bool:
+        return await self._repo.remove_dependency(feature_id, depends_on_id)
+
+    async def get_dependency_graph(self, project_id: UUID) -> dict[str, object]:
+        epics = await self._repo.get_backlog_tree(project_id)
+        edges = await self._repo.get_all_dependencies(project_id)
+        nodes = []
+        for epic in epics:
+            for feature in epic.features:
+                nodes.append(
+                    {
+                        "id": str(feature.id),
+                        "number": feature.number,
+                        "title": feature.title,
+                        "status": feature.status,
+                        "epic_title": epic.title,
+                        "epic_color": epic.color,
+                    }
+                )
+        edge_list = []
+        number_map = {n["id"]: n["number"] for n in nodes}
+        for feat_id, dep_id in edges:
+            edge_list.append(
+                {
+                    "from_id": str(dep_id),
+                    "to_id": str(feat_id),
+                    "from_number": number_map.get(str(dep_id), 0),
+                    "to_number": number_map.get(str(feat_id), 0),
+                }
+            )
+        return {"nodes": nodes, "edges": edge_list}
+
     # --- Search ---
 
     async def search(self, project_id: UUID, query: str, limit: int = 20) -> SearchResponse:

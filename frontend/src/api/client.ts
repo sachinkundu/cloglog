@@ -1,4 +1,4 @@
-import type { AppNotification, BacklogEpic, BoardResponse, Document, DocumentSummary, Project, SearchResponse, TaskNote, Worktree } from './types'
+import type { AppNotification, BacklogEpic, BoardResponse, DependencyGraphResponse, Document, DocumentSummary, Project, SearchResponse, TaskNote, Worktree } from './types'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api/v1'
 
@@ -57,6 +57,19 @@ export const api = {
       `/projects/${projectId}/notifications/dismiss-task/${taskId}`,
       { method: 'POST' },
     ),
+
+  // Dependencies
+  getDependencyGraph: (projectId: string) =>
+    fetchJSON<DependencyGraphResponse>(`/projects/${projectId}/dependency-graph`),
+  addDependency: (featureId: string, dependsOnId: string) =>
+    fetchJSON<{ status: string }>(`/features/${featureId}/dependencies`, {
+      method: 'POST',
+      body: JSON.stringify({ depends_on_id: dependsOnId }),
+    }),
+  removeDependency: (featureId: string, dependsOnId: string) =>
+    fetch(`${BASE_URL}/features/${featureId}/dependencies/${dependsOnId}`, {
+      method: 'DELETE',
+    }),
 
   // Search
   search: (projectId: string, q: string, limit?: number, signal?: AbortSignal) =>

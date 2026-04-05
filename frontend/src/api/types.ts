@@ -76,6 +76,28 @@ export interface BoardResponse {
   done_count: number
 }
 
+// Dependency graph types (not yet in OpenAPI contract)
+export interface DependencyGraphNode {
+  id: string
+  number: number
+  title: string
+  status: string
+  epic_title: string
+  epic_color: string
+}
+
+export interface DependencyGraphEdge {
+  from_id: string
+  to_id: string
+  from_number: number
+  to_number: number
+}
+
+export interface DependencyGraphResponse {
+  nodes: DependencyGraphNode[]
+  edges: DependencyGraphEdge[]
+}
+
 export type SSEEvent = {
   type:
     | 'task_status_changed'
@@ -91,5 +113,7 @@ export type SSEEvent = {
     | 'task_note_added'
     | 'bulk_import'
     | 'notification_created'
+    | 'dependency_added'
+    | 'dependency_removed'
   data: Record<string, string>
 }

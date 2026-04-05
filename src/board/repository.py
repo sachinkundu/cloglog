@@ -10,7 +10,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from src.board.models import Epic, Feature, Notification, Project, Task, TaskNote
+from src.board.models import Epic, Feature, FeatureDependency, Notification, Project, Task, TaskNote
 
 
 class BoardRepository:
@@ -258,6 +258,42 @@ class BoardRepository:
             select(Task).where(Task.worktree_id == worktree_id).order_by(Task.position)
         )
         return list(result.scalars().all())
+
+    # --- Dependencies ---
+
+    async def add_dependency(self, feature_id: UUID, depends_on_id: UUID) -> None:
+        dep = FeatureDependency(feature_id=feature_id, depends_on_id=depends_on_id)
+        self._session.add(dep)
+        await self._session.commit()
+
+    async def remove_dependency(self, feature_id: UUID, depends_on_id: UUID) -> bool:
+        dep = await self._session.get(FeatureDependency, (feature_id, depends_on_id))
+        if dep is None:
+            return False
+        await self._session.delete(dep)
+        await self._session.commit()
+        return True
+
+    async def get_dependency_exists(self, feature_id: UUID, depends_on_id: UUID) -> bool:
+        dep = await self._session.get(FeatureDependency, (feature_id, depends_on_id))
+        return dep is not None
+
+    async def get_all_dependencies(self, project_id: UUID) -> list[tuple[UUID, UUID]]:
+        result = await self._session.execute(
+            select(FeatureDependency.feature_id, FeatureDependency.depends_on_id)
+            .join(Feature, FeatureDependency.feature_id == Feature.id)
+            .join(Epic, Feature.epic_id == Epic.id)
+            .where(Epic.project_id == project_id)
+        )
+        return [(row[0], row[1]) for row in result.all()]
+
+    async def get_feature_dependencies(self, feature_id: UUID) -> list[UUID]:
+        result = await self._session.execute(
+            select(FeatureDependency.depends_on_id).where(
+                FeatureDependency.feature_id == feature_id
+            )
+        )
+        return [row[0] for row in result.all()]
 
     # --- Task Notes ---
 

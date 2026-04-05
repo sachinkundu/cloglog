@@ -21,6 +21,8 @@ class EventType(StrEnum):
     TASK_NOTE_ADDED = "task_note_added"
     BULK_IMPORT = "bulk_import"
     NOTIFICATION_CREATED = "notification_created"
+    DEPENDENCY_ADDED = "dependency_added"
+    DEPENDENCY_REMOVED = "dependency_removed"
 
 
 @dataclass

@@ -15,6 +15,8 @@ from src.board.schemas import (
     BacklogTask,
     BoardColumn,
     BoardResponse,
+    DependencyCreate,
+    DependencyGraphResponse,
     EpicCreate,
     EpicResponse,
     FeatureCreate,
@@ -431,6 +433,73 @@ async def get_backlog(project_id: UUID, service: ServiceDep) -> list[BacklogEpic
         )
 
     return result
+
+
+# --- Dependencies ---
+
+
+@router.get(
+    "/projects/{project_id}/dependency-graph",
+    response_model=DependencyGraphResponse,
+)
+async def get_dependency_graph(project_id: UUID, service: ServiceDep) -> DependencyGraphResponse:
+    project = await service._repo.get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    graph = await service.get_dependency_graph(project_id)
+    return DependencyGraphResponse.model_validate(graph)
+
+
+@router.post("/features/{feature_id}/dependencies", status_code=201)
+async def add_dependency(
+    feature_id: UUID, body: DependencyCreate, service: ServiceDep
+) -> dict[str, str]:
+    try:
+        await service.add_dependency(feature_id, body.depends_on_id)
+    except ValueError as e:
+        msg = str(e)
+        if "DUPLICATE" in msg:
+            raise HTTPException(status_code=409, detail="Dependency already exists") from None
+        raise HTTPException(status_code=400, detail=msg) from None
+    # Resolve project_id for SSE event
+    feature = await service._repo.get_feature(feature_id)
+    assert feature is not None
+    epic = await service._repo.get_epic(feature.epic_id)
+    assert epic is not None
+    await event_bus.publish(
+        Event(
+            type=EventType.DEPENDENCY_ADDED,
+            project_id=epic.project_id,
+            data={
+                "feature_id": str(feature_id),
+                "depends_on_id": str(body.depends_on_id),
+            },
+        )
+    )
+    return {"status": "created"}
+
+
+@router.delete("/features/{feature_id}/dependencies/{depends_on_id}", status_code=204)
+async def remove_dependency(feature_id: UUID, depends_on_id: UUID, service: ServiceDep) -> None:
+    # Resolve project_id for SSE event before deletion
+    feature = await service._repo.get_feature(feature_id)
+    if feature is None:
+        raise HTTPException(status_code=404, detail="Feature not found")
+    epic = await service._repo.get_epic(feature.epic_id)
+    assert epic is not None
+    removed = await service.remove_dependency(feature_id, depends_on_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Dependency not found")
+    await event_bus.publish(
+        Event(
+            type=EventType.DEPENDENCY_REMOVED,
+            project_id=epic.project_id,
+            data={
+                "feature_id": str(feature_id),
+                "depends_on_id": str(depends_on_id),
+            },
+        )
+    )
 
 
 # --- Import ---

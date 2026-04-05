@@ -61,8 +61,13 @@ export function BacklogTree({ backlog, onItemClick, onReorderEpics, onReorderFea
   )
   const [localBacklog, setLocalBacklog] = useState(backlog)
 
-  // Sync local state when backlog prop changes (e.g. SSE refresh)
-  if (backlog !== localBacklog && JSON.stringify(backlog) !== JSON.stringify(localBacklog)) {
+  // Sync from props only when items are added/removed/status-changed — not on reorder.
+  // This preserves drag ordering while picking up structural changes.
+  const getContentKey = (bl: BacklogEpic[]) =>
+    bl.flatMap(e => [e.epic.id, ...e.features.flatMap(f => [f.feature.id, f.feature.status, ...f.tasks.map(t => t.id + t.status)])]).sort().join(',')
+  const propKey = getContentKey(backlog)
+  const localKey = getContentKey(localBacklog)
+  if (propKey !== localKey) {
     setLocalBacklog(backlog)
   }
 

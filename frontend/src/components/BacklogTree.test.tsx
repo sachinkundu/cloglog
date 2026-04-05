@@ -82,6 +82,10 @@ const mockWithMixedStatuses: BacklogEpic[] = [
 ]
 
 describe('BacklogTree', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
   it('renders epic headers', () => {
     render(<BacklogTree backlog={mockBacklog} onItemClick={vi.fn()} />)
     expect(screen.getByText('Auth System')).toBeInTheDocument()
@@ -120,5 +124,98 @@ describe('BacklogTree', () => {
     render(<BacklogTree backlog={mockBacklog} onItemClick={onClick} />)
     await user.click(screen.getByText('Callback handler'))
     expect(onClick).toHaveBeenCalledWith('task', 't1')
+  })
+
+  it('hides fully completed epics by default', () => {
+    const backlogWithDone: BacklogEpic[] = [
+      ...mockBacklog,
+      {
+        epic: {
+          id: 'e2', project_id: 'p1', title: 'Done Epic', description: '',
+          bounded_context: '', context_description: '', status: 'done',
+          position: 1, created_at: '', color: '#10b981', number: 3,
+        },
+        features: [{
+          feature: {
+            id: 'f2', epic_id: 'e2', title: 'Done Feature', description: '',
+            status: 'done', position: 0, created_at: '', number: 3,
+          },
+          tasks: [
+            { id: 't3', title: 'Done task', status: 'done', priority: 'normal', number: 6 },
+          ],
+          task_counts: { total: 1, done: 1 },
+        }],
+        task_counts: { total: 1, done: 1 },
+      },
+    ]
+    render(<BacklogTree backlog={backlogWithDone} onItemClick={vi.fn()} />)
+    expect(screen.getByText('Auth System')).toBeInTheDocument()
+    expect(screen.queryByText('Done Epic')).not.toBeInTheDocument()
+    expect(screen.getByText('Show completed (1)')).toBeInTheDocument()
+  })
+
+  it('shows completed epics when toggle is clicked', async () => {
+    const user = userEvent.setup()
+    const backlogWithDone: BacklogEpic[] = [
+      ...mockBacklog,
+      {
+        epic: {
+          id: 'e2', project_id: 'p1', title: 'Done Epic', description: '',
+          bounded_context: '', context_description: '', status: 'done',
+          position: 1, created_at: '', color: '#10b981', number: 3,
+        },
+        features: [{
+          feature: {
+            id: 'f2', epic_id: 'e2', title: 'Done Feature', description: '',
+            status: 'done', position: 0, created_at: '', number: 3,
+          },
+          tasks: [
+            { id: 't3', title: 'Done task', status: 'done', priority: 'normal', number: 6 },
+          ],
+          task_counts: { total: 1, done: 1 },
+        }],
+        task_counts: { total: 1, done: 1 },
+      },
+    ]
+    render(<BacklogTree backlog={backlogWithDone} onItemClick={vi.fn()} />)
+    await user.click(screen.getByText('Show completed (1)'))
+    expect(screen.getByText('Done Epic')).toBeInTheDocument()
+    expect(screen.getByText('Hide completed (1)')).toBeInTheDocument()
+  })
+
+  it('hides completed features within a visible epic', () => {
+    const backlogMixed: BacklogEpic[] = [{
+      epic: {
+        id: 'e1', project_id: 'p1', title: 'Mixed Epic', description: '',
+        bounded_context: '', context_description: '', status: 'in_progress',
+        position: 0, created_at: '', color: '#7c3aed', number: 1,
+      },
+      features: [
+        {
+          feature: {
+            id: 'f1', epic_id: 'e1', title: 'Active Feature', description: '',
+            status: 'in_progress', position: 0, created_at: '', number: 1,
+          },
+          tasks: [
+            { id: 't1', title: 'Active task', status: 'backlog', priority: 'normal', number: 1 },
+          ],
+          task_counts: { total: 1, done: 0 },
+        },
+        {
+          feature: {
+            id: 'f2', epic_id: 'e1', title: 'Finished Feature', description: '',
+            status: 'done', position: 1, created_at: '', number: 2,
+          },
+          tasks: [
+            { id: 't2', title: 'Done task', status: 'done', priority: 'normal', number: 2 },
+          ],
+          task_counts: { total: 1, done: 1 },
+        },
+      ],
+      task_counts: { total: 2, done: 1 },
+    }]
+    render(<BacklogTree backlog={backlogMixed} onItemClick={vi.fn()} />)
+    expect(screen.getByText('Active Feature')).toBeInTheDocument()
+    expect(screen.queryByText('Finished Feature')).not.toBeInTheDocument()
   })
 })

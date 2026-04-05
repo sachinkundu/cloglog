@@ -26,13 +26,32 @@ function SegmentedProgress({ tasks }: { tasks: Array<{ status: string }> }) {
   )
 }
 
+function isFullyDone(counts: { total: number; done: number }) {
+  return counts.total > 0 && counts.done === counts.total
+}
+
 export function BacklogTree({ backlog, onItemClick }: BacklogTreeProps) {
+  const [showCompleted, setShowCompleted] = useState(
+    () => localStorage.getItem('backlog-show-completed') === 'true'
+  )
   const [expandedEpics, setExpandedEpics] = useState<Set<string>>(
     new Set(backlog.map(e => e.epic.id))
   )
   const [expandedFeatures, setExpandedFeatures] = useState<Set<string>>(
     new Set(backlog.flatMap(e => e.features.map(f => f.feature.id)))
   )
+
+  const toggleShowCompleted = () => {
+    setShowCompleted(prev => {
+      const next = !prev
+      localStorage.setItem('backlog-show-completed', String(next))
+      return next
+    })
+  }
+
+  const visibleBacklog = showCompleted
+    ? backlog
+    : backlog.filter(e => !isFullyDone(e.task_counts))
 
   const toggleEpic = (id: string) => {
     setExpandedEpics(prev => {
@@ -52,10 +71,20 @@ export function BacklogTree({ backlog, onItemClick }: BacklogTreeProps) {
     })
   }
 
+  const completedCount = backlog.filter(e => isFullyDone(e.task_counts)).length
+
   return (
     <div className="backlog-tree">
-      {backlog.map(({ epic, features }) => {
-        const allTasks = features.flatMap(f => f.tasks)
+      {completedCount > 0 && (
+        <button className="backlog-completed-toggle" onClick={toggleShowCompleted}>
+          {showCompleted ? 'Hide' : 'Show'} completed ({completedCount})
+        </button>
+      )}
+      {visibleBacklog.map(({ epic, features }) => {
+        const visibleFeatures = showCompleted
+          ? features
+          : features.filter(f => !isFullyDone(f.task_counts))
+        const allTasks = visibleFeatures.flatMap(f => f.tasks)
 
         return (
           <div key={epic.id} className="backlog-epic">
@@ -80,7 +109,7 @@ export function BacklogTree({ backlog, onItemClick }: BacklogTreeProps) {
               <SegmentedProgress tasks={allTasks} />
             </div>
 
-            {expandedEpics.has(epic.id) && features.map(({ feature, tasks }) => {
+            {expandedEpics.has(epic.id) && visibleFeatures.map(({ feature, tasks }) => {
               const backlogTasks = tasks.filter(t => t.status === 'backlog')
 
               return (

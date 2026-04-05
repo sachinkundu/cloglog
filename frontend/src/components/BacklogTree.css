@@ -2,6 +2,22 @@
   overflow-y: auto;
 }
 
+.backlog-completed-toggle {
+  display: block;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 4px 8px;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+
+.backlog-completed-toggle:hover {
+  color: var(--text-secondary);
+}
+
 .backlog-epic {
   margin-bottom: 16px;
 }

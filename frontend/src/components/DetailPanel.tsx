@@ -213,7 +213,7 @@ function TaskDetail({ data, onNavigate }: { data: TaskData; onNavigate: (type: '
             {notes.map(n => (
               <div key={n.id} className="detail-note">
                 <div className="detail-note-time">{new Date(n.created_at).toLocaleString()}</div>
-                <div className="detail-description"><Markdown>{n.note}</Markdown></div>
+                <div className="detail-description"><Markdown>{n.note.replace(/\\n/g, '\n')}</Markdown></div>
               </div>
             ))}
           </div>

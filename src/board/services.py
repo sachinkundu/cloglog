@@ -8,7 +8,7 @@ from uuid import UUID
 
 from src.board.models import Project
 from src.board.repository import BoardRepository
-from src.board.schemas import ImportPlan
+from src.board.schemas import ImportPlan, SearchResponse, SearchResult
 
 EPIC_COLOR_PALETTE = [
     "#7c3aed",  # purple
@@ -90,6 +90,21 @@ class BoardService:
             epic.status = "planned"
 
         await session.commit()
+
+    # --- Search ---
+
+    async def search(
+        self, project_id: UUID, query: str, limit: int = 20
+    ) -> SearchResponse:
+        project = await self._repo.get_project(project_id)
+        if not project:
+            raise ValueError("Project not found")
+        results, total = await self._repo.search(project_id, query, limit)
+        return SearchResponse(
+            query=query,
+            results=[SearchResult(**r) for r in results],
+            total=total,
+        )
 
     # --- Import ---
 

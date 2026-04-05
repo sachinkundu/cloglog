@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.board.repository import BoardRepository
@@ -23,6 +23,7 @@ from src.board.schemas import (
     ProjectCreate,
     ProjectResponse,
     ProjectWithKey,
+    SearchResponse,
     TaskCard,
     TaskCounts,
     TaskCreate,
@@ -338,6 +339,22 @@ async def dismiss_task_notification(
         await service._repo.mark_notification_read(notif.id)
         return {"dismissed": True}
     return {"dismissed": False}
+
+
+# --- Search ---
+
+
+@router.get("/projects/{project_id}/search", response_model=SearchResponse)
+async def search_project(
+    project_id: UUID,
+    service: ServiceDep,
+    q: str = Query(..., min_length=1),
+    limit: int = Query(20, ge=1, le=50),
+) -> SearchResponse:
+    try:
+        return await service.search(project_id, q, limit)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Project not found")
 
 
 # --- Board ---

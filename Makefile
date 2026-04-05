@@ -70,6 +70,9 @@ dev: ## Start everything (db + migrate + backend + frontend)
 	@echo "  Postgres: up"
 	@uv run alembic upgrade head 2>&1 | tail -1
 	@echo "  Migrations: applied"
+	@# Kill old processes on ports 8000 and 5173 if still running
+	@fuser -k 8000/tcp 2>/dev/null && echo "  Killed old backend on :8000" || true
+	@fuser -k 5173/tcp 2>/dev/null && echo "  Killed old frontend on :5173" || true
 	@echo "  Starting backend + frontend..."
 	@trap 'kill 0' EXIT; \
 		uv run uvicorn src.gateway.app:create_app --factory --host 0.0.0.0 --port 8000 --reload & \

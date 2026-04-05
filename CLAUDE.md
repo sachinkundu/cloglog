@@ -57,6 +57,11 @@ cd mcp-server && make test   # MCP server tests
 cd mcp-server && make build  # Build TypeScript
 ```
 
+## Environment Quirks
+
+- **Run frontend tests from `frontend/` directory:** `cd frontend && npx vitest run`. Running from repo root causes `document is not defined` errors.
+- **Run backend tests from repo root:** `uv run pytest` from `/home/sachin/code/cloglog`.
+
 ## Quality Gate
 
 Before completing any task or creating a PR, run `make quality` and verify it passes.
@@ -82,6 +87,14 @@ GH_TOKEN="$BOT_TOKEN" gh pr create --title "feat: ..." --body "..."
 ```
 
 Never use `git push` or `gh pr create` without first setting the bot token. The user cannot merge their own PRs — all agent work must appear as authored by the bot.
+
+## Non-Negotiable Principles
+
+These are CRITICAL. Every agent, every worktree, every task. No exceptions.
+
+1. **Always choose the best option, not the easiest.** When proposing approaches, pick the architecturally sound solution even if it requires more work. Never take shortcuts that create tech debt. The right solution now saves pain later.
+
+2. **Boy Scout Rule: leave the code better than you found it.** Fix pre-existing problems before adding new code. If you find broken tests, fix them first. If you find inconsistent naming, fix it. If you find a bug in code you're touching, fix it. Never pile new work on top of existing problems.
 
 ## Agent Learnings
 
@@ -110,8 +123,13 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 - **Auth consistency:** All agent-facing endpoints use `Authorization: Bearer <api-key>`. Dashboard-facing endpoints are public (no auth). Never use query parameters for auth. Use the `CurrentProject` dependency from `src/gateway/auth.py`.
 - **Model imports in tests:** All model classes must be imported in `tests/conftest.py` so `Base.metadata.create_all` creates all tables. If you add a new model, verify the import exists.
 
+### Autonomous Agent Behavior
+- **NEVER wait for user input.** Worktree agents are fully autonomous. Make your own design decisions. All communication with the user happens via PR comments on GitHub — never via the terminal.
+- **Never use interactive skills that ask questions.** Do not use the brainstorming skill's question-and-answer flow. Write design specs directly with your own recommendations, create the PR, and let the user review it there.
+- **Decline visual companion offers.** If a skill offers to show mockups in a browser, decline and include diagrams/mockups as text or markdown in the spec instead.
+
 ### Planning Before Implementation
-- **Never create implementation tasks without going through the planning pipeline first.** The pipeline is: design spec (brainstorming) → API contract (DDD architect + reviewer) → implementation plan → then create tasks and execute.
+- **Never create implementation tasks without going through the planning pipeline first.** The pipeline is: design spec → implementation plan → then create tasks and execute.
 - Features on the board represent work to be planned, not pre-decomposed task lists. The implementation tasks emerge from the planning process.
 - If you need to note a feature idea, create the feature on the board but leave it empty. The planning pipeline fills in the tasks.
 
@@ -136,13 +154,15 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 ### Worktree Hygiene
 - **Never commit CONTRACT.yaml.** It's a local reference file copied by `create-worktree.sh`. It is in `.gitignore`.
 - **Task lifecycle in worktrees:** Move tasks through `in_progress → review` using `update_task_status` MCP tool. Before moving to review, add a structured test report via `add_task_note` covering: (1) **Pre-existing tests** — how many existed, were any affected? (2) **Modified tests** — which tests changed and why? (3) **New tests** — what was added, what edge cases covered? (4) **Testing strategy** — why these tests, what risks considered? (5) **Results** — final pass/fail with clear delta (e.g., "3 modified, 1 new, 0 removed"). This is a demo of your testing judgment, not just a pass count.
-- **PR merge detection:** After creating a PR and starting a `/loop`, check `gh pr view --json state` to detect when the PR is merged. When merged: mark all tasks as done via `complete_task`, call `unregister_agent`, then exit cleanly.
+- **PR merge detection:** After creating a PR and starting a `/loop`, check `gh pr view --json state` to detect when the PR is merged. When merged: mark tasks as done via `complete_task`, call `unregister_agent`, then exit cleanly.
+- **Attach documents after PR merge:** When a spec or plan PR is merged, attach the document to the feature using `attach_document` MCP tool so it appears on the board card.
 - **SSE events are live:** The board updates in real-time via SSE. When you change task status, the dashboard reflects it immediately.
 - **Worktree removal:** Use `./scripts/manage-worktrees.sh remove <name>` to remove a single worktree after its PR merges. Use `./scripts/manage-worktrees.sh close <wave-name> <name> [name...]` to close a full wave (generates work log, removes all worktrees, updates main).
+- **Zellij tab management:** See `docs/zellij-guide.md` for the complete guide. Key rules: always name tabs after the worktree (`wt-*`), close only tabs you created, close by name→TAB_ID lookup via `zellij action list-tabs`, never by index.
 
 ### Agent Shutdown
 - **Agents deregister themselves.** When all tasks are complete (`get_my_tasks` returns empty), generate shutdown artifacts and call `unregister-by-path`. Never rely on the master agent or scripts to deregister.
-- **All tasks must be assigned before launch.** The master agent must assign all tasks to a worktree before launching the agent. The agent exits when its task queue is empty — incremental assignment after launch risks premature exit.
+- **All tasks must be assigned before launch.** The master agent must assign all tasks to a worktree before launching the agent. Assign by calling `start_task` or `update_task` with `worktree_id` for each task. The agent exits when its task queue is empty — incremental assignment after launch risks premature exit. Creating tasks on the board is NOT the same as assigning them — tasks without a `worktree_id` won't appear in `get_my_tasks`.
 - **Three-tier shutdown:** (1) **Cooperative** — main agent calls `POST /agents/{id}/request-shutdown`, agent sees `shutdown_requested: true` on next heartbeat, finishes current work, generates artifacts, unregisters. (2) **SIGTERM** — if agent doesn't respond within a few minutes, send SIGTERM. SessionEnd hook generates artifacts and calls unregister (best-effort). (3) **Heartbeat timeout** (F-10) — if all else fails, stale sessions are cleaned up after 3 minutes.
 - **SessionEnd hook handles SIGTERM.** If killed externally, the `.claude/hooks/agent-shutdown.sh` hook generates work logs and calls unregister automatically.
 - **Artifact handoff is explicit.** The unregister call includes paths to `shutdown-artifacts/work-log.md` and `shutdown-artifacts/learnings.md`. The `WORKTREE_OFFLINE` event carries these paths for the main agent to consolidate.

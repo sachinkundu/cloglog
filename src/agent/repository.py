@@ -77,6 +77,37 @@ class AgentRepository:
         )
         await self._session.commit()
 
+    async def request_shutdown(self, worktree_id: UUID) -> None:
+        await self._session.execute(
+            update(Worktree).where(Worktree.id == worktree_id).values(shutdown_requested=True)
+        )
+        await self._session.commit()
+
+    async def get_worktree_by_path(self, project_id: UUID, worktree_path: str) -> Worktree | None:
+        result = await self._session.execute(
+            select(Worktree).where(
+                Worktree.project_id == project_id,
+                Worktree.worktree_path == worktree_path,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def delete_worktree(self, worktree_id: UUID) -> None:
+        """Delete worktree and all associated sessions."""
+        sessions = (
+            (await self._session.execute(select(Session).where(Session.worktree_id == worktree_id)))
+            .scalars()
+            .all()
+        )
+        for s in sessions:
+            await self._session.delete(s)
+
+        worktree = await self._session.get(Worktree, worktree_id)
+        if worktree is not None:
+            await self._session.delete(worktree)
+
+        await self._session.commit()
+
     # --- Session ---
 
     async def create_session(self, worktree_id: UUID) -> Session:

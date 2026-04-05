@@ -8,9 +8,13 @@ export function createServer(client: CloglogClient): McpServer {
   const handlers = createToolHandlers(client)
   let currentWorktreeId: string | null = null
   let currentProjectId: string | null = null
+  let shutdownRequested = false
   const heartbeat = new HeartbeatTimer(async () => {
     if (currentWorktreeId) {
-      await client.request('POST', `/api/v1/agents/${currentWorktreeId}/heartbeat`)
+      const resp = await client.request('POST', `/api/v1/agents/${currentWorktreeId}/heartbeat`) as Record<string, unknown>
+      if (resp?.shutdown_requested) {
+        shutdownRequested = true
+      }
     }
   })
 
@@ -76,7 +80,11 @@ export function createServer(client: CloglogClient): McpServer {
       const wt = requireRegistered()
       if (typeof wt !== 'string') return wt
       const result = await handlers.get_my_tasks({ worktree_id: wt })
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] }
+      let text = JSON.stringify(result, null, 2)
+      if (shutdownRequested) {
+        text += '\n\n⚠️ SHUTDOWN REQUESTED: The master agent has requested this worktree to shut down. Finish your current work, generate shutdown artifacts (work-log.md and learnings.md in shutdown-artifacts/), call unregister_agent, and exit.'
+      }
+      return { content: [{ type: 'text' as const, text }] }
     }
   )
 
@@ -100,7 +108,11 @@ export function createServer(client: CloglogClient): McpServer {
       const wt = requireRegistered()
       if (typeof wt !== 'string') return wt
       const result = await handlers.complete_task({ worktree_id: wt, task_id })
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] }
+      let text = JSON.stringify(result, null, 2)
+      if (shutdownRequested) {
+        text += '\n\n⚠️ SHUTDOWN REQUESTED: The master agent has requested this worktree to shut down. Finish your current work, generate shutdown artifacts (work-log.md and learnings.md in shutdown-artifacts/), call unregister_agent, and exit.'
+      }
+      return { content: [{ type: 'text' as const, text }] }
     }
   )
 

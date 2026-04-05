@@ -69,6 +69,7 @@ class TestAgentRegistrationAPI:
         assert data["current_task"] is None
 
     async def test_register_reconnects(self, client: AsyncClient) -> None:
+        """After unregister (which deletes the record), re-registering creates a fresh worktree."""
         project = await _create_project_via_api(client)
         h = _auth(project["api_key"])
 
@@ -77,20 +78,23 @@ class TestAgentRegistrationAPI:
             json={"worktree_path": "/repo/wt-auth", "branch_name": "wt-auth"},
             headers=h,
         )
+        assert r1.status_code == 201
+
         wt_id = r1.json()["worktree_id"]
 
-        # Unregister
-        await client.post(f"/api/v1/agents/{wt_id}/unregister")
+        # Unregister (now deletes the worktree record)
+        unreg = await client.post(f"/api/v1/agents/{wt_id}/unregister")
+        assert unreg.status_code == 204
 
-        # Re-register
+        # Re-register — creates a brand-new worktree, not a resume
         r2 = await client.post(
             "/api/v1/agents/register",
             json={"worktree_path": "/repo/wt-auth", "branch_name": "wt-auth"},
             headers=h,
         )
         assert r2.status_code == 201
-        assert r2.json()["resumed"] is True
-        assert r2.json()["worktree_id"] == wt_id
+        assert r2.json()["resumed"] is False
+        assert r2.json()["worktree_id"] is not None
 
     async def test_register_requires_auth(self, client: AsyncClient) -> None:
         resp = await client.post(
@@ -231,8 +235,89 @@ class TestUnregisterAPI:
         resp = await client.post(f"/api/v1/agents/{wt_id}/unregister")
         assert resp.status_code == 204
 
-        # Verify worktree is offline
+        # Verify worktree record is deleted
         resp = await client.get(f"/api/v1/projects/{project['id']}/worktrees")
         worktrees = resp.json()
-        assert len(worktrees) == 1
-        assert worktrees[0]["status"] == "offline"
+        assert len(worktrees) == 0
+
+    async def test_unregister_deletes_worktree_record(self, client: AsyncClient) -> None:
+        """Unregistering an agent deletes the worktree from the DB."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+
+        resp = await client.post(
+            "/api/v1/agents/register",
+            json={"worktree_path": "/tmp/test-unreg-del", "branch_name": "wt-del"},
+            headers=h,
+        )
+        assert resp.status_code == 201
+        worktree_id = resp.json()["worktree_id"]
+
+        resp = await client.post(f"/api/v1/agents/{worktree_id}/unregister")
+        assert resp.status_code == 204
+
+        resp = await client.get(f"/api/v1/projects/{project['id']}/worktrees")
+        worktree_ids = [w["id"] for w in resp.json()]
+        assert worktree_id not in worktree_ids
+
+    async def test_unregister_by_path_not_found(self, client: AsyncClient) -> None:
+        """Unregister-by-path returns 404 for unknown path."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+
+        resp = await client.post(
+            "/api/v1/agents/unregister-by-path",
+            json={"worktree_path": "/tmp/nonexistent"},
+            headers=h,
+        )
+        assert resp.status_code == 404
+
+    async def test_unregister_by_path_success(self, client: AsyncClient) -> None:
+        """Unregister-by-path deletes the worktree record for the given path."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+
+        resp = await client.post(
+            "/api/v1/agents/register",
+            json={"worktree_path": "/tmp/test-by-path", "branch_name": "wt-by-path"},
+            headers=h,
+        )
+        assert resp.status_code == 201
+
+        resp = await client.post(
+            "/api/v1/agents/unregister-by-path",
+            json={"worktree_path": "/tmp/test-by-path"},
+            headers=h,
+        )
+        assert resp.status_code == 204
+
+        resp = await client.get(f"/api/v1/projects/{project['id']}/worktrees")
+        assert len(resp.json()) == 0
+
+    async def test_unregister_by_path_with_artifacts(self, client: AsyncClient) -> None:
+        """Unregister-by-path accepts optional artifact paths."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+
+        resp = await client.post(
+            "/api/v1/agents/register",
+            json={"worktree_path": "/tmp/test-artifacts", "branch_name": "wt-artifacts"},
+            headers=h,
+        )
+        assert resp.status_code == 201
+
+        resp = await client.post(
+            "/api/v1/agents/unregister-by-path",
+            json={
+                "worktree_path": "/tmp/test-artifacts",
+                "artifacts": {
+                    "work_log": "/tmp/test-artifacts/WORK_LOG.md",
+                    "learnings": "/tmp/test-artifacts/LEARNINGS.md",
+                },
+            },
+            headers=h,
+        )
+        assert resp.status_code == 204
+
+        resp = await client.get(f"/api/v1/projects/{project['id']}/worktrees")
+        assert len(resp.json()) == 0

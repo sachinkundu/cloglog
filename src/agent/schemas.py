@@ -30,6 +30,7 @@ class RegisterResponse(BaseModel):
 class HeartbeatResponse(BaseModel):
     status: str
     last_heartbeat: datetime
+    shutdown_requested: bool = False
 
 
 # --- Task lifecycle ---
@@ -71,6 +72,16 @@ class TaskInfo(BaseModel):
 class AddTaskNoteRequest(BaseModel):
     task_id: UUID
     note: str
+
+
+class ArtifactPaths(BaseModel):
+    work_log: str | None = None
+    learnings: str | None = None
+
+
+class UnregisterByPathRequest(BaseModel):
+    worktree_path: str
+    artifacts: ArtifactPaths | None = None
 
 
 # --- Worktree ---

@@ -56,6 +56,7 @@ export default function App() {
       selectedProjectId={selectedProjectId}
       worktrees={worktrees}
       boardStats={board ? { total_tasks: board.total_tasks, done_count: board.done_count } : null}
+      onNavigate={openDetail}
     >
       {!selectedProjectId && (
         <div style={{
@@ -85,12 +86,13 @@ export default function App() {
         />
       )}
 
-      {detail && (
+      {detail && selectedProjectId && (
         <DetailPanel
           type={detail.type}
           data={detail.data}
           onClose={closeDetail}
           onNavigate={openDetail}
+          projectId={selectedProjectId}
         />
       )}
     </Layout>

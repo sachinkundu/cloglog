@@ -127,3 +127,19 @@ class TaskNote(Base):
     )
 
     task: Mapped[Task] = relationship(back_populates="notes")
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id: Mapped[_uuid.UUID] = mapped_column(
+        primary_key=True, default=_uuid.uuid4, server_default=text("gen_random_uuid()")
+    )
+    project_id: Mapped[_uuid.UUID] = mapped_column(ForeignKey("projects.id"))
+    task_id: Mapped[_uuid.UUID] = mapped_column(ForeignKey("tasks.id"))
+    task_title: Mapped[str] = mapped_column(String(500))
+    task_number: Mapped[int] = mapped_column(default=0)
+    read: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )

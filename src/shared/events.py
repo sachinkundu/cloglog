@@ -20,6 +20,7 @@ class EventType(StrEnum):
     TASK_DELETED = "task_deleted"
     TASK_NOTE_ADDED = "task_note_added"
     BULK_IMPORT = "bulk_import"
+    NOTIFICATION_CREATED = "notification_created"
 
 
 @dataclass

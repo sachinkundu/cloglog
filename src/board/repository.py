@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from src.board.models import Epic, Feature, Project, Task, TaskNote
+from src.board.models import Epic, Feature, Notification, Project, Task, TaskNote
 
 
 class BoardRepository:
@@ -271,3 +271,63 @@ class BoardRepository:
             select(TaskNote).where(TaskNote.task_id == task_id).order_by(TaskNote.created_at)
         )
         return list(result.scalars().all())
+
+    # --- Notifications ---
+
+    async def create_notification(
+        self, project_id: UUID, task_id: UUID, task_title: str, task_number: int
+    ) -> Notification:
+        notif = Notification(
+            project_id=project_id,
+            task_id=task_id,
+            task_title=task_title,
+            task_number=task_number,
+        )
+        self._session.add(notif)
+        await self._session.commit()
+        await self._session.refresh(notif)
+        return notif
+
+    async def get_unread_notifications(self, project_id: UUID) -> list[Notification]:
+        result = await self._session.execute(
+            select(Notification)
+            .where(Notification.project_id == project_id, Notification.read == False)  # noqa: E712
+            .order_by(Notification.created_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def mark_notification_read(self, notification_id: UUID) -> Notification | None:
+        notif = await self._session.get(Notification, notification_id)
+        if notif is None:
+            return None
+        notif.read = True
+        await self._session.commit()
+        await self._session.refresh(notif)
+        return notif
+
+    async def mark_all_notifications_read(self, project_id: UUID) -> int:
+        from sqlalchemy import CursorResult, update
+
+        result = await self._session.execute(
+            update(Notification)
+            .where(
+                Notification.project_id == project_id,
+                Notification.read == False,  # noqa: E712
+            )
+            .values(read=True)
+        )
+        await self._session.commit()
+        assert isinstance(result, CursorResult)
+        return int(result.rowcount)
+
+    async def get_unread_notification_for_task(
+        self, project_id: UUID, task_id: UUID
+    ) -> Notification | None:
+        result = await self._session.execute(
+            select(Notification).where(
+                Notification.project_id == project_id,
+                Notification.task_id == task_id,
+                Notification.read == False,  # noqa: E712
+            )
+        )
+        return result.scalars().first()

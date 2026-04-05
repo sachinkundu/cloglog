@@ -1,4 +1,4 @@
-import type { AppNotification, BacklogEpic, BoardResponse, DependencyGraphResponse, Document, DocumentSummary, Project, TaskNote, Worktree } from './types'
+import type { AppNotification, BacklogEpic, BoardResponse, DependencyGraphResponse, Document, DocumentSummary, Project, SearchResponse, TaskNote, Worktree } from './types'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api/v1'
 
@@ -69,6 +69,32 @@ export const api = {
   removeDependency: (featureId: string, dependsOnId: string) =>
     fetch(`${BASE_URL}/features/${featureId}/dependencies/${dependsOnId}`, {
       method: 'DELETE',
+    }),
+
+  // Search
+  search: (projectId: string, q: string, limit?: number, signal?: AbortSignal) =>
+    fetchJSON<SearchResponse>(
+      `/projects/${projectId}/search?q=${encodeURIComponent(q)}&limit=${limit ?? 20}`,
+      { signal },
+    ),
+
+  // Reorder
+  reorderEpics: (projectId: string, items: { id: string; position: number }[]) =>
+    fetchJSON(`/projects/${projectId}/epics/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ items }),
+    }),
+
+  reorderFeatures: (projectId: string, epicId: string, items: { id: string; position: number }[]) =>
+    fetchJSON(`/projects/${projectId}/epics/${epicId}/features/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ items }),
+    }),
+
+  reorderTasks: (featureId: string, items: { id: string; position: number }[]) =>
+    fetchJSON(`/features/${featureId}/tasks/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ items }),
     }),
 
   // SSE stream URL (not a fetch — used by EventSource)

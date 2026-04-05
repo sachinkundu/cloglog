@@ -5,6 +5,10 @@ import { describe, it, expect, vi } from 'vitest'
 import { Board } from './Board'
 import type { BoardResponse } from '../api/types'
 
+vi.mock('../hooks/useSearch', () => ({
+  useSearch: () => ({ results: [], loading: false, search: vi.fn(), clear: vi.fn() }),
+}))
+
 const mockBoard: BoardResponse = {
   project_id: 'p1',
   project_name: 'Test Project',
@@ -62,6 +66,7 @@ function renderBoard(overrides?: Partial<Parameters<typeof Board>[0]>) {
   const props = {
     board: mockBoard,
     backlog: [] as never[],
+    projectId: 'p1',
     onTaskClick: vi.fn(),
     onItemClick: vi.fn(),
     ...overrides,
@@ -114,5 +119,10 @@ describe('Board', () => {
     expect(backlogSection).toBeTruthy()
     const countEl = backlogSection!.querySelector('.column-count')
     expect(countEl?.textContent).toBe('1')
+  })
+
+  it('renders search widget in header', () => {
+    renderBoard()
+    expect(screen.getByPlaceholderText('Search epics, features, tasks...')).toBeInTheDocument()
   })
 })

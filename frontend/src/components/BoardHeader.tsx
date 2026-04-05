@@ -1,12 +1,14 @@
 import { useNavigate, useLocation } from 'react-router-dom'
 import type { BoardResponse } from '../api/types'
+import { SearchWidget } from './SearchWidget'
 
 interface BoardHeaderProps {
   board: BoardResponse
   projectId: string
+  onItemClick: (type: 'epic' | 'feature' | 'task', id: string) => void
 }
 
-export function BoardHeader({ board, projectId }: BoardHeaderProps) {
+export function BoardHeader({ board, projectId, onItemClick }: BoardHeaderProps) {
   const navigate = useNavigate()
   const location = useLocation()
   const isDeps = location.pathname.endsWith('/dependencies')
@@ -19,7 +21,7 @@ export function BoardHeader({ board, projectId }: BoardHeaderProps) {
     <div style={{
       padding: '20px 24px 12px',
       display: 'flex',
-      alignItems: 'baseline',
+      alignItems: 'center',
       gap: '16px',
     }}>
       <h2 style={{
@@ -72,6 +74,7 @@ export function BoardHeader({ board, projectId }: BoardHeaderProps) {
           }}
         >Dependencies</button>
       </div>
+      <SearchWidget projectId={projectId} onSelect={onItemClick} />
     </div>
   )
 }

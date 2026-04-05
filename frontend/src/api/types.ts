@@ -44,6 +44,24 @@ export interface AppNotification {
   created_at: string
 }
 
+// Search
+export interface SearchResult {
+  id: string
+  type: 'epic' | 'feature' | 'task'
+  title: string
+  number: number
+  status: string
+  epic_title?: string
+  epic_color?: string
+  feature_title?: string
+}
+
+export interface SearchResponse {
+  query: string
+  results: SearchResult[]
+  total: number
+}
+
 // Frontend-only types (not from API)
 export interface BoardColumn {
   status: string

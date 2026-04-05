@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
+from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -367,3 +369,151 @@ class BoardRepository:
             )
         )
         return result.scalars().first()
+
+    # --- Search ---
+
+    async def search(
+        self, project_id: UUID, query: str, limit: int = 20
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Search epics, features, and tasks by title or entity number.
+
+        Supports patterns like "E-1", "F-21", "T-3", "1", or free text.
+        Returns (results, total_count).
+        """
+        # Parse query for entity number pattern (e.g. E-1, F-21, T-3, or bare 1)
+        number_match = re.match(r"^([EFT])?-?(\d+)$", query.strip(), re.IGNORECASE)
+        type_prefix: str | None = None
+        exact_number: str = ""
+
+        if number_match:
+            type_prefix = (number_match.group(1) or "").upper() or None
+            exact_number = number_match.group(2)
+
+        pattern = f"%{query}%"
+
+        # Build individual SELECT statements
+        epic_select = """
+            SELECT e.id, 'epic' AS type, e.title, e.number, e.status,
+                   NULL AS epic_title, NULL AS epic_color, NULL AS feature_title,
+                   1 AS type_priority
+            FROM epics e
+            WHERE e.project_id = :project_id
+              AND (e.title ILIKE :pattern OR e.number::text = :exact_number)
+        """
+
+        feature_select = """
+            SELECT f.id, 'feature' AS type, f.title, f.number, f.status,
+                   e.title AS epic_title, e.color AS epic_color, NULL AS feature_title,
+                   2 AS type_priority
+            FROM features f
+            JOIN epics e ON f.epic_id = e.id
+            WHERE e.project_id = :project_id
+              AND (f.title ILIKE :pattern OR f.number::text = :exact_number)
+        """
+
+        task_select = """
+            SELECT t.id, 'task' AS type, t.title, t.number, t.status,
+                   e.title AS epic_title, e.color AS epic_color, f.title AS feature_title,
+                   3 AS type_priority
+            FROM tasks t
+            JOIN features f ON t.feature_id = f.id
+            JOIN epics e ON f.epic_id = e.id
+            WHERE e.project_id = :project_id
+              AND (t.title ILIKE :pattern OR t.number::text = :exact_number)
+        """
+
+        # Filter by type prefix if present
+        if type_prefix == "E":
+            union_sql = epic_select
+        elif type_prefix == "F":
+            union_sql = feature_select
+        elif type_prefix == "T":
+            union_sql = task_select
+        else:
+            union_sql = f"{epic_select} UNION ALL {feature_select} UNION ALL {task_select}"
+
+        # Count query
+        count_sql = f"SELECT COUNT(*) FROM ({union_sql}) AS search_results"
+        count_result = await self._session.execute(
+            text(count_sql),
+            {"project_id": project_id, "pattern": pattern, "exact_number": exact_number},
+        )
+        total = count_result.scalar_one()
+
+        # Results query with ordering and limit
+        results_sql = f"""
+            SELECT id, type, title, number, status, epic_title, epic_color, feature_title
+            FROM ({union_sql}) AS search_results
+            ORDER BY type_priority, title
+            LIMIT :limit
+        """
+        results_result = await self._session.execute(
+            text(results_sql),
+            {
+                "project_id": project_id,
+                "pattern": pattern,
+                "exact_number": exact_number,
+                "limit": limit,
+            },
+        )
+
+        rows = results_result.fetchall()
+        results = [
+            {
+                "id": row[0],
+                "type": row[1],
+                "title": row[2],
+                "number": row[3],
+                "status": row[4],
+                "epic_title": row[5],
+                "epic_color": row[6],
+                "feature_title": row[7],
+            }
+            for row in rows
+        ]
+
+        return results, total
+
+    # --- Reorder ---
+
+    async def reorder_epics(self, project_id: UUID, positions: list[tuple[UUID, int]]) -> None:
+        """Reorder epics within a project by updating their positions."""
+        ids = [pid for pid, _ in positions]
+        result = await self._session.execute(
+            select(Epic).where(Epic.project_id == project_id, Epic.id.in_(ids))
+        )
+        epics = {e.id: e for e in result.scalars().all()}
+        if len(epics) != len(ids):
+            missing = set(ids) - set(epics.keys())
+            raise ValueError(f"Epic IDs not found in project: {missing}")
+        for epic_id, pos in positions:
+            epics[epic_id].position = pos
+        await self._session.commit()
+
+    async def reorder_features(self, epic_id: UUID, positions: list[tuple[UUID, int]]) -> None:
+        """Reorder features within an epic by updating their positions."""
+        ids = [pid for pid, _ in positions]
+        result = await self._session.execute(
+            select(Feature).where(Feature.epic_id == epic_id, Feature.id.in_(ids))
+        )
+        features = {f.id: f for f in result.scalars().all()}
+        if len(features) != len(ids):
+            missing = set(ids) - set(features.keys())
+            raise ValueError(f"Feature IDs not found in epic: {missing}")
+        for feature_id, pos in positions:
+            features[feature_id].position = pos
+        await self._session.commit()
+
+    async def reorder_tasks(self, feature_id: UUID, positions: list[tuple[UUID, int]]) -> None:
+        """Reorder tasks within a feature by updating their positions."""
+        ids = [pid for pid, _ in positions]
+        result = await self._session.execute(
+            select(Task).where(Task.feature_id == feature_id, Task.id.in_(ids))
+        )
+        tasks = {t.id: t for t in result.scalars().all()}
+        if len(tasks) != len(ids):
+            missing = set(ids) - set(tasks.keys())
+            raise ValueError(f"Task IDs not found in feature: {missing}")
+        for task_id, pos in positions:
+            tasks[task_id].position = pos
+        await self._session.commit()

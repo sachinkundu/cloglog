@@ -737,3 +737,259 @@ async def test_mark_all_notifications_read(client: AsyncClient):
     resp = await client.post(f"/api/v1/projects/{project['id']}/notifications/read-all")
     assert resp.status_code == 200
     assert resp.json()["marked_read"] == 0
+
+
+# --- Search endpoint ---
+
+
+async def _create_test_hierarchy(client: AsyncClient, project_name: str) -> dict:
+    """Helper to create a project with epic, feature, and task. Returns all IDs."""
+    project = (await client.post("/api/v1/projects", json={"name": project_name})).json()
+    epic = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics",
+            json={"title": "Auth Epic"},
+        )
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Login Feature"},
+        )
+    ).json()
+    task = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "Write Login Tests"},
+        )
+    ).json()
+    return {
+        "project": project,
+        "epic": epic,
+        "feature": feature,
+        "task": task,
+    }
+
+
+async def test_search_by_title(client: AsyncClient):
+    """Search by title substring returns matching results."""
+    h = await _create_test_hierarchy(client, "search-title-test")
+    pid = h["project"]["id"]
+    resp = await client.get(f"/api/v1/projects/{pid}/search", params={"q": "Auth"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["query"] == "Auth"
+    assert data["total"] >= 1
+    titles = [r["title"] for r in data["results"]]
+    assert "Auth Epic" in titles
+
+
+async def test_search_case_insensitive(client: AsyncClient):
+    """Search is case-insensitive (ILIKE)."""
+    h = await _create_test_hierarchy(client, "search-case-test")
+    pid = h["project"]["id"]
+    resp = await client.get(f"/api/v1/projects/{pid}/search", params={"q": "auth epic"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] >= 1
+    titles = [r["title"] for r in data["results"]]
+    assert "Auth Epic" in titles
+
+
+async def test_search_by_entity_number(client: AsyncClient):
+    """Search 'T-1' finds the task with number 1."""
+    h = await _create_test_hierarchy(client, "search-tnum-test")
+    pid = h["project"]["id"]
+    resp = await client.get(f"/api/v1/projects/{pid}/search", params={"q": "T-1"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] >= 1
+    types = [r["type"] for r in data["results"]]
+    assert "task" in types
+    task_result = next(r for r in data["results"] if r["type"] == "task")
+    assert task_result["number"] == 1
+
+
+async def test_search_by_bare_number(client: AsyncClient):
+    """Search '1' matches entities with number 1 across all types."""
+    h = await _create_test_hierarchy(client, "search-barenum-test")
+    pid = h["project"]["id"]
+    resp = await client.get(f"/api/v1/projects/{pid}/search", params={"q": "1"})
+    assert resp.status_code == 200
+    data = resp.json()
+    # All entities have number 1, so all three should match
+    assert data["total"] >= 3
+    types = {r["type"] for r in data["results"]}
+    assert types == {"epic", "feature", "task"}
+
+
+async def test_search_type_prefix_filters(client: AsyncClient):
+    """Search 'E-1' only returns epics, not features or tasks."""
+    h = await _create_test_hierarchy(client, "search-prefix-test")
+    pid = h["project"]["id"]
+    resp = await client.get(f"/api/v1/projects/{pid}/search", params={"q": "E-1"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] >= 1
+    types = {r["type"] for r in data["results"]}
+    assert types == {"epic"}
+
+
+async def test_search_respects_limit(client: AsyncClient):
+    """Search with limit=1 returns at most 1 result."""
+    h = await _create_test_hierarchy(client, "search-limit-test")
+    pid = h["project"]["id"]
+    # Search for something that matches multiple items
+    resp = await client.get(f"/api/v1/projects/{pid}/search", params={"q": "1", "limit": 1})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["results"]) == 1
+    # total reflects the actual count, not the limited results
+    assert data["total"] >= 1
+
+
+async def test_search_empty_query_rejected(client: AsyncClient):
+    """Empty query string returns 422 validation error."""
+    h = await _create_test_hierarchy(client, "search-empty-test")
+    pid = h["project"]["id"]
+    resp = await client.get(f"/api/v1/projects/{pid}/search", params={"q": ""})
+    assert resp.status_code == 422
+
+
+async def test_search_invalid_project_404(client: AsyncClient):
+    """Search with non-existent project ID returns 404."""
+    resp = await client.get(
+        "/api/v1/projects/00000000-0000-0000-0000-000000000000/search",
+        params={"q": "test"},
+    )
+    assert resp.status_code == 404
+
+
+async def test_search_includes_breadcrumbs(client: AsyncClient):
+    """Task search results include epic_title, epic_color, and feature_title."""
+    h = await _create_test_hierarchy(client, "search-breadcrumb-test")
+    pid = h["project"]["id"]
+    resp = await client.get(f"/api/v1/projects/{pid}/search", params={"q": "Write Login Tests"})
+    assert resp.status_code == 200
+    data = resp.json()
+    task_results = [r for r in data["results"] if r["type"] == "task"]
+    assert len(task_results) >= 1
+    task_r = task_results[0]
+    assert task_r["epic_title"] == "Auth Epic"
+    assert task_r["epic_color"] is not None
+    assert task_r["epic_color"].startswith("#")
+    assert task_r["feature_title"] == "Login Feature"
+
+
+async def test_search_returns_all_entity_types(client: AsyncClient):
+    """Search for a term present in all entity types returns epics, features, and tasks."""
+    project = (await client.post("/api/v1/projects", json={"name": "search-alltypes-test"})).json()
+    pid = project["id"]
+    epic = (
+        await client.post(
+            f"/api/v1/projects/{pid}/epics",
+            json={"title": "Shared Keyword Widget"},
+        )
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{pid}/epics/{epic['id']}/features",
+            json={"title": "Widget Config"},
+        )
+    ).json()
+    await client.post(
+        f"/api/v1/projects/{pid}/features/{feature['id']}/tasks",
+        json={"title": "Widget Styling"},
+    )
+
+    resp = await client.get(f"/api/v1/projects/{pid}/search", params={"q": "Widget"})
+    assert resp.status_code == 200
+    data = resp.json()
+    types = {r["type"] for r in data["results"]}
+    assert types == {"epic", "feature", "task"}
+    assert data["total"] == 3
+
+
+# --- Reorder endpoints ---
+
+
+async def test_reorder_epics(client: AsyncClient):
+    """Reorder epics and verify via backlog endpoint."""
+    project = (await client.post("/api/v1/projects", json={"name": "reorder-epics"})).json()
+    e1 = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics", json={"title": "Epic A", "position": 0}
+        )
+    ).json()
+    e2 = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics", json={"title": "Epic B", "position": 1}
+        )
+    ).json()
+
+    # Swap order
+    resp = await client.post(
+        f"/api/v1/projects/{project['id']}/epics/reorder",
+        json={"items": [{"id": e2["id"], "position": 0}, {"id": e1["id"], "position": 1}]},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+    # Verify via backlog
+    backlog = (await client.get(f"/api/v1/projects/{project['id']}/backlog")).json()
+    assert backlog[0]["epic"]["id"] == e2["id"]
+    assert backlog[1]["epic"]["id"] == e1["id"]
+
+
+async def test_reorder_tasks(client: AsyncClient):
+    """Reorder tasks within a feature and verify via backlog."""
+    project = (await client.post("/api/v1/projects", json={"name": "reorder-tasks"})).json()
+    epic = (
+        await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "Epic"})
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
+    t1 = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "Task A", "position": 0},
+        )
+    ).json()
+    t2 = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "Task B", "position": 1},
+        )
+    ).json()
+
+    # Swap order
+    resp = await client.post(
+        f"/api/v1/features/{feature['id']}/tasks/reorder",
+        json={"items": [{"id": t2["id"], "position": 0}, {"id": t1["id"], "position": 1}]},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+    # Verify via backlog
+    backlog = (await client.get(f"/api/v1/projects/{project['id']}/backlog")).json()
+    tasks = backlog[0]["features"][0]["tasks"]
+    assert tasks[0]["id"] == t2["id"]
+    assert tasks[1]["id"] == t1["id"]
+
+
+async def test_reorder_invalid_ids(client: AsyncClient):
+    """Reorder with invalid IDs returns 400."""
+    project = (await client.post("/api/v1/projects", json={"name": "reorder-invalid"})).json()
+    resp = await client.post(
+        f"/api/v1/projects/{project['id']}/epics/reorder",
+        json={
+            "items": [
+                {"id": "00000000-0000-0000-0000-000000000000", "position": 0},
+            ]
+        },
+    )
+    assert resp.status_code == 400

@@ -23,6 +23,9 @@ class EventType(StrEnum):
     NOTIFICATION_CREATED = "notification_created"
     DEPENDENCY_ADDED = "dependency_added"
     DEPENDENCY_REMOVED = "dependency_removed"
+    EPIC_REORDERED = "epic_reordered"
+    FEATURE_REORDERED = "feature_reordered"
+    TASK_REORDERED = "task_reordered"
 
 
 @dataclass

@@ -178,6 +178,26 @@ class BacklogEpic(BaseModel):
     task_counts: TaskCounts
 
 
+# --- Search ---
+
+
+class SearchResult(BaseModel):
+    id: UUID
+    type: str  # "epic" | "feature" | "task"
+    title: str
+    number: int
+    status: str
+    epic_title: str | None = None
+    epic_color: str | None = None
+    feature_title: str | None = None
+
+
+class SearchResponse(BaseModel):
+    query: str
+    results: list[SearchResult]
+    total: int
+
+
 # --- Import ---
 
 
@@ -230,3 +250,15 @@ class DependencyGraphEdge(BaseModel):
 class DependencyGraphResponse(BaseModel):
     nodes: list[DependencyGraphNode]
     edges: list[DependencyGraphEdge]
+
+
+# --- Reorder ---
+
+
+class ReorderItem(BaseModel):
+    id: UUID
+    position: int
+
+
+class ReorderRequest(BaseModel):
+    items: list[ReorderItem]

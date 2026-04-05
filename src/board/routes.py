@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.board.repository import BoardRepository
@@ -25,6 +25,8 @@ from src.board.schemas import (
     ProjectCreate,
     ProjectResponse,
     ProjectWithKey,
+    ReorderRequest,
+    SearchResponse,
     TaskCard,
     TaskCounts,
     TaskCreate,
@@ -340,6 +342,88 @@ async def dismiss_task_notification(
         await service._repo.mark_notification_read(notif.id)
         return {"dismissed": True}
     return {"dismissed": False}
+
+
+# --- Search ---
+
+
+@router.get("/projects/{project_id}/search", response_model=SearchResponse)
+async def search_project(
+    project_id: UUID,
+    service: ServiceDep,
+    q: str = Query(..., min_length=1),
+    limit: int = Query(20, ge=1, le=50),
+) -> SearchResponse:
+    try:
+        return await service.search(project_id, q, limit)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Project not found") from None
+
+
+# --- Reorder ---
+
+
+@router.post("/projects/{project_id}/epics/reorder")
+async def reorder_epics(
+    project_id: UUID, body: ReorderRequest, service: ServiceDep
+) -> dict[str, str]:
+    try:
+        positions = [(item.id, item.position) for item in body.items]
+        await service._repo.reorder_epics(project_id, positions)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+    await event_bus.publish(
+        Event(
+            type=EventType.EPIC_REORDERED,
+            project_id=project_id,
+            data={"project_id": str(project_id)},
+        )
+    )
+    return {"status": "ok"}
+
+
+@router.post("/projects/{project_id}/epics/{epic_id}/features/reorder")
+async def reorder_features(
+    project_id: UUID, epic_id: UUID, body: ReorderRequest, service: ServiceDep
+) -> dict[str, str]:
+    try:
+        positions = [(item.id, item.position) for item in body.items]
+        await service._repo.reorder_features(epic_id, positions)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+    await event_bus.publish(
+        Event(
+            type=EventType.FEATURE_REORDERED,
+            project_id=project_id,
+            data={"epic_id": str(epic_id)},
+        )
+    )
+    return {"status": "ok"}
+
+
+@router.post("/features/{feature_id}/tasks/reorder")
+async def reorder_tasks(
+    feature_id: UUID, body: ReorderRequest, service: ServiceDep
+) -> dict[str, str]:
+    feature = await service._repo.get_feature(feature_id)
+    if feature is None:
+        raise HTTPException(status_code=404, detail="Feature not found")
+    epic = await service._repo.get_epic(feature.epic_id)
+    assert epic is not None
+    project_id = epic.project_id
+    try:
+        positions = [(item.id, item.position) for item in body.items]
+        await service._repo.reorder_tasks(feature_id, positions)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+    await event_bus.publish(
+        Event(
+            type=EventType.TASK_REORDERED,
+            project_id=project_id,
+            data={"feature_id": str(feature_id)},
+        )
+    )
+    return {"status": "ok"}
 
 
 # --- Board ---

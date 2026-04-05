@@ -137,6 +137,51 @@ Add new event types for position changes:
 
 These events trigger a backlog refetch on other connected clients.
 
+## Drag UX — How It Works
+
+### Interaction Model
+
+The drag interaction uses a **dedicated drag handle** — a six-dot grip icon (⠿) that appears to the left of each item (epic, feature, or task) on hover. This is the only element that initiates a drag. Clicking the item title still navigates to the detail panel as it does today.
+
+**Mouse flow:**
+1. User hovers over any backlog item → grip handle fades in on the left edge
+2. User presses and holds the grip handle → cursor changes to `grab` → item lifts with a subtle scale/shadow effect (the "picked up" state)
+3. User drags vertically → a translucent ghost of the item follows the cursor, and a colored insertion line appears between items to show where it will land
+4. User releases → item animates into its new position, backend is updated
+
+**Touch flow (mobile/tablet):**
+1. Grip handles are always visible (no hover on touch devices)
+2. User long-presses the grip handle (~200ms activation delay via @dnd-kit's `delay` sensor option) → item lifts
+3. Same drag/drop behavior as mouse
+4. The long-press delay prevents accidental drags while scrolling
+
+**Keyboard flow (@dnd-kit built-in):**
+1. User tabs to a grip handle → handle shows focus ring
+2. Space/Enter to pick up → screen reader announces "Picked up {item title}"
+3. Arrow Up/Down to move position → announces new position
+4. Space/Enter to drop, Escape to cancel
+
+### Visual Feedback During Drag
+
+| State | Visual |
+|-------|--------|
+| **Idle** | Grip handle hidden (mouse) or subtle (touch) |
+| **Hover** | Grip handle fades in, cursor: `grab` |
+| **Picked up** | Item gets `box-shadow` + slight scale (1.02), cursor: `grabbing` |
+| **Dragging** | Translucent drag overlay follows cursor; original position shows a dashed placeholder |
+| **Drop target** | Colored insertion line (2px, using epic color for context) appears between items |
+| **Dropped** | Item animates to final position (CSS transition ~200ms) |
+
+### Why Not Long-Press on the Title?
+
+Long-press on the title was considered but rejected because:
+- It conflicts with text selection (users may want to copy a task title)
+- No visual affordance — users wouldn't discover it without a tooltip or onboarding
+- Mobile users might accidentally trigger drag while scrolling the backlog
+- A visible grip handle is a universal pattern (Trello, Linear, Notion) — users immediately recognize it means "draggable"
+
+The grip handle makes the drag capability **discoverable** and **intentional**.
+
 ## Frontend Changes
 
 ### Dependencies
@@ -155,15 +200,9 @@ The BacklogTree component needs three levels of sortable containers:
 
 Each draggable item gets:
 - A drag handle (grip icon on the left side of the item)
-- Visual feedback during drag (opacity reduction, drop placeholder)
+- Visual feedback during drag (opacity reduction + shadow, drop placeholder line)
 - Restricted axis movement (vertical only — `restrictToVerticalAxis` modifier)
-
-### Drag Handle Design
-
-- Small grip icon (⠿ or similar CSS dots pattern) appears on hover to the left of each item
-- Always visible on touch devices
-- Drag only initiates from the handle — clicking the item title still navigates to detail panel
-- Handle is the keyboard-focusable element for accessibility
+- Touch sensor with 200ms activation delay to prevent accidental drags while scrolling
 
 ### Optimistic Updates
 

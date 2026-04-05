@@ -1,4 +1,4 @@
-import type { AppNotification, BacklogEpic, BoardResponse, Document, DocumentSummary, Project, TaskNote, Worktree } from './types'
+import type { AppNotification, BacklogEpic, BoardResponse, Document, DocumentSummary, Project, SearchResponse, TaskNote, Worktree } from './types'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api/v1'
 
@@ -56,6 +56,13 @@ export const api = {
     fetchJSON<{ dismissed: boolean }>(
       `/projects/${projectId}/notifications/dismiss-task/${taskId}`,
       { method: 'POST' },
+    ),
+
+  // Search
+  search: (projectId: string, q: string, limit?: number, signal?: AbortSignal) =>
+    fetchJSON<SearchResponse>(
+      `/projects/${projectId}/search?q=${encodeURIComponent(q)}&limit=${limit ?? 20}`,
+      { signal },
     ),
 
   // SSE stream URL (not a fetch — used by EventSource)

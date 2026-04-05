@@ -1,11 +1,13 @@
 import { useCallback, useMemo } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { Board } from './components/Board'
+import { DependencyGraph } from './components/DependencyGraph'
 import { DetailPanel } from './components/DetailPanel'
 import { Layout } from './components/Layout'
 import { useBoard } from './hooks/useBoard'
+import { useDependencyGraph } from './hooks/useDependencyGraph'
 import { useProjects } from './hooks/useProjects'
-import type { BacklogEpic, BoardResponse } from './api/types'
+import type { BacklogEpic, BoardResponse, DependencyGraphResponse } from './api/types'
 
 type DetailState =
   | { type: 'epic'; data: any }
@@ -21,18 +23,21 @@ export default function App() {
     taskId?: string
   }>()
   const navigate = useNavigate()
+  const location = useLocation()
+  const isDependenciesView = location.pathname.endsWith('/dependencies')
 
   const selectedProjectId = projectId ?? null
   const { projects, loading: projectsLoading } = useProjects()
   const { board, backlog, worktrees, loading: boardLoading, refetch } = useBoard(selectedProjectId)
+  const { graph: depGraph } = useDependencyGraph(selectedProjectId)
 
   const detail = useMemo<DetailState>(() => {
     if (!selectedProjectId) return null
     if (epicId) return buildEpicDetail(backlog, epicId)
-    if (featureId) return buildFeatureDetail(backlog, featureId)
+    if (featureId) return buildFeatureDetail(backlog, featureId, depGraph)
     if (taskId) return buildTaskDetail(backlog, board, taskId)
     return null
-  }, [selectedProjectId, epicId, featureId, taskId, backlog, board])
+  }, [selectedProjectId, epicId, featureId, taskId, backlog, board, depGraph])
 
   const openDetail = useCallback((type: 'epic' | 'feature' | 'task', id: string) => {
     if (!selectedProjectId) return
@@ -76,7 +81,7 @@ export default function App() {
         </div>
       )}
 
-      {board && !boardLoading && (
+      {board && !boardLoading && !isDependenciesView && (
         <Board
           board={board}
           backlog={backlog}
@@ -84,6 +89,10 @@ export default function App() {
           onItemClick={openDetail}
           onRefresh={refetch}
         />
+      )}
+
+      {selectedProjectId && isDependenciesView && (
+        <DependencyGraph projectId={selectedProjectId} onItemClick={openDetail} />
       )}
 
       {detail && selectedProjectId && (
@@ -120,10 +129,32 @@ function buildEpicDetail(backlog: BacklogEpic[], epicId: string): DetailState {
   }
 }
 
-function buildFeatureDetail(backlog: BacklogEpic[], featureId: string): DetailState {
+function buildFeatureDetail(backlog: BacklogEpic[], featureId: string, depGraph: DependencyGraphResponse | null): DetailState {
   for (const entry of backlog) {
     const feat = entry.features.find(f => f.feature.id === featureId)
     if (feat) {
+      let dependencies: Array<{ id: string; title: string; number: number }> = []
+      let dependents: Array<{ id: string; title: string; number: number }> = []
+      let all_features: Array<{ id: string; title: string; number: number }> = []
+
+      if (depGraph) {
+        all_features = depGraph.nodes.map(n => ({ id: n.id, title: n.title, number: n.number }))
+        dependencies = depGraph.edges
+          .filter(e => e.to_id === featureId)
+          .map(e => {
+            const node = depGraph.nodes.find(n => n.id === e.from_id)
+            return node ? { id: node.id, title: node.title, number: node.number } : null
+          })
+          .filter((x): x is { id: string; title: string; number: number } => x !== null)
+        dependents = depGraph.edges
+          .filter(e => e.from_id === featureId)
+          .map(e => {
+            const node = depGraph.nodes.find(n => n.id === e.to_id)
+            return node ? { id: node.id, title: node.title, number: node.number } : null
+          })
+          .filter((x): x is { id: string; title: string; number: number } => x !== null)
+      }
+
       return {
         type: 'feature',
         data: {
@@ -134,6 +165,9 @@ function buildFeatureDetail(backlog: BacklogEpic[], featureId: string): DetailSt
           task_counts: feat.task_counts,
           number: feat.feature.number,
           tasks: feat.tasks.map(t => ({ id: t.id, title: t.title, status: t.status })),
+          dependencies,
+          dependents,
+          all_features,
         },
       }
     }

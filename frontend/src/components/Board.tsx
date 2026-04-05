@@ -17,7 +17,7 @@ export function Board({ board, backlog, onTaskClick, onItemClick, onRefresh }: B
 
   return (
     <div className="board">
-      <BoardHeader board={board} />
+      <BoardHeader board={board} projectId={board.project_id} />
       <div className="board-columns">
         <div className="board-backlog">
           <div className="column-header">

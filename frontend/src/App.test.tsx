@@ -9,6 +9,7 @@ vi.mock('./api/client', () => ({
     listProjects: vi.fn().mockResolvedValue([]),
     getBoard: vi.fn().mockResolvedValue(null),
     getWorktrees: vi.fn().mockResolvedValue([]),
+    getDependencyGraph: vi.fn().mockResolvedValue({ nodes: [], edges: [] }),
     streamUrl: vi.fn().mockReturnValue('http://test/stream'),
   },
 }))

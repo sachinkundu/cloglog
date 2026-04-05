@@ -354,7 +354,7 @@ async def search_project(
     try:
         return await service.search(project_id, q, limit)
     except ValueError:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail="Project not found") from None
 
 
 # --- Board ---

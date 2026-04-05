@@ -840,9 +840,7 @@ async def test_search_respects_limit(client: AsyncClient):
     h = await _create_test_hierarchy(client, "search-limit-test")
     pid = h["project"]["id"]
     # Search for something that matches multiple items
-    resp = await client.get(
-        f"/api/v1/projects/{pid}/search", params={"q": "1", "limit": 1}
-    )
+    resp = await client.get(f"/api/v1/projects/{pid}/search", params={"q": "1", "limit": 1})
     assert resp.status_code == 200
     data = resp.json()
     assert len(data["results"]) == 1
@@ -871,9 +869,7 @@ async def test_search_includes_breadcrumbs(client: AsyncClient):
     """Task search results include epic_title, epic_color, and feature_title."""
     h = await _create_test_hierarchy(client, "search-breadcrumb-test")
     pid = h["project"]["id"]
-    resp = await client.get(
-        f"/api/v1/projects/{pid}/search", params={"q": "Write Login Tests"}
-    )
+    resp = await client.get(f"/api/v1/projects/{pid}/search", params={"q": "Write Login Tests"})
     assert resp.status_code == 200
     data = resp.json()
     task_results = [r for r in data["results"] if r["type"] == "task"]
@@ -887,9 +883,7 @@ async def test_search_includes_breadcrumbs(client: AsyncClient):
 
 async def test_search_returns_all_entity_types(client: AsyncClient):
     """Search for a term present in all entity types returns epics, features, and tasks."""
-    project = (
-        await client.post("/api/v1/projects", json={"name": "search-alltypes-test"})
-    ).json()
+    project = (await client.post("/api/v1/projects", json={"name": "search-alltypes-test"})).json()
     pid = project["id"]
     epic = (
         await client.post(

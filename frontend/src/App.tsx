@@ -80,6 +80,7 @@ export default function App() {
         <Board
           board={board}
           backlog={backlog}
+          projectId={selectedProjectId}
           onTaskClick={handleTaskClick}
           onItemClick={openDetail}
           onRefresh={refetch}

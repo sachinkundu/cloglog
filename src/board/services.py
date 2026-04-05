@@ -93,9 +93,7 @@ class BoardService:
 
     # --- Search ---
 
-    async def search(
-        self, project_id: UUID, query: str, limit: int = 20
-    ) -> SearchResponse:
+    async def search(self, project_id: UUID, query: str, limit: int = 20) -> SearchResponse:
         project = await self._repo.get_project(project_id)
         if not project:
             raise ValueError("Project not found")

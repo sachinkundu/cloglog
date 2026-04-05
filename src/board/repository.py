@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func, select, text
@@ -337,7 +338,7 @@ class BoardRepository:
 
     async def search(
         self, project_id: UUID, query: str, limit: int = 20
-    ) -> tuple[list[dict], int]:
+    ) -> tuple[list[dict[str, Any]], int]:
         """Search epics, features, and tasks by title or entity number.
 
         Supports patterns like "E-1", "F-21", "T-3", "1", or free text.

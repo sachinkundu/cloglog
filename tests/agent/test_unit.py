@@ -148,6 +148,28 @@ class TestAgentRepository:
         paths = {w.worktree_path for w in worktrees}
         assert paths == {"/repo/wt-a", "/repo/wt-b"}
 
+    async def test_get_worktree_by_path(self, db_session: AsyncSession) -> None:
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+        wt, _ = await repo.upsert_worktree(project.id, "/tmp/test-wt", "wt-test")
+        found = await repo.get_worktree_by_path(project.id, "/tmp/test-wt")
+        assert found is not None
+        assert found.id == wt.id
+
+    async def test_get_worktree_by_path_not_found(self, db_session: AsyncSession) -> None:
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+        found = await repo.get_worktree_by_path(project.id, "/tmp/nonexistent")
+        assert found is None
+
+    async def test_delete_worktree(self, db_session: AsyncSession) -> None:
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+        wt, _ = await repo.upsert_worktree(project.id, "/tmp/test-del", "wt-del")
+        _ = await repo.create_session(wt.id)
+        await repo.delete_worktree(wt.id)
+        assert await repo.get_worktree(wt.id) is None
+
 
 # --- Service Tests ---
 

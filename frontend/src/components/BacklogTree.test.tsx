@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, it, expect, vi } from 'vitest'
+import { beforeEach, describe, it, expect, vi } from 'vitest'
 import { BacklogTree } from './BacklogTree'
 import type { BacklogEpic } from '../api/types'
 
@@ -151,7 +151,7 @@ describe('BacklogTree', () => {
     render(<BacklogTree backlog={backlogWithDone} onItemClick={vi.fn()} />)
     expect(screen.getByText('Auth System')).toBeInTheDocument()
     expect(screen.queryByText('Done Epic')).not.toBeInTheDocument()
-    expect(screen.getByText('Show completed (1)')).toBeInTheDocument()
+    expect(screen.getByText('Show completed (2)')).toBeInTheDocument()
   })
 
   it('shows completed epics when toggle is clicked', async () => {
@@ -178,9 +178,9 @@ describe('BacklogTree', () => {
       },
     ]
     render(<BacklogTree backlog={backlogWithDone} onItemClick={vi.fn()} />)
-    await user.click(screen.getByText('Show completed (1)'))
+    await user.click(screen.getByText('Show completed (2)'))
     expect(screen.getByText('Done Epic')).toBeInTheDocument()
-    expect(screen.getByText('Hide completed (1)')).toBeInTheDocument()
+    expect(screen.getByText('Hide completed (2)')).toBeInTheDocument()
   })
 
   it('hides completed features within a visible epic', () => {

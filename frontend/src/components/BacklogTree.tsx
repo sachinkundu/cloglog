@@ -71,7 +71,11 @@ export function BacklogTree({ backlog, onItemClick }: BacklogTreeProps) {
     })
   }
 
-  const completedCount = backlog.filter(e => isFullyDone(e.task_counts)).length
+  const completedEpics = backlog.filter(e => isFullyDone(e.task_counts)).length
+  const completedFeatures = backlog.reduce(
+    (sum, e) => sum + e.features.filter(f => isFullyDone(f.task_counts)).length, 0
+  )
+  const completedCount = completedEpics + completedFeatures
 
   return (
     <div className="backlog-tree">

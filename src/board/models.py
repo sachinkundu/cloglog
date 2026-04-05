@@ -75,6 +75,19 @@ class Feature(Base):
 
     epic: Mapped[Epic] = relationship(back_populates="features")
     tasks: Mapped[list[Task]] = relationship(back_populates="feature", cascade="all, delete-orphan")
+    dependencies: Mapped[list[Feature]] = relationship(
+        secondary="feature_dependencies",
+        primaryjoin="Feature.id == feature_dependencies.c.feature_id",
+        secondaryjoin="Feature.id == feature_dependencies.c.depends_on_id",
+        lazy="selectin",
+    )
+    dependents: Mapped[list[Feature]] = relationship(
+        secondary="feature_dependencies",
+        primaryjoin="Feature.id == feature_dependencies.c.depends_on_id",
+        secondaryjoin="Feature.id == feature_dependencies.c.feature_id",
+        lazy="selectin",
+        viewonly=True,
+    )
 
 
 class FeatureDependency(Base):

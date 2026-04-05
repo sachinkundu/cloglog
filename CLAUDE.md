@@ -107,11 +107,15 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 - Frontend work requires component tests (@testing-library/react), not just "it renders" smoke tests. Test interactions, conditional rendering, error states.
 - Backend work requires both unit tests (business logic) and integration tests (API endpoints against real DB).
 - PRs without tests will be rejected in review.
+- **Frontend worktrees need `cd frontend && npm install`** before tests will run — node_modules are not shared across worktrees.
 
 ### PR Quality
 - Every PR must include a **Test Report** section showing: what tests were added, test output, coverage.
 - Frontend PRs should include screenshots of the UI.
 - Run the full quality gate (`make quality`) before pushing. Don't assume it passes.
+- **Proactive rebase:** When other PRs merge to main while yours is open, rebase before the reviewer has to ask.
+- **Conflict marker check:** After resolving merge conflicts, run `grep -rn "^<<<<<<" src/ frontend/src/` to catch leftover markers.
+- **`raise ... from None`** in except clauses — ruff B904 requires this for `raise HTTPException` inside `except` blocks.
 
 ### Git Identity
 - NEVER push or create PRs as the user. Always use the bot identity. See "Git Identity & PRs" section above.
@@ -121,6 +125,7 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 - **Router registration:** If your context has `routes.py`, it MUST be registered in `src/gateway/app.py` via `app.include_router()`. If you can't edit `app.py` due to worktree discipline, add a comment at the top of your routes.py noting it needs registration, and mention it in your PR description.
 - **Alembic migrations:** Your migration's `down_revision` must point to the latest existing migration, not just the one that existed when your worktree branched. If another context merged a migration before you, rebase and update your `down_revision` before pushing. Check with `python -m alembic history`.
 - **Auth consistency:** All agent-facing endpoints use `Authorization: Bearer <api-key>`. Dashboard-facing endpoints are public (no auth). Never use query parameters for auth. Use the `CurrentProject` dependency from `src/gateway/auth.py`.
+- **Concurrent worktree merges:** When multiple worktrees are active, the last to merge faces conflicts in shared files (`events.py`, `schemas.py`, `types.ts`, `package.json`). Plan for this — rebase frequently and resolve conflicts before requesting review.
 - **Model imports in tests:** All model classes must be imported in `tests/conftest.py` so `Base.metadata.create_all` creates all tables. If you add a new model, verify the import exists.
 
 ### Autonomous Agent Behavior

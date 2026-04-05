@@ -380,29 +380,30 @@ git commit -m "feat(events): emit SSE events on epic/feature/task deletion"
 - Modify: `src/document/routes.py:26-35`
 - Modify: `src/agent/routes.py:94-107`
 - Modify: `src/board/routes.py:321-326` (import)
-- Test: `tests/document/test_routes.py`, `tests/agent/test_integration.py`, `tests/board/test_routes.py`
+- Test: `tests/e2e/test_document_events.py`, `tests/board/test_routes.py`
 
 - [ ] **Step 1: Write test for document_attached event**
 
-Add to `tests/document/test_routes.py` (check existing import pattern first):
+Create `tests/e2e/test_document_events.py`. Use the e2e client which has all routers mounted — this avoids raw DB manipulation and creates entities through the API:
 
 ```python
 from unittest.mock import AsyncMock, patch
 
+from httpx import AsyncClient
 
-async def test_create_document_emits_event(client: AsyncClient, db_session: AsyncSession):
+
+async def test_create_document_emits_event(client: AsyncClient):
     """Attaching a document emits a DOCUMENT_ATTACHED event."""
-    from src.board.models import Epic, Feature, Project
-
-    project = Project(name="doc-event-test")
-    db_session.add(project)
-    await db_session.flush()
-    epic = Epic(project_id=project.id, title="Epic", position=0)
-    db_session.add(epic)
-    await db_session.flush()
-    feature = Feature(epic_id=epic.id, title="Feature", position=0)
-    db_session.add(feature)
-    await db_session.commit()
+    project = (await client.post("/api/v1/projects", json={"name": "doc-event-test"})).json()
+    epic = (
+        await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "Epic"})
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
 
     with patch("src.document.routes.event_bus.publish", new_callable=AsyncMock) as mock_publish:
         resp = await client.post(
@@ -413,19 +414,19 @@ async def test_create_document_emits_event(client: AsyncClient, db_session: Asyn
                 "doc_type": "spec",
                 "source_path": "",
                 "attached_to_type": "feature",
-                "attached_to_id": str(feature.id),
+                "attached_to_id": feature["id"],
             },
         )
         assert resp.status_code == 201
         mock_publish.assert_called_once()
         event = mock_publish.call_args[0][0]
         assert event.type == "document_attached"
-        assert str(event.project_id) == str(project.id)
+        assert str(event.project_id) == project["id"]
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest tests/document/test_routes.py::test_create_document_emits_event -v`
+Run: `uv run pytest tests/e2e/test_document_events.py::test_create_document_emits_event -v`
 Expected: FAIL
 
 - [ ] **Step 3: Implement document_attached event with project_id resolver**
@@ -501,7 +502,7 @@ async def create_document(
 
 - [ ] **Step 4: Run document test**
 
-Run: `uv run pytest tests/document/test_routes.py::test_create_document_emits_event -v`
+Run: `uv run pytest tests/e2e/test_document_events.py::test_create_document_emits_event -v`
 Expected: PASS
 
 - [ ] **Step 5: Write and implement task_note_added event**
@@ -577,7 +578,7 @@ Expected: All pass (138 existing + new event tests)
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/document/routes.py src/agent/routes.py src/board/routes.py tests/
+git add src/document/routes.py src/agent/routes.py src/board/routes.py tests/e2e/test_document_events.py
 git commit -m "feat(events): emit document_attached, task_note_added, bulk_import events"
 ```
 

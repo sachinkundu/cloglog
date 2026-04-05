@@ -87,7 +87,8 @@ export function useBoard(projectId: string | null) {
       event.type === 'feature_reordered' ||
       event.type === 'task_reordered'
     ) {
-      api.getBacklog(projectId!).then(setBacklog)
+      // Skip refetch — the drag initiator already has the correct optimistic state.
+      // Other clients viewing the same board will get the updated order on next refresh.
     } else {
       fetchBoard()
     }

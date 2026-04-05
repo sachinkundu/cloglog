@@ -26,6 +26,7 @@ from src.agent.services import AgentService
 from src.board.repository import BoardRepository
 from src.gateway.auth import CurrentProject
 from src.shared.database import get_session
+from src.shared.events import Event, EventType, event_bus
 
 router = APIRouter()
 
@@ -99,6 +100,17 @@ async def add_task_note(
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     note = await service._board_repo.add_task_note(body.task_id, body.note)
+    feature = await service._board_repo.get_feature(task.feature_id)
+    assert feature is not None
+    epic = await service._board_repo.get_epic(feature.epic_id)
+    assert epic is not None
+    await event_bus.publish(
+        Event(
+            type=EventType.TASK_NOTE_ADDED,
+            project_id=epic.project_id,
+            data={"task_id": str(body.task_id)},
+        )
+    )
     return {
         "id": note.id,
         "task_id": note.task_id,

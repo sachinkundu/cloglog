@@ -96,6 +96,13 @@ async def create_epic(project_id: UUID, body: EpicCreate, service: ServiceDep) -
         color=color,
         number=number,
     )
+    await event_bus.publish(
+        Event(
+            type=EventType.EPIC_CREATED,
+            project_id=project_id,
+            data={"epic_id": str(epic.id), "title": body.title},
+        )
+    )
     return EpicResponse.model_validate(epic)
 
 
@@ -107,9 +114,20 @@ async def list_epics(project_id: UUID, service: ServiceDep) -> list[EpicResponse
 
 @router.delete("/epics/{epic_id}", status_code=204)
 async def delete_epic(epic_id: UUID, service: ServiceDep) -> None:
+    epic = await service._repo.get_epic(epic_id)
+    if epic is None:
+        raise HTTPException(status_code=404, detail="Epic not found")
+    project_id = epic.project_id
     deleted = await service._repo.delete_epic(epic_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Epic not found")
+    await event_bus.publish(
+        Event(
+            type=EventType.EPIC_DELETED,
+            project_id=project_id,
+            data={"epic_id": str(epic_id)},
+        )
+    )
 
 
 # --- Features ---
@@ -130,6 +148,13 @@ async def create_feature(
     feature = await service._repo.create_feature(
         epic_id, body.title, body.description, body.position, number=number
     )
+    await event_bus.publish(
+        Event(
+            type=EventType.FEATURE_CREATED,
+            project_id=epic.project_id,
+            data={"feature_id": str(feature.id), "title": body.title},
+        )
+    )
     return FeatureResponse.model_validate(feature)
 
 
@@ -146,9 +171,22 @@ async def list_features(
 
 @router.delete("/features/{feature_id}", status_code=204)
 async def delete_feature(feature_id: UUID, service: ServiceDep) -> None:
+    feature = await service._repo.get_feature(feature_id)
+    if feature is None:
+        raise HTTPException(status_code=404, detail="Feature not found")
+    epic = await service._repo.get_epic(feature.epic_id)
+    assert epic is not None
+    project_id = epic.project_id
     deleted = await service._repo.delete_feature(feature_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Feature not found")
+    await event_bus.publish(
+        Event(
+            type=EventType.FEATURE_DELETED,
+            project_id=project_id,
+            data={"feature_id": str(feature_id)},
+        )
+    )
 
 
 # --- Tasks ---
@@ -168,6 +206,15 @@ async def create_task(
     number = await service._repo.next_task_number(project_id)
     task = await service._repo.create_task(
         feature_id, body.title, body.description, body.priority, body.position, number=number
+    )
+    epic = await service._repo.get_epic(feature.epic_id)
+    assert epic is not None
+    await event_bus.publish(
+        Event(
+            type=EventType.TASK_CREATED,
+            project_id=epic.project_id,
+            data={"task_id": str(task.id), "title": body.title},
+        )
     )
     return TaskResponse.model_validate(task)
 
@@ -208,9 +255,24 @@ async def update_task(task_id: UUID, body: TaskUpdate, service: ServiceDep) -> T
 
 @router.delete("/tasks/{task_id}", status_code=204)
 async def delete_task(task_id: UUID, service: ServiceDep) -> None:
+    task = await service._repo.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    feature = await service._repo.get_feature(task.feature_id)
+    assert feature is not None
+    epic = await service._repo.get_epic(feature.epic_id)
+    assert epic is not None
+    project_id = epic.project_id
     deleted = await service._repo.delete_task(task_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Task not found")
+    await event_bus.publish(
+        Event(
+            type=EventType.TASK_DELETED,
+            project_id=project_id,
+            data={"task_id": str(task_id)},
+        )
+    )
 
 
 @router.get("/tasks/{task_id}/notes")
@@ -323,4 +385,16 @@ async def import_plan(project_id: UUID, body: ImportPlan, service: ServiceDep) -
     project = await service._repo.get_project(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    return await service.import_plan(project_id, body)
+    result = await service.import_plan(project_id, body)
+    await event_bus.publish(
+        Event(
+            type=EventType.BULK_IMPORT,
+            project_id=project_id,
+            data={
+                "epics_created": result["epics_created"],
+                "features_created": result["features_created"],
+                "tasks_created": result["tasks_created"],
+            },
+        )
+    )
+    return result

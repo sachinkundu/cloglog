@@ -20,6 +20,14 @@ export function useSSE(
       'worktree_online',
       'worktree_offline',
       'document_attached',
+      'epic_created',
+      'epic_deleted',
+      'feature_created',
+      'feature_deleted',
+      'task_created',
+      'task_deleted',
+      'task_note_added',
+      'bulk_import',
     ] as const
 
     for (const type of eventTypes) {

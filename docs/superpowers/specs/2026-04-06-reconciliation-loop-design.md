@@ -73,9 +73,20 @@ For every task in `in_progress` that has a `pr_url`:
 
 For every registered agent (worktree with active session):
 - Fetch assigned tasks via `get_my_tasks`
-- If no tasks assigned → report: "Agent {name} has no tasks — should unregister"
+- If no tasks assigned:
+  - Check the board for backlog tasks in the agent's feature that have no worktree_id
+  - If unassigned tasks exist → report: "Agent {name} has no tasks but feature has N unassigned backlog tasks — likely a missing assignment"
+  - If no unassigned tasks exist → report: "Agent {name} has no tasks and nothing to assign — should unregister"
 - If all assigned tasks are `done` → report: "Agent {name} finished — should unregister"
 - Check heartbeat age — if stale → report: "Agent {name} heartbeat stale"
+
+#### 2b. Agent PR Comment Monitoring
+
+For every agent with a task in `review` status that has a `pr_url`:
+- Fetch PR comments via `gh api repos/.../issues/{N}/comments`
+- Fetch the latest comment timestamp
+- If there are unaddressed comments (comments after the agent's last push) → report: "Agent {name} has unaddressed comments on PR #X — agent may not be polling"
+- In auto-fix mode: send a message to the agent's zellij pane reminding it to check PR comments
 
 #### 3. Worktree ↔ Agent Reconciliation
 
@@ -113,8 +124,10 @@ Tasks:
   ✓ T-122 (review) — PR #54 is OPEN, no unaddressed comments
 
 Agents:
-  ⚠ wt-e2e — registered but has no assigned tasks → should unregister
-  ✓ wt-assign — 2 tasks in progress
+  ⚠ wt-e2e — no assigned tasks but F-22 has 0 unassigned backlog tasks → should unregister
+  ⚠ wt-gateway — no assigned tasks but F-23 has 2 unassigned backlog tasks → missing assignment
+  ⚠ wt-assign — unaddressed comments on PR #41 (last comment 2h ago, no push since)
+  ✓ wt-frontend — 1 task in progress, PR polling active
 
 Worktrees:
   ⚠ wt-e2e — branch fully merged into main → can be removed

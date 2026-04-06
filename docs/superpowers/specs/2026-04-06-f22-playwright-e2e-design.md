@@ -58,6 +58,7 @@ export default defineConfig({
     baseURL: 'http://localhost:5173',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
+    video: 'retain-on-failure', // Record video, keep only for failed tests
   },
   projects: [
     { name: 'chromium', use: { browserName: 'chromium' } },
@@ -305,6 +306,50 @@ Where possible, prefer semantic selectors (roles, labels, text) over test IDs. A
 ```
 
 Install with `npx playwright install chromium` for the browser binary.
+
+## Test Artifacts & Reporting
+
+Playwright generates rich artifacts that serve as visual test reports:
+
+### Video Recording
+Playwright records **WebM videos** of every test run. Configured via `video: 'retain-on-failure'` — videos are kept only for failed tests to save disk space. Can be set to `'on'` to keep all videos.
+
+Videos are saved to `test-results/<test-name>/video.webm` automatically.
+
+### Trace Viewer
+Playwright's **trace files** capture a complete timeline of each test: screenshots at every action, DOM snapshots, network requests, and console logs. Configured via `trace: 'on-first-retry'`.
+
+Open traces with: `npx playwright show-trace test-results/<test-name>/trace.zip`
+
+### HTML Report
+Playwright generates an **HTML report** with embedded videos, screenshots, and traces:
+
+```bash
+# Generate and open HTML report after test run
+npx playwright show-report
+```
+
+The report includes:
+- Pass/fail status per test with duration
+- Embedded video playback for failed tests
+- Screenshot thumbnails at each step
+- Trace viewer links for deep debugging
+
+### Attaching Artifacts to PR Test Reports
+
+When agents create PRs, the test report section should include:
+1. Summary of tests run (count, pass/fail)
+2. For failures: link to the HTML report or trace file
+3. Video recordings can be attached to GitHub PR comments as `.webm` files
+
+### CI Artifact Upload
+
+In CI, upload the `playwright-report/` and `test-results/` directories as build artifacts so reviewers can download and inspect videos/traces for any failures.
+
+```makefile
+test-e2e-browser-report:  ## Run Playwright tests and open HTML report
+	cd tests/e2e/playwright && npx playwright test --reporter=html && npx playwright show-report
+```
 
 ## Risks & Mitigations
 

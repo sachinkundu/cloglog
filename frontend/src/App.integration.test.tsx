@@ -2,6 +2,20 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+
+// Mock excalidraw before importing App (open-color JSON import issue)
+vi.mock('@excalidraw/excalidraw', () => ({
+  Excalidraw: () => null,
+  convertToExcalidrawElements: vi.fn().mockReturnValue([]),
+}))
+vi.mock('@excalidraw/mermaid-to-excalidraw', () => ({
+  parseMermaidToExcalidraw: vi.fn().mockResolvedValue({
+    elements: [],
+    files: null,
+  }),
+}))
+vi.mock('@excalidraw/excalidraw/index.css', () => ({}))
+
 import App from './App'
 import { api } from './api/client'
 import type { BoardResponse, Project, Worktree } from './api/types'

@@ -4,8 +4,8 @@ export interface ToolHandlers {
   register_agent(args: { worktree_path: string }): Promise<unknown>
   get_my_tasks(args: { worktree_id: string }): Promise<unknown>
   start_task(args: { worktree_id: string; task_id: string }): Promise<unknown>
-  complete_task(args: { worktree_id: string; task_id: string }): Promise<unknown>
-  update_task_status(args: { worktree_id: string; task_id: string; status: string }): Promise<unknown>
+  complete_task(args: { worktree_id: string; task_id: string; pr_url?: string }): Promise<unknown>
+  update_task_status(args: { worktree_id: string; task_id: string; status: string; pr_url?: string }): Promise<unknown>
   add_task_note(args: { worktree_id: string; task_id: string; note: string }): Promise<unknown>
   attach_document(args: {
     entity_type: string; entity_id: string; type: string;
@@ -26,7 +26,7 @@ export interface ToolHandlers {
   list_epics(args: { project_id: string }): Promise<unknown>
   create_feature(args: { project_id: string; epic_id: string; title: string; description?: string }): Promise<unknown>
   list_features(args: { project_id: string; epic_id: string }): Promise<unknown>
-  create_task(args: { project_id: string; feature_id: string; title: string; description?: string; priority?: string }): Promise<unknown>
+  create_task(args: { project_id: string; feature_id: string; title: string; description?: string; priority?: string; task_type?: string }): Promise<unknown>
   get_backlog(args: { project_id: string }): Promise<unknown>
   get_board(args: { project_id: string }): Promise<unknown>
   update_task(args: { task_id: string; title?: string; description?: string; priority?: string }): Promise<unknown>
@@ -47,12 +47,19 @@ export function createToolHandlers(client: CloglogClient): ToolHandlers {
       return client.request('POST', `/api/v1/agents/${worktree_id}/start-task`, { task_id })
     },
 
-    async complete_task({ worktree_id, task_id }) {
-      return client.request('POST', `/api/v1/agents/${worktree_id}/complete-task`, { task_id })
+    async complete_task({ worktree_id, task_id, pr_url }) {
+      return client.request('POST', `/api/v1/agents/${worktree_id}/complete-task`, {
+        task_id,
+        ...(pr_url ? { pr_url } : {}),
+      })
     },
 
-    async update_task_status({ worktree_id, task_id, status }) {
-      return client.request('PATCH', `/api/v1/agents/${worktree_id}/task-status`, { task_id, status })
+    async update_task_status({ worktree_id, task_id, status, pr_url }) {
+      return client.request('PATCH', `/api/v1/agents/${worktree_id}/task-status`, {
+        task_id,
+        status,
+        ...(pr_url ? { pr_url } : {}),
+      })
     },
 
     async add_task_note({ worktree_id, task_id, note }) {
@@ -107,11 +114,12 @@ export function createToolHandlers(client: CloglogClient): ToolHandlers {
       return client.request('GET', `/api/v1/projects/${project_id}/epics/${epic_id}/features`)
     },
 
-    async create_task({ project_id, feature_id, title, description, priority }) {
+    async create_task({ project_id, feature_id, title, description, priority, task_type }) {
       return client.request('POST', `/api/v1/projects/${project_id}/features/${feature_id}/tasks`, {
         title,
         description: description ?? '',
         priority: priority ?? 'normal',
+        task_type: task_type ?? 'task',
       })
     },
 

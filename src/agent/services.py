@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from src.agent.repository import AgentRepository
+from src.board.models import Task
 from src.board.repository import BoardRepository
 from src.shared.config import settings
 from src.shared.events import Event, EventType, event_bus
@@ -81,6 +82,34 @@ class AgentService:
 
     # --- Task Lifecycle ---
 
+    def _check_pipeline_predecessors(self, task: Task, feature_tasks: list[Task]) -> None:
+        """Check that predecessor task types in the pipeline are done."""
+        if task.task_type == "task":
+            return  # Standalone tasks have no pipeline deps
+
+        predecessor_type: str | None = None
+        if task.task_type == "plan":
+            predecessor_type = "spec"
+        elif task.task_type == "impl":
+            predecessor_type = "plan"
+
+        if predecessor_type is None:
+            return
+
+        predecessors = [t for t in feature_tasks if t.task_type == predecessor_type]
+        if not predecessors:
+            return  # No predecessor tasks exist — allow start
+
+        undone = [t for t in predecessors if t.status != "done"]
+        if undone:
+            titles = ", ".join(f"T-{t.number} ({t.status})" for t in undone)
+            raise ValueError(
+                f"Cannot start {task.task_type} task: "
+                f"{predecessor_type} task(s) not done yet: "
+                f"{titles}. "
+                f"Wait for the {predecessor_type} PR to be merged."
+            )
+
     async def start_task(self, worktree_id: UUID, task_id: UUID) -> dict[str, object]:
         """Start working on a task."""
         worktree = await self._repo.get_worktree(worktree_id)
@@ -90,6 +119,10 @@ class AgentService:
         task = await self._board_repo.get_task(task_id)
         if task is None:
             raise ValueError(f"Task {task_id} not found")
+
+        # Guard: check pipeline ordering (spec before plan, plan before impl)
+        feature_tasks = await self._board_repo.get_tasks_for_feature(task.feature_id)
+        self._check_pipeline_predecessors(task, feature_tasks)
 
         # Assign task to worktree and set status
         await self._board_repo.update_task(task_id, worktree_id=worktree_id, status="in_progress")
@@ -109,14 +142,32 @@ class AgentService:
 
         return {"task_id": task_id, "status": "in_progress"}
 
-    async def complete_task(self, worktree_id: UUID, task_id: UUID) -> dict[str, object]:
+    async def complete_task(
+        self, worktree_id: UUID, task_id: UUID, pr_url: str | None = None
+    ) -> dict[str, object]:
         """Complete a task and return the next assigned task if any."""
         worktree = await self._repo.get_worktree(worktree_id)
         if worktree is None:
             raise ValueError(f"Worktree {worktree_id} not found")
 
+        task = await self._board_repo.get_task(task_id)
+        if task is None:
+            raise ValueError(f"Task {task_id} not found")
+
+        # Guard: spec and impl tasks require PR to be in review before completing
+        if task.task_type in ("spec", "impl") and task.status != "review":
+            raise ValueError(
+                f"Cannot complete {task.task_type} task: must be in 'review' status first "
+                f"(current: {task.status}). Move to review with a PR URL first."
+            )
+
+        # Update pr_url if provided
+        update_fields: dict[str, object] = {"status": "done"}
+        if pr_url is not None:
+            update_fields["pr_url"] = pr_url
+
         # Mark task done
-        await self._board_repo.update_task(task_id, status="done")
+        await self._board_repo.update_task(task_id, **update_fields)
         await self._repo.set_worktree_current_task(worktree_id, None)
 
         await event_bus.publish(
@@ -147,13 +198,38 @@ class AgentService:
 
         return {"completed_task_id": task_id, "next_task": next_task}
 
-    async def update_task_status(self, worktree_id: UUID, task_id: UUID, status: str) -> None:
+    async def update_task_status(
+        self, worktree_id: UUID, task_id: UUID, status: str, pr_url: str | None = None
+    ) -> None:
         """Update a task's status (e.g. to review, blocked)."""
         worktree = await self._repo.get_worktree(worktree_id)
         if worktree is None:
             raise ValueError(f"Worktree {worktree_id} not found")
 
-        await self._board_repo.update_task(task_id, status=status)
+        task = await self._board_repo.get_task(task_id)
+        if task is None:
+            raise ValueError(f"Task {task_id} not found")
+
+        # Guard: moving to review requires pr_url for spec and impl tasks
+        needs_pr = task.task_type in ("spec", "impl")
+        if status == "review" and needs_pr and not pr_url and not task.pr_url:
+            raise ValueError(
+                f"Cannot move {task.task_type} task to review without a PR URL. "
+                f"Provide pr_url parameter with the GitHub PR link."
+            )
+
+        # Guard: moving to done requires the task to have been in review (for spec/impl)
+        if status == "done" and task.task_type in ("spec", "impl") and task.status != "review":
+            raise ValueError(
+                f"Cannot move {task.task_type} task directly to done. "
+                f"It must go through review first."
+            )
+
+        update_fields: dict[str, object] = {"status": status}
+        if pr_url is not None:
+            update_fields["pr_url"] = pr_url
+
+        await self._board_repo.update_task(task_id, **update_fields)
 
         await event_bus.publish(
             Event(

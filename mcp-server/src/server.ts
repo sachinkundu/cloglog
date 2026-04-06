@@ -102,12 +102,15 @@ export function createServer(client: CloglogClient): McpServer {
 
   server.tool(
     'complete_task',
-    'Mark task as Done, get next task.',
-    { task_id: z.string().describe('UUID of the task to complete') },
-    async ({ task_id }) => {
+    'Mark task as Done, get next task. For spec/impl tasks, task must be in review status first.',
+    {
+      task_id: z.string().describe('UUID of the task to complete'),
+      pr_url: z.string().optional().describe('GitHub PR URL (required for spec/impl tasks)'),
+    },
+    async ({ task_id, pr_url }) => {
       const wt = requireRegistered()
       if (typeof wt !== 'string') return wt
-      const result = await handlers.complete_task({ worktree_id: wt, task_id })
+      const result = await handlers.complete_task({ worktree_id: wt, task_id, pr_url })
       let text = JSON.stringify(result, null, 2)
       if (shutdownRequested) {
         text += '\n\n⚠️ SHUTDOWN REQUESTED: The master agent has requested this worktree to shut down. Finish your current work, generate shutdown artifacts (work-log.md and learnings.md in shutdown-artifacts/), call unregister_agent, and exit.'
@@ -118,15 +121,16 @@ export function createServer(client: CloglogClient): McpServer {
 
   server.tool(
     'update_task_status',
-    'Move task to a specific column (e.g., review, done).',
+    'Move task to a specific column (e.g., review, done). For spec/impl tasks, moving to review requires a pr_url.',
     {
       task_id: z.string().describe('UUID of the task'),
       status: z.string().describe('Target status: backlog, in_progress, review, done'),
+      pr_url: z.string().optional().describe('GitHub PR URL (required when moving spec/impl tasks to review)'),
     },
-    async ({ task_id, status }) => {
+    async ({ task_id, status, pr_url }) => {
       const wt = requireRegistered()
       if (typeof wt !== 'string') return wt
-      await handlers.update_task_status({ worktree_id: wt, task_id, status })
+      await handlers.update_task_status({ worktree_id: wt, task_id, status, pr_url })
       return { content: [{ type: 'text' as const, text: `Task ${task_id} moved to ${status}.` }] }
     }
   )
@@ -264,11 +268,12 @@ export function createServer(client: CloglogClient): McpServer {
       title: z.string().describe('Task title'),
       description: z.string().optional().describe('Task description'),
       priority: z.enum(['normal', 'expedite']).optional().describe('Task priority (default: normal)'),
+      task_type: z.enum(['spec', 'plan', 'impl', 'task']).optional().describe('Task type for pipeline ordering. spec → plan → impl. Default: task (no pipeline deps)'),
     },
-    async ({ feature_id, title, description, priority }) => {
+    async ({ feature_id, title, description, priority, task_type }) => {
       const pid = requireProject()
       if (typeof pid !== 'string') return pid
-      const result = await handlers.create_task({ project_id: pid, feature_id, title, description, priority })
+      const result = await handlers.create_task({ project_id: pid, feature_id, title, description, priority, task_type })
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] }
     }
   )

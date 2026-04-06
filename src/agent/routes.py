@@ -70,7 +70,8 @@ async def start_task(
     try:
         return await service.start_task(worktree_id, body.task_id)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
+        status = 409 if "Cannot start" in str(e) else 404
+        raise HTTPException(status_code=status, detail=str(e)) from None
 
 
 @router.post("/agents/{worktree_id}/complete-task", response_model=CompleteTaskResponse)
@@ -78,9 +79,9 @@ async def complete_task(
     worktree_id: UUID, body: CompleteTaskRequest, service: ServiceDep
 ) -> dict[str, object]:
     try:
-        return await service.complete_task(worktree_id, body.task_id)
+        return await service.complete_task(worktree_id, body.task_id, pr_url=body.pr_url)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
+        raise HTTPException(status_code=409, detail=str(e)) from None
 
 
 @router.patch("/agents/{worktree_id}/task-status", status_code=204)
@@ -88,9 +89,9 @@ async def update_task_status(
     worktree_id: UUID, body: UpdateTaskStatusRequest, service: ServiceDep
 ) -> None:
     try:
-        await service.update_task_status(worktree_id, body.task_id, body.status)
+        await service.update_task_status(worktree_id, body.task_id, body.status, pr_url=body.pr_url)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
+        raise HTTPException(status_code=409, detail=str(e)) from None
 
 
 @router.post("/agents/{worktree_id}/task-note", status_code=201)

@@ -209,7 +209,13 @@ async def create_task(
         raise HTTPException(status_code=404, detail="Feature not found")
     number = await service._repo.next_task_number(project_id)
     task = await service._repo.create_task(
-        feature_id, body.title, body.description, body.priority, body.position, number=number
+        feature_id,
+        body.title,
+        body.description,
+        body.priority,
+        body.position,
+        number=number,
+        task_type=body.task_type,
     )
     epic = await service._repo.get_epic(feature.epic_id)
     assert epic is not None

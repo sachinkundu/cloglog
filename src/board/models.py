@@ -108,6 +108,8 @@ class Task(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(20), default="backlog")
     priority: Mapped[str] = mapped_column(String(20), default="normal")
+    task_type: Mapped[str] = mapped_column(String(20), default="task")
+    pr_url: Mapped[str | None] = mapped_column(String(500), default=None)
     worktree_id: Mapped[_uuid.UUID | None] = mapped_column(default=None)
     position: Mapped[int] = mapped_column(default=0)
     number: Mapped[int] = mapped_column(default=0)

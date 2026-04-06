@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.agent.repository import AgentRepository
+from src.agent.services import AgentService
 from src.board.models import Epic, Feature, Task
+from src.board.repository import BoardRepository
 
 
 def _auth(api_key: str) -> dict[str, str]:
@@ -321,3 +325,111 @@ class TestUnregisterAPI:
 
         resp = await client.get(f"/api/v1/projects/{project['id']}/worktrees")
         assert len(resp.json()) == 0
+
+
+class TestHeartbeatTimeoutAPI:
+    async def test_timeout_sets_worktree_offline(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Register an agent, expire its heartbeat, run cleanup, verify offline via API."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+
+        reg = await client.post(
+            "/api/v1/agents/register",
+            json={"worktree_path": "/repo/wt-stale", "branch_name": "wt-stale"},
+            headers=h,
+        )
+        assert reg.status_code == 201
+        wt_id = reg.json()["worktree_id"]
+
+        # Manually expire the heartbeat in the DB
+        repo = AgentRepository(db_session)
+        session = await repo.get_active_session(uuid.UUID(wt_id))
+        assert session is not None
+        session.last_heartbeat = datetime.now(UTC) - timedelta(minutes=10)
+        await db_session.commit()
+
+        # Run the timeout check
+        service = AgentService(repo, BoardRepository(db_session))
+        affected = await service.check_heartbeat_timeouts()
+        assert uuid.UUID(wt_id) in affected
+
+        # Verify via API that the worktree is now offline
+        resp = await client.get(f"/api/v1/projects/{project['id']}/worktrees")
+        assert resp.status_code == 200
+        worktrees = resp.json()
+        assert len(worktrees) == 1
+        assert worktrees[0]["id"] == wt_id
+        assert worktrees[0]["status"] == "offline"
+
+    async def test_timeout_does_not_affect_fresh_agents(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Agents with recent heartbeats are not cleaned up."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+
+        reg = await client.post(
+            "/api/v1/agents/register",
+            json={"worktree_path": "/repo/wt-fresh", "branch_name": "wt-fresh"},
+            headers=h,
+        )
+        assert reg.status_code == 201
+        wt_id = reg.json()["worktree_id"]
+
+        # Send a heartbeat to keep it fresh
+        hb = await client.post(f"/api/v1/agents/{wt_id}/heartbeat")
+        assert hb.status_code == 200
+
+        # Run timeout check — should not affect this agent
+        repo = AgentRepository(db_session)
+        service = AgentService(repo, BoardRepository(db_session))
+        affected = await service.check_heartbeat_timeouts()
+        assert uuid.UUID(wt_id) not in affected
+
+        # Verify still online
+        resp = await client.get(f"/api/v1/projects/{project['id']}/worktrees")
+        worktrees = resp.json()
+        assert len(worktrees) == 1
+        assert worktrees[0]["status"] == "online"
+
+    async def test_timed_out_agent_can_re_register(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """After timeout, an agent can re-register and resume."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+
+        reg = await client.post(
+            "/api/v1/agents/register",
+            json={"worktree_path": "/repo/wt-comeback", "branch_name": "wt-comeback"},
+            headers=h,
+        )
+        wt_id = reg.json()["worktree_id"]
+
+        # Expire and timeout
+        repo = AgentRepository(db_session)
+        session = await repo.get_active_session(uuid.UUID(wt_id))
+        assert session is not None
+        session.last_heartbeat = datetime.now(UTC) - timedelta(minutes=10)
+        await db_session.commit()
+
+        service = AgentService(repo, BoardRepository(db_session))
+        await service.check_heartbeat_timeouts()
+
+        # Re-register
+        reg2 = await client.post(
+            "/api/v1/agents/register",
+            json={"worktree_path": "/repo/wt-comeback", "branch_name": "wt-comeback"},
+            headers=h,
+        )
+        assert reg2.status_code == 201
+        assert reg2.json()["resumed"] is True
+        assert reg2.json()["worktree_id"] == wt_id
+
+        # Verify back online
+        resp = await client.get(f"/api/v1/projects/{project['id']}/worktrees")
+        worktrees = resp.json()
+        assert len(worktrees) == 1
+        assert worktrees[0]["status"] == "online"

@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agent.repository import AgentRepository
+from src.agent.scheduler import run_heartbeat_checker
 from src.agent.services import AgentService
 from src.board.models import Epic, Feature, Project, Task
 from src.board.repository import BoardRepository
@@ -354,3 +357,98 @@ class TestAgentService:
         assert len(worktrees) == 2
         paths = {w["worktree_path"] for w in worktrees}
         assert paths == {"/repo/wt-a", "/repo/wt-b"}
+
+    async def test_agent_re_registers_after_timeout(self, db_session: AsyncSession) -> None:
+        """An agent that was timed out can re-register and get a new session."""
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+        service = AgentService(repo, BoardRepository(db_session))
+
+        # Register and start a task
+        task = await _create_task_chain(db_session, project)
+        reg = await service.register(project.id, "/repo/wt-timeout", "wt-timeout")
+        wt_id = reg["worktree_id"]
+        await service.start_task(wt_id, task.id)  # type: ignore[arg-type]
+
+        # Simulate timeout
+        session = await repo.get_active_session(wt_id)  # type: ignore[arg-type]
+        assert session is not None
+        session.last_heartbeat = datetime.now(UTC) - timedelta(minutes=10)
+        await db_session.commit()
+        await service.check_heartbeat_timeouts()
+
+        # Verify timed out
+        worktree = await repo.get_worktree(wt_id)  # type: ignore[arg-type]
+        assert worktree is not None
+        assert worktree.status == "offline"
+
+        # Re-register — should get a new session, resume with current_task
+        reg2 = await service.register(project.id, "/repo/wt-timeout", "wt-timeout")
+        assert reg2["resumed"] is True
+        assert reg2["worktree_id"] == wt_id
+        assert reg2["current_task"] is not None
+        assert reg2["current_task"]["id"] == task.id  # type: ignore[index]
+
+        # Verify worktree is back online
+        worktree = await repo.get_worktree(wt_id)  # type: ignore[arg-type]
+        assert worktree is not None
+        assert worktree.status == "online"
+
+
+# --- Scheduler Tests ---
+
+
+class TestHeartbeatScheduler:
+    async def test_scheduler_calls_check_timeouts(self, db_session: AsyncSession) -> None:
+        """The scheduler loop calls check_heartbeat_timeouts on each iteration."""
+        call_count = 0
+
+        async def mock_check_timeouts(self: AgentService) -> list:
+            nonlocal call_count
+            call_count += 1
+            return []
+
+        with (
+            patch.object(AgentService, "check_heartbeat_timeouts", mock_check_timeouts),
+            patch("src.agent.scheduler.async_session_factory") as mock_factory,
+        ):
+            mock_session = AsyncMock()
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            # Run the checker with a very short interval, cancel after a brief wait
+            task = asyncio.create_task(run_heartbeat_checker(interval_seconds=0))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert call_count >= 1
+
+    async def test_scheduler_survives_exceptions(self, db_session: AsyncSession) -> None:
+        """The scheduler continues running even if an iteration raises."""
+        call_count = 0
+
+        async def failing_check(self: AgentService) -> list:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("DB connection lost")
+            return []
+
+        with (
+            patch.object(AgentService, "check_heartbeat_timeouts", failing_check),
+            patch("src.agent.scheduler.async_session_factory") as mock_factory,
+        ):
+            mock_session = AsyncMock()
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            task = asyncio.create_task(run_heartbeat_checker(interval_seconds=0))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        # Should have been called at least twice — once errored, once succeeded
+        assert call_count >= 2

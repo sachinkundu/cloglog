@@ -34,6 +34,7 @@ export class CloglogClient {
     const headers: Record<string, string> = {
       'Authorization': `Bearer ${this.apiKey}`,
       'Content-Type': 'application/json',
+      'X-MCP-Request': 'true',
     }
 
     const response = await fetch(url, {

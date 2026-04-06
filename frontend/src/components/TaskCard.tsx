@@ -1,6 +1,7 @@
 import type { TaskCard as TaskCardType } from '../api/types'
 import { formatEntityNumber } from '../utils/format'
 import { BreadcrumbPills } from './BreadcrumbPills'
+import { PrLink } from './PrLink'
 import './TaskCard.css'
 
 interface TaskCardProps {
@@ -32,6 +33,7 @@ export function TaskCard({ task, onClick }: TaskCardProps) {
         {task.worktree_id && (
           <span className="task-worktree">agent assigned</span>
         )}
+        {task.pr_url && <PrLink url={task.pr_url} />}
       </div>
     </div>
   )

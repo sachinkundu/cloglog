@@ -1,6 +1,20 @@
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi } from 'vitest'
+
+// Mock excalidraw before importing App (open-color JSON import issue)
+vi.mock('@excalidraw/excalidraw', () => ({
+  Excalidraw: () => null,
+  convertToExcalidrawElements: vi.fn().mockReturnValue([]),
+}))
+vi.mock('@excalidraw/mermaid-to-excalidraw', () => ({
+  parseMermaidToExcalidraw: vi.fn().mockResolvedValue({
+    elements: [],
+    files: null,
+  }),
+}))
+vi.mock('@excalidraw/excalidraw/index.css', () => ({}))
+
 import App from './App'
 
 // Mock the API

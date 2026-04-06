@@ -2,6 +2,20 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+
+// Mock excalidraw before importing App (open-color JSON import issue)
+vi.mock('@excalidraw/excalidraw', () => ({
+  Excalidraw: () => null,
+  convertToExcalidrawElements: vi.fn().mockReturnValue([]),
+}))
+vi.mock('@excalidraw/mermaid-to-excalidraw', () => ({
+  parseMermaidToExcalidraw: vi.fn().mockResolvedValue({
+    elements: [],
+    files: null,
+  }),
+}))
+vi.mock('@excalidraw/excalidraw/index.css', () => ({}))
+
 import App from './App'
 import { api } from './api/client'
 import type { BoardResponse, Project, Worktree } from './api/types'
@@ -56,8 +70,12 @@ const board: BoardResponse = {
           description: 'Create the login form with validation',
           status: 'backlog',
           priority: 'expedite',
+          task_type: 'task',
+          pr_url: null,
           worktree_id: 'wt1',
           position: 0,
+          number: 1,
+          archived: false,
           created_at: '',
           updated_at: '',
           epic_title: 'Authentication',
@@ -76,8 +94,12 @@ const board: BoardResponse = {
           description: 'Configure GitHub Actions',
           status: 'in_progress',
           priority: 'normal',
+          task_type: 'task',
+          pr_url: null,
           worktree_id: null,
           position: 0,
+          number: 2,
+          archived: false,
           created_at: '',
           updated_at: '',
           epic_title: 'DevOps',

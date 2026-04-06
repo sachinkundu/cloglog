@@ -10,6 +10,7 @@ const mdComponents = {
 }
 import { api } from '../api/client'
 import type { Document, DocumentSummary, TaskCard } from '../api/types'
+import { PrLink } from './PrLink'
 import './CardDetail.css'
 
 interface CardDetailProps {
@@ -43,6 +44,7 @@ export function CardDetail({ task, onClose }: CardDetailProps) {
             {task.priority === 'expedite' && (
               <span className="status-badge expedite">expedite</span>
             )}
+            {task.pr_url && <PrLink url={task.pr_url} />}
           </div>
           <button className="card-detail-close" onClick={onClose}>x</button>
         </div>

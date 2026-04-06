@@ -21,12 +21,17 @@ const baseTask: TaskCard = {
   description: 'Build the auth flow',
   status: 'in_progress',
   priority: 'normal',
+  task_type: 'task',
+  pr_url: null,
   worktree_id: null,
   position: 0,
+  number: 0,
+  archived: false,
   created_at: '',
   updated_at: '',
   epic_title: 'Security',
   feature_title: 'Auth System',
+  epic_color: '#7c3aed',
 }
 
 const mockDocs: DocumentSummary[] = [
@@ -121,6 +126,18 @@ describe('CardDetail', () => {
       expect(screen.getByText('spec: Auth Spec')).toBeInTheDocument()
       expect(screen.getByText('plan: Auth Plan')).toBeInTheDocument()
     })
+  })
+
+  it('shows PR link when pr_url is set', () => {
+    const task = { ...baseTask, pr_url: 'https://github.com/sachinkundu/cloglog/pull/77', status: 'review' }
+    render(<CardDetail task={task} onClose={vi.fn()} />)
+    expect(screen.getByText('PR #77')).toBeInTheDocument()
+    expect(screen.getByRole('link')).toHaveAttribute('href', 'https://github.com/sachinkundu/cloglog/pull/77')
+  })
+
+  it('does not show PR link when pr_url is null', () => {
+    render(<CardDetail task={baseTask} onClose={vi.fn()} />)
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
   })
 
   it('loads and displays document content when a doc chip is clicked', async () => {

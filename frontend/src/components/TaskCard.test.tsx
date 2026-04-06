@@ -11,8 +11,12 @@ const baseTask: TaskCardType = {
   description: 'Add login form',
   status: 'in_progress',
   priority: 'normal',
+  task_type: 'task',
+  pr_url: null,
   worktree_id: null,
   position: 0,
+  number: 1,
+  archived: false,
   created_at: '',
   updated_at: '',
   epic_title: 'Auth',
@@ -68,5 +72,26 @@ describe('TaskCard', () => {
   it('renders expedite priority badge', () => {
     render(<TaskCard task={{ ...baseTask, priority: 'expedite' }} onClick={vi.fn()} />)
     expect(screen.getByText('expedite')).toBeInTheDocument()
+  })
+
+  it('shows PR link when pr_url is set', () => {
+    const task = { ...baseTask, pr_url: 'https://github.com/sachinkundu/cloglog/pull/45' }
+    render(<TaskCard task={task} onClick={vi.fn()} />)
+    expect(screen.getByText('PR #45')).toBeInTheDocument()
+    expect(screen.getByRole('link')).toHaveAttribute('href', 'https://github.com/sachinkundu/cloglog/pull/45')
+  })
+
+  it('does not show PR link when pr_url is null', () => {
+    render(<TaskCard task={baseTask} onClick={vi.fn()} />)
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it('PR link click does not trigger card onClick', async () => {
+    const user = userEvent.setup()
+    const onClick = vi.fn()
+    const task = { ...baseTask, pr_url: 'https://github.com/sachinkundu/cloglog/pull/10' }
+    render(<TaskCard task={task} onClick={onClick} />)
+    await user.click(screen.getByRole('link'))
+    expect(onClick).not.toHaveBeenCalled()
   })
 })

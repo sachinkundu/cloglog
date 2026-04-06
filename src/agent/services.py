@@ -146,6 +146,13 @@ class AgentService:
         self, worktree_id: UUID, task_id: UUID, pr_url: str | None = None
     ) -> dict[str, object]:
         """Complete a task and return the next assigned task if any."""
+        raise ValueError(
+            "Agents cannot mark tasks as done. "
+            "Move the task to 'review' and wait for the user to mark it done "
+            "by dragging the card on the board."
+        )
+
+        # --- Dead code below: kept for reference when user-done is removed ---
         worktree = await self._repo.get_worktree(worktree_id)
         if worktree is None:
             raise ValueError(f"Worktree {worktree_id} not found")
@@ -215,6 +222,14 @@ class AgentService:
         self, worktree_id: UUID, task_id: UUID, status: str, pr_url: str | None = None
     ) -> None:
         """Update a task's status (e.g. to review, blocked)."""
+        # Guard: agents cannot move tasks to done — only user can via board UI
+        if status == "done":
+            raise ValueError(
+                "Agents cannot mark tasks as done. "
+                "Move the task to 'review' and wait for the user "
+                "to drag it to done on the board."
+            )
+
         worktree = await self._repo.get_worktree(worktree_id)
         if worktree is None:
             raise ValueError(f"Worktree {worktree_id} not found")

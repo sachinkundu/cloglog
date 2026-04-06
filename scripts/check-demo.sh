@@ -19,29 +19,11 @@ if [[ "$BRANCH" == "main" || "$BRANCH" == "master" ]]; then
   exit 0
 fi
 
-# Detect feature name from DEMO_FEATURE env var or branch name
+# Detect feature/branch identifier for demo lookup
 FEATURE="${DEMO_FEATURE:-}"
 if [[ -z "$FEATURE" ]]; then
-  # Extract feature identifier from branch name
-  # Patterns: wt-frontend -> look for feature in commit, f23-impl -> f23, etc.
-  case "$BRANCH" in
-    f[0-9]*-*)
-      # Branch like f23-impl or f23-design-spec — extract f<N> prefix
-      FEATURE=$(echo "$BRANCH" | grep -oP '^f\d+' || echo "")
-      ;;
-    wt-*)
-      # Worktree branch — check for DEMO_FEATURE in .env
-      if [[ -f .env ]]; then
-        FEATURE=$(grep -oP 'DEMO_FEATURE=\K.*' .env 2>/dev/null || echo "")
-      fi
-      ;;
-  esac
-fi
-
-if [[ -z "$FEATURE" ]]; then
-  echo "  Could not detect feature name. Set DEMO_FEATURE env var or use f<N>-* branch naming."
-  echo "  Skipping demo check."
-  exit 0
+  # Use the full branch name as the demo directory identifier
+  FEATURE="$BRANCH"
 fi
 
 # Skip if docs/demos/ doesn't exist yet (demo system not yet set up)
@@ -63,15 +45,9 @@ if compgen -G "docs/demos/*/" > /dev/null 2>&1; then
 fi
 
 if [[ -z "$DEMO_DIR" ]]; then
-  # If no demo directories exist at all, the system isn't adopted yet — warn but pass
-  if ! compgen -G "docs/demos/*/" > /dev/null 2>&1; then
-    echo "  No demos exist yet — demo system not yet adopted. Skipping."
-    exit 0
-  fi
-  # Other demos exist but this feature is missing one — fail
-  echo "  ERROR: No demo directory found matching feature '$FEATURE' in docs/demos/"
-  echo "  Expected: docs/demos/<feature-name>/demo.md"
-  echo "  Run 'make demo' to generate the demo document."
+  echo "  ERROR: No demo found matching '$FEATURE' in docs/demos/"
+  echo "  Expected: docs/demos/<branch-or-feature>/demo.md"
+  echo "  Create a demo with showboat before committing."
   exit 1
 fi
 

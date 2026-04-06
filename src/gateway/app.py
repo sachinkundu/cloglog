@@ -8,8 +8,11 @@ import contextlib
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.responses import Response
 
 
 @asynccontextmanager
@@ -30,6 +33,31 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+
+    class AgentRouteIsolationMiddleware(BaseHTTPMiddleware):
+        """Block agents from accessing non-agent routes.
+
+        If a request has an Authorization header (API key = agent caller),
+        it can only access /api/v1/agents/* routes. All other routes return
+        403. The frontend UI has no API key so it passes through freely.
+        """
+
+        async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+            auth = request.headers.get("Authorization")
+            path = request.url.path
+            if auth and path.startswith("/api/v1/") and not path.startswith("/api/v1/agents/"):
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": (
+                            "Agents can only access /api/v1/agents/* routes. "
+                            "Use MCP tools for all board operations."
+                        )
+                    },
+                )
+            return await call_next(request)
+
+    app.add_middleware(AgentRouteIsolationMiddleware)
 
     app.add_middleware(
         CORSMiddleware,

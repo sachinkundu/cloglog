@@ -47,6 +47,7 @@ class StartTaskResponse(BaseModel):
 
 class CompleteTaskRequest(BaseModel):
     task_id: UUID
+    pr_url: str | None = None
 
 
 class CompleteTaskResponse(BaseModel):
@@ -57,6 +58,7 @@ class CompleteTaskResponse(BaseModel):
 class UpdateTaskStatusRequest(BaseModel):
     task_id: UUID
     status: str  # review, blocked, etc.
+    pr_url: str | None = None
 
 
 class TaskInfo(BaseModel):

@@ -92,11 +92,16 @@ class FeatureResponse(BaseModel):
 # --- Task ---
 
 
+VALID_TASK_TYPES = {"spec", "plan", "impl", "task"}
+PIPELINE_ORDER = {"spec": 0, "plan": 1, "impl": 2, "task": -1}
+
+
 class TaskCreate(BaseModel):
     title: str
     description: str = ""
     priority: str = "normal"
     position: int = 0
+    task_type: str = "task"
 
 
 class TaskUpdate(BaseModel):
@@ -107,6 +112,7 @@ class TaskUpdate(BaseModel):
     worktree_id: UUID | None = None
     position: int | None = None
     archived: bool | None = None
+    pr_url: str | None = None
 
 
 class TaskResponse(BaseModel):
@@ -118,6 +124,8 @@ class TaskResponse(BaseModel):
     description: str
     status: str
     priority: str
+    task_type: str
+    pr_url: str | None
     worktree_id: UUID | None
     position: int
     number: int
@@ -159,6 +167,8 @@ class BacklogTask(BaseModel):
     title: str
     status: str
     priority: str
+    task_type: str = "task"
+    pr_url: str | None = None
 
 
 class TaskCounts(BaseModel):

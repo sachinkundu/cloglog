@@ -189,6 +189,7 @@ class BoardRepository:
         priority: str,
         position: int,
         number: int = 0,
+        task_type: str = "task",
     ) -> Task:
         task = Task(
             feature_id=feature_id,
@@ -197,6 +198,7 @@ class BoardRepository:
             priority=priority,
             position=position,
             number=number,
+            task_type=task_type,
         )
         self._session.add(task)
         await self._session.commit()

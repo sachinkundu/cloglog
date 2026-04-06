@@ -28,4 +28,17 @@ if ! make quality > /tmp/quality-check-$$.log 2>&1; then
 fi
 
 rm -f /tmp/quality-check-$$.log
+
+# Demo check — only required on push and PR creation, not on every commit
+if echo "$COMMAND" | grep -qE '(git push|gh pr create)'; then
+  if ! make demo-check > /tmp/demo-check-$$.log 2>&1; then
+    echo "Blocked: demo check failed. Create a demo before pushing/creating PR." >&2
+    echo "---" >&2
+    tail -10 /tmp/demo-check-$$.log >&2
+    rm -f /tmp/demo-check-$$.log
+    exit 2
+  fi
+  rm -f /tmp/demo-check-$$.log
+fi
+
 exit 0

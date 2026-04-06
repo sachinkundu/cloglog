@@ -123,11 +123,10 @@ if [[ -d "$WORKTREE_DIR/mcp-server" ]]; then
   (cd "$WORKTREE_DIR/mcp-server" && npm install --silent 2>/dev/null)
 fi
 
-# Copy .env if it exists in main repo
-if [[ -f "$REPO_ROOT/.env" ]]; then
-  cp "$REPO_ROOT/.env" "$WORKTREE_DIR/.env"
-  echo "  Copied .env"
-fi
+# Set up isolated infrastructure (ports + database)
+echo "  Infrastructure: setting up isolated ports and database"
+export WORKTREE_PATH="$WORKTREE_DIR"
+"$SCRIPT_DIR/worktree-infra.sh" up 2>&1 | sed 's/^/    /'
 
 echo "Dependencies installed."
 
@@ -259,6 +258,19 @@ fi
 
 cat >> "$CLAUDE_MD" << CLAUDE_EOF
 
+## Demo
+
+After implementation, write a \`demo-script.sh\` and run \`make demo\` to produce a proof-of-work \`demo.md\`.
+See the Proof-of-Work Demos section in the root CLAUDE.md for details.
+
+## Infrastructure
+
+This worktree uses isolated infrastructure. Ports and DB are in \`.env\`.
+Source \`scripts/worktree-ports.sh\` for port assignments in demo scripts.
+
+CLAUDE_EOF
+
+cat >> "$CLAUDE_MD" << CLAUDE_EOF
 ## Git
 
 You are on branch \`${BRANCH_NAME}\`. Commit frequently with descriptive messages.

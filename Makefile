@@ -1,4 +1,4 @@
-.PHONY: help install test test-board test-agent test-document test-gateway test-e2e test-e2e-browser test-e2e-browser-ui test-e2e-browser-headed test-e2e-browser-report lint typecheck coverage contract-check quality run-backend
+.PHONY: help install test test-board test-agent test-document test-gateway test-e2e test-e2e-browser test-e2e-browser-ui test-e2e-browser-headed test-e2e-browser-report lint typecheck coverage contract-check demo demo-check quality run-backend
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -57,6 +57,13 @@ contract-check: ## Validate backend matches API contract
 		echo "  No contract files, skipping"; \
 	fi
 
+demo: ## Run proof-of-work demo for current feature
+	@echo "Running proof-of-work demo..."
+	@scripts/run-demo.sh
+
+demo-check: ## Check demo document exists and verifies
+	@scripts/check-demo.sh
+
 quality: ## Run full quality gate (lint + typecheck + test + coverage)
 	@echo "── Backend ─────────────────────────────"
 	@echo ""
@@ -71,6 +78,9 @@ quality: ## Run full quality gate (lint + typecheck + test + coverage)
 	@echo ""
 	@echo "  Contract:"
 	@$(MAKE) --no-print-directory contract-check && echo "    compliant          ✓" || (echo "    FAILED ✗" && exit 1)
+	@echo ""
+	@echo "  Demo:"
+	@$(MAKE) --no-print-directory demo-check && echo "    verified           ✓" || (echo "    FAILED ✗" && exit 1)
 	@echo ""
 	@echo "── Quality gate: PASSED ────────────────"
 

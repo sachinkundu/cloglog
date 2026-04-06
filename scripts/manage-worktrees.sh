@@ -85,6 +85,18 @@ if [[ "$MODE" == "close" ]]; then
   echo ""
 fi
 
+# --- Tear down infrastructure ---
+echo "── Tearing down infrastructure ──"
+for wt in "${WORKTREES[@]}"; do
+  WT_DIR="${REPO_ROOT}/.claude/worktrees/${wt}"
+  if [[ -d "$WT_DIR" ]]; then
+    echo "  Cleaning up infra for $wt..."
+    export WORKTREE_PATH="$WT_DIR"
+    "$SCRIPT_DIR/worktree-infra.sh" down 2>&1 | sed 's/^/    /' || echo "    Warning: infra cleanup failed (continuing)"
+  fi
+done
+echo ""
+
 # --- Remove worktrees ---
 echo "── Removing worktrees ──"
 for wt in "${WORKTREES[@]}"; do

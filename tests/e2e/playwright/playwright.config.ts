@@ -37,6 +37,8 @@ export default defineConfig({
       env: {
         ...process.env,
         DATABASE_URL: TEST_DB_URL,
+        // Suppress desktop notifications (notify-send) during E2E tests
+        DISPLAY: '',
       },
     },
     {

@@ -14,6 +14,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 export WORKTREE_PATH="${WORKTREE_PATH:-$REPO_ROOT}"
 source "$SCRIPT_DIR/worktree-ports.sh"
 
+# PostgreSQL connection defaults (match docker-compose.yml)
+PG_HOST="${PG_HOST:-127.0.0.1}"
+PG_PORT="${PG_PORT:-5432}"
+PG_USER="${PG_USER:-postgres}"
+PG_PASSWORD="${PG_PASSWORD:-postgres}"
+export PGPASSWORD="$PG_PASSWORD"
+
 CMD="${1:-}"
 
 case "$CMD" in
@@ -24,10 +31,10 @@ case "$CMD" in
     echo "  Database: $WORKTREE_DB_NAME"
 
     # Create database if it doesn't exist
-    if psql -h 127.0.0.1 -U postgres -tc "SELECT 1 FROM pg_database WHERE datname='$WORKTREE_DB_NAME'" 2>/dev/null | grep -q 1; then
+    if psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -tc "SELECT 1 FROM pg_database WHERE datname='$WORKTREE_DB_NAME'" 2>/dev/null | grep -q 1; then
       echo "  Database already exists"
     else
-      psql -h 127.0.0.1 -U postgres -c "CREATE DATABASE $WORKTREE_DB_NAME" 2>/dev/null
+      psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -c "CREATE DATABASE $WORKTREE_DB_NAME" 2>/dev/null
       echo "  Database created"
     fi
 
@@ -59,10 +66,10 @@ EOF
     done
 
     # Drop the database
-    if psql -h 127.0.0.1 -U postgres -tc "SELECT 1 FROM pg_database WHERE datname='$WORKTREE_DB_NAME'" 2>/dev/null | grep -q 1; then
+    if psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -tc "SELECT 1 FROM pg_database WHERE datname='$WORKTREE_DB_NAME'" 2>/dev/null | grep -q 1; then
       # Terminate active connections first
-      psql -h 127.0.0.1 -U postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$WORKTREE_DB_NAME' AND pid <> pg_backend_pid();" 2>/dev/null || true
-      psql -h 127.0.0.1 -U postgres -c "DROP DATABASE IF EXISTS $WORKTREE_DB_NAME" 2>/dev/null
+      psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$WORKTREE_DB_NAME' AND pid <> pg_backend_pid();" 2>/dev/null || true
+      psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -c "DROP DATABASE IF EXISTS $WORKTREE_DB_NAME" 2>/dev/null
       echo "  Database dropped"
     else
       echo "  Database did not exist"

@@ -1,9 +1,14 @@
 import { defineConfig } from '@playwright/test';
 import path from 'path';
 
-const TEST_DB_URL = 'postgresql+asyncpg://cloglog:cloglog_dev@localhost:5432/cloglog_e2e_test';
-const E2E_BACKEND_PORT = 8001;
-const E2E_FRONTEND_PORT = 5174;
+// Read from worktree .env if available, otherwise use E2E defaults.
+// In worktrees, scripts/worktree-ports.sh sets these via .env.
+const E2E_BACKEND_PORT = parseInt(process.env.BACKEND_PORT ?? '8001', 10);
+const E2E_FRONTEND_PORT = parseInt(process.env.FRONTEND_PORT ?? '5174', 10);
+const TEST_DB_NAME = process.env.WORKTREE_DB_NAME ?? 'cloglog_e2e_test';
+const TEST_DB_URL = process.env.DATABASE_URL
+  ? process.env.DATABASE_URL.replace('postgresql://', 'postgresql+asyncpg://')
+  : `postgresql+asyncpg://cloglog:cloglog_dev@localhost:5432/${TEST_DB_NAME}`;
 
 // Resolve absolute paths from the config file location
 const REPO_ROOT = path.resolve(__dirname, '../../..');

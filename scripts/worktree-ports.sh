@@ -18,4 +18,10 @@ export BACKEND_PORT=$BASE_PORT
 export FRONTEND_PORT=$((BASE_PORT + 1))
 export DB_PORT=$((BASE_PORT + 2))
 export WORKTREE_DB_NAME="cloglog_${WORKTREE_NAME//-/_}"
-export DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:5432/${WORKTREE_DB_NAME}"
+
+# Compose DATABASE_URL from PG env vars (defaults match docker-compose.yml)
+_PG_USER="${PG_USER:-postgres}"
+_PG_PASS="${PG_PASSWORD:-postgres}"
+_PG_HOST="${PG_HOST:-127.0.0.1}"
+_PG_PORT="${PG_PORT:-5432}"
+export DATABASE_URL="postgresql://${_PG_USER}:${_PG_PASS}@${_PG_HOST}:${_PG_PORT}/${WORKTREE_DB_NAME}"

@@ -14,8 +14,21 @@ else
   exit 0  # Detached HEAD or can't read — allow
 fi
 
-# Fast exit: not a worktree branch
-[[ "$BRANCH" == wt-* ]] || exit 0
+# Check if we're inside a worktree directory (agents may rename branches to bypass)
+WORKTREE_DIR=""
+if [[ "$CWD" == */.claude/worktrees/wt-* ]]; then
+  WORKTREE_DIR=$(echo "$CWD" | grep -oP '\.claude/worktrees/\Kwt-[^/]+')
+fi
+
+# Fast exit: not a worktree branch AND not in a worktree directory
+if [[ "$BRANCH" != wt-* ]] && [[ -z "$WORKTREE_DIR" ]]; then
+  exit 0
+fi
+
+# Use worktree directory name if branch was renamed
+if [[ "$BRANCH" != wt-* ]] && [[ -n "$WORKTREE_DIR" ]]; then
+  BRANCH="$WORKTREE_DIR"
+fi
 
 FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
 [[ -n "$FILE_PATH" ]] || exit 0

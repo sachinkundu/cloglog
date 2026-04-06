@@ -174,6 +174,24 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 - **Artifact handoff is explicit.** The unregister call includes paths to `shutdown-artifacts/work-log.md` and `shutdown-artifacts/learnings.md`. The `WORKTREE_OFFLINE` event carries these paths for the main agent to consolidate.
 - **Main agent consolidation.** On receiving `WORKTREE_OFFLINE` with artifacts: read the files, copy work log to `docs/superpowers/work-logs/`, merge learnings into CLAUDE.md, commit, then run `./scripts/manage-worktrees.sh remove {name}`.
 
+### Proof-of-Work Demos
+- **Every PR must include a `demo.md`.** After implementation, run `make demo` to produce it.
+- Backend PRs: use Showboat with curl commands to prove APIs work. No Rodney needed.
+- Frontend PRs: use Showboat + Rodney (headless Chrome) for screenshots. Both available via `uvx`.
+- Write a `demo-script.sh` in your feature's `docs/demos/<feature>/` directory.
+- The demo script should exercise affected endpoints/pages and capture proof of correctness.
+- Demo documents are committed to the branch and summarized in the PR description.
+- `make quality` will fail if a PR is missing its demo.
+- Demo scope: feature walkthrough only. Regression testing is handled by E2E tests.
+- Each worktree runs on isolated ports and database. Source `scripts/worktree-ports.sh` in demo scripts.
+
+### Infrastructure Isolation
+- **Each worktree has its own ports and database.** Created automatically by `create-worktree.sh`.
+- Port assignments are in the worktree's `.env` file. Source `scripts/worktree-ports.sh` for env vars.
+- Database is named `cloglog_<worktree_name>` (hyphens replaced with underscores).
+- **Cleanup is automatic:** `manage-worktrees.sh remove` tears down the database and kills port processes.
+- Never hardcode ports. Always use `$BACKEND_PORT`, `$FRONTEND_PORT` from the env.
+
 ---
 
 *This section is updated after each wave with learnings from PR reviews. If you encounter a new pattern that future agents should know, note it in your PR description so it can be added here.*

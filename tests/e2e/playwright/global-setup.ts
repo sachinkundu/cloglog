@@ -8,9 +8,10 @@ import { execFileSync } from 'child_process';
 
 const PG_HOST = process.env.PG_HOST ?? 'localhost';
 const PG_PORT = process.env.PG_PORT ?? '5432';
-const PG_USER = 'cloglog';
-const PG_PASSWORD = 'cloglog_dev';
-const TEST_DB = 'cloglog_e2e_test';
+const PG_USER = process.env.PG_USER ?? 'cloglog';
+const PG_PASSWORD = process.env.PG_PASSWORD ?? 'cloglog_dev';
+// Use worktree DB name if available (set by scripts/worktree-ports.sh), otherwise E2E default
+const TEST_DB = process.env.WORKTREE_DB_NAME ?? 'cloglog_e2e_test';
 
 function psql(sql: string, db = 'postgres') {
   execFileSync('psql', ['-h', PG_HOST, '-p', PG_PORT, '-U', PG_USER, '-d', db, '-c', sql], {

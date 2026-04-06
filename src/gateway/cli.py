@@ -1,4 +1,8 @@
-"""CLI scaffold for cloglog using Typer."""
+"""CLI for the human operator to observe and manage the cloglog board.
+
+Agents use MCP tools, not this CLI. This is for the human to inspect
+task status, assign work, and manage the board from the terminal.
+"""
 
 from __future__ import annotations
 
@@ -183,7 +187,7 @@ STATUS_LABELS = {
     "done": "Done",
 }
 
-tasks_app = typer.Typer(name="tasks", help="Manage tasks.")
+tasks_app = typer.Typer(name="tasks", help="Inspect and manage tasks (for the human operator).")
 app.add_typer(tasks_app)
 
 

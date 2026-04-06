@@ -6,12 +6,15 @@
 
 ## Problem
 
-Agents and operators currently manage tasks exclusively through the MCP tools or raw HTTP API. There is no CLI for task operations — listing tasks, assigning them to worktrees, changing status, or filtering by feature/epic. The existing `cloglog` CLI (`src/gateway/cli.py`) only has `health`, `projects list`, and `projects create`.
+The human operator has no CLI to observe and manage the board. Agents use MCP tools directly and should continue to do so — the CLI is **not** for agents. It's for the human to quickly check task status, assign work to worktrees, and make adjustments from the terminal without opening the dashboard.
 
-A CLI enables:
-- Operators to quickly inspect and manage tasks from the terminal
+The CLI enables:
+- The human operator to quickly inspect task status and board state from the terminal
 - Scripts (`create-worktree.sh`, `manage-worktrees.sh`) to assign tasks programmatically
 - A consistent UX pattern alongside existing `cloglog projects` commands
+- Near-parity with MCP tools, so the human has the same capabilities as agents
+
+**Important:** Agents must NOT use the CLI. They use MCP tools which provide structured responses and integrate with the board's event system. The CLI is a human interface only.
 
 ## Design
 

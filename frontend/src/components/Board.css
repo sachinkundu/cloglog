@@ -20,3 +20,9 @@
   padding: 12px;
   overflow-y: auto;
 }
+
+.drag-overlay-card {
+  opacity: 0.9;
+  transform: rotate(2deg);
+  pointer-events: none;
+}

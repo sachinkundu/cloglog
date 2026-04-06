@@ -37,6 +37,12 @@ export const api = {
     fetchJSON<DocumentSummary[]>(`/documents?attached_to_type=feature&attached_to_id=${featureId}`),
 
   // Tasks
+  updateTask: (taskId: string, updates: Record<string, unknown>) =>
+    fetchJSON(`/tasks/${taskId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    }),
+
   archiveTask: (taskId: string) =>
     fetchJSON(`/tasks/${taskId}`, {
       method: 'PATCH',

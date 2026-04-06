@@ -1,9 +1,21 @@
 import { useCallback } from 'react'
-import type { BacklogEpic, BoardResponse } from '../api/types'
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  TouchSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+} from '@dnd-kit/core'
+import { useState } from 'react'
+import type { BacklogEpic, BoardResponse, TaskCard as TaskCardType } from '../api/types'
 import { api } from '../api/client'
 import { BacklogTree } from './BacklogTree'
 import { BoardHeader } from './BoardHeader'
 import { Column } from './Column'
+import { TaskCard } from './TaskCard'
 import './Board.css'
 
 interface BoardProps {
@@ -17,6 +29,12 @@ interface BoardProps {
 
 export function Board({ board, backlog, projectId, onTaskClick, onItemClick, onRefresh }: BoardProps) {
   const flowColumns = board.columns.filter(col => col.status !== 'backlog')
+  const [activeTask, setActiveTask] = useState<TaskCardType | null>(null)
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
+  )
 
   const handleReorderEpics = useCallback((items: { id: string; position: number }[]) => {
     api.reorderEpics(projectId, items).catch(() => onRefresh?.())
@@ -29,6 +47,33 @@ export function Board({ board, backlog, projectId, onTaskClick, onItemClick, onR
   const handleReorderTasks = useCallback((featureId: string, items: { id: string; position: number }[]) => {
     api.reorderTasks(featureId, items).catch(() => onRefresh?.())
   }, [onRefresh])
+
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    const task = event.active.data.current?.task as TaskCardType | undefined
+    if (task) setActiveTask(task)
+  }, [])
+
+  const handleDragEnd = useCallback((event: DragEndEvent) => {
+    setActiveTask(null)
+    const { active, over } = event
+    if (!over) return
+
+    const task = active.data.current?.task as TaskCardType | undefined
+    if (!task) return
+
+    // Extract status from the droppable column id (format: "column-<status>")
+    const targetStatus = over.data.current?.status as string | undefined
+    if (!targetStatus || targetStatus === task.status) return
+
+    // Optimistically update via API, then refresh
+    api.updateTask(task.id, { status: targetStatus })
+      .then(() => onRefresh?.())
+      .catch(() => onRefresh?.())
+  }, [onRefresh])
+
+  const handleDragCancel = useCallback(() => {
+    setActiveTask(null)
+  }, [])
 
   return (
     <div className="board">
@@ -50,9 +95,23 @@ export function Board({ board, backlog, projectId, onTaskClick, onItemClick, onR
             onReorderTasks={handleReorderTasks}
           />
         </div>
-        {flowColumns.map(col => (
-          <Column key={col.status} column={col} onTaskClick={onTaskClick} onRefresh={onRefresh} />
-        ))}
+        <DndContext
+          sensors={sensors}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+          onDragCancel={handleDragCancel}
+        >
+          {flowColumns.map(col => (
+            <Column key={col.status} column={col} onTaskClick={onTaskClick} onRefresh={onRefresh} draggable />
+          ))}
+          <DragOverlay>
+            {activeTask ? (
+              <div className="drag-overlay-card">
+                <TaskCard task={activeTask} onClick={() => {}} />
+              </div>
+            ) : null}
+          </DragOverlay>
+        </DndContext>
       </div>
     </div>
   )

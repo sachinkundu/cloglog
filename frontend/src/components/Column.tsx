@@ -1,6 +1,8 @@
 import { useState } from 'react'
+import { useDroppable } from '@dnd-kit/core'
 import type { BoardColumn as BoardColumnType } from '../api/types'
 import { api } from '../api/client'
+import { DraggableTaskCard } from './DraggableTaskCard'
 import { TaskCard } from './TaskCard'
 import './Column.css'
 
@@ -8,6 +10,7 @@ interface ColumnProps {
   column: BoardColumnType
   onTaskClick: (taskId: string) => void
   onRefresh?: () => void
+  draggable?: boolean
 }
 
 const COLUMN_LABELS: Record<string, string> = {
@@ -17,9 +20,14 @@ const COLUMN_LABELS: Record<string, string> = {
   done: 'Done',
 }
 
-export function Column({ column, onTaskClick, onRefresh }: ColumnProps) {
+export function Column({ column, onTaskClick, onRefresh, draggable = false }: ColumnProps) {
   const [showArchived, setShowArchived] = useState(false)
   const isDone = column.status === 'done'
+
+  const { setNodeRef, isOver } = useDroppable({
+    id: `column-${column.status}`,
+    data: { status: column.status },
+  })
 
   const visibleTasks = isDone
     ? column.tasks.filter(t => !t.archived)
@@ -35,7 +43,7 @@ export function Column({ column, onTaskClick, onRefresh }: ColumnProps) {
   }
 
   return (
-    <div className="column">
+    <div className={`column${isOver ? ' column-drop-target' : ''}`}>
       <div className="column-header">
         <span className={`column-dot col-${column.status}`} />
         <span className="column-title">{COLUMN_LABELS[column.status] ?? column.status}</span>
@@ -46,10 +54,14 @@ export function Column({ column, onTaskClick, onRefresh }: ColumnProps) {
           </button>
         )}
       </div>
-      <div className="column-tasks">
-        {visibleTasks.map(task => (
-          <TaskCard key={task.id} task={task} onClick={() => onTaskClick(task.id)} />
-        ))}
+      <div className="column-tasks" ref={setNodeRef}>
+        {visibleTasks.map(task =>
+          draggable ? (
+            <DraggableTaskCard key={task.id} task={task} onClick={() => onTaskClick(task.id)} />
+          ) : (
+            <TaskCard key={task.id} task={task} onClick={() => onTaskClick(task.id)} />
+          )
+        )}
 
         {isDone && archivedTasks.length > 0 && (
           <div className="archived-section">

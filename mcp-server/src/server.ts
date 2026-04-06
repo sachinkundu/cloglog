@@ -102,7 +102,7 @@ export function createServer(client: CloglogClient): McpServer {
 
   server.tool(
     'complete_task',
-    'Mark task as Done, get next task. For spec/impl tasks, task must be in review status first.',
+    'BLOCKED: Agents cannot mark tasks done. Move to review and wait for the user to drag the card to done on the board.',
     {
       task_id: z.string().describe('UUID of the task to complete'),
       pr_url: z.string().optional().describe('GitHub PR URL (required for spec/impl tasks)'),
@@ -121,7 +121,7 @@ export function createServer(client: CloglogClient): McpServer {
 
   server.tool(
     'update_task_status',
-    'Move task to a specific column (e.g., review, done). For spec/impl tasks, moving to review requires a pr_url.',
+    'Move task to a specific column. Agents can move to review (with pr_url for spec/impl) but CANNOT move to done — only the user can.',
     {
       task_id: z.string().describe('UUID of the task'),
       status: z.string().describe('Target status: backlog, in_progress, review, done'),

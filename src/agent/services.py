@@ -157,9 +157,22 @@ class AgentService:
         # Guard: spec and impl tasks require PR to be in review before completing
         if task.task_type in ("spec", "impl") and task.status != "review":
             raise ValueError(
-                f"Cannot complete {task.task_type} task: must be in 'review' status first "
-                f"(current: {task.status}). Move to review with a PR URL first."
+                f"Cannot complete {task.task_type} task: "
+                f"must be in 'review' status first "
+                f"(current: {task.status}). "
+                f"Move to review with a PR URL first."
             )
+
+        # Guard: pr_url must not be reused by another done task in same feature
+        if pr_url:
+            feature_tasks = await self._board_repo.get_tasks_for_feature(task.feature_id)
+            for ft in feature_tasks:
+                if ft.id != task.id and ft.pr_url == pr_url and ft.status == "done":
+                    raise ValueError(
+                        f"PR {pr_url} is already used by completed task "
+                        f"T-{ft.number} ({ft.title}). "
+                        f"Create a new PR for this task."
+                    )
 
         # Update pr_url if provided
         update_fields: dict[str, object] = {"status": "done"}
@@ -217,6 +230,17 @@ class AgentService:
                 f"Cannot move {task.task_type} task to review without a PR URL. "
                 f"Provide pr_url parameter with the GitHub PR link."
             )
+
+        # Guard: pr_url must not be reused by another done task in same feature
+        if pr_url and status == "review":
+            feature_tasks = await self._board_repo.get_tasks_for_feature(task.feature_id)
+            for ft in feature_tasks:
+                if ft.id != task.id and ft.pr_url == pr_url and ft.status == "done":
+                    raise ValueError(
+                        f"PR {pr_url} is already used by completed task "
+                        f"T-{ft.number} ({ft.title}). "
+                        f"Create a new PR for this task."
+                    )
 
         # Guard: moving to done requires the task to have been in review (for spec/impl)
         if status == "done" and task.task_type in ("spec", "impl") and task.status != "review":

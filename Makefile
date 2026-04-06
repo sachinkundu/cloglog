@@ -57,6 +57,12 @@ contract-check: ## Validate backend matches API contract
 		echo "  No contract files, skipping"; \
 	fi
 
+reconcile: ## Audit system state and report drift
+	@scripts/reconcile.sh
+
+reconcile-fix: ## Audit and auto-fix safe issues
+	@scripts/reconcile.sh --fix
+
 demo: ## Run proof-of-work demo for current feature
 	@echo "Running proof-of-work demo..."
 	@scripts/run-demo.sh

@@ -1,0 +1,23 @@
+.pr-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--accent);
+  text-decoration: none;
+  transition: background 0.15s ease;
+}
+
+.pr-link:hover {
+  background: var(--bg-hover);
+  text-decoration: underline;
+}
+
+.pr-link-icon {
+  flex-shrink: 0;
+  opacity: 0.8;
+}

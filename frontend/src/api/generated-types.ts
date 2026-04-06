@@ -891,6 +891,10 @@ export interface components {
             status: string;
             /** Priority */
             priority: string;
+            /** Task Type */
+            task_type: string;
+            /** Pr Url */
+            pr_url: string | null;
             /** Worktree Id */
             worktree_id: string | null;
             /** Position */
@@ -988,6 +992,10 @@ export interface components {
             status: string;
             /** Priority */
             priority: string;
+            /** Task Type */
+            task_type: string;
+            /** Pr Url */
+            pr_url: string | null;
             /** Worktree Id */
             worktree_id: string | null;
             /** Position */

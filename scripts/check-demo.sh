@@ -19,6 +19,13 @@ if [[ "$BRANCH" == "main" || "$BRANCH" == "master" ]]; then
   exit 0
 fi
 
+# Skip if this branch only has doc/spec changes (no code to demo)
+CODE_CHANGES=$(git diff main --name-only 2>/dev/null | grep -vE '^docs/|^CLAUDE\.md|^\.claude/' | head -1)
+if [[ -z "$CODE_CHANGES" ]]; then
+  echo "  Docs-only branch — no demo required."
+  exit 0
+fi
+
 # Detect feature/branch identifier for demo lookup
 FEATURE="${DEMO_FEATURE:-}"
 if [[ -z "$FEATURE" ]]; then

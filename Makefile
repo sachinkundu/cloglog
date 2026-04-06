@@ -1,4 +1,4 @@
-.PHONY: help install test test-board test-agent test-document test-gateway test-e2e lint typecheck coverage contract-check quality run-backend
+.PHONY: help install test test-board test-agent test-document test-gateway test-e2e test-e2e-browser test-e2e-browser-ui test-e2e-browser-headed test-e2e-browser-report lint typecheck coverage contract-check quality run-backend
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -25,6 +25,18 @@ test-gateway: ## Run Gateway context tests
 
 test-e2e: ## Run end-to-end tests
 	uv run pytest tests/e2e/ -v --tb=short
+
+test-e2e-browser: ## Run Playwright E2E browser tests
+	cd tests/e2e/playwright && npx playwright test
+
+test-e2e-browser-ui: ## Run Playwright E2E tests with interactive UI
+	cd tests/e2e/playwright && npx playwright test --ui
+
+test-e2e-browser-headed: ## Run Playwright E2E tests in headed browser
+	cd tests/e2e/playwright && npx playwright test --headed
+
+test-e2e-browser-report: ## Run Playwright E2E tests and open HTML report
+	cd tests/e2e/playwright && npx playwright test --reporter=html && npx playwright show-report
 
 # ── Quality ───────────────────────────────────
 

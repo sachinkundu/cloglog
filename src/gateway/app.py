@@ -35,17 +35,28 @@ def create_app() -> FastAPI:
     )
 
     class AgentRouteIsolationMiddleware(BaseHTTPMiddleware):
-        """Block agents from accessing non-agent routes.
+        """Block direct agent API calls to non-agent routes.
 
-        If a request has an Authorization header (API key = agent caller),
-        it can only access /api/v1/agents/* routes. All other routes return
-        403. The frontend UI has no API key so it passes through freely.
+        Requests with an Authorization header (API key) are blocked from
+        non-agent routes UNLESS they include the X-MCP-Request header,
+        which identifies them as coming from the MCP server (the sanctioned
+        path for board operations).
+
+        - Agent direct call (API key only) → blocked from board routes
+        - MCP server call (API key + X-MCP-Request) → allowed everywhere
+        - Frontend UI (no API key) → allowed everywhere
         """
 
         async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
             auth = request.headers.get("Authorization")
+            mcp = request.headers.get("X-MCP-Request")
             path = request.url.path
-            if auth and path.startswith("/api/v1/") and not path.startswith("/api/v1/agents/"):
+            if (
+                auth
+                and not mcp
+                and path.startswith("/api/v1/")
+                and not path.startswith("/api/v1/agents/")
+            ):
                 return JSONResponse(
                     status_code=403,
                     content={

@@ -68,6 +68,19 @@ async def test_agent_blocked_from_documents(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_mcp_server_allowed_on_all_routes(client: AsyncClient) -> None:
+    """Requests with X-MCP-Request header pass through even with API key."""
+    headers = {
+        "Authorization": "Bearer fake-api-key",
+        "X-MCP-Request": "true",
+    }
+
+    resp = await client.get("/api/v1/projects", headers=headers)
+    # Should not be 403 — MCP server is allowed
+    assert resp.status_code != 403
+
+
+@pytest.mark.asyncio
 async def test_health_endpoint_not_blocked(client: AsyncClient) -> None:
     """Health check is not under /api/v1/ so it should never be blocked."""
     headers = {"Authorization": "Bearer fake-api-key"}

@@ -19,10 +19,11 @@ interface LayoutProps {
   agentFilter?: string | null
   onAgentClick?: (worktreeId: string) => void
   agentTaskCounts?: Record<string, number>
+  onRefresh?: () => void
   children: ReactNode
 }
 
-export function Layout({ projects, selectedProjectId, worktrees, boardStats, onNavigate, agentFilter, onAgentClick, agentTaskCounts, children }: LayoutProps) {
+export function Layout({ projects, selectedProjectId, worktrees, boardStats, onNavigate, agentFilter, onAgentClick, agentTaskCounts, onRefresh, children }: LayoutProps) {
   return (
     <div className="layout">
       <Sidebar
@@ -33,6 +34,7 @@ export function Layout({ projects, selectedProjectId, worktrees, boardStats, onN
         agentFilter={agentFilter}
         onAgentClick={onAgentClick}
         agentTaskCounts={agentTaskCounts}
+        onRefresh={onRefresh}
       />
       <main className="main-content">
         <div className="main-header">

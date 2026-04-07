@@ -137,6 +137,9 @@ print(len(active))
 
     if [[ "$task_count" == "0" ]]; then
       warn "Agent $wname — no active tasks assigned → should unregister"
+      if $FIX_MODE; then
+        curl -sf -X POST "$API/agents/$wid/unregister" >/dev/null 2>&1 && fixed "Unregistered agent $wname" || err "Failed to unregister $wname"
+      fi
     else
       # Check if any task in review has unaddressed PR comments
       review_info=$(curl -sf "$API/agents/$wid/tasks" | python3 -c "

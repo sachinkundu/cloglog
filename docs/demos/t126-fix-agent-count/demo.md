@@ -1,17 +1,14 @@
 # T-126: Fix agent task count — exclude done/archived
 
-*2026-04-07T16:33:03Z by Showboat 0.6.1*
-<!-- showboat-id: 2a10a71d-4a35-4a30-ad62-7b4ce18caca1 -->
+*2026-04-07T16:36:25Z by Showboat 0.6.1*
+<!-- showboat-id: a436db21-f75d-4e8f-9d96-7757f1fad8d3 -->
 
-Agent task counts in the sidebar now exclude done and archived tasks. Only backlog, in_progress, and review tasks are counted.
+Agent task counts now exclude done and archived tasks. Only active tasks (backlog, in_progress, review) are counted.
 
-```bash
-cd frontend && NO_COLOR=1 npx vitest run 2>&1 | grep -E '(Tests|Test Files|FAIL|passed|failed)'
+```bash {image}
+![Sidebar with corrected active task counts](docs/demos/t126-fix-agent-count/sidebar-fixed-counts.png)
 ```
 
-```output
- Test Files  24 passed (24)
-      Tests  193 passed (193)
-```
+![Sidebar with corrected active task counts](90750d01-2026-04-07.png)
 
-One-line fix in App.tsx agentTaskCounts memo. No new tests needed.
+Each agent shows only its active task count. Previously done/archived tasks inflated the number.

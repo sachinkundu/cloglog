@@ -28,7 +28,8 @@ export interface ToolHandlers {
   list_features(args: { project_id: string; epic_id: string }): Promise<unknown>
   create_task(args: { project_id: string; feature_id: string; title: string; description?: string; priority?: string; task_type?: string }): Promise<unknown>
   get_backlog(args: { project_id: string }): Promise<unknown>
-  get_board(args: { project_id: string }): Promise<unknown>
+  get_board(args: { project_id: string; epic_id?: string; exclude_done?: boolean }): Promise<unknown>
+  get_active_tasks(args: { project_id: string }): Promise<unknown>
   update_task(args: { task_id: string; title?: string; description?: string; priority?: string }): Promise<unknown>
   delete_task(args: { task_id: string }): Promise<unknown>
 }
@@ -127,8 +128,16 @@ export function createToolHandlers(client: CloglogClient): ToolHandlers {
       return client.request('GET', `/api/v1/projects/${project_id}/backlog`)
     },
 
-    async get_board({ project_id }) {
-      return client.request('GET', `/api/v1/projects/${project_id}/board`)
+    async get_board({ project_id, epic_id, exclude_done }) {
+      const params = new URLSearchParams()
+      if (epic_id) params.set('epic_id', epic_id)
+      if (exclude_done) params.set('exclude_done', 'true')
+      const qs = params.toString()
+      return client.request('GET', `/api/v1/projects/${project_id}/board${qs ? `?${qs}` : ''}`)
+    },
+
+    async get_active_tasks({ project_id }) {
+      return client.request('GET', `/api/v1/projects/${project_id}/active-tasks`)
     },
 
     async update_task({ task_id, title, description, priority }) {

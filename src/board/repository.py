@@ -235,16 +235,53 @@ class BoardRepository:
         await self._session.commit()
         return True
 
-    async def get_board_tasks(self, project_id: UUID) -> list[Task]:
-        """Get all tasks for a project with their feature/epic info loaded."""
-        result = await self._session.execute(
+    async def get_board_tasks(
+        self,
+        project_id: UUID,
+        *,
+        statuses: list[str] | None = None,
+        epic_id: UUID | None = None,
+        exclude_done: bool = False,
+    ) -> list[Task]:
+        """Get tasks for a project with their feature/epic info loaded.
+
+        Args:
+            statuses: If provided, only return tasks with these statuses.
+            epic_id: If provided, only return tasks under this epic.
+            exclude_done: If True, exclude tasks with status 'done'.
+        """
+        query = (
             select(Task)
             .join(Feature, Task.feature_id == Feature.id)
             .join(Epic, Feature.epic_id == Epic.id)
             .where(Epic.project_id == project_id)
             .options(joinedload(Task.feature).joinedload(Feature.epic))
+        )
+        if statuses:
+            query = query.where(Task.status.in_(statuses))
+        if epic_id is not None:
+            query = query.where(Epic.id == epic_id)
+        if exclude_done:
+            query = query.where(Task.status != "done")
+        query = query.order_by(Task.position)
+        result = await self._session.execute(query)
+        return list(result.unique().scalars().all())
+
+    async def get_active_tasks(self, project_id: UUID) -> list[Task]:
+        """Get non-done, non-archived tasks with feature/epic info loaded."""
+        query = (
+            select(Task)
+            .join(Feature, Task.feature_id == Feature.id)
+            .join(Epic, Feature.epic_id == Epic.id)
+            .where(
+                Epic.project_id == project_id,
+                Task.status != "done",
+                Task.archived == False,  # noqa: E712
+            )
+            .options(joinedload(Task.feature).joinedload(Feature.epic))
             .order_by(Task.position)
         )
+        result = await self._session.execute(query)
         return list(result.unique().scalars().all())
 
     async def get_backlog_tree(self, project_id: UUID) -> list[Epic]:

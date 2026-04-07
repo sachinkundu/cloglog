@@ -292,12 +292,27 @@ export function createServer(client: CloglogClient): McpServer {
 
   server.tool(
     'get_board',
-    'Get the board state showing tasks organized by column (backlog, assigned, in_progress, review, done, blocked).',
+    'Get the board state showing tasks organized by column. Supports filtering to reduce response size.',
+    {
+      epic_id: z.string().optional().describe('Filter to tasks under this epic UUID'),
+      exclude_done: z.boolean().optional().describe('Exclude done tasks (default: false)'),
+    },
+    async ({ epic_id, exclude_done }) => {
+      const pid = requireProject()
+      if (typeof pid !== 'string') return pid
+      const result = await handlers.get_board({ project_id: pid, epic_id, exclude_done })
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] }
+    }
+  )
+
+  server.tool(
+    'get_active_tasks',
+    'Get a compact list of non-done, non-archived tasks. Much smaller than get_board — use this when you only need task IDs, statuses, and titles.',
     {},
     async () => {
       const pid = requireProject()
       if (typeof pid !== 'string') return pid
-      const result = await handlers.get_board({ project_id: pid })
+      const result = await handlers.get_active_tasks({ project_id: pid })
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] }
     }
   )

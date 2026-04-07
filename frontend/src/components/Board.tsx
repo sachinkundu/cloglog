@@ -25,9 +25,10 @@ interface BoardProps {
   onTaskClick: (taskId: string) => void
   onItemClick: (type: 'epic' | 'feature' | 'task', id: string) => void
   onRefresh?: () => void
+  worktreeNames?: Record<string, string>
 }
 
-export function Board({ board, backlog, projectId, onTaskClick, onItemClick, onRefresh }: BoardProps) {
+export function Board({ board, backlog, projectId, onTaskClick, onItemClick, onRefresh, worktreeNames }: BoardProps) {
   const flowColumns = board.columns.filter(col => col.status !== 'backlog')
   const [activeTask, setActiveTask] = useState<TaskCardType | null>(null)
 
@@ -102,12 +103,12 @@ export function Board({ board, backlog, projectId, onTaskClick, onItemClick, onR
           onDragCancel={handleDragCancel}
         >
           {flowColumns.map(col => (
-            <Column key={col.status} column={col} onTaskClick={onTaskClick} onRefresh={onRefresh} draggable />
+            <Column key={col.status} column={col} onTaskClick={onTaskClick} onRefresh={onRefresh} draggable worktreeNames={worktreeNames} />
           ))}
           <DragOverlay>
             {activeTask ? (
               <div className="drag-overlay-card">
-                <TaskCard task={activeTask} onClick={() => {}} />
+                <TaskCard task={activeTask} onClick={() => {}} worktreeNames={worktreeNames} />
               </div>
             ) : null}
           </DragOverlay>

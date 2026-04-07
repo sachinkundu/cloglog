@@ -52,10 +52,23 @@ describe('TaskCard', () => {
     expect(screen.queryByText('expedite')).not.toBeInTheDocument()
   })
 
-  it('shows agent assigned badge when worktree_id is set', () => {
+  it('shows agent (removed) badge when worktree_id is set but no map', () => {
     const assignedTask = { ...baseTask, worktree_id: 'wt1' }
     render(<TaskCard task={assignedTask} onClick={vi.fn()} />)
-    expect(screen.getByText('agent assigned')).toBeInTheDocument()
+    expect(screen.getByText('agent (removed)')).toBeInTheDocument()
+  })
+
+  it('shows worktree name when worktreeNames map is provided', () => {
+    const assignedTask = { ...baseTask, worktree_id: 'wt1' }
+    render(<TaskCard task={assignedTask} onClick={vi.fn()} worktreeNames={{ wt1: 'wt-backend' }} />)
+    expect(screen.getByText('wt-backend')).toBeInTheDocument()
+    expect(screen.queryByText('agent assigned')).not.toBeInTheDocument()
+  })
+
+  it('shows agent (removed) when worktree_id not in map', () => {
+    const assignedTask = { ...baseTask, worktree_id: 'wt-unknown' }
+    render(<TaskCard task={assignedTask} onClick={vi.fn()} worktreeNames={{ wt1: 'wt-backend' }} />)
+    expect(screen.getByText('agent (removed)')).toBeInTheDocument()
   })
 
   it('does not show agent assigned badge when no worktree', () => {

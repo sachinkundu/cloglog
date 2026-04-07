@@ -6,9 +6,10 @@ import { TaskCard } from './TaskCard'
 interface DraggableTaskCardProps {
   task: TaskCardType
   onClick: () => void
+  worktreeNames?: Record<string, string>
 }
 
-export function DraggableTaskCard({ task, onClick }: DraggableTaskCardProps) {
+export function DraggableTaskCard({ task, onClick, worktreeNames }: DraggableTaskCardProps) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: task.id,
     data: { task },
@@ -27,7 +28,7 @@ export function DraggableTaskCard({ task, onClick }: DraggableTaskCardProps) {
       {...listeners}
       {...attributes}
     >
-      <TaskCard task={task} onClick={onClick} />
+      <TaskCard task={task} onClick={onClick} worktreeNames={worktreeNames} />
     </div>
   )
 }

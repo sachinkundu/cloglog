@@ -94,10 +94,17 @@ def projects_create(
 # --- Shared helpers ---
 
 
-def _api_get(url: str, path: str) -> dict[str, Any] | list[Any]:
+def _auth_headers(api_key: str) -> dict[str, str]:
+    """Build auth headers from an API key (used as dashboard key)."""
+    if not api_key:
+        return {}
+    return {"X-Dashboard-Key": api_key}
+
+
+def _api_get(url: str, path: str, api_key: str = "") -> dict[str, Any] | list[Any]:
     """GET with standard error handling."""
     try:
-        resp = httpx.get(f"{url}{path}", timeout=5.0)
+        resp = httpx.get(f"{url}{path}", headers=_auth_headers(api_key), timeout=5.0)
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
     except httpx.ConnectError:
@@ -108,10 +115,12 @@ def _api_get(url: str, path: str) -> dict[str, Any] | list[Any]:
         raise typer.Exit(code=1) from None
 
 
-def _api_patch(url: str, path: str, json_body: dict[str, Any]) -> dict[str, Any]:
+def _api_patch(url: str, path: str, json_body: dict[str, Any], api_key: str = "") -> dict[str, Any]:
     """PATCH with standard error handling."""
     try:
-        resp = httpx.patch(f"{url}{path}", json=json_body, timeout=5.0)
+        resp = httpx.patch(
+            f"{url}{path}", json=json_body, headers=_auth_headers(api_key), timeout=5.0
+        )
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
     except httpx.ConnectError:
@@ -122,16 +131,16 @@ def _api_patch(url: str, path: str, json_body: dict[str, Any]) -> dict[str, Any]
         raise typer.Exit(code=1) from None
 
 
-def _resolve_project(url: str, name_or_id: str) -> tuple[str, str]:
+def _resolve_project(url: str, name_or_id: str, api_key: str = "") -> tuple[str, str]:
     """Resolve project name or UUID to (id, name)."""
     try:
         _uuid.UUID(name_or_id)
-        project = _api_get(url, f"/api/v1/projects/{name_or_id}")
+        project = _api_get(url, f"/api/v1/projects/{name_or_id}", api_key=api_key)
         if isinstance(project, dict):
             return str(project["id"]), str(project["name"])
     except (ValueError, SystemExit):
         pass
-    projects = _api_get(url, "/api/v1/projects")
+    projects = _api_get(url, "/api/v1/projects", api_key=api_key)
     if isinstance(projects, list):
         for p in projects:
             if p["name"].lower() == name_or_id.lower():
@@ -140,18 +149,22 @@ def _resolve_project(url: str, name_or_id: str) -> tuple[str, str]:
     raise typer.Exit(code=1)
 
 
-def _resolve_task(url: str, project_id: str, number_or_id: str) -> tuple[str, int, str]:
+def _resolve_task(
+    url: str, project_id: str, number_or_id: str, api_key: str = ""
+) -> tuple[str, int, str]:
     """Resolve task T-number or UUID to (id, number, title)."""
     clean = number_or_id.lstrip("Tt-")
     if clean.isdigit():
-        results = _api_get(url, f"/api/v1/projects/{project_id}/search?q=T-{clean}")
+        results = _api_get(
+            url, f"/api/v1/projects/{project_id}/search?q=T-{clean}", api_key=api_key
+        )
         if isinstance(results, dict):
             for r in results.get("results", []):
                 if r["type"] == "task" and r["number"] == int(clean):
                     return str(r["id"]), int(r["number"]), str(r["title"])
     try:
         _uuid.UUID(number_or_id)
-        backlog = _api_get(url, f"/api/v1/projects/{project_id}/backlog")
+        backlog = _api_get(url, f"/api/v1/projects/{project_id}/backlog", api_key=api_key)
         if isinstance(backlog, list):
             for epic in backlog:
                 for feat in epic["features"]:
@@ -164,9 +177,9 @@ def _resolve_task(url: str, project_id: str, number_or_id: str) -> tuple[str, in
     raise typer.Exit(code=1)
 
 
-def _resolve_worktree(url: str, project_id: str, name: str) -> tuple[str, str]:
+def _resolve_worktree(url: str, project_id: str, name: str, api_key: str = "") -> tuple[str, str]:
     """Resolve worktree name to (id, path)."""
-    worktrees = _api_get(url, f"/api/v1/projects/{project_id}/worktrees")
+    worktrees = _api_get(url, f"/api/v1/projects/{project_id}/worktrees", api_key=api_key)
     if isinstance(worktrees, list):
         for wt in worktrees:
             path = wt.get("worktree_path", "")
@@ -390,6 +403,55 @@ def tasks_complete(
     task_id, task_num, _ = _resolve_task(url, project_id, task)
     _api_patch(url, f"/api/v1/tasks/{task_id}", {"status": "done"})
     typer.echo(f"T-{task_num} \u2192 done")
+
+
+# --- Agents subcommand ---
+
+agents_app = typer.Typer(name="agents", help="Inspect registered agents (worktrees).")
+app.add_typer(agents_app)
+
+
+@agents_app.command("list")
+def agents_list(
+    project: Annotated[str, typer.Option(help="Project name or UUID", envvar="CLOGLOG_PROJECT")],
+    url: Annotated[
+        str, typer.Option(help="Base URL", envvar="CLOGLOG_URL")
+    ] = "http://localhost:8000",
+    api_key: Annotated[str, typer.Option(help="Dashboard API key", envvar="CLOGLOG_API_KEY")] = "",
+    status: Annotated[str | None, typer.Option(help="Filter by status")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="JSON output")] = False,
+) -> None:
+    """List registered agents (worktrees) for a project."""
+    project_id, project_name = _resolve_project(url, project, api_key=api_key)
+    worktrees = _api_get(url, f"/api/v1/projects/{project_id}/worktrees", api_key=api_key)
+    if not isinstance(worktrees, list):
+        typer.echo("Error: unexpected response", err=True)
+        raise typer.Exit(code=1)
+
+    if status:
+        worktrees = [wt for wt in worktrees if wt.get("status") == status]
+
+    if json_output:
+        typer.echo(json.dumps(worktrees, indent=2, default=str))
+        return
+
+    if not worktrees:
+        typer.echo(f"No agents registered for project '{project_name}'.")
+        return
+
+    typer.echo(f"\nAgents for '{project_name}' ({len(worktrees)})\n")
+    for wt in worktrees:
+        name = wt.get("name", "unknown")
+        wt_id = str(wt.get("id", ""))[:8]
+        wt_status = wt.get("status", "unknown")
+        branch = wt.get("branch_name", "")
+        heartbeat = str(wt.get("last_heartbeat", "never"))[:19]
+        current_task = wt.get("current_task_id")
+        task_display = str(current_task)[:8] if current_task else "none"
+
+        status_icon = "●" if wt_status == "active" else "○"
+        typer.echo(f"  {status_icon} {name:<20} {wt_id}  {wt_status:<10} {branch}")
+        typer.echo(f"    task: {task_display}  heartbeat: {heartbeat}")
 
 
 @tasks_app.command("status")

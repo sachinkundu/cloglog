@@ -13,6 +13,9 @@ interface SidebarProps {
   selectedProjectId: string | null
   worktrees: Worktree[]
   boardStats?: BoardStats | null
+  agentFilter?: string | null
+  onAgentClick?: (worktreeId: string) => void
+  agentTaskCounts?: Record<string, number>
 }
 
 function getProjectHealth(worktrees: Worktree[], boardStats: BoardStats | null | undefined): 'green' | 'yellow' | 'red' {
@@ -22,7 +25,7 @@ function getProjectHealth(worktrees: Worktree[], boardStats: BoardStats | null |
   return hasTasksProgressing ? 'green' : 'yellow'
 }
 
-export function Sidebar({ projects, selectedProjectId, worktrees, boardStats }: SidebarProps) {
+export function Sidebar({ projects, selectedProjectId, worktrees, boardStats, agentFilter, onAgentClick, agentTaskCounts }: SidebarProps) {
   const navigate = useNavigate()
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('sidebar-collapsed') === 'true')
 
@@ -75,13 +78,23 @@ export function Sidebar({ projects, selectedProjectId, worktrees, boardStats }: 
             <section className="sidebar-section">
               <h2 className="sidebar-section-title">Agents</h2>
               <ul className="worktree-list">
-                {worktrees.map(wt => (
-                  <li key={wt.id} className="worktree-item">
-                    <span className={`status-dot ${wt.status} ${wt.status === 'online' ? 'pulse' : ''}`} />
-                    <span className="worktree-name">{wt.name}</span>
-                    <span className="worktree-status">{wt.status}</span>
-                  </li>
-                ))}
+                {worktrees.map(wt => {
+                  const taskCount = agentTaskCounts?.[wt.id] ?? 0
+                  return (
+                    <li
+                      key={wt.id}
+                      className={`worktree-item ${agentFilter === wt.id ? 'worktree-active' : ''}`}
+                      onClick={() => onAgentClick?.(wt.id)}
+                      title={`${taskCount} task${taskCount !== 1 ? 's' : ''}`}
+                      role="button"
+                    >
+                      <span className={`status-dot ${wt.status} ${wt.status === 'online' ? 'pulse' : ''}`} />
+                      <span className="worktree-name">{wt.name}</span>
+                      <span className="worktree-task-count">{taskCount}</span>
+                      <span className="worktree-status">{wt.status}</span>
+                    </li>
+                  )
+                })}
               </ul>
             </section>
           )}

@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { Board } from './components/Board'
@@ -31,6 +31,25 @@ export default function App() {
   const { projects, loading: projectsLoading } = useProjects()
   const { board, backlog, worktrees, loading: boardLoading, refetch } = useBoard(selectedProjectId)
   const { graph: depGraph } = useDependencyGraph(selectedProjectId)
+
+  const [agentFilter, setAgentFilter] = useState<string | null>(null)
+  const handleAgentClick = useCallback((worktreeId: string) => {
+    setAgentFilter(prev => prev === worktreeId ? null : worktreeId)
+  }, [])
+
+  const agentTaskCounts = useMemo(() => {
+    const counts: Record<string, number> = {}
+    if (board) {
+      for (const col of board.columns) {
+        for (const task of col.tasks) {
+          if (task.worktree_id) {
+            counts[task.worktree_id] = (counts[task.worktree_id] ?? 0) + 1
+          }
+        }
+      }
+    }
+    return counts
+  }, [board])
 
   const worktreeNames = useMemo(() => {
     const map: Record<string, string> = {}
@@ -69,6 +88,9 @@ export default function App() {
       worktrees={worktrees}
       boardStats={board ? { total_tasks: board.total_tasks, done_count: board.done_count } : null}
       onNavigate={openDetail}
+      agentFilter={agentFilter}
+      onAgentClick={handleAgentClick}
+      agentTaskCounts={agentTaskCounts}
     >
       {!selectedProjectId && (
         <div style={{
@@ -97,6 +119,7 @@ export default function App() {
           onItemClick={openDetail}
           onRefresh={refetch}
           worktreeNames={worktreeNames}
+          agentFilter={agentFilter}
         />
       )}
 

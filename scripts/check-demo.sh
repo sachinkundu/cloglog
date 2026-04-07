@@ -20,7 +20,9 @@ if [[ "$BRANCH" == "main" || "$BRANCH" == "master" ]]; then
 fi
 
 # Skip if this branch only has doc/spec changes (no code to demo)
-CODE_CHANGES=$(git diff main --name-only 2>/dev/null | grep -vE '^docs/|^CLAUDE\.md|^\.claude/' | head -1 || true)
+# Use merge-base so rebased branches don't show phantom diffs from already-merged work
+MERGE_BASE=$(git merge-base main HEAD 2>/dev/null || echo "main")
+CODE_CHANGES=$(git diff "$MERGE_BASE" --name-only 2>/dev/null | grep -vE '^docs/|^CLAUDE\.md|^\.claude/|^scripts/' | head -1 || true)
 if [[ -z "$CODE_CHANGES" ]]; then
   echo "  Docs-only branch — no demo required."
   exit 0

@@ -85,7 +85,11 @@ export function BacklogTree({ backlog, onItemClick, onReorderEpics, onReorderFea
   }
 
   const visibleBacklog = showCompleted
-    ? localBacklog
+    ? [...localBacklog].sort((a, b) => {
+        const aDone = isFullyDone(a.task_counts) ? 1 : 0
+        const bDone = isFullyDone(b.task_counts) ? 1 : 0
+        return aDone - bDone
+      })
     : localBacklog.filter(e => !isFullyDone(e.task_counts))
 
   const toggleEpic = (id: string) => {
@@ -191,7 +195,11 @@ export function BacklogTree({ backlog, onItemClick, onReorderEpics, onReorderFea
         >
           {visibleBacklog.map(({ epic, features, task_counts }) => {
             const visibleFeatures = showCompleted
-              ? features
+              ? [...features].sort((a, b) => {
+                  const aDone = isFullyDone(a.task_counts) ? 1 : 0
+                  const bDone = isFullyDone(b.task_counts) ? 1 : 0
+                  return aDone - bDone
+                })
               : features.filter(f => !isFullyDone(f.task_counts))
             const allTasks = visibleFeatures.flatMap(f => f.tasks)
 

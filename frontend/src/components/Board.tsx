@@ -26,9 +26,10 @@ interface BoardProps {
   onItemClick: (type: 'epic' | 'feature' | 'task', id: string) => void
   onRefresh?: () => void
   worktreeNames?: Record<string, string>
+  agentFilter?: string | null
 }
 
-export function Board({ board, backlog, projectId, onTaskClick, onItemClick, onRefresh, worktreeNames }: BoardProps) {
+export function Board({ board, backlog, projectId, onTaskClick, onItemClick, onRefresh, worktreeNames, agentFilter }: BoardProps) {
   const flowColumns = board.columns.filter(col => col.status !== 'backlog')
   const [activeTask, setActiveTask] = useState<TaskCardType | null>(null)
 
@@ -103,7 +104,7 @@ export function Board({ board, backlog, projectId, onTaskClick, onItemClick, onR
           onDragCancel={handleDragCancel}
         >
           {flowColumns.map(col => (
-            <Column key={col.status} column={col} onTaskClick={onTaskClick} onRefresh={onRefresh} draggable worktreeNames={worktreeNames} />
+            <Column key={col.status} column={col} onTaskClick={onTaskClick} onRefresh={onRefresh} draggable worktreeNames={worktreeNames} agentFilter={agentFilter} />
           ))}
           <DragOverlay>
             {activeTask ? (

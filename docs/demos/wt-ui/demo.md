@@ -1,23 +1,31 @@
-# T-112: Show agent worktree name on task cards
+# T-60: Agent click filters board, hover shows task count
 
-*2026-04-07T13:52:31Z by Showboat 0.6.1*
-<!-- showboat-id: 389df86e-ca4f-4fc1-838d-cd055b6d6dae -->
+*2026-04-07T14:50:31Z by Showboat 0.6.1*
+<!-- showboat-id: 15be91e7-9edc-43af-bd13-72b15b201e6b -->
 
-Task cards and the detail panel now show the worktree name (e.g. 'wt-ui') instead of generic 'agent assigned'. Falls back to 'agent assigned' when the worktree is not in the lookup map.
+Clicking an agent in the sidebar filters all board columns to show only that agent's tasks. Click again to clear. Each agent shows its task count badge.
 
 ```bash {image}
-![In Progress column showing wt-ui on task cards](docs/demos/wt-ui/in-progress-col.png)
+![Sidebar showing agent task counts](docs/demos/wt-ui/sidebar-agents.png)
 ```
 
-![In Progress column showing wt-ui on task cards](d233ee62-2026-04-07.png)
+![Sidebar showing agent task counts](04243516-2026-04-07.png)
+
+After clicking wt-ui, the board filters to only its 4 tasks:
+
+```bash {image}
+![Board filtered to wt-ui tasks](docs/demos/wt-ui/filtered-columns.png)
+```
+
+![Board filtered to wt-ui tasks](1f065582-2026-04-07.png)
 
 ```bash
-cd frontend && NO_COLOR=1 npx vitest run src/components/TaskCard.test.tsx 2>&1 | grep -E '(Tests|Test Files|FAIL|passed|failed)'
+cd frontend && NO_COLOR=1 npx vitest run src/components/Sidebar.test.tsx src/components/Column.test.tsx 2>&1 | grep -E '(Tests|Test Files|FAIL|passed|failed)'
 ```
 
 ```output
- Test Files  1 passed (1)
-      Tests  13 passed (13)
+ Test Files  2 passed (2)
+      Tests  33 passed (33)
 ```
 
-Test delta: 176 -> 178 (+2 new). Tests worktree name display and fallback to 'agent assigned'.
+Test delta: 178 -> 183 (+5 new). Agent click, filter highlight, task count display, column agent filtering.

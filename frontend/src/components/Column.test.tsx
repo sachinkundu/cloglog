@@ -5,7 +5,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { Column } from './Column'
 import type { BoardColumn } from '../api/types'
 
-const makeTask = (id: string, title: string, status: string, archived = false) => ({
+const makeTask = (id: string, title: string, status: string, archived = false, worktree_id: string | null = null) => ({
   id,
   feature_id: 'f1',
   title,
@@ -14,7 +14,7 @@ const makeTask = (id: string, title: string, status: string, archived = false) =
   priority: 'normal',
   task_type: 'task',
   pr_url: null as string | null,
-  worktree_id: null,
+  worktree_id,
   position: 0,
   number: 1,
   archived,
@@ -148,6 +148,42 @@ describe('Column', () => {
     expect(archiveSpy).toHaveBeenCalledWith('t1')
     expect(onRefresh).toHaveBeenCalled()
     archiveSpy.mockRestore()
+  })
+
+  it('filters tasks by agent when agentFilter is set', () => {
+    const column: BoardColumn = {
+      status: 'in_progress',
+      tasks: [
+        makeTask('t1', 'Agent 1 Task', 'in_progress', false, 'wt1'),
+        makeTask('t2', 'Agent 2 Task', 'in_progress', false, 'wt2'),
+        makeTask('t3', 'Unassigned Task', 'in_progress', false, null),
+      ],
+    }
+    render(
+      <DndContext>
+        <Column column={column} onTaskClick={vi.fn()} agentFilter="wt1" />
+      </DndContext>
+    )
+    expect(screen.getByText('Agent 1 Task')).toBeInTheDocument()
+    expect(screen.queryByText('Agent 2 Task')).not.toBeInTheDocument()
+    expect(screen.queryByText('Unassigned Task')).not.toBeInTheDocument()
+  })
+
+  it('shows all tasks when agentFilter is null', () => {
+    const column: BoardColumn = {
+      status: 'in_progress',
+      tasks: [
+        makeTask('t1', 'Agent Task', 'in_progress', false, 'wt1'),
+        makeTask('t2', 'Other Task', 'in_progress', false, null),
+      ],
+    }
+    render(
+      <DndContext>
+        <Column column={column} onTaskClick={vi.fn()} agentFilter={null} />
+      </DndContext>
+    )
+    expect(screen.getByText('Agent Task')).toBeInTheDocument()
+    expect(screen.getByText('Other Task')).toBeInTheDocument()
   })
 
   // Draggable prop tests

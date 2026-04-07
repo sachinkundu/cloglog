@@ -12,6 +12,7 @@ interface ColumnProps {
   onRefresh?: () => void
   draggable?: boolean
   worktreeNames?: Record<string, string>
+  agentFilter?: string | null
 }
 
 const COLUMN_LABELS: Record<string, string> = {
@@ -21,7 +22,7 @@ const COLUMN_LABELS: Record<string, string> = {
   done: 'Done',
 }
 
-export function Column({ column, onTaskClick, onRefresh, draggable = false, worktreeNames }: ColumnProps) {
+export function Column({ column, onTaskClick, onRefresh, draggable = false, worktreeNames, agentFilter }: ColumnProps) {
   const [showArchived, setShowArchived] = useState(false)
   const isDone = column.status === 'done'
 
@@ -30,11 +31,14 @@ export function Column({ column, onTaskClick, onRefresh, draggable = false, work
     data: { status: column.status },
   })
 
-  const visibleTasks = isDone
-    ? column.tasks.filter(t => !t.archived)
+  const filteredTasks = agentFilter
+    ? column.tasks.filter(t => t.worktree_id === agentFilter)
     : column.tasks
+  const visibleTasks = isDone
+    ? filteredTasks.filter(t => !t.archived)
+    : filteredTasks
   const archivedTasks = isDone
-    ? column.tasks.filter(t => t.archived)
+    ? filteredTasks.filter(t => t.archived)
     : []
 
   const archiveAll = async () => {

@@ -1,17 +1,17 @@
-# T-112: Show agent worktree name on task cards
+# T-60: Agent click filters board, hover shows task count
 
-*2026-04-07T12:03:15Z by Showboat 0.6.1*
-<!-- showboat-id: 21a0a4ec-73b9-4abe-b5a1-84f7a0a79a8a -->
+*2026-04-07T12:08:57Z by Showboat 0.6.1*
+<!-- showboat-id: cbe6a15c-24fb-4e7e-94a8-1f882948d4a8 -->
 
-Task cards and detail panel now show the worktree name (e.g. wt-backend) instead of generic 'agent assigned'. Falls back to 'agent assigned' if the worktree lookup fails.
+Clicking an agent in the sidebar filters all board columns to show only that agent's tasks. Click again to clear filter. Each agent shows its task count. Active filter is visually highlighted.
 
 ```bash
-cd frontend && NO_COLOR=1 npx vitest run src/components/TaskCard.test.tsx 2>&1 | grep -E '(Tests|FAIL|passed|failed)'
+cd frontend && NO_COLOR=1 npx vitest run src/components/Sidebar.test.tsx src/components/Column.test.tsx 2>&1 | grep -E '(Tests|Test Files|FAIL|passed|failed)'
 ```
 
 ```output
- Test Files  1 passed (1)
-      Tests  13 passed (13)
+ Test Files  2 passed (2)
+      Tests  33 passed (33)
 ```
 
-Test delta: 176 -> 178 tests (+2 new). Tests worktree name display and fallback.
+Test delta: 178 -> 183 tests (+5 new). Agent click, filter highlight, task count display, column agent filtering.

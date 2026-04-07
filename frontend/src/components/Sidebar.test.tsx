@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { Sidebar } from './Sidebar'
 import type { Project, Worktree } from '../api/types'
 
@@ -177,6 +177,57 @@ describe('Sidebar', () => {
     const button = screen.getByText('Alpha').closest('button')
     const dot = button!.querySelector('.project-health')
     expect(dot).toHaveClass('health-red')
+  })
+
+  it('calls onAgentClick when a worktree item is clicked', async () => {
+    const user = userEvent.setup()
+    const onAgentClick = vi.fn()
+    render(
+      <MemoryRouter>
+        <Sidebar
+          projects={mockProjects}
+          selectedProjectId="p1"
+          worktrees={mockWorktrees}
+          onAgentClick={onAgentClick}
+        />
+      </MemoryRouter>
+    )
+    await user.click(screen.getByText('wt-backend'))
+    expect(onAgentClick).toHaveBeenCalledWith('wt1')
+  })
+
+  it('highlights active agent filter', () => {
+    render(
+      <MemoryRouter>
+        <Sidebar
+          projects={mockProjects}
+          selectedProjectId="p1"
+          worktrees={mockWorktrees}
+          agentFilter="wt1"
+        />
+      </MemoryRouter>
+    )
+    const backendItem = screen.getByText('wt-backend').closest('.worktree-item')
+    expect(backendItem).toHaveClass('worktree-active')
+    const frontendItem = screen.getByText('wt-frontend').closest('.worktree-item')
+    expect(frontendItem).not.toHaveClass('worktree-active')
+  })
+
+  it('shows task count on worktree items', () => {
+    render(
+      <MemoryRouter>
+        <Sidebar
+          projects={mockProjects}
+          selectedProjectId="p1"
+          worktrees={mockWorktrees}
+          agentTaskCounts={{ wt1: 3, wt2: 0 }}
+        />
+      </MemoryRouter>
+    )
+    const backendItem = screen.getByText('wt-backend').closest('.worktree-item')
+    expect(backendItem).toHaveTextContent('3')
+    const frontendItem = screen.getByText('wt-frontend').closest('.worktree-item')
+    expect(frontendItem).toHaveTextContent('0')
   })
 
   it('does not show project-health dot for unselected projects', () => {

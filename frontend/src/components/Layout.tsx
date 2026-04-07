@@ -16,10 +16,13 @@ interface LayoutProps {
   worktrees: Worktree[]
   boardStats?: BoardStats | null
   onNavigate?: (type: 'epic' | 'feature' | 'task', id: string) => void
+  agentFilter?: string | null
+  onAgentClick?: (worktreeId: string) => void
+  agentTaskCounts?: Record<string, number>
   children: ReactNode
 }
 
-export function Layout({ projects, selectedProjectId, worktrees, boardStats, onNavigate, children }: LayoutProps) {
+export function Layout({ projects, selectedProjectId, worktrees, boardStats, onNavigate, agentFilter, onAgentClick, agentTaskCounts, children }: LayoutProps) {
   return (
     <div className="layout">
       <Sidebar
@@ -27,6 +30,9 @@ export function Layout({ projects, selectedProjectId, worktrees, boardStats, onN
         selectedProjectId={selectedProjectId}
         worktrees={worktrees}
         boardStats={boardStats}
+        agentFilter={agentFilter}
+        onAgentClick={onAgentClick}
+        agentTaskCounts={agentTaskCounts}
       />
       <main className="main-content">
         <div className="main-header">

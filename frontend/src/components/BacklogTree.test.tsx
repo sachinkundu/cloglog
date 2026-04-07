@@ -214,6 +214,102 @@ describe('BacklogTree', () => {
     expect(screen.getByText('Auth System')).toBeInTheDocument()
   })
 
+  it('sorts incomplete features before completed ones when show completed is on', async () => {
+    const user = userEvent.setup()
+    const backlogMixed: BacklogEpic[] = [{
+      epic: {
+        id: 'e1', project_id: 'p1', title: 'Mixed Epic', description: '',
+        bounded_context: '', context_description: '', status: 'in_progress',
+        position: 0, created_at: '', color: '#7c3aed', number: 1,
+      },
+      features: [
+        {
+          feature: {
+            id: 'f1', epic_id: 'e1', title: 'Finished Feature', description: '',
+            status: 'done', position: 0, created_at: '', number: 1,
+          },
+          tasks: [
+            { id: 't1', title: 'Done task', status: 'done', priority: 'normal', number: 1 },
+          ],
+          task_counts: { total: 1, done: 1 },
+        },
+        {
+          feature: {
+            id: 'f2', epic_id: 'e1', title: 'Active Feature', description: '',
+            status: 'in_progress', position: 1, created_at: '', number: 2,
+          },
+          tasks: [
+            { id: 't2', title: 'Active task', status: 'backlog', priority: 'normal', number: 2 },
+          ],
+          task_counts: { total: 1, done: 0 },
+        },
+      ],
+      task_counts: { total: 2, done: 1 },
+    }]
+    render(<BacklogTree backlog={backlogMixed} onItemClick={vi.fn()} />)
+    // Toggle show completed
+    await user.click(screen.getByText('Show completed (1)'))
+    // Both features should be visible now
+    expect(screen.getByText('Active Feature')).toBeInTheDocument()
+    expect(screen.getByText('Finished Feature')).toBeInTheDocument()
+    // Active Feature should come before Finished Feature in the DOM
+    const activeEl = screen.getByText('Active Feature')
+    const finishedEl = screen.getByText('Finished Feature')
+    // compareDocumentPosition bit 4 = DOCUMENT_POSITION_FOLLOWING
+    expect(activeEl.compareDocumentPosition(finishedEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('sorts incomplete epics before completed ones when show completed is on', async () => {
+    const user = userEvent.setup()
+    const backlogMixed: BacklogEpic[] = [
+      {
+        epic: {
+          id: 'e1', project_id: 'p1', title: 'Done Epic', description: '',
+          bounded_context: '', context_description: '', status: 'done',
+          position: 0, created_at: '', color: '#10b981', number: 1,
+        },
+        features: [{
+          feature: {
+            id: 'f1', epic_id: 'e1', title: 'Done Feature', description: '',
+            status: 'done', position: 0, created_at: '', number: 1,
+          },
+          tasks: [
+            { id: 't1', title: 'Done task', status: 'done', priority: 'normal', number: 1 },
+          ],
+          task_counts: { total: 1, done: 1 },
+        }],
+        task_counts: { total: 1, done: 1 },
+      },
+      {
+        epic: {
+          id: 'e2', project_id: 'p1', title: 'Active Epic', description: '',
+          bounded_context: '', context_description: '', status: 'in_progress',
+          position: 1, created_at: '', color: '#7c3aed', number: 2,
+        },
+        features: [{
+          feature: {
+            id: 'f2', epic_id: 'e2', title: 'Active Feature', description: '',
+            status: 'in_progress', position: 0, created_at: '', number: 2,
+          },
+          tasks: [
+            { id: 't2', title: 'Active task', status: 'backlog', priority: 'normal', number: 2 },
+          ],
+          task_counts: { total: 1, done: 0 },
+        }],
+        task_counts: { total: 1, done: 0 },
+      },
+    ]
+    render(<BacklogTree backlog={backlogMixed} onItemClick={vi.fn()} />)
+    await user.click(screen.getByText('Show completed (2)'))
+    // Both epics visible
+    expect(screen.getByText('Active Epic')).toBeInTheDocument()
+    expect(screen.getByText('Done Epic')).toBeInTheDocument()
+    // Active Epic should come before Done Epic
+    const activeEl = screen.getByText('Active Epic')
+    const doneEl = screen.getByText('Done Epic')
+    expect(activeEl.compareDocumentPosition(doneEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
   it('hides completed features within a visible epic', () => {
     const backlogMixed: BacklogEpic[] = [{
       epic: {

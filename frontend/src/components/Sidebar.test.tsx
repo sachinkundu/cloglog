@@ -220,6 +220,33 @@ describe('Sidebar', () => {
     expect(frontendItem?.querySelector('.worktree-task-count')).toHaveTextContent('0')
   })
 
+  it('shows context menu on right-click of project', async () => {
+    const user = userEvent.setup()
+    render(
+      <MemoryRouter>
+        <Sidebar projects={mockProjects} selectedProjectId="p1" worktrees={[]} onDeleteProject={vi.fn()} />
+      </MemoryRouter>
+    )
+    const projectBtn = screen.getByText('Alpha').closest('button')!
+    await user.pointer({ keys: '[MouseRight]', target: projectBtn })
+    expect(screen.getByTestId('context-menu')).toBeInTheDocument()
+    expect(screen.getByText('Delete project')).toBeInTheDocument()
+  })
+
+  it('calls onDeleteProject when delete is clicked in context menu', async () => {
+    const user = userEvent.setup()
+    const onDelete = vi.fn()
+    render(
+      <MemoryRouter>
+        <Sidebar projects={mockProjects} selectedProjectId="p1" worktrees={[]} onDeleteProject={onDelete} />
+      </MemoryRouter>
+    )
+    const projectBtn = screen.getByText('Alpha').closest('button')!
+    await user.pointer({ keys: '[MouseRight]', target: projectBtn })
+    await user.click(screen.getByText('Delete project'))
+    expect(onDelete).toHaveBeenCalledWith('p1')
+  })
+
   it('does not show project-health dot for unselected projects', () => {
     render(
       <MemoryRouter>

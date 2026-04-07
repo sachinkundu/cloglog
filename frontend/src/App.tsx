@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
+import { api } from './api/client'
 
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { Board } from './components/Board'
@@ -77,6 +78,14 @@ export default function App() {
     }
   }, [selectedProjectId, navigate])
 
+  const handleDeleteProject = useCallback(async (projectId: string) => {
+    await api.deleteProject(projectId)
+    if (selectedProjectId === projectId) {
+      navigate('/')
+    }
+    window.location.reload()
+  }, [selectedProjectId, navigate])
+
   const handleTaskClick = useCallback((taskId: string) => {
     openDetail('task', taskId)
   }, [openDetail])
@@ -92,6 +101,7 @@ export default function App() {
       onAgentClick={handleAgentClick}
       agentTaskCounts={agentTaskCounts}
       onRefresh={refetch}
+      onDeleteProject={handleDeleteProject}
     >
       {!selectedProjectId && (
         <div style={{

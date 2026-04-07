@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { Project, Worktree } from '../api/types'
 import { AgentPanel } from './AgentPanel'
@@ -18,6 +18,7 @@ interface SidebarProps {
   onAgentClick?: (worktreeId: string) => void
   agentTaskCounts?: Record<string, number>
   onRefresh?: () => void
+  onDeleteProject?: (projectId: string) => void
 }
 
 function getProjectHealth(worktrees: Worktree[], boardStats: BoardStats | null | undefined): 'green' | 'yellow' | 'red' {
@@ -27,9 +28,30 @@ function getProjectHealth(worktrees: Worktree[], boardStats: BoardStats | null |
   return hasTasksProgressing ? 'green' : 'yellow'
 }
 
-export function Sidebar({ projects, selectedProjectId, worktrees, boardStats, agentFilter, onAgentClick, agentTaskCounts, onRefresh }: SidebarProps) {
+export function Sidebar({ projects, selectedProjectId, worktrees, boardStats, agentFilter, onAgentClick, agentTaskCounts, onRefresh, onDeleteProject }: SidebarProps) {
   const navigate = useNavigate()
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('sidebar-collapsed') === 'true')
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; projectId: string } | null>(null)
+
+  const handleContextMenu = useCallback((e: React.MouseEvent, projectId: string) => {
+    e.preventDefault()
+    setContextMenu({ x: e.clientX, y: e.clientY, projectId })
+  }, [])
+
+  const handleDelete = useCallback(() => {
+    if (contextMenu) {
+      onDeleteProject?.(contextMenu.projectId)
+      setContextMenu(null)
+    }
+  }, [contextMenu, onDeleteProject])
+
+  // Close context menu on click anywhere
+  useEffect(() => {
+    if (!contextMenu) return
+    const close = () => setContextMenu(null)
+    document.addEventListener('click', close)
+    return () => document.removeEventListener('click', close)
+  }, [contextMenu])
 
   const toggleCollapsed = () => {
     setCollapsed(prev => {
@@ -58,6 +80,7 @@ export function Sidebar({ projects, selectedProjectId, worktrees, boardStats, ag
                   <button
                     className={`project-item ${p.id === selectedProjectId ? 'selected' : ''}`}
                     onClick={() => navigate(`/projects/${p.id}`)}
+                    onContextMenu={(e) => handleContextMenu(e, p.id)}
                   >
                     {p.id === selectedProjectId && boardStats ? (
                       <span className={`status-dot project-health health-${getProjectHealth(worktrees, boardStats)}`} />
@@ -110,6 +133,18 @@ export function Sidebar({ projects, selectedProjectId, worktrees, boardStats, ag
             />
           )}
         </>
+      )}
+
+      {contextMenu && (
+        <div
+          className="context-menu"
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+          data-testid="context-menu"
+        >
+          <button className="context-menu-item danger" onClick={handleDelete}>
+            Delete project
+          </button>
+        </div>
       )}
     </aside>
   )

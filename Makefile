@@ -57,6 +57,7 @@ contract-check: ## Validate backend matches API contract
 		echo "  No contract files, skipping"; \
 	fi
 
+
 demo: ## Run proof-of-work demo for current feature
 	@echo "Running proof-of-work demo..."
 	@scripts/run-demo.sh

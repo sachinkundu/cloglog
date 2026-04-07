@@ -31,6 +31,14 @@ export default function App() {
   const { board, backlog, worktrees, loading: boardLoading, refetch } = useBoard(selectedProjectId)
   const { graph: depGraph } = useDependencyGraph(selectedProjectId)
 
+  const worktreeNames = useMemo(() => {
+    const map: Record<string, string> = {}
+    for (const wt of worktrees) {
+      map[wt.id] = wt.name
+    }
+    return map
+  }, [worktrees])
+
   const detail = useMemo<DetailState>(() => {
     if (!selectedProjectId) return null
     if (epicId) return buildEpicDetail(backlog, epicId)
@@ -89,6 +97,7 @@ export default function App() {
           onTaskClick={handleTaskClick}
           onItemClick={openDetail}
           onRefresh={refetch}
+          worktreeNames={worktreeNames}
         />
       )}
 
@@ -103,6 +112,7 @@ export default function App() {
           onClose={closeDetail}
           onNavigate={openDetail}
           projectId={selectedProjectId}
+          worktreeNames={worktreeNames}
         />
       )}
     </Layout>

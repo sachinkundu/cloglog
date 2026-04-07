@@ -55,13 +55,14 @@ type DetailPanelProps = {
   onClose: () => void
   onNavigate: (type: 'epic' | 'feature' | 'task', id: string) => void
   projectId?: string
+  worktreeNames?: Record<string, string>
 } & (
   | { type: 'epic'; data: EpicData }
   | { type: 'feature'; data: FeatureData }
   | { type: 'task'; data: TaskData }
 )
 
-export function DetailPanel({ type, data, onClose, onNavigate, projectId }: DetailPanelProps) {
+export function DetailPanel({ type, data, onClose, onNavigate, projectId, worktreeNames }: DetailPanelProps) {
   return (
     <div className="detail-overlay" data-testid="detail-overlay" onClick={onClose}>
       <div className="detail-panel" onClick={e => e.stopPropagation()}>
@@ -69,7 +70,7 @@ export function DetailPanel({ type, data, onClose, onNavigate, projectId }: Deta
 
         {type === 'epic' && <EpicDetail data={data as EpicData} />}
         {type === 'feature' && <FeatureDetail data={data as FeatureData} onNavigate={onNavigate} />}
-        {type === 'task' && <TaskDetail data={data as TaskData} onNavigate={onNavigate} projectId={projectId} />}
+        {type === 'task' && <TaskDetail data={data as TaskData} onNavigate={onNavigate} projectId={projectId} worktreeNames={worktreeNames} />}
       </div>
     </div>
   )
@@ -295,7 +296,7 @@ function FeatureDetail({ data, onNavigate }: { data: FeatureData; onNavigate: (t
   )
 }
 
-function TaskDetail({ data, onNavigate, projectId }: { data: TaskData; onNavigate: (type: 'epic' | 'feature' | 'task', id: string) => void; projectId?: string }) {
+function TaskDetail({ data, onNavigate, projectId, worktreeNames }: { data: TaskData; onNavigate: (type: 'epic' | 'feature' | 'task', id: string) => void; projectId?: string; worktreeNames?: Record<string, string> }) {
   const [notes, setNotes] = useState<TaskNote[]>([])
   useEffect(() => {
     api.getTaskNotes(data.id).then(setNotes).catch(() => {})
@@ -326,7 +327,7 @@ function TaskDetail({ data, onNavigate, projectId }: { data: TaskData; onNavigat
         <div className="detail-meta">
           <span className={`detail-status status-${data.status}`}>{data.status}</span>
           {data.priority === 'expedite' && <span className="detail-badge expedite">expedite</span>}
-          {data.worktree_id && <span className="detail-agent">agent assigned</span>}
+          {data.worktree_id && <span className="detail-agent">{worktreeNames?.[data.worktree_id] ?? 'agent assigned'}</span>}
         </div>
       </div>
       {data.description && <div className="detail-description"><Markdown remarkPlugins={[remarkGfm]} components={mdComponents}>{data.description}</Markdown></div>}

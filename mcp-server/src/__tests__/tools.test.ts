@@ -114,6 +114,32 @@ describe('Tool Handlers', () => {
     )
   })
 
+  it('get_board calls GET /projects/{id}/board with no params by default', async () => {
+    await handlers.get_board({ project_id: 'proj-1' })
+    expect(client.request).toHaveBeenCalledWith(
+      'GET', '/api/v1/projects/proj-1/board'
+    )
+  })
+
+  it('get_board passes epic_id and exclude_done as query params', async () => {
+    await handlers.get_board({ project_id: 'proj-1', epic_id: 'epic-1', exclude_done: true })
+    expect(client.request).toHaveBeenCalledWith(
+      'GET', '/api/v1/projects/proj-1/board?epic_id=epic-1&exclude_done=true'
+    )
+  })
+
+  it('get_active_tasks calls GET /projects/{id}/active-tasks', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: 't1', number: 1, title: 'Task 1', status: 'backlog' },
+    ])
+
+    const result = await handlers.get_active_tasks({ project_id: 'proj-1' })
+    expect(client.request).toHaveBeenCalledWith(
+      'GET', '/api/v1/projects/proj-1/active-tasks'
+    )
+    expect(result).toHaveLength(1)
+  })
+
   it('create_tasks calls POST /projects/{id}/import', async () => {
     (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
       epics_created: 1, features_created: 2, tasks_created: 5,

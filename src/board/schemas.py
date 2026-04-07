@@ -158,6 +158,21 @@ class BoardResponse(BaseModel):
     done_count: int
 
 
+class ActiveTaskItem(BaseModel):
+    """Compact task representation for the active-tasks endpoint."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    number: int
+    title: str
+    status: str
+    pr_url: str | None
+    worktree_id: UUID | None
+    feature_id: UUID
+    task_type: str
+
+
 # --- Backlog tree view ---
 
 

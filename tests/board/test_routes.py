@@ -993,3 +993,165 @@ async def test_reorder_invalid_ids(client: AsyncClient):
         },
     )
     assert resp.status_code == 400
+
+
+# --- Filtered board & active-tasks ---
+
+
+async def _setup_board(client: AsyncClient, name: str) -> dict:
+    """Create a project with two epics, each with a feature, and tasks in various statuses."""
+    project = (await client.post("/api/v1/projects", json={"name": name})).json()
+    pid = project["id"]
+    epic1 = (await client.post(f"/api/v1/projects/{pid}/epics", json={"title": "Epic1"})).json()
+    epic2 = (await client.post(f"/api/v1/projects/{pid}/epics", json={"title": "Epic2"})).json()
+    feat1 = (
+        await client.post(
+            f"/api/v1/projects/{pid}/epics/{epic1['id']}/features",
+            json={"title": "F1"},
+        )
+    ).json()
+    feat2 = (
+        await client.post(
+            f"/api/v1/projects/{pid}/epics/{epic2['id']}/features",
+            json={"title": "F2"},
+        )
+    ).json()
+    # Create tasks: backlog, in_progress, done under feat1; review under feat2
+    t_backlog = (
+        await client.post(
+            f"/api/v1/projects/{pid}/features/{feat1['id']}/tasks",
+            json={"title": "T-backlog"},
+        )
+    ).json()
+    t_progress = (
+        await client.post(
+            f"/api/v1/projects/{pid}/features/{feat1['id']}/tasks",
+            json={"title": "T-progress"},
+        )
+    ).json()
+    await client.patch(f"/api/v1/tasks/{t_progress['id']}", json={"status": "in_progress"})
+    t_done = (
+        await client.post(
+            f"/api/v1/projects/{pid}/features/{feat1['id']}/tasks",
+            json={"title": "T-done"},
+        )
+    ).json()
+    await client.patch(f"/api/v1/tasks/{t_done['id']}", json={"status": "done"})
+    t_review = (
+        await client.post(
+            f"/api/v1/projects/{pid}/features/{feat2['id']}/tasks",
+            json={"title": "T-review"},
+        )
+    ).json()
+    await client.patch(f"/api/v1/tasks/{t_review['id']}", json={"status": "review"})
+    return {
+        "project_id": pid,
+        "epic1_id": epic1["id"],
+        "epic2_id": epic2["id"],
+        "feat1_id": feat1["id"],
+        "feat2_id": feat2["id"],
+        "t_backlog": t_backlog["id"],
+        "t_progress": t_progress["id"],
+        "t_done": t_done["id"],
+        "t_review": t_review["id"],
+    }
+
+
+async def test_board_no_filters_backward_compat(client: AsyncClient):
+    """get_board with no filters returns all tasks (backward compat)."""
+    ids = await _setup_board(client, "board-no-filter")
+    resp = await client.get(f"/api/v1/projects/{ids['project_id']}/board")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_tasks"] == 4
+    assert data["done_count"] == 1
+
+
+async def test_board_exclude_done(client: AsyncClient):
+    """exclude_done=true omits done tasks."""
+    ids = await _setup_board(client, "board-excl-done")
+    resp = await client.get(
+        f"/api/v1/projects/{ids['project_id']}/board", params={"exclude_done": "true"}
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_tasks"] == 3
+    assert data["done_count"] == 0
+
+
+async def test_board_filter_by_status(client: AsyncClient):
+    """Filter board by specific statuses."""
+    ids = await _setup_board(client, "board-status-filter")
+    resp = await client.get(
+        f"/api/v1/projects/{ids['project_id']}/board",
+        params={"status": ["in_progress", "review"]},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_tasks"] == 2
+
+
+async def test_board_filter_by_epic(client: AsyncClient):
+    """Filter board by epic_id returns only tasks under that epic."""
+    ids = await _setup_board(client, "board-epic-filter")
+    resp = await client.get(
+        f"/api/v1/projects/{ids['project_id']}/board",
+        params={"epic_id": ids["epic2_id"]},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    # epic2 has only the review task
+    assert data["total_tasks"] == 1
+
+
+async def test_board_combined_filters(client: AsyncClient):
+    """Combine epic_id and exclude_done."""
+    ids = await _setup_board(client, "board-combined")
+    resp = await client.get(
+        f"/api/v1/projects/{ids['project_id']}/board",
+        params={"epic_id": ids["epic1_id"], "exclude_done": "true"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    # epic1 has backlog + in_progress (done is excluded)
+    assert data["total_tasks"] == 2
+
+
+async def test_active_tasks_endpoint(client: AsyncClient):
+    """active-tasks returns non-done, non-archived tasks with compact fields."""
+    ids = await _setup_board(client, "active-tasks-test")
+    resp = await client.get(f"/api/v1/projects/{ids['project_id']}/active-tasks")
+    assert resp.status_code == 200
+    data = resp.json()
+    # 4 tasks total, 1 done → 3 active
+    assert len(data) == 3
+    # Verify compact fields are present
+    item = data[0]
+    assert "id" in item
+    assert "number" in item
+    assert "title" in item
+    assert "status" in item
+    assert "feature_id" in item
+    assert "task_type" in item
+    # Verify verbose fields are NOT present
+    assert "description" not in item
+    assert "epic_title" not in item
+    assert "created_at" not in item
+
+
+async def test_active_tasks_excludes_archived(client: AsyncClient):
+    """active-tasks excludes archived tasks."""
+    ids = await _setup_board(client, "active-archived")
+    # Archive a backlog task
+    await client.patch(f"/api/v1/tasks/{ids['t_backlog']}", json={"archived": True})
+    resp = await client.get(f"/api/v1/projects/{ids['project_id']}/active-tasks")
+    assert resp.status_code == 200
+    data = resp.json()
+    # 3 non-done, but 1 is archived → 2
+    assert len(data) == 2
+
+
+async def test_active_tasks_not_found(client: AsyncClient):
+    """active-tasks returns 404 for unknown project."""
+    resp = await client.get("/api/v1/projects/00000000-0000-0000-0000-000000000000/active-tasks")
+    assert resp.status_code == 404

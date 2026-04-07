@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.board.repository import BoardRepository
 from src.board.schemas import (
+    ActiveTaskItem,
     BacklogEpic,
     BacklogFeature,
     BacklogTask,
@@ -436,7 +437,13 @@ async def reorder_tasks(
 
 
 @router.get("/projects/{project_id}/board", response_model=BoardResponse)
-async def get_board(project_id: UUID, service: ServiceDep) -> BoardResponse:
+async def get_board(
+    project_id: UUID,
+    service: ServiceDep,
+    status: Annotated[list[str] | None, Query()] = None,
+    epic_id: UUID | None = None,
+    exclude_done: bool = False,
+) -> BoardResponse:
     project = await service._repo.get_project(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -444,7 +451,9 @@ async def get_board(project_id: UUID, service: ServiceDep) -> BoardResponse:
     # Self-healing: assign colors to epics created before the color feature
     await service._repo.backfill_epic_colors(project_id, EPIC_COLOR_PALETTE)
 
-    tasks = await service._repo.get_board_tasks(project_id)
+    tasks = await service._repo.get_board_tasks(
+        project_id, statuses=status, epic_id=epic_id, exclude_done=exclude_done
+    )
 
     columns: dict[str, list[TaskCard]] = {col: [] for col in BOARD_COLUMNS}
     done_count = 0
@@ -468,6 +477,18 @@ async def get_board(project_id: UUID, service: ServiceDep) -> BoardResponse:
         total_tasks=len(tasks),
         done_count=done_count,
     )
+
+
+@router.get(
+    "/projects/{project_id}/active-tasks",
+    response_model=list[ActiveTaskItem],
+)
+async def get_active_tasks(project_id: UUID, service: ServiceDep) -> list[ActiveTaskItem]:
+    project = await service._repo.get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    tasks = await service._repo.get_active_tasks(project_id)
+    return [ActiveTaskItem.model_validate(t) for t in tasks]
 
 
 # --- Backlog ---

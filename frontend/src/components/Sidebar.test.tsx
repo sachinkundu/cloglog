@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi } from 'vitest'
@@ -67,14 +67,15 @@ describe('Sidebar', () => {
   })
 
   it('shows worktrees when a project is selected', () => {
-    render(
+    const { container } = render(
       <MemoryRouter>
         <Sidebar projects={mockProjects} selectedProjectId="p1" worktrees={mockWorktrees} />
       </MemoryRouter>
     )
     expect(screen.getByText('Agents')).toBeInTheDocument()
-    expect(screen.getByText('wt-backend')).toBeInTheDocument()
-    expect(screen.getByText('wt-frontend')).toBeInTheDocument()
+    const list = container.querySelector('.worktree-list')!
+    expect(within(list).getByText('wt-backend')).toBeInTheDocument()
+    expect(within(list).getByText('wt-frontend')).toBeInTheDocument()
   })
 
   it('shows project stats for the selected project', () => {
@@ -106,18 +107,19 @@ describe('Sidebar', () => {
   })
 
   it('applies pulse class to online worktree dots', () => {
-    render(
+    const { container } = render(
       <MemoryRouter>
         <Sidebar projects={mockProjects} selectedProjectId="p1" worktrees={mockWorktrees} />
       </MemoryRouter>
     )
+    const list = container.querySelector('.worktree-list')!
     // wt-backend is online — its dot should have the pulse class
-    const backendItem = screen.getByText('wt-backend').closest('.worktree-item')
+    const backendItem = within(list).getByText('wt-backend').closest('.worktree-item')
     const dot = backendItem!.querySelector('.status-dot')
     expect(dot).toHaveClass('pulse')
 
     // wt-frontend is offline — no pulse
-    const frontendItem = screen.getByText('wt-frontend').closest('.worktree-item')
+    const frontendItem = within(list).getByText('wt-frontend').closest('.worktree-item')
     const offlineDot = frontendItem!.querySelector('.status-dot')
     expect(offlineDot).not.toHaveClass('pulse')
   })
@@ -182,36 +184,39 @@ describe('Sidebar', () => {
   it('calls onAgentClick when a worktree is clicked', async () => {
     const user = userEvent.setup()
     const onAgentClick = vi.fn()
-    render(
+    const { container } = render(
       <MemoryRouter>
         <Sidebar projects={mockProjects} selectedProjectId="p1" worktrees={mockWorktrees} onAgentClick={onAgentClick} />
       </MemoryRouter>
     )
-    await user.click(screen.getByText('wt-backend'))
+    const list = container.querySelector('.worktree-list')!
+    await user.click(within(list).getByText('wt-backend'))
     expect(onAgentClick).toHaveBeenCalledWith('wt1')
   })
 
   it('highlights active agent filter', () => {
-    render(
+    const { container } = render(
       <MemoryRouter>
         <Sidebar projects={mockProjects} selectedProjectId="p1" worktrees={mockWorktrees} agentFilter="wt1" />
       </MemoryRouter>
     )
-    const backendItem = screen.getByText('wt-backend').closest('.worktree-item')
+    const list = container.querySelector('.worktree-list')!
+    const backendItem = within(list).getByText('wt-backend').closest('.worktree-item')
     expect(backendItem).toHaveClass('worktree-active')
-    const frontendItem = screen.getByText('wt-frontend').closest('.worktree-item')
+    const frontendItem = within(list).getByText('wt-frontend').closest('.worktree-item')
     expect(frontendItem).not.toHaveClass('worktree-active')
   })
 
   it('shows task count on worktree items', () => {
-    render(
+    const { container } = render(
       <MemoryRouter>
         <Sidebar projects={mockProjects} selectedProjectId="p1" worktrees={mockWorktrees} agentTaskCounts={{ wt1: 3, wt2: 0 }} />
       </MemoryRouter>
     )
-    const backendItem = screen.getByText('wt-backend').closest('.worktree-item')
+    const list = container.querySelector('.worktree-list')!
+    const backendItem = within(list).getByText('wt-backend').closest('.worktree-item')
     expect(backendItem?.querySelector('.worktree-task-count')).toHaveTextContent('3')
-    const frontendItem = screen.getByText('wt-frontend').closest('.worktree-item')
+    const frontendItem = within(list).getByText('wt-frontend').closest('.worktree-item')
     expect(frontendItem?.querySelector('.worktree-task-count')).toHaveTextContent('0')
   })
 

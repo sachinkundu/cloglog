@@ -1,31 +1,23 @@
-# T-60: Agent click filters board, hover shows task count
+# T-61: Agent management panel — view and remove worktrees
 
-*2026-04-07T14:50:31Z by Showboat 0.6.1*
-<!-- showboat-id: 15be91e7-9edc-43af-bd13-72b15b201e6b -->
+*2026-04-07T15:31:03Z by Showboat 0.6.1*
+<!-- showboat-id: 2fe12f50-5bf8-47ac-b02c-d3c884026bca -->
 
-Clicking an agent in the sidebar filters all board columns to show only that agent's tasks. Click again to clear. Each agent shows its task count badge.
-
-```bash {image}
-![Sidebar showing agent task counts](docs/demos/wt-ui/sidebar-agents.png)
-```
-
-![Sidebar showing agent task counts](04243516-2026-04-07.png)
-
-After clicking wt-ui, the board filters to only its 4 tasks:
+New 'Manage Agents' panel in the sidebar. Click an agent to expand details (status, branch, heartbeat, task count). Online agents show a 'Request Shutdown' button that sets shutdown_requested on the worktree record.
 
 ```bash {image}
-![Board filtered to wt-ui tasks](docs/demos/wt-ui/filtered-columns.png)
+![Agent panel with expanded details and shutdown button](docs/demos/wt-ui/agent-panel.png)
 ```
 
-![Board filtered to wt-ui tasks](1f065582-2026-04-07.png)
+![Agent panel with expanded details and shutdown button](ab7187dc-2026-04-07.png)
 
 ```bash
-cd frontend && NO_COLOR=1 npx vitest run src/components/Sidebar.test.tsx src/components/Column.test.tsx 2>&1 | grep -E '(Tests|Test Files|FAIL|passed|failed)'
+cd frontend && NO_COLOR=1 npx vitest run src/components/AgentPanel.test.tsx 2>&1 | grep -E '(Tests|Test Files|FAIL|passed|failed)'
 ```
 
 ```output
- Test Files  2 passed (2)
-      Tests  33 passed (33)
+ Test Files  1 passed (1)
+      Tests  8 passed (8)
 ```
 
-Test delta: 178 -> 183 (+5 new). Agent click, filter highlight, task count display, column agent filtering.
+Test delta: 183 -> 191 (+8 new). AgentPanel component tests, integration test fix for duplicate names.

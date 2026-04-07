@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { Project, Worktree } from '../api/types'
+import { AgentPanel } from './AgentPanel'
 import './Sidebar.css'
 
 interface BoardStats {
@@ -16,6 +17,7 @@ interface SidebarProps {
   agentFilter?: string | null
   onAgentClick?: (worktreeId: string) => void
   agentTaskCounts?: Record<string, number>
+  onRefresh?: () => void
 }
 
 function getProjectHealth(worktrees: Worktree[], boardStats: BoardStats | null | undefined): 'green' | 'yellow' | 'red' {
@@ -25,7 +27,7 @@ function getProjectHealth(worktrees: Worktree[], boardStats: BoardStats | null |
   return hasTasksProgressing ? 'green' : 'yellow'
 }
 
-export function Sidebar({ projects, selectedProjectId, worktrees, boardStats, agentFilter, onAgentClick, agentTaskCounts }: SidebarProps) {
+export function Sidebar({ projects, selectedProjectId, worktrees, boardStats, agentFilter, onAgentClick, agentTaskCounts, onRefresh }: SidebarProps) {
   const navigate = useNavigate()
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('sidebar-collapsed') === 'true')
 
@@ -97,6 +99,15 @@ export function Sidebar({ projects, selectedProjectId, worktrees, boardStats, ag
                 })}
               </ul>
             </section>
+          )}
+
+          {selectedProjectId && worktrees.length > 0 && (
+            <AgentPanel
+              worktrees={worktrees}
+              projectId={selectedProjectId}
+              agentTaskCounts={agentTaskCounts}
+              onRefresh={onRefresh}
+            />
           )}
         </>
       )}

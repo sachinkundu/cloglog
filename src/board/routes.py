@@ -6,8 +6,10 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.agent.models import Worktree as WorktreeModel
 from src.board.repository import BoardRepository
 from src.board.schemas import (
     BacklogEpic,
@@ -613,3 +615,31 @@ async def import_plan(project_id: UUID, body: ImportPlan, service: ServiceDep) -
         )
     )
     return result
+
+
+# --- Worktree Management (Dashboard) ---
+
+
+@router.post(
+    "/projects/{project_id}/worktrees/{worktree_id}/request-shutdown",
+    status_code=200,
+)
+async def request_worktree_shutdown(
+    project_id: UUID,
+    worktree_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, bool]:
+    """Request a worktree agent to shut down. Dashboard-facing endpoint.
+
+    Sets shutdown_requested=True on the worktree record. The agent will
+    see this on its next heartbeat and shut down cleanly.
+    """
+    result = await session.execute(
+        sa_update(WorktreeModel)
+        .where(WorktreeModel.id == worktree_id, WorktreeModel.project_id == project_id)
+        .values(shutdown_requested=True)
+    )
+    await session.commit()
+    if getattr(result, "rowcount", 0) == 0:
+        raise HTTPException(status_code=404, detail="Worktree not found") from None
+    return {"shutdown_requested": True}

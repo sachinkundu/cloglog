@@ -91,6 +91,7 @@ export default function App() {
       agentFilter={agentFilter}
       onAgentClick={handleAgentClick}
       agentTaskCounts={agentTaskCounts}
+      onRefresh={refetch}
     >
       {!selectedProjectId && (
         <div style={{

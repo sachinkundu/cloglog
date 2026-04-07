@@ -1,0 +1,93 @@
+.agent-panel {
+  padding: 12px 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.agent-panel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agent-panel-item {
+  margin: 0 8px;
+  border-radius: var(--radius-sm);
+}
+
+.agent-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.agent-panel-header:hover {
+  background: var(--bg-tertiary);
+}
+
+.agent-panel-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  flex: 1;
+}
+
+.agent-panel-toggle {
+  font-size: 10px;
+  color: var(--text-muted);
+  padding: 2px 4px;
+}
+
+.agent-panel-details {
+  padding: 4px 8px 8px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-panel-row {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.agent-panel-label {
+  color: var(--text-muted);
+}
+
+.agent-panel-value {
+  color: var(--text-secondary);
+}
+
+.agent-panel-value.status-online {
+  color: var(--active);
+}
+
+.agent-panel-value.status-offline {
+  color: var(--danger);
+}
+
+.agent-panel-shutdown {
+  margin-top: 4px;
+  padding: 4px 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--danger);
+  background: none;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.agent-panel-shutdown:hover:not(:disabled) {
+  background: var(--danger);
+  color: var(--bg-primary);
+}
+
+.agent-panel-shutdown:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

@@ -108,6 +108,13 @@ export const api = {
       body: JSON.stringify({ items }),
     }),
 
+  // Worktree management
+  requestWorktreeShutdown: (projectId: string, worktreeId: string) =>
+    fetchJSON<{ shutdown_requested: boolean }>(
+      `/projects/${projectId}/worktrees/${worktreeId}/request-shutdown`,
+      { method: 'POST' },
+    ),
+
   // SSE stream URL (not a fetch — used by EventSource, which can't send headers)
   streamUrl: (projectId: string) =>
     `${BASE_URL}/projects/${projectId}/stream?dashboard_key=${encodeURIComponent(DASHBOARD_KEY)}`,

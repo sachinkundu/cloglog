@@ -187,7 +187,8 @@ describe('App integration', () => {
       expect(mockApi.getWorktrees).toHaveBeenCalledWith('p1')
     })
 
-    expect(await screen.findByText('wt-ui')).toBeInTheDocument()
+    const worktreeElements = await screen.findAllByText('wt-ui')
+    expect(worktreeElements.length).toBeGreaterThanOrEqual(1)
   })
 
   it('clicking a task card opens the detail panel', async () => {

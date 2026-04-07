@@ -104,6 +104,31 @@ MOCK_WORKTREES = [
     }
 ]
 
+MOCK_WORKTREES_FULL = [
+    {
+        "id": WORKTREE_ID,
+        "project_id": PROJECT_ID,
+        "name": "wt-assign",
+        "worktree_path": "/home/user/code/cloglog/.claude/worktrees/wt-assign",
+        "branch_name": "wt-assign",
+        "status": "active",
+        "current_task_id": TASK_ID,
+        "last_heartbeat": "2026-04-07T12:00:00Z",
+        "created_at": "2026-04-06T10:00:00Z",
+    },
+    {
+        "id": "88888888-7777-6666-5555-444444444444",
+        "project_id": PROJECT_ID,
+        "name": "wt-board",
+        "worktree_path": "/home/user/code/cloglog/.claude/worktrees/wt-board",
+        "branch_name": "wt-board",
+        "status": "offline",
+        "current_task_id": None,
+        "last_heartbeat": "2026-04-06T09:00:00Z",
+        "created_at": "2026-04-06T08:00:00Z",
+    },
+]
+
 MOCK_TASK_PATCH = {
     "id": TASK_ID,
     "feature_id": "f1f1f1f1-0000-0000-0000-000000000000",
@@ -482,3 +507,115 @@ def test_tasks_show_unknown_task() -> None:
     )
     assert result.exit_code == 1
     assert "not found" in result.output.lower()
+
+
+# --- Agents command tests ---
+
+
+def test_agents_list_command_exists() -> None:
+    """agents list command exists and requires --project."""
+    result = runner.invoke(app, ["agents", "list"])
+    assert result.exit_code == 2  # missing required --project
+
+
+@respx.mock
+def test_agents_list_table_output() -> None:
+    """agents list displays agents with status icons and details."""
+    respx.get(f"{BASE}/api/v1/projects").mock(return_value=Response(200, json=MOCK_PROJECTS))
+    respx.get(f"{BASE}/api/v1/projects/{PROJECT_ID}/worktrees").mock(
+        return_value=Response(200, json=MOCK_WORKTREES_FULL)
+    )
+
+    result = runner.invoke(app, ["agents", "list", "--project", "testproj", "--url", BASE])
+    assert result.exit_code == 0
+    assert "wt-assign" in result.output
+    assert "wt-board" in result.output
+    assert "●" in result.output  # active icon
+    assert "○" in result.output  # offline icon
+    assert "Agents for 'testproj' (2)" in result.output
+
+
+@respx.mock
+def test_agents_list_json_output() -> None:
+    """agents list --json outputs valid JSON."""
+    respx.get(f"{BASE}/api/v1/projects").mock(return_value=Response(200, json=MOCK_PROJECTS))
+    respx.get(f"{BASE}/api/v1/projects/{PROJECT_ID}/worktrees").mock(
+        return_value=Response(200, json=MOCK_WORKTREES_FULL)
+    )
+
+    result = runner.invoke(
+        app, ["agents", "list", "--project", "testproj", "--url", BASE, "--json"]
+    )
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert isinstance(data, list)
+    assert len(data) == 2
+    assert data[0]["name"] == "wt-assign"
+
+
+@respx.mock
+def test_agents_list_status_filter() -> None:
+    """agents list --status filters agents."""
+    respx.get(f"{BASE}/api/v1/projects").mock(return_value=Response(200, json=MOCK_PROJECTS))
+    respx.get(f"{BASE}/api/v1/projects/{PROJECT_ID}/worktrees").mock(
+        return_value=Response(200, json=MOCK_WORKTREES_FULL)
+    )
+
+    result = runner.invoke(
+        app,
+        ["agents", "list", "--project", "testproj", "--url", BASE, "--status", "active"],
+    )
+    assert result.exit_code == 0
+    assert "wt-assign" in result.output
+    assert "wt-board" not in result.output
+
+
+@respx.mock
+def test_agents_list_empty() -> None:
+    """agents list with no agents shows helpful message."""
+    respx.get(f"{BASE}/api/v1/projects").mock(return_value=Response(200, json=MOCK_PROJECTS))
+    respx.get(f"{BASE}/api/v1/projects/{PROJECT_ID}/worktrees").mock(
+        return_value=Response(200, json=[])
+    )
+
+    result = runner.invoke(app, ["agents", "list", "--project", "testproj", "--url", BASE])
+    assert result.exit_code == 0
+    assert "No agents registered" in result.output
+
+
+@respx.mock
+def test_agents_list_unknown_project() -> None:
+    """agents list with unknown project exits 1."""
+    respx.get(f"{BASE}/api/v1/projects").mock(return_value=Response(200, json=[]))
+
+    result = runner.invoke(app, ["agents", "list", "--project", "nonexistent", "--url", BASE])
+    assert result.exit_code == 1
+    assert "not found" in result.output.lower()
+
+
+@respx.mock
+def test_agents_list_shows_heartbeat() -> None:
+    """agents list displays last heartbeat time."""
+    respx.get(f"{BASE}/api/v1/projects").mock(return_value=Response(200, json=MOCK_PROJECTS))
+    respx.get(f"{BASE}/api/v1/projects/{PROJECT_ID}/worktrees").mock(
+        return_value=Response(200, json=MOCK_WORKTREES_FULL)
+    )
+
+    result = runner.invoke(app, ["agents", "list", "--project", "testproj", "--url", BASE])
+    assert result.exit_code == 0
+    assert "heartbeat:" in result.output
+    assert "2026-04-07T12:00:00" in result.output
+
+
+@respx.mock
+def test_agents_list_shows_current_task() -> None:
+    """agents list displays current task id."""
+    respx.get(f"{BASE}/api/v1/projects").mock(return_value=Response(200, json=MOCK_PROJECTS))
+    respx.get(f"{BASE}/api/v1/projects/{PROJECT_ID}/worktrees").mock(
+        return_value=Response(200, json=MOCK_WORKTREES_FULL)
+    )
+
+    result = runner.invoke(app, ["agents", "list", "--project", "testproj", "--url", BASE])
+    assert result.exit_code == 0
+    assert "task:" in result.output
+    assert "none" in result.output  # wt-board has no task

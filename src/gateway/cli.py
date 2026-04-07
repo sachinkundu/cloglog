@@ -392,6 +392,54 @@ def tasks_complete(
     typer.echo(f"T-{task_num} \u2192 done")
 
 
+# --- Agents subcommand ---
+
+agents_app = typer.Typer(name="agents", help="Inspect registered agents (worktrees).")
+app.add_typer(agents_app)
+
+
+@agents_app.command("list")
+def agents_list(
+    project: Annotated[str, typer.Option(help="Project name or UUID", envvar="CLOGLOG_PROJECT")],
+    url: Annotated[
+        str, typer.Option(help="Base URL", envvar="CLOGLOG_URL")
+    ] = "http://localhost:8000",
+    status: Annotated[str | None, typer.Option(help="Filter by status")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="JSON output")] = False,
+) -> None:
+    """List registered agents (worktrees) for a project."""
+    project_id, project_name = _resolve_project(url, project)
+    worktrees = _api_get(url, f"/api/v1/projects/{project_id}/worktrees")
+    if not isinstance(worktrees, list):
+        typer.echo("Error: unexpected response", err=True)
+        raise typer.Exit(code=1)
+
+    if status:
+        worktrees = [wt for wt in worktrees if wt.get("status") == status]
+
+    if json_output:
+        typer.echo(json.dumps(worktrees, indent=2, default=str))
+        return
+
+    if not worktrees:
+        typer.echo(f"No agents registered for project '{project_name}'.")
+        return
+
+    typer.echo(f"\nAgents for '{project_name}' ({len(worktrees)})\n")
+    for wt in worktrees:
+        name = wt.get("name", "unknown")
+        wt_id = str(wt.get("id", ""))[:8]
+        wt_status = wt.get("status", "unknown")
+        branch = wt.get("branch_name", "")
+        heartbeat = str(wt.get("last_heartbeat", "never"))[:19]
+        current_task = wt.get("current_task_id")
+        task_display = str(current_task)[:8] if current_task else "none"
+
+        status_icon = "●" if wt_status == "active" else "○"
+        typer.echo(f"  {status_icon} {name:<20} {wt_id}  {wt_status:<10} {branch}")
+        typer.echo(f"    task: {task_display}  heartbeat: {heartbeat}")
+
+
 @tasks_app.command("status")
 def tasks_set_status(
     task: Annotated[str, typer.Option(help="Task number or UUID")],

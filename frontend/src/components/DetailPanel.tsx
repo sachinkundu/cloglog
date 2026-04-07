@@ -327,7 +327,7 @@ function TaskDetail({ data, onNavigate, projectId, worktreeNames }: { data: Task
         <div className="detail-meta">
           <span className={`detail-status status-${data.status}`}>{data.status}</span>
           {data.priority === 'expedite' && <span className="detail-badge expedite">expedite</span>}
-          {data.worktree_id && <span className="detail-agent">{worktreeNames?.[data.worktree_id] ?? 'agent assigned'}</span>}
+          {data.worktree_id && <span className="detail-agent">{worktreeNames?.[data.worktree_id] ?? 'agent (removed)'}</span>}
         </div>
       </div>
       {data.description && <div className="detail-description"><Markdown remarkPlugins={[remarkGfm]} components={mdComponents}>{data.description}</Markdown></div>}

@@ -32,7 +32,7 @@ export function TaskCard({ task, onClick, worktreeNames }: TaskCardProps) {
           <span className="task-priority">expedite</span>
         )}
         {task.worktree_id && (
-          <span className="task-worktree">{worktreeNames?.[task.worktree_id] ?? 'agent assigned'}</span>
+          <span className="task-worktree">{worktreeNames?.[task.worktree_id] ?? 'agent (removed)'}</span>
         )}
         {task.pr_url && <PrLink url={task.pr_url} />}
       </div>

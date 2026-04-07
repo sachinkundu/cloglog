@@ -67,7 +67,7 @@ export function AgentPanel({ worktrees, projectId, agentTaskCounts, onRefresh }:
                   </div>
                   <div className="agent-panel-row">
                     <span className="agent-panel-label">Branch</span>
-                    <span className="agent-panel-value">{wt.branch_name}</span>
+                    <span className="agent-panel-value">{wt.branch_name || '\u2014'}</span>
                   </div>
                   <div className="agent-panel-row">
                     <span className="agent-panel-label">Heartbeat</span>

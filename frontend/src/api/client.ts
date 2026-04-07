@@ -23,6 +23,12 @@ export const api = {
   listProjects: () => fetchJSON<Project[]>('/projects'),
   getProject: (id: string) => fetchJSON<Project>(`/projects/${id}`),
 
+  deleteProject: (id: string) =>
+    fetch(`${BASE_URL}/projects/${id}`, {
+      method: 'DELETE',
+      headers: { 'X-Dashboard-Key': DASHBOARD_KEY },
+    }),
+
   // Board
   getBoard: (projectId: string) => fetchJSON<BoardResponse>(`/projects/${projectId}/board`),
 

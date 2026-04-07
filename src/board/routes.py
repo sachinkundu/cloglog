@@ -77,6 +77,13 @@ async def get_project(project_id: UUID, service: ServiceDep) -> ProjectResponse:
     return ProjectResponse.model_validate(project)
 
 
+@router.delete("/projects/{project_id}", status_code=204)
+async def delete_project(project_id: UUID, service: ServiceDep) -> None:
+    deleted = await service._repo.delete_project(project_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Project not found") from None
+
+
 # --- Epics ---
 
 

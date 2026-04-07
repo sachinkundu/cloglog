@@ -33,6 +33,14 @@ class BoardRepository:
         result = await self._session.execute(select(Project).order_by(Project.created_at))
         return list(result.scalars().all())
 
+    async def delete_project(self, project_id: UUID) -> bool:
+        project = await self._session.get(Project, project_id)
+        if project is None:
+            return False
+        await self._session.delete(project)
+        await self._session.commit()
+        return True
+
     async def set_project_api_key_hash(self, project_id: UUID, api_key_hash: str) -> None:
         project = await self._session.get(Project, project_id)
         if project:

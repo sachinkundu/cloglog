@@ -1,11 +1,16 @@
 import type { AppNotification, BacklogEpic, BoardResponse, DependencyGraphResponse, Document, DocumentSummary, Project, SearchResponse, TaskNote, Worktree } from './types'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api/v1'
+const DASHBOARD_KEY = import.meta.env.VITE_DASHBOARD_KEY ?? 'cloglog-dashboard-dev'
 
 async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(`${BASE_URL}${path}`, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Dashboard-Key': DASHBOARD_KEY,
+      ...init?.headers,
+    },
   })
   if (!resp.ok) {
     throw new Error(`API error: ${resp.status} ${resp.statusText}`)
@@ -103,6 +108,7 @@ export const api = {
       body: JSON.stringify({ items }),
     }),
 
-  // SSE stream URL (not a fetch — used by EventSource)
-  streamUrl: (projectId: string) => `${BASE_URL}/projects/${projectId}/stream`,
+  // SSE stream URL (not a fetch — used by EventSource, which can't send headers)
+  streamUrl: (projectId: string) =>
+    `${BASE_URL}/projects/${projectId}/stream?dashboard_key=${encodeURIComponent(DASHBOARD_KEY)}`,
 }

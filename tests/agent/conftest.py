@@ -37,7 +37,11 @@ async def client(test_db_name: str) -> AsyncGenerator[AsyncClient, None]:
 
     app.dependency_overrides[get_session] = _override_get_session
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-Dashboard-Key": "cloglog-dashboard-dev"},
+    ) as ac:
         yield ac
 
     await test_engine.dispose()

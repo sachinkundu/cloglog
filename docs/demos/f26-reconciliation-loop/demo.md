@@ -35,3 +35,5 @@ grep -c "reconcile" Makefile || echo "0 — Makefile targets removed"
 ```
 
 The skill checks 5 categories: (1) Tasks vs PR state, (2) Agents vs tasks, (3) Worktrees vs branches, (4) Stale branches, (5) Orphaned PRs. All board/agent operations go through MCP tools with proper API key auth.
+
+Access control: every API request must present one of three credentials — agent API key (agents/* only), MCP server (API key + X-MCP-Request, everywhere), or dashboard key (X-Dashboard-Key, non-agent routes). Unauthenticated requests are rejected. See tests/gateway/test_route_isolation.py for 10 test cases covering all paths.

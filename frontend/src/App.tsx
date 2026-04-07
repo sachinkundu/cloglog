@@ -43,7 +43,7 @@ export default function App() {
     if (board) {
       for (const col of board.columns) {
         for (const task of col.tasks) {
-          if (task.worktree_id) {
+          if (task.worktree_id && task.status !== 'done' && !task.archived) {
             counts[task.worktree_id] = (counts[task.worktree_id] ?? 0) + 1
           }
         }

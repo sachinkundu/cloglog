@@ -13,8 +13,8 @@ We need addressed, reliable messaging from the main agent (or external events li
 ```
                                     ┌──────────────┐
 GitHub Webhook ──POST──►            │   Backend    │
-Main Agent ─────POST──►  /agents/  │              │
-                        {id}/message│  EventBus    │──SSE──► Dashboard UI
+Main Agent ──MCP tool──►            │              │
+  (send_agent_message)              │  EventBus    │──SSE──► Dashboard UI
                                     │   publishes  │
                                     │ AGENT_MESSAGE│──SSE──► Agent MCP Server (wt-ui)
                                     │              │──SSE──► Agent MCP Server (wt-assign)
@@ -25,6 +25,8 @@ Main Agent ─────POST──►  /agents/  │              │
                                                           ▼
                                                     Claude Agent Session
 ```
+
+**Important:** The main agent sends messages via an MCP tool (`send_agent_message`), never by calling the API directly. The MCP server translates the tool call into the backend API call. This is consistent with how all agent operations go through MCP.
 
 ### Components
 
@@ -218,8 +220,25 @@ class EventType(str, Enum):
 - MCP server: test that SSE events trigger `sendLoggingMessage`
 - E2E: send message via API, verify agent receives it (requires real MCP server)
 
-### Open Questions
+### Pre-Implementation: Prototype Required
 
-1. **`sendLoggingMessage` vs other notification types** — does Claude Code surface logging notifications in the agent's conversation? Need to verify this works as expected. If not, we may need a different MCP notification mechanism.
-2. **EventSource with auth** — the `eventsource` npm package supports headers, but verify it's compatible with our SSE endpoint.
-3. **Message ordering** — SSE delivers in order, but if the agent is processing a tool call when a notification arrives, when does it see it? Need to understand Claude Code's notification handling.
+Before implementing the full pipeline, we need to validate that the core mechanism works — can an MCP server push a notification to a Claude Code session that the agent actually sees and acts on?
+
+**Prototype scope:**
+1. Add a test MCP tool `ping_self` that calls `server.sendLoggingMessage()` with a test message
+2. Verify: does the message appear in the Claude Code conversation context?
+3. If `sendLoggingMessage` doesn't surface to the agent, try alternatives:
+   - `server.sendResourceUpdated()` — triggers resource re-read
+   - Append message to a tool response on next tool call (piggyback approach, like shutdown_requested)
+   - Create a polling MCP tool `check_messages` that the agent calls periodically (least preferred — still polling)
+4. Test with a real agent session, not just unit tests
+
+**If the prototype fails** (no MCP notification mechanism surfaces in Claude Code), the fallback is:
+- Extend the heartbeat response with a `pending_messages: string[]` field
+- Agent sees messages on next heartbeat (30-60s latency)
+- Less elegant but guaranteed to work since heartbeat responses already surface in agent context
+
+**Questions the prototype answers:**
+- Does `sendLoggingMessage` appear in Claude Code conversation?
+- What happens if a notification arrives while the agent is processing a tool call?
+- Is `eventsource` npm package compatible with our SSE endpoint + auth headers?

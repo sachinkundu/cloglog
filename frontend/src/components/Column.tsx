@@ -11,6 +11,7 @@ interface ColumnProps {
   onTaskClick: (taskId: string) => void
   onRefresh?: () => void
   draggable?: boolean
+  worktreeNames?: Record<string, string>
 }
 
 const COLUMN_LABELS: Record<string, string> = {
@@ -20,7 +21,7 @@ const COLUMN_LABELS: Record<string, string> = {
   done: 'Done',
 }
 
-export function Column({ column, onTaskClick, onRefresh, draggable = false }: ColumnProps) {
+export function Column({ column, onTaskClick, onRefresh, draggable = false, worktreeNames }: ColumnProps) {
   const [showArchived, setShowArchived] = useState(false)
   const isDone = column.status === 'done'
 
@@ -57,9 +58,9 @@ export function Column({ column, onTaskClick, onRefresh, draggable = false }: Co
       <div className="column-tasks" ref={setNodeRef}>
         {visibleTasks.map(task =>
           draggable ? (
-            <DraggableTaskCard key={task.id} task={task} onClick={() => onTaskClick(task.id)} />
+            <DraggableTaskCard key={task.id} task={task} onClick={() => onTaskClick(task.id)} worktreeNames={worktreeNames} />
           ) : (
-            <TaskCard key={task.id} task={task} onClick={() => onTaskClick(task.id)} />
+            <TaskCard key={task.id} task={task} onClick={() => onTaskClick(task.id)} worktreeNames={worktreeNames} />
           )
         )}
 

@@ -1,4 +1,5 @@
 import { useCallback, useMemo } from 'react'
+
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { Board } from './components/Board'
 import { DependencyGraph } from './components/DependencyGraph'
@@ -30,6 +31,12 @@ export default function App() {
   const { projects, loading: projectsLoading } = useProjects()
   const { board, backlog, worktrees, loading: boardLoading, refetch } = useBoard(selectedProjectId)
   const { graph: depGraph } = useDependencyGraph(selectedProjectId)
+
+  const worktreeNames = useMemo(() => {
+    const map: Record<string, string> = {}
+    for (const wt of worktrees) map[wt.id] = wt.name
+    return map
+  }, [worktrees])
 
   const detail = useMemo<DetailState>(() => {
     if (!selectedProjectId) return null
@@ -89,6 +96,7 @@ export default function App() {
           onTaskClick={handleTaskClick}
           onItemClick={openDetail}
           onRefresh={refetch}
+          worktreeNames={worktreeNames}
         />
       )}
 
@@ -103,6 +111,7 @@ export default function App() {
           onClose={closeDetail}
           onNavigate={openDetail}
           projectId={selectedProjectId}
+          worktreeNames={worktreeNames}
         />
       )}
     </Layout>

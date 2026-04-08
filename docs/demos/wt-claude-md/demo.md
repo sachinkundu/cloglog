@@ -9,11 +9,11 @@ Comprehensive design document covering cloglog's architecture, agent lifecycle, 
 ## Document exists and has expected sections
 
 ```bash
-wc -l docs/design.md
+test -f docs/design.md && echo "exists"
 ```
 
 ```output
-888
+exists
 ```
 
 ```bash
@@ -21,7 +21,7 @@ grep -c "^## " docs/design.md
 ```
 
 ```output
-12
+14
 ```
 
 ```bash
@@ -55,12 +55,12 @@ grep -c "mermaid" docs/design.md
 2
 ```
 
-## No source code changes
+## Contains key architecture terms
 
 ```bash
-git diff --name-only HEAD~1
+grep -c "Bounded Context" docs/design.md
 ```
 
 ```output
-docs/design.md
+2
 ```

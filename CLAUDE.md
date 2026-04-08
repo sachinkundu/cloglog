@@ -111,8 +111,12 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 - **Cross-feature integration tests:** When modifying a component that was recently changed by another feature, write at least one test covering both features together. Check `git log --oneline <file>` to see recent changes. Two features that independently modify the same component can break each other in ways neither feature's tests catch.
 
 ### PR Quality
-- Every PR must include a **Test Report** section showing: what tests were added, test output, coverage.
-- Frontend PRs should include screenshots of the UI.
+- **PR body structure matters.** The reviewer opens the PR and needs context fast. Use this order:
+  1. **Summary** — 1-3 bullets on what and why
+  2. **Demo** — immediately after the summary. Embed the demo output (curl responses, screenshots, state machine transitions) directly in the PR body. The reviewer should see proof the feature works before reading any code. Link to the full `demo.md` if it's long, but inline the highlights.
+  3. **Test Report** — what tests were added, output, coverage delta
+- The demo in the PR body is the most important thing after the summary. It gives the reviewer full context: "this is what the PR does, and here's proof it works." Code review is 10x easier when you already understand what the code is supposed to do.
+- Frontend PRs should include screenshots of the UI inline in the PR body.
 - Run the full quality gate (`make quality`) before pushing. Don't assume it passes.
 - **Proactive rebase:** When other PRs merge to main while yours is open, rebase before the reviewer has to ask.
 - **Conflict marker check:** After resolving merge conflicts, run `grep -rn "^<<<<<<" src/ frontend/src/` to catch leftover markers.

@@ -379,6 +379,61 @@ export function createServer(client: CloglogClient): McpServer {
   )
 
   server.tool(
+    'update_epic',
+    'Update an epic (title, description, bounded_context, or status).',
+    {
+      epic_id: z.string().describe('UUID of the epic'),
+      title: z.string().optional().describe('New title'),
+      description: z.string().optional().describe('New description'),
+      bounded_context: z.string().optional().describe('New bounded context'),
+      status: z.string().optional().describe('New status'),
+    },
+    async ({ epic_id, title, description, bounded_context, status }) => {
+      const result = await handlers.update_epic({ epic_id, title, description, bounded_context, status })
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] }
+    }
+  )
+
+  server.tool(
+    'delete_epic',
+    'Delete an epic and all its features and tasks.',
+    {
+      epic_id: z.string().describe('UUID of the epic to delete'),
+    },
+    async ({ epic_id }) => {
+      await handlers.delete_epic({ epic_id })
+      return { content: [{ type: 'text' as const, text: `Epic ${epic_id} deleted.` }] }
+    }
+  )
+
+  server.tool(
+    'update_feature',
+    'Update a feature (title, description, or status).',
+    {
+      feature_id: z.string().describe('UUID of the feature'),
+      title: z.string().optional().describe('New title'),
+      description: z.string().optional().describe('New description'),
+      status: z.string().optional().describe('New status'),
+    },
+    async ({ feature_id, title, description, status }) => {
+      const result = await handlers.update_feature({ feature_id, title, description, status })
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] }
+    }
+  )
+
+  server.tool(
+    'delete_feature',
+    'Delete a feature and all its tasks.',
+    {
+      feature_id: z.string().describe('UUID of the feature to delete'),
+    },
+    async ({ feature_id }) => {
+      await handlers.delete_feature({ feature_id })
+      return { content: [{ type: 'text' as const, text: `Feature ${feature_id} deleted.` }] }
+    }
+  )
+
+  server.tool(
     'send_agent_message',
     'Send a message to another agent by worktree ID. The message is delivered on the target agent\'s next heartbeat (within ~60s) via tool response piggyback.',
     {

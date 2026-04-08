@@ -51,6 +51,14 @@ class EpicCreate(BaseModel):
     position: int = 0
 
 
+class EpicUpdate(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    bounded_context: str | None = None
+    context_description: str | None = None
+    status: str | None = None
+
+
 class EpicResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -74,6 +82,12 @@ class FeatureCreate(BaseModel):
     title: str
     description: str = ""
     position: int = 0
+
+
+class FeatureUpdate(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    status: str | None = None
 
 
 class FeatureResponse(BaseModel):

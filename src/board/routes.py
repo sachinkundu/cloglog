@@ -22,8 +22,10 @@ from src.board.schemas import (
     DependencyGraphResponse,
     EpicCreate,
     EpicResponse,
+    EpicUpdate,
     FeatureCreate,
     FeatureResponse,
+    FeatureUpdate,
     ImportPlan,
     ProjectCreate,
     ProjectResponse,
@@ -126,6 +128,22 @@ async def list_epics(project_id: UUID, service: ServiceDep) -> list[EpicResponse
     return [EpicResponse.model_validate(e) for e in epics]
 
 
+@router.patch("/epics/{epic_id}", response_model=EpicResponse)
+async def update_epic(epic_id: UUID, body: EpicUpdate, service: ServiceDep) -> EpicResponse:
+    fields = body.model_dump(exclude_unset=True)
+    epic = await service._repo.update_epic(epic_id, **fields)
+    if epic is None:
+        raise HTTPException(status_code=404, detail="Epic not found")
+    await event_bus.publish(
+        Event(
+            type=EventType.EPIC_CREATED,  # reuse for updates
+            project_id=epic.project_id,
+            data={"epic_id": str(epic_id), "title": epic.title},
+        )
+    )
+    return EpicResponse.model_validate(epic)
+
+
 @router.delete("/epics/{epic_id}", status_code=204)
 async def delete_epic(epic_id: UUID, service: ServiceDep) -> None:
     epic = await service._repo.get_epic(epic_id)
@@ -181,6 +199,26 @@ async def list_features(
 ) -> list[FeatureResponse]:
     features = await service._repo.list_features(epic_id)
     return [FeatureResponse.model_validate(f) for f in features]
+
+
+@router.patch("/features/{feature_id}", response_model=FeatureResponse)
+async def update_feature(
+    feature_id: UUID, body: FeatureUpdate, service: ServiceDep
+) -> FeatureResponse:
+    fields = body.model_dump(exclude_unset=True)
+    feature = await service._repo.update_feature(feature_id, **fields)
+    if feature is None:
+        raise HTTPException(status_code=404, detail="Feature not found")
+    epic = await service._repo.get_epic(feature.epic_id)
+    assert epic is not None
+    await event_bus.publish(
+        Event(
+            type=EventType.FEATURE_CREATED,  # reuse for updates
+            project_id=epic.project_id,
+            data={"feature_id": str(feature_id), "title": feature.title},
+        )
+    )
+    return FeatureResponse.model_validate(feature)
 
 
 @router.delete("/features/{feature_id}", status_code=204)

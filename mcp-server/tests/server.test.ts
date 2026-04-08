@@ -94,3 +94,71 @@ describe('tools require registration', () => {
     expect(result.content[0].text).toContain('Not registered')
   })
 })
+
+describe('guard error handling', () => {
+  let client: CloglogClient
+  let tools: any
+
+  beforeEach(async () => {
+    client = mockClient()
+    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
+      worktree_id: 'wt-abc',
+      id: 'proj-1',
+    })
+
+    const server = createServer(client)
+    tools = (server as any)._registeredTools
+    // Register first
+    await tools.register_agent.handler({ worktree_path: '/path' })
+  })
+
+  it('start_task returns isError when guard rejects (one active task)', async () => {
+    ;(client.request as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('cloglog API error: 409 {"detail":"Cannot start task: agent already has active task(s): T-10 \'Write spec\' (in_progress)"}')
+    )
+
+    const result = await tools.start_task.handler({ task_id: 't1' })
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain('Cannot start task')
+  })
+
+  it('start_task returns isError when pipeline guard rejects', async () => {
+    ;(client.request as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('cloglog API error: 409 {"detail":"Cannot start plan task: spec task(s) not done yet"}')
+    )
+
+    const result = await tools.start_task.handler({ task_id: 't1' })
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain('spec task')
+  })
+
+  it('update_task_status returns isError when pr_url missing for review', async () => {
+    ;(client.request as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('cloglog API error: 409 {"detail":"Cannot move task to review without a PR URL"}')
+    )
+
+    const result = await tools.update_task_status.handler({ task_id: 't1', status: 'review' })
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain('PR URL')
+  })
+
+  it('update_task_status returns isError when agent tries done', async () => {
+    ;(client.request as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('cloglog API error: 409 {"detail":"Agents cannot mark tasks as done"}')
+    )
+
+    const result = await tools.update_task_status.handler({ task_id: 't1', status: 'done' })
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain('Agents cannot mark tasks as done')
+  })
+
+  it('complete_task returns isError (agents cannot mark done)', async () => {
+    ;(client.request as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('cloglog API error: 409 {"detail":"Agents cannot mark tasks as done"}')
+    )
+
+    const result = await tools.complete_task.handler({ task_id: 't1' })
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain('Agents cannot mark tasks as done')
+  })
+})

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.agent.repository import AgentRepository
 from src.agent.schemas import (
     AddTaskNoteRequest,
+    AssignTaskRequest,
     CompleteTaskRequest,
     CompleteTaskResponse,
     HeartbeatResponse,
@@ -62,6 +63,17 @@ async def get_tasks(worktree_id: UUID, service: ServiceDep) -> list[TaskInfo]:
     """Get all tasks assigned to this worktree."""
     tasks = await service._board_repo.get_tasks_for_worktree(worktree_id)
     return [TaskInfo.model_validate(t) for t in tasks]
+
+
+@router.patch("/agents/{worktree_id}/assign-task", status_code=200)
+async def assign_task(
+    worktree_id: UUID, body: AssignTaskRequest, service: ServiceDep
+) -> dict[str, object]:
+    """Assign a task to a worktree without changing its status."""
+    try:
+        return await service.assign_task(worktree_id, body.task_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from None
 
 
 @router.post("/agents/{worktree_id}/start-task", response_model=StartTaskResponse)

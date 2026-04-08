@@ -199,6 +199,97 @@ class TestTaskLifecycleAPI:
         assert resp.status_code == 204
 
 
+class TestAssignTaskAPI:
+    async def test_assign_task_sets_worktree_id(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Assign a task to a worktree without changing its status."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+        task_id = await _create_task_via_db(db_session, project["id"])
+
+        reg = await client.post(
+            "/api/v1/agents/register",
+            json={"worktree_path": "/repo/wt-assign", "branch_name": "wt-assign"},
+            headers=h,
+        )
+        wt_id = reg.json()["worktree_id"]
+
+        resp = await client.patch(
+            f"/api/v1/agents/{wt_id}/assign-task",
+            json={"task_id": task_id},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["task_id"] == task_id
+        assert data["worktree_id"] == wt_id
+        assert data["status"] == "assigned"
+
+        # Verify the task appears in get_my_tasks
+        tasks_resp = await client.get(f"/api/v1/agents/{wt_id}/tasks")
+        assert tasks_resp.status_code == 200
+        tasks = tasks_resp.json()
+        assert len(tasks) == 1
+        assert tasks[0]["id"] == task_id
+        # Status should be unchanged (still "assigned" from creation)
+        assert tasks[0]["status"] == "assigned"
+
+    async def test_assign_task_sends_notification_message(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Assigning a task queues a message for the target agent."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+        task_id = await _create_task_via_db(db_session, project["id"])
+
+        reg = await client.post(
+            "/api/v1/agents/register",
+            json={"worktree_path": "/repo/wt-assign-msg", "branch_name": "wt-assign-msg"},
+            headers=h,
+        )
+        wt_id = reg.json()["worktree_id"]
+
+        await client.patch(
+            f"/api/v1/agents/{wt_id}/assign-task",
+            json={"task_id": task_id},
+        )
+
+        # Heartbeat should deliver the assignment notification
+        hb = await client.post(f"/api/v1/agents/{wt_id}/heartbeat")
+        assert hb.status_code == 200
+        messages = hb.json()["pending_messages"]
+        assert len(messages) == 1
+        assert "New task assigned" in messages[0]
+        assert "Implement auth" in messages[0]
+
+    async def test_assign_task_unknown_worktree(self, client: AsyncClient) -> None:
+        fake_id = uuid.uuid4()
+        resp = await client.patch(
+            f"/api/v1/agents/{fake_id}/assign-task",
+            json={"task_id": str(uuid.uuid4())},
+        )
+        assert resp.status_code == 404
+
+    async def test_assign_task_unknown_task(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+
+        reg = await client.post(
+            "/api/v1/agents/register",
+            json={"worktree_path": "/repo/wt-assign-bad", "branch_name": "wt-assign-bad"},
+            headers=h,
+        )
+        wt_id = reg.json()["worktree_id"]
+
+        resp = await client.patch(
+            f"/api/v1/agents/{wt_id}/assign-task",
+            json={"task_id": str(uuid.uuid4())},
+        )
+        assert resp.status_code == 404
+
+
 class TestWorktreeListAPI:
     async def test_list_worktrees(self, client: AsyncClient) -> None:
         project = await _create_project_via_api(client)

@@ -117,6 +117,21 @@ export function createServer(client: CloglogClient): McpServer {
   )
 
   server.tool(
+    'assign_task',
+    'Assign a task to a running agent by worktree ID. Sets worktree_id on the task without changing status, so get_my_tasks returns it. Also sends a message to the target agent.',
+    {
+      worktree_id: z.string().describe('UUID of the target agent worktree'),
+      task_id: z.string().describe('UUID of the task to assign'),
+    },
+    async ({ worktree_id, task_id }) => {
+      const result = await handlers.assign_task({ worktree_id, task_id })
+      let text = JSON.stringify(result, null, 2)
+      text += drainMessages()
+      return { content: [{ type: 'text' as const, text }] }
+    }
+  )
+
+  server.tool(
     'complete_task',
     'BLOCKED: Agents cannot mark tasks done. Move to review and wait for the user to drag the card to done on the board.',
     {

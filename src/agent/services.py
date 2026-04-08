@@ -134,6 +134,17 @@ class AgentService:
         if task is None:
             raise ValueError(f"Task {task_id} not found")
 
+        # Guard: one active task per agent — reject if already working on something
+        existing_tasks = await self._board_repo.get_tasks_for_worktree(worktree_id)
+        active_statuses = ("in_progress", "review")
+        active = [t for t in existing_tasks if t.id != task_id and t.status in active_statuses]
+        if active:
+            titles = ", ".join(f"T-{t.number} '{t.title}' ({t.status})" for t in active)
+            raise ValueError(
+                f"Cannot start task: agent already has active task(s): {titles}. "
+                f"Finish or move the current task before starting a new one."
+            )
+
         # Guard: check pipeline ordering (spec before plan, plan before impl)
         feature_tasks = await self._board_repo.get_tasks_for_feature(task.feature_id)
         self._check_pipeline_predecessors(task, feature_tasks)
@@ -252,12 +263,11 @@ class AgentService:
         if task is None:
             raise ValueError(f"Task {task_id} not found")
 
-        # Guard: moving to review requires pr_url for spec and impl tasks
-        needs_pr = task.task_type in ("spec", "impl")
-        if status == "review" and needs_pr and not pr_url and not task.pr_url:
+        # Guard: moving to review requires pr_url for ALL task types
+        if status == "review" and not pr_url and not task.pr_url:
             raise ValueError(
-                f"Cannot move {task.task_type} task to review without a PR URL. "
-                f"Provide pr_url parameter with the GitHub PR link."
+                "Cannot move task to review without a PR URL. "
+                "Provide pr_url parameter with the GitHub PR link."
             )
 
         # Guard: pr_url must not be reused by another done task in same feature

@@ -321,7 +321,12 @@ class TestAgentService:
         reg = await service.register(project.id, "/repo/wt-auth", "wt-auth")
         wt_id = reg["worktree_id"]
         await service.start_task(wt_id, task.id)  # type: ignore[arg-type]
-        await service.update_task_status(wt_id, task.id, "review")  # type: ignore[arg-type]
+        await service.update_task_status(
+            wt_id,
+            task.id,
+            "review",
+            pr_url="https://github.com/test/repo/pull/1",  # type: ignore[arg-type]
+        )
 
         updated_task = await BoardRepository(db_session).get_task(task.id)
         assert updated_task is not None
@@ -418,6 +423,159 @@ class TestAgentService:
 
         r2 = await service.heartbeat(wt_id)  # type: ignore[arg-type]
         assert len(r2["pending_messages"]) == 0  # type: ignore[arg-type]
+
+    async def test_start_task_blocked_when_active_task(self, db_session: AsyncSession) -> None:
+        """Cannot start a second task when agent already has one in_progress."""
+        project = await _create_project(db_session)
+        task1 = await _create_task_chain(db_session, project)
+        # Create a second task in the same feature
+        task2 = Task(
+            feature_id=task1.feature_id,
+            title="Second Task",
+            description="Another task",
+            priority="normal",
+            position=1,
+            status="assigned",
+        )
+        db_session.add(task2)
+        await db_session.commit()
+        await db_session.refresh(task2)
+
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        reg = await service.register(project.id, "/repo/wt-guard", "wt-guard")
+        wt_id = reg["worktree_id"]
+
+        # Assign both tasks to the worktree
+        await BoardRepository(db_session).update_task(task1.id, worktree_id=wt_id)
+        await BoardRepository(db_session).update_task(task2.id, worktree_id=wt_id)
+
+        # Start first task
+        await service.start_task(wt_id, task1.id)  # type: ignore[arg-type]
+
+        # Try to start second — should fail
+        with pytest.raises(ValueError, match="Cannot start task.*already has active"):
+            await service.start_task(wt_id, task2.id)  # type: ignore[arg-type]
+
+    async def test_start_task_allowed_after_previous_done(self, db_session: AsyncSession) -> None:
+        """Can start a new task after the previous one is moved to done."""
+        project = await _create_project(db_session)
+        task1 = await _create_task_chain(db_session, project)
+        task2 = Task(
+            feature_id=task1.feature_id,
+            title="Second Task",
+            description="Another task",
+            priority="normal",
+            position=1,
+            status="assigned",
+        )
+        db_session.add(task2)
+        await db_session.commit()
+        await db_session.refresh(task2)
+
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        reg = await service.register(project.id, "/repo/wt-guard2", "wt-guard2")
+        wt_id = reg["worktree_id"]
+
+        await BoardRepository(db_session).update_task(task1.id, worktree_id=wt_id)
+        await BoardRepository(db_session).update_task(task2.id, worktree_id=wt_id)
+
+        # Start and complete first task (simulate user marking done)
+        await service.start_task(wt_id, task1.id)  # type: ignore[arg-type]
+        await BoardRepository(db_session).update_task(task1.id, status="done")
+
+        # Starting second task should now work
+        result = await service.start_task(wt_id, task2.id)  # type: ignore[arg-type]
+        assert result["status"] == "in_progress"
+
+    async def test_review_requires_pr_url(self, db_session: AsyncSession) -> None:
+        """Moving any task to review requires a pr_url."""
+        project = await _create_project(db_session)
+        task = await _create_task_chain(db_session, project)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+
+        reg = await service.register(project.id, "/repo/wt-pr", "wt-pr")
+        wt_id = reg["worktree_id"]
+        await service.start_task(wt_id, task.id)  # type: ignore[arg-type]
+
+        # Try moving to review without pr_url — should fail
+        with pytest.raises(ValueError, match="Cannot move task to review without a PR URL"):
+            await service.update_task_status(wt_id, task.id, "review")  # type: ignore[arg-type]
+
+    async def test_review_to_in_progress_allowed(self, db_session: AsyncSession) -> None:
+        """Agent can move task from review back to in_progress (e.g. addressing PR comments)."""
+        project = await _create_project(db_session)
+        task = await _create_task_chain(db_session, project)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+
+        reg = await service.register(project.id, "/repo/wt-rev", "wt-rev")
+        wt_id = reg["worktree_id"]
+        await service.start_task(wt_id, task.id)  # type: ignore[arg-type]
+
+        # Move to review with PR URL
+        await service.update_task_status(
+            wt_id,
+            task.id,
+            "review",
+            pr_url="https://github.com/test/repo/pull/1",  # type: ignore[arg-type]
+        )
+        updated = await BoardRepository(db_session).get_task(task.id)
+        assert updated is not None
+        assert updated.status == "review"
+
+        # Move back to in_progress
+        await service.update_task_status(wt_id, task.id, "in_progress")  # type: ignore[arg-type]
+        updated = await BoardRepository(db_session).get_task(task.id)
+        assert updated is not None
+        assert updated.status == "in_progress"
+
+    async def test_agent_cannot_move_to_done(self, db_session: AsyncSession) -> None:
+        """Agent cannot move task to done via update_task_status."""
+        project = await _create_project(db_session)
+        task = await _create_task_chain(db_session, project)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+
+        reg = await service.register(project.id, "/repo/wt-done", "wt-done")
+        wt_id = reg["worktree_id"]
+        await service.start_task(wt_id, task.id)  # type: ignore[arg-type]
+
+        with pytest.raises(ValueError, match="Agents cannot mark tasks as done"):
+            await service.update_task_status(wt_id, task.id, "done")  # type: ignore[arg-type]
+
+    async def test_start_task_blocked_when_task_in_review(self, db_session: AsyncSession) -> None:
+        """Cannot start a new task when agent has one in review status."""
+        project = await _create_project(db_session)
+        task1 = await _create_task_chain(db_session, project)
+        task2 = Task(
+            feature_id=task1.feature_id,
+            title="Second Task",
+            description="Another task",
+            priority="normal",
+            position=1,
+            status="assigned",
+        )
+        db_session.add(task2)
+        await db_session.commit()
+        await db_session.refresh(task2)
+
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        reg = await service.register(project.id, "/repo/wt-rev-blk", "wt-rev-blk")
+        wt_id = reg["worktree_id"]
+
+        await BoardRepository(db_session).update_task(task1.id, worktree_id=wt_id)
+        await BoardRepository(db_session).update_task(task2.id, worktree_id=wt_id)
+
+        # Start task1 and move to review
+        await service.start_task(wt_id, task1.id)  # type: ignore[arg-type]
+        await service.update_task_status(
+            wt_id,
+            task1.id,
+            "review",
+            pr_url="https://github.com/test/repo/pull/1",  # type: ignore[arg-type]
+        )
+
+        # Try to start task2 — should fail because task1 is in review
+        with pytest.raises(ValueError, match="Cannot start task.*already has active"):
+            await service.start_task(wt_id, task2.id)  # type: ignore[arg-type]
 
     async def test_agent_re_registers_after_timeout(self, db_session: AsyncSession) -> None:
         """An agent that was timed out can re-register and get a new session."""

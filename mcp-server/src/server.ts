@@ -51,6 +51,20 @@ export function createServer(client: CloglogClient): McpServer {
     return currentProjectId
   }
 
+  /** Wrap a tool handler to catch API errors and return them as isError responses */
+  function wrapHandler<T extends Record<string, unknown>>(
+    fn: (args: T) => Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }>
+  ) {
+    return async (args: T) => {
+      try {
+        return await fn(args)
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err)
+        return { content: [{ type: 'text' as const, text: `⛔ ${message}` }], isError: true }
+      }
+    }
+  }
+
   // ── Agent lifecycle ───────────────────────────────────
 
   server.tool(
@@ -104,16 +118,16 @@ export function createServer(client: CloglogClient): McpServer {
 
   server.tool(
     'start_task',
-    'Mark a task as In Progress.',
+    'Mark a task as In Progress. Guards: only one active task per agent, and pipeline ordering enforced (spec before plan, plan before impl).',
     { task_id: z.string().describe('UUID of the task to start') },
-    async ({ task_id }) => {
+    wrapHandler(async ({ task_id }: { task_id: string }) => {
       const wt = requireRegistered()
       if (typeof wt !== 'string') return wt
       await handlers.start_task({ worktree_id: wt, task_id })
       let text = `Task ${task_id} started.`
       text += drainMessages()
       return { content: [{ type: 'text' as const, text }] }
-    }
+    })
   )
 
   server.tool(
@@ -138,7 +152,7 @@ export function createServer(client: CloglogClient): McpServer {
       task_id: z.string().describe('UUID of the task to complete'),
       pr_url: z.string().optional().describe('GitHub PR URL (required for spec/impl tasks)'),
     },
-    async ({ task_id, pr_url }) => {
+    wrapHandler(async ({ task_id, pr_url }: { task_id: string; pr_url?: string }) => {
       const wt = requireRegistered()
       if (typeof wt !== 'string') return wt
       const result = await handlers.complete_task({ worktree_id: wt, task_id, pr_url })
@@ -148,25 +162,25 @@ export function createServer(client: CloglogClient): McpServer {
       }
       text += drainMessages()
       return { content: [{ type: 'text' as const, text }] }
-    }
+    })
   )
 
   server.tool(
     'update_task_status',
-    'Move task to a specific column. Agents can move to review (with pr_url for spec/impl) but CANNOT move to done — only the user can.',
+    'Move task to a specific column. Agents can move to review (pr_url REQUIRED for ALL task types) but CANNOT move to done — only the user can.',
     {
       task_id: z.string().describe('UUID of the task'),
       status: z.string().describe('Target status: backlog, in_progress, review, done'),
-      pr_url: z.string().optional().describe('GitHub PR URL (required when moving spec/impl tasks to review)'),
+      pr_url: z.string().optional().describe('GitHub PR URL (REQUIRED when moving ANY task to review)'),
     },
-    async ({ task_id, status, pr_url }) => {
+    wrapHandler(async ({ task_id, status, pr_url }: { task_id: string; status: string; pr_url?: string }) => {
       const wt = requireRegistered()
       if (typeof wt !== 'string') return wt
       await handlers.update_task_status({ worktree_id: wt, task_id, status, pr_url })
       let text = `Task ${task_id} moved to ${status}.`
       text += drainMessages()
       return { content: [{ type: 'text' as const, text }] }
-    }
+    })
   )
 
   server.tool(

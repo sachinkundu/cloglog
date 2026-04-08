@@ -207,6 +207,98 @@ describe('Tool Handlers', () => {
     expect(result).toHaveLength(1)
   })
 
+  it('create_task passes task_type to the API', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 't-new', title: 'Write spec', task_type: 'spec',
+    })
+
+    const result = await handlers.create_task({
+      project_id: 'proj-1',
+      feature_id: 'f1',
+      title: 'Write spec',
+      task_type: 'spec',
+    })
+    expect(client.request).toHaveBeenCalledWith(
+      'POST', '/api/v1/projects/proj-1/features/f1/tasks',
+      { title: 'Write spec', description: '', priority: 'normal', task_type: 'spec' }
+    )
+    expect(result).toHaveProperty('task_type', 'spec')
+  })
+
+  it('create_task defaults task_type to "task"', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 't-new', title: 'Fix bug',
+    })
+
+    await handlers.create_task({
+      project_id: 'proj-1',
+      feature_id: 'f1',
+      title: 'Fix bug',
+    })
+    expect(client.request).toHaveBeenCalledWith(
+      'POST', '/api/v1/projects/proj-1/features/f1/tasks',
+      { title: 'Fix bug', description: '', priority: 'normal', task_type: 'task' }
+    )
+  })
+
+  it('update_task_status passes pr_url when provided', async () => {
+    await handlers.update_task_status({
+      worktree_id: 'wt-123', task_id: 't1', status: 'review',
+      pr_url: 'https://github.com/org/repo/pull/42',
+    })
+    expect(client.request).toHaveBeenCalledWith(
+      'PATCH', '/api/v1/agents/wt-123/task-status',
+      { task_id: 't1', status: 'review', pr_url: 'https://github.com/org/repo/pull/42' }
+    )
+  })
+
+  it('complete_task passes pr_url when provided', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
+      completed_task_id: 't1', next_task: null,
+    })
+
+    await handlers.complete_task({
+      worktree_id: 'wt-123', task_id: 't1',
+      pr_url: 'https://github.com/org/repo/pull/42',
+    })
+    expect(client.request).toHaveBeenCalledWith(
+      'POST', '/api/v1/agents/wt-123/complete-task',
+      { task_id: 't1', pr_url: 'https://github.com/org/repo/pull/42' }
+    )
+  })
+
+  it('start_task propagates API errors (guard rejections)', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('cloglog API error: 409 Cannot start task: agent already has active task(s)')
+    )
+
+    await expect(
+      handlers.start_task({ worktree_id: 'wt-123', task_id: 't1' })
+    ).rejects.toThrow('409')
+  })
+
+  it('update_task_status propagates API errors (pr_url required)', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('cloglog API error: 409 Cannot move task to review without a PR URL')
+    )
+
+    await expect(
+      handlers.update_task_status({
+        worktree_id: 'wt-123', task_id: 't1', status: 'review',
+      })
+    ).rejects.toThrow('409')
+  })
+
+  it('complete_task propagates API errors (agents cannot mark done)', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('cloglog API error: 409 Agents cannot mark tasks as done')
+    )
+
+    await expect(
+      handlers.complete_task({ worktree_id: 'wt-123', task_id: 't1' })
+    ).rejects.toThrow('Agents cannot mark tasks as done')
+  })
+
   it('create_tasks calls POST /projects/{id}/import', async () => {
     (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
       epics_created: 1, features_created: 2, tasks_created: 5,

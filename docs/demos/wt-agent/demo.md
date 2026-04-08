@@ -100,13 +100,13 @@ uv run pytest tests/agent/ --no-header -q 2>&1 | tail -1 | sed "s/ in [0-9.]*s//
 ```
 
 ```bash {image}
-![Board before auto-move: T-128 in Review column](docs/demos/t-128/board-before-automove.png)
+![BEFORE: T-128 in Review column, In Progress empty](docs/demos/t-128/board-before-automove.png)
 ```
 
-![Board before auto-move: T-128 in Review column](79f92a44-2026-04-08.png)
+![BEFORE: T-128 in Review column, In Progress empty](ecd82e80-2026-04-08.png)
 
 ```bash {image}
-![Board after auto-move: T-128 back in In Progress column](docs/demos/t-128/board-after-automove.png)
+![AFTER: T-128 moved back to In Progress column after PR comments detected](docs/demos/t-128/board-after-automove.png)
 ```
 
-![Board after auto-move: T-128 back in In Progress column](b85904b9-2026-04-08.png)
+![AFTER: T-128 moved back to In Progress column after PR comments detected](5fd2b536-2026-04-08.png)

@@ -77,7 +77,9 @@ uv run pytest tests/agent/test_integration.py::TestPipelineOrderingAPI --no-head
 
 ## Review to in_progress auto-move (T-128)
 
-The `review → in_progress` transition is allowed by the state machine, enabling agents to auto-move tasks back when PR review comments arrive. This test proves the round-trip works:
+The `review → in_progress` transition is allowed by the state machine, enabling agents to auto-move tasks back when PR review comments arrive.
+
+### Integration test proof
 
 ```bash
 uv run pytest tests/agent/test_integration.py::TestTransitionGuardsAPI::test_review_to_in_progress_allowed --no-header -q 2>&1 | tail -1 | sed "s/ in [0-9.]*s//"
@@ -96,3 +98,15 @@ uv run pytest tests/agent/ --no-header -q 2>&1 | tail -1 | sed "s/ in [0-9.]*s//
 ```output
 70 passed
 ```
+
+```bash {image}
+![Board before auto-move: T-128 in Review column](docs/demos/t-128/board-before-automove.png)
+```
+
+![Board before auto-move: T-128 in Review column](79f92a44-2026-04-08.png)
+
+```bash {image}
+![Board after auto-move: T-128 back in In Progress column](docs/demos/t-128/board-after-automove.png)
+```
+
+![Board after auto-move: T-128 back in In Progress column](b85904b9-2026-04-08.png)

@@ -140,6 +140,21 @@ describe('Tool Handlers', () => {
     )
   })
 
+  it('assign_task calls PATCH /agents/{wt}/assign-task', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
+      task_id: 't1',
+      worktree_id: 'wt-target',
+      status: 'assigned',
+    })
+
+    const result = await handlers.assign_task({ worktree_id: 'wt-target', task_id: 't1' })
+    expect(client.request).toHaveBeenCalledWith(
+      'PATCH', '/api/v1/agents/wt-target/assign-task',
+      { task_id: 't1' }
+    )
+    expect(result).toHaveProperty('status', 'assigned')
+  })
+
   it('get_active_tasks calls GET /projects/{id}/active-tasks', async () => {
     (client.request as ReturnType<typeof vi.fn>).mockResolvedValue([
       { id: 't1', number: 1, title: 'Task 1', status: 'backlog' },

@@ -77,6 +77,10 @@ class TaskInfo(BaseModel):
     priority: str
 
 
+class AssignTaskRequest(BaseModel):
+    task_id: UUID
+
+
 class AddTaskNoteRequest(BaseModel):
     task_id: UUID
     note: str

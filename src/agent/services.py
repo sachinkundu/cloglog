@@ -94,6 +94,42 @@ class AgentService:
             raise ValueError(f"Worktree {worktree_id} not found")
         await self._repo.queue_message(worktree_id, message, sender)
 
+    # --- Task Assignment ---
+
+    async def assign_task(self, worktree_id: UUID, task_id: UUID) -> dict[str, object]:
+        """Assign a task to a worktree without changing its status.
+
+        Sets worktree_id on the task so it appears in get_my_tasks for the agent.
+        Also sends a message to the target agent notifying it of the assignment.
+        """
+        worktree = await self._repo.get_worktree(worktree_id)
+        if worktree is None:
+            raise ValueError(f"Worktree {worktree_id} not found")
+
+        task = await self._board_repo.get_task(task_id)
+        if task is None:
+            raise ValueError(f"Task {task_id} not found")
+
+        await self._board_repo.update_task(task_id, worktree_id=worktree_id)
+
+        # Notify the target agent
+        message = f"New task assigned: T-{task.number} — {task.title}. Call get_my_tasks to see it."
+        await self._repo.queue_message(worktree_id, message, sender="system")
+
+        await event_bus.publish(
+            Event(
+                type=EventType.TASK_STATUS_CHANGED,
+                project_id=worktree.project_id,
+                data={
+                    "task_id": str(task_id),
+                    "worktree_id": str(worktree_id),
+                    "action": "assigned",
+                },
+            )
+        )
+
+        return {"task_id": task_id, "worktree_id": worktree_id, "status": "assigned"}
+
     # --- Task Lifecycle ---
 
     def _check_pipeline_predecessors(self, task: Task, feature_tasks: list[Task]) -> None:

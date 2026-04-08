@@ -9,14 +9,27 @@ export function createServer(client: CloglogClient): McpServer {
   let currentWorktreeId: string | null = null
   let currentProjectId: string | null = null
   let shutdownRequested = false
+  let pendingMessages: string[] = []
   const heartbeat = new HeartbeatTimer(async () => {
     if (currentWorktreeId) {
       const resp = await client.request('POST', `/api/v1/agents/${currentWorktreeId}/heartbeat`) as Record<string, unknown>
       if (resp?.shutdown_requested) {
         shutdownRequested = true
       }
+      // Pick up pending messages from heartbeat response
+      const messages = resp?.pending_messages as string[] | undefined
+      if (messages && messages.length > 0) {
+        pendingMessages.push(...messages)
+      }
     }
   })
+
+  /** Drain pending messages and return them as a suffix for tool responses */
+  function drainMessages(): string {
+    if (pendingMessages.length === 0) return ''
+    const msgs = pendingMessages.splice(0, pendingMessages.length)
+    return '\n\n📨 MESSAGES:\n' + msgs.map(m => `- ${m}`).join('\n')
+  }
 
   const server = new McpServer({
     name: 'cloglog-mcp',
@@ -84,6 +97,7 @@ export function createServer(client: CloglogClient): McpServer {
       if (shutdownRequested) {
         text += '\n\n⚠️ SHUTDOWN REQUESTED: The master agent has requested this worktree to shut down. Finish your current work, generate shutdown artifacts (work-log.md and learnings.md in shutdown-artifacts/), call unregister_agent, and exit.'
       }
+      text += drainMessages()
       return { content: [{ type: 'text' as const, text }] }
     }
   )
@@ -96,7 +110,9 @@ export function createServer(client: CloglogClient): McpServer {
       const wt = requireRegistered()
       if (typeof wt !== 'string') return wt
       await handlers.start_task({ worktree_id: wt, task_id })
-      return { content: [{ type: 'text' as const, text: `Task ${task_id} started.` }] }
+      let text = `Task ${task_id} started.`
+      text += drainMessages()
+      return { content: [{ type: 'text' as const, text }] }
     }
   )
 
@@ -115,6 +131,7 @@ export function createServer(client: CloglogClient): McpServer {
       if (shutdownRequested) {
         text += '\n\n⚠️ SHUTDOWN REQUESTED: The master agent has requested this worktree to shut down. Finish your current work, generate shutdown artifacts (work-log.md and learnings.md in shutdown-artifacts/), call unregister_agent, and exit.'
       }
+      text += drainMessages()
       return { content: [{ type: 'text' as const, text }] }
     }
   )
@@ -131,7 +148,9 @@ export function createServer(client: CloglogClient): McpServer {
       const wt = requireRegistered()
       if (typeof wt !== 'string') return wt
       await handlers.update_task_status({ worktree_id: wt, task_id, status, pr_url })
-      return { content: [{ type: 'text' as const, text: `Task ${task_id} moved to ${status}.` }] }
+      let text = `Task ${task_id} moved to ${status}.`
+      text += drainMessages()
+      return { content: [{ type: 'text' as const, text }] }
     }
   )
 
@@ -341,6 +360,50 @@ export function createServer(client: CloglogClient): McpServer {
     async ({ task_id }) => {
       await handlers.delete_task({ task_id })
       return { content: [{ type: 'text' as const, text: `Task ${task_id} deleted.` }] }
+    }
+  )
+
+  server.tool(
+    'send_agent_message',
+    'Send a message to another agent by worktree ID. The message is delivered on the target agent\'s next heartbeat (within ~60s) via tool response piggyback.',
+    {
+      worktree_id: z.string().describe('UUID of the target agent worktree'),
+      message: z.string().describe('Message to deliver'),
+    },
+    async ({ worktree_id, message }) => {
+      await handlers.send_agent_message({ worktree_id, message, sender: currentWorktreeId ?? 'main-agent' })
+      return { content: [{ type: 'text' as const, text: `Message queued for delivery to agent ${worktree_id}.` }] }
+    }
+  )
+
+  // --- Prototype: test MCP server → agent notification ---
+  server.tool(
+    'test_notification',
+    'PROTOTYPE: Send a delayed notification to test if MCP server can push messages to the agent. Sends a logging message after the specified delay.',
+    {
+      message: z.string().describe('Message to send'),
+      delay_seconds: z.number().default(3).describe('Seconds to wait before sending'),
+    },
+    async ({ message, delay_seconds }) => {
+      const delay = (delay_seconds ?? 3) * 1000
+      // Fire notification after delay (non-blocking)
+      setTimeout(async () => {
+        try {
+          await server.server.sendLoggingMessage({
+            level: 'info',
+            logger: 'agent-notification',
+            data: `📨 NOTIFICATION: ${message}`,
+          })
+        } catch (err) {
+          console.error('Failed to send logging message:', err)
+        }
+      }, delay)
+      return {
+        content: [{
+          type: 'text' as const,
+          text: `Notification scheduled. Will send "${message}" in ${delay_seconds}s via sendLoggingMessage. Watch for it in your conversation.`
+        }]
+      }
     }
   )
 

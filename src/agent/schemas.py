@@ -31,6 +31,12 @@ class HeartbeatResponse(BaseModel):
     status: str
     last_heartbeat: datetime
     shutdown_requested: bool = False
+    pending_messages: list[str] = []
+
+
+class SendMessageRequest(BaseModel):
+    message: str
+    sender: str = "system"
 
 
 # --- Task lifecycle ---

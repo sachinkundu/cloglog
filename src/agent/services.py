@@ -74,11 +74,25 @@ class AgentService:
         worktree = await self._repo.get_worktree(worktree_id)
         shutdown = worktree.shutdown_requested if worktree else False
 
+        # Drain pending messages from DB
+        db_messages = await self._repo.drain_messages(worktree_id)
+        messages = [f"[{m.sender}] {m.message}" for m in db_messages]
+
         return {
             "status": "ok",
             "last_heartbeat": updated.last_heartbeat,
             "shutdown_requested": shutdown,
+            "pending_messages": messages,
         }
+
+    # --- Messaging ---
+
+    async def send_message(self, worktree_id: UUID, message: str, sender: str = "system") -> None:
+        """Queue a message for delivery to an agent on its next heartbeat."""
+        worktree = await self._repo.get_worktree(worktree_id)
+        if worktree is None:
+            raise ValueError(f"Worktree {worktree_id} not found")
+        await self._repo.queue_message(worktree_id, message, sender)
 
     # --- Task Lifecycle ---
 

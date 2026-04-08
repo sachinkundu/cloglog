@@ -7,6 +7,7 @@ export interface ToolHandlers {
   complete_task(args: { worktree_id: string; task_id: string; pr_url?: string }): Promise<unknown>
   update_task_status(args: { worktree_id: string; task_id: string; status: string; pr_url?: string }): Promise<unknown>
   add_task_note(args: { worktree_id: string; task_id: string; note: string }): Promise<unknown>
+  send_agent_message(args: { worktree_id: string; message: string; sender?: string }): Promise<unknown>
   attach_document(args: {
     entity_type: string; entity_id: string; type: string;
     title: string; content: string; source_path?: string
@@ -65,6 +66,13 @@ export function createToolHandlers(client: CloglogClient): ToolHandlers {
 
     async add_task_note({ worktree_id, task_id, note }) {
       return client.request('POST', `/api/v1/agents/${worktree_id}/task-note`, { task_id, note })
+    },
+
+    async send_agent_message({ worktree_id, message, sender }) {
+      return client.request('POST', `/api/v1/agents/${worktree_id}/message`, {
+        message,
+        ...(sender ? { sender } : {}),
+      })
     },
 
     async attach_document({ entity_type, entity_id, type, title, content, source_path }) {

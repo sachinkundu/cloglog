@@ -8,7 +8,7 @@ from uuid import UUID
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.agent.models import Session, Worktree
+from src.agent.models import AgentMessage, Session, Worktree
 
 
 class AgentRepository:
@@ -151,3 +151,30 @@ class AgentRepository:
             )
         )
         return list(result.scalars().all())
+
+    # --- Messages ---
+
+    async def queue_message(self, worktree_id: UUID, message: str, sender: str) -> AgentMessage:
+        msg = AgentMessage(worktree_id=worktree_id, message=message, sender=sender)
+        self._session.add(msg)
+        await self._session.commit()
+        await self._session.refresh(msg)
+        return msg
+
+    async def drain_messages(self, worktree_id: UUID) -> list[AgentMessage]:
+        """Fetch and mark delivered all pending messages for a worktree."""
+        result = await self._session.execute(
+            select(AgentMessage)
+            .where(
+                AgentMessage.worktree_id == worktree_id,
+                AgentMessage.delivered == False,  # noqa: E712
+            )
+            .order_by(AgentMessage.created_at)
+        )
+        messages = list(result.scalars().all())
+        now = datetime.now(UTC)
+        for msg in messages:
+            msg.delivered = True
+            msg.delivered_at = now
+        await self._session.commit()
+        return messages

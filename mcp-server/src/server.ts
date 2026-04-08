@@ -376,36 +376,5 @@ export function createServer(client: CloglogClient): McpServer {
     }
   )
 
-  // --- Prototype: test MCP server → agent notification ---
-  server.tool(
-    'test_notification',
-    'PROTOTYPE: Send a delayed notification to test if MCP server can push messages to the agent. Sends a logging message after the specified delay.',
-    {
-      message: z.string().describe('Message to send'),
-      delay_seconds: z.number().default(3).describe('Seconds to wait before sending'),
-    },
-    async ({ message, delay_seconds }) => {
-      const delay = (delay_seconds ?? 3) * 1000
-      // Fire notification after delay (non-blocking)
-      setTimeout(async () => {
-        try {
-          await server.server.sendLoggingMessage({
-            level: 'info',
-            logger: 'agent-notification',
-            data: `📨 NOTIFICATION: ${message}`,
-          })
-        } catch (err) {
-          console.error('Failed to send logging message:', err)
-        }
-      }, delay)
-      return {
-        content: [{
-          type: 'text' as const,
-          text: `Notification scheduled. Will send "${message}" in ${delay_seconds}s via sendLoggingMessage. Watch for it in your conversation.`
-        }]
-      }
-    }
-  )
-
   return server
 }

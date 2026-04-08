@@ -8,7 +8,6 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agent.repository import AgentRepository
@@ -173,6 +172,61 @@ class TestAgentRepository:
         await repo.delete_worktree(wt.id)
         assert await repo.get_worktree(wt.id) is None
 
+    async def test_queue_message(self, db_session: AsyncSession) -> None:
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+        wt, _ = await repo.upsert_worktree(project.id, "/repo/wt-msg", "wt-msg")
+
+        msg = await repo.queue_message(wt.id, "hello agent", "main-agent")
+
+        assert msg.worktree_id == wt.id
+        assert msg.message == "hello agent"
+        assert msg.sender == "main-agent"
+        assert msg.delivered is False
+        assert msg.delivered_at is None
+        assert msg.created_at is not None
+
+    async def test_drain_messages_returns_undelivered(self, db_session: AsyncSession) -> None:
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+        wt, _ = await repo.upsert_worktree(project.id, "/repo/wt-drain", "wt-drain")
+
+        await repo.queue_message(wt.id, "msg1", "sender-a")
+        await repo.queue_message(wt.id, "msg2", "sender-b")
+
+        drained = await repo.drain_messages(wt.id)
+
+        assert len(drained) == 2
+        assert drained[0].message == "msg1"
+        assert drained[1].message == "msg2"
+        for m in drained:
+            assert m.delivered is True
+            assert m.delivered_at is not None
+
+    async def test_drain_messages_skips_delivered(self, db_session: AsyncSession) -> None:
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+        wt, _ = await repo.upsert_worktree(project.id, "/repo/wt-skip", "wt-skip")
+
+        await repo.queue_message(wt.id, "once", "system")
+        first = await repo.drain_messages(wt.id)
+        assert len(first) == 1
+
+        second = await repo.drain_messages(wt.id)
+        assert len(second) == 0
+
+    async def test_drain_messages_preserves_order(self, db_session: AsyncSession) -> None:
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+        wt, _ = await repo.upsert_worktree(project.id, "/repo/wt-order", "wt-order")
+
+        await repo.queue_message(wt.id, "first", "system")
+        await repo.queue_message(wt.id, "second", "system")
+        await repo.queue_message(wt.id, "third", "system")
+
+        drained = await repo.drain_messages(wt.id)
+        assert [m.message for m in drained] == ["first", "second", "third"]
+
 
 # --- Service Tests ---
 
@@ -246,7 +300,8 @@ class TestAgentService:
         assert updated_task.status == "in_progress"
         assert updated_task.worktree_id == reg["worktree_id"]
 
-    async def test_complete_task(self, db_session: AsyncSession) -> None:
+    async def test_complete_task_blocked(self, db_session: AsyncSession) -> None:
+        """complete_task always raises — agents cannot mark tasks done."""
         project = await _create_project(db_session)
         task = await _create_task_chain(db_session, project)
         service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
@@ -254,49 +309,9 @@ class TestAgentService:
         reg = await service.register(project.id, "/repo/wt-auth", "wt-auth")
         wt_id = reg["worktree_id"]
         await service.start_task(wt_id, task.id)  # type: ignore[arg-type]
-        result = await service.complete_task(wt_id, task.id)  # type: ignore[arg-type]
 
-        assert result["completed_task_id"] == task.id
-        assert result["next_task"] is None  # No more tasks
-
-        updated_task = await BoardRepository(db_session).get_task(task.id)
-        assert updated_task is not None
-        assert updated_task.status == "done"
-
-    async def test_complete_task_returns_next(self, db_session: AsyncSession) -> None:
-        project = await _create_project(db_session)
-        task1 = await _create_task_chain(db_session, project)
-
-        # Create a second task assigned to the same worktree
-        stmt = select(Epic).where(Epic.project_id == project.id)
-        epic = (await db_session.execute(stmt)).scalar_one()
-        stmt2 = select(Feature).where(Feature.epic_id == epic.id)
-        feature = (await db_session.execute(stmt2)).scalar_one()
-        task2 = Task(
-            feature_id=feature.id,
-            title="Second Task",
-            description="Next thing",
-            priority="normal",
-            position=1,
-            status="backlog",
-        )
-        db_session.add(task2)
-        await db_session.commit()
-        await db_session.refresh(task2)
-
-        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
-        reg = await service.register(project.id, "/repo/wt-auth", "wt-auth")
-        wt_id = reg["worktree_id"]
-
-        # Assign task2 to this worktree
-        await BoardRepository(db_session).update_task(task2.id, worktree_id=wt_id)
-
-        # Start and complete task1
-        await service.start_task(wt_id, task1.id)  # type: ignore[arg-type]
-        result = await service.complete_task(wt_id, task1.id)  # type: ignore[arg-type]
-
-        assert result["next_task"] is not None
-        assert result["next_task"]["id"] == task2.id  # type: ignore[index]
+        with pytest.raises(ValueError, match="Agents cannot mark tasks as done"):
+            await service.complete_task(wt_id, task.id)  # type: ignore[arg-type]
 
     async def test_update_task_status(self, db_session: AsyncSession) -> None:
         project = await _create_project(db_session)
@@ -357,6 +372,52 @@ class TestAgentService:
         assert len(worktrees) == 2
         paths = {w["worktree_path"] for w in worktrees}
         assert paths == {"/repo/wt-a", "/repo/wt-b"}
+
+    async def test_send_message(self, db_session: AsyncSession) -> None:
+        project = await _create_project(db_session)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        reg = await service.register(project.id, "/repo/wt-snd", "wt-snd")
+        wt_id = reg["worktree_id"]
+
+        await service.send_message(wt_id, "please rebase", "main-agent")  # type: ignore[arg-type]
+
+        # Verify message is in DB via drain
+        repo = AgentRepository(db_session)
+        messages = await repo.drain_messages(wt_id)  # type: ignore[arg-type]
+        assert len(messages) == 1
+        assert messages[0].message == "please rebase"
+        assert messages[0].sender == "main-agent"
+
+    async def test_send_message_unknown_worktree(self, db_session: AsyncSession) -> None:
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        with pytest.raises(ValueError, match="not found"):
+            await service.send_message(uuid.uuid4(), "hello", "system")
+
+    async def test_heartbeat_returns_pending_messages(self, db_session: AsyncSession) -> None:
+        project = await _create_project(db_session)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        reg = await service.register(project.id, "/repo/wt-hbm", "wt-hbm")
+        wt_id = reg["worktree_id"]
+
+        await service.send_message(wt_id, "urgent: rebase now", "main-agent")  # type: ignore[arg-type]
+        result = await service.heartbeat(wt_id)  # type: ignore[arg-type]
+
+        assert len(result["pending_messages"]) == 1  # type: ignore[arg-type]
+        assert "[main-agent] urgent: rebase now" in result["pending_messages"]  # type: ignore[operator]
+
+    async def test_heartbeat_drains_messages(self, db_session: AsyncSession) -> None:
+        project = await _create_project(db_session)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        reg = await service.register(project.id, "/repo/wt-hbd", "wt-hbd")
+        wt_id = reg["worktree_id"]
+
+        await service.send_message(wt_id, "one-time msg", "system")  # type: ignore[arg-type]
+
+        r1 = await service.heartbeat(wt_id)  # type: ignore[arg-type]
+        assert len(r1["pending_messages"]) == 1  # type: ignore[arg-type]
+
+        r2 = await service.heartbeat(wt_id)  # type: ignore[arg-type]
+        assert len(r2["pending_messages"]) == 0  # type: ignore[arg-type]
 
     async def test_agent_re_registers_after_timeout(self, db_session: AsyncSession) -> None:
         """An agent that was timed out can re-register and get a new session."""

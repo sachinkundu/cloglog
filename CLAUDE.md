@@ -175,15 +175,24 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 - **Main agent consolidation.** On receiving `WORKTREE_OFFLINE` with artifacts: read the files, copy work log to `docs/superpowers/work-logs/`, merge learnings into CLAUDE.md, commit, then run `./scripts/manage-worktrees.sh remove {name}`.
 
 ### Proof-of-Work Demos
-- **Every PR must include a `demo.md`.** After implementation, run `make demo` to produce it.
-- Backend PRs: use Showboat with curl commands to prove APIs work. No Rodney needed.
-- Frontend PRs: use Showboat + Rodney (headless Chrome) for screenshots. Both available via `uvx`.
-- Write a `demo-script.sh` in your feature's `docs/demos/<feature>/` directory.
-- The demo script should exercise affected endpoints/pages and capture proof of correctness.
-- Demo documents are committed to the branch and summarized in the PR description.
+- **Every PR must include a `demo.md` that RUNS what you built, not describes it.** A demo is proof that your code works, not a summary of what you changed.
+- **A demo is NOT:** test output, a list of files changed, a description of what was implemented, or grep of source code. Those belong in the PR description, not the demo.
+- **A demo IS:** executing the actual feature and showing the output. Think "if I were showing this to a colleague, what would I type in the terminal or click in the browser?"
+- **Backend PRs (new endpoints, API changes):** Use Showboat `exec` blocks to curl each new/changed endpoint. Show the request AND the response. Start the backend on your worktree port first.
+  ```bash
+  # Example: demo for a new message endpoint
+  uvx showboat exec demo.md bash 'curl -s -X POST http://localhost:$BACKEND_PORT/api/v1/agents/$WT_ID/message -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" -d "{\"message\": \"hello\"}" | jq .'
+  ```
+- **MCP server PRs (new tools):** Start a test backend, register an agent, then call the MCP tool endpoint that the tool wraps. Show the API call and response.
+- **Frontend PRs (new UI):** Use Rodney (headless Chrome via `uvx rodney`) to take a screenshot of the new/changed UI. Include before AND after if modifying existing UI.
+  ```bash
+  uvx rodney screenshot http://localhost:$FRONTEND_PORT --output docs/demos/my-feature/screenshot.png
+  uvx showboat image demo.md docs/demos/my-feature/screenshot.png
+  ```
+- **State machine / guard PRs:** Show both the happy path (allowed transition) AND the rejection (blocked transition with error message).
 - `make quality` will fail if a PR is missing its demo.
-- Demo scope: feature walkthrough only. Regression testing is handled by E2E tests.
 - Each worktree runs on isolated ports and database. Source `scripts/worktree-ports.sh` in demo scripts.
+- Demo scope: feature walkthrough only. Regression testing is handled by E2E tests.
 
 ### Infrastructure Isolation
 - **Each worktree has its own ports and database.** Created automatically by `create-worktree.sh`.

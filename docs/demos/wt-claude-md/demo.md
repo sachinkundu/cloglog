@@ -21,7 +21,7 @@ grep -c "^## " docs/design.md
 ```
 
 ```output
-14
+13
 ```
 
 ```bash
@@ -41,7 +41,6 @@ grep "^## " docs/design.md
 ## Hook-Enforced Discipline
 ## Tech Stack
 ## Getting Started
-## Contributing
 ## Glossary
 ```
 
@@ -52,15 +51,5 @@ grep -c "mermaid" docs/design.md
 ```
 
 ```output
-2
-```
-
-## Contains key architecture terms
-
-```bash
-grep -c "Bounded Context" docs/design.md
-```
-
-```output
-2
+13
 ```

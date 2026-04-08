@@ -12,25 +12,28 @@ Without cloglog, you're juggling terminal windows, manually checking heartbeats,
 
 cloglog is a **multi-project Kanban dashboard** purpose-built for managing autonomous AI coding agents. It combines project planning (epics, features, tasks) with agent lifecycle management (registration, heartbeat, messaging, shutdown) in a single system that updates in real-time via Server-Sent Events.
 
-```
- You (human)                          Your Agents
- +-----------+                        +-----------+
- | Dashboard | <-------- SSE -------> | MCP Tools |
- | (React)   |                        | (stdio)   |
- +-----------+                        +-----------+
-       |                                    |
-       | X-Dashboard-Key             Bearer + X-MCP-Request
-       |                                    |
-       v                                    v
- +--------------------------------------------------+
- |              cloglog Backend (FastAPI)             |
- |                                                    |
- |  +--------+  +-------+  +--------+  +---------+  |
- |  | Board  |  | Agent |  |Document|  | Gateway |  |
- |  +--------+  +-------+  +--------+  +---------+  |
- +--------------------------------------------------+
-                        |
-                   PostgreSQL
+```mermaid
+graph TB
+    subgraph Human
+        Dashboard["Dashboard (React)"]
+    end
+
+    subgraph Agents
+        MCP["MCP Tools (stdio)"]
+    end
+
+    Dashboard -- "SSE (real-time updates)" --> Backend
+    Dashboard -- "X-Dashboard-Key" --> Backend
+    MCP -- "Bearer + X-MCP-Request" --> Backend
+
+    subgraph Backend["cloglog Backend (FastAPI)"]
+        Board
+        Agent
+        Document
+        Gateway
+    end
+
+    Backend --> DB[(PostgreSQL)]
 ```
 
 ---
@@ -39,29 +42,39 @@ cloglog is a **multi-project Kanban dashboard** purpose-built for managing auton
 
 cloglog follows **Domain-Driven Design** with four bounded contexts. Each context owns its models, services, repository, and routes. They communicate through Protocol interfaces — never by importing each other's internals.
 
-```
- +------------------------------------------------------------------+
- |                         Gateway                                   |
- |  (API composition, auth middleware, SSE, CLI)                     |
- |  Composes routers from all contexts into a single FastAPI app     |
- +------------------------------------------------------------------+
-        |                    |                    |
-        v                    v                    v
- +--------------+   +--------------+   +------------------+
- |    Board     |   |    Agent     |   |    Document      |
- |              |   |              |   |                  |
- | Projects     |   | Worktrees    |   | Append-only      |
- | Epics        |   | Sessions     |   | document store   |
- | Features     |   | Heartbeat    |   |                  |
- | Tasks        |   | Messages     |   | Attached to      |
- | Dependencies |   | Shutdown     |   | epics, features, |
- | Notifications|   |              |   | or tasks         |
- +--------------+   +--------------+   +------------------+
-        ^                    |
-        |   Conformist       |
-        +--------------------+
-   Agent follows Board's
-   TaskStatusService protocol
+```mermaid
+graph TB
+    subgraph Gateway["Gateway (API composition, auth, SSE, CLI)"]
+        GW["Composes routers from all contexts"]
+    end
+
+    Gateway --> Board
+    Gateway --> Agent
+    Gateway --> Document
+
+    subgraph Board["Board Context"]
+        B1[Projects]
+        B2[Epics]
+        B3[Features]
+        B4[Tasks]
+        B5[Dependencies]
+        B6[Notifications]
+    end
+
+    subgraph Agent["Agent Context"]
+        A1[Worktrees]
+        A2[Sessions]
+        A3[Heartbeat]
+        A4[Messages]
+        A5[Shutdown]
+    end
+
+    subgraph Document["Document Context"]
+        D1["Append-only document store"]
+        D2["Attached to epics, features, or tasks"]
+    end
+
+    Agent -- "Conformist: follows Board's\nTaskStatusService protocol" --> Board
 ```
 
 ### Context Relationships
@@ -145,18 +158,23 @@ class DocumentService(Protocol):
 
 Every piece of work lives in a four-level hierarchy:
 
-```
-Project
- +-- Epic  (bounded context or large initiative)
- |    +-- Feature  (deliverable unit of work)
- |    |    +-- Task  (atomic work item — what agents actually do)
- |    |    |    +-- TaskNote  (status updates, test reports)
- |    |    +-- Task
- |    +-- Feature
- |         +-- Task
- +-- Epic
-      +-- Feature
-           +-- Task
+```mermaid
+graph TD
+    P[Project] --> E1[Epic 1: Board Context]
+    P --> E2[Epic 2: Agent Context]
+
+    E1 --> F1[Feature 1: Task Management]
+    E1 --> F2[Feature 2: Search]
+
+    F1 --> T1["Task 1: Models (spec)"]
+    F1 --> T2["Task 2: Routes (impl)"]
+    T1 --> N1[TaskNote: test report]
+    T1 --> N2[TaskNote: status update]
+
+    F2 --> T3["Task 3: Implement search"]
+
+    E2 --> F3[Feature 3: Heartbeat]
+    F3 --> T4["Task 4: Timeout detection"]
 ```
 
 Each entity gets a **human-readable number** (E-1, F-5, T-23) via monotonic counters on the Project. UUIDs handle identity; numbers handle conversation.
@@ -176,28 +194,18 @@ Tasks aren't all equal. The `task_type` field determines pipeline ordering:
 
 ### Status State Machine
 
-```
-                    +----------+
-                    | backlog  |  (not started)
-                    +----+-----+
-                         |
-                    start_task()
-                         |
-                    +----v-------+
-                    | in_progress|  (agent working)
-                    +----+-------+
-                         |
-                  update_task_status()
-                         |
-                    +----v-----+
-                    |  review  |  (PR created, awaiting human)
-                    +----+-----+
-                         |
-                    [human drags card]
-                         |
-                    +----v-----+
-                    |   done   |  (complete)
-                    +----------+
+```mermaid
+stateDiagram-v2
+    [*] --> backlog : Task created
+
+    backlog --> in_progress : start_task()
+    in_progress --> review : update_task_status(pr_url)
+    review --> done : Human drags card on dashboard
+
+    note right of backlog : Not started
+    note right of in_progress : Agent working
+    note right of review : PR created, awaiting human
+    note right of done : Complete
 ```
 
 **Key constraint:** Agents can move tasks to `review` but **cannot** move them to `done`. Only humans drag the card to done on the dashboard. This ensures human review of every piece of agent work.
@@ -223,12 +231,11 @@ This means the board always reflects reality. No stale "in progress" epics with 
 
 Features can depend on other features, forming a **directed acyclic graph**:
 
-```
-F-1 (Auth API)  ----+
-                     |---> F-3 (Protected Routes)
-F-2 (User Model) ---+
-
-F-4 (Dashboard) --------> F-5 (SSE Integration)
+```mermaid
+graph LR
+    F1["F-1 Auth API"] --> F3["F-3 Protected Routes"]
+    F2["F-2 User Model"] --> F3
+    F4["F-4 Dashboard"] --> F5["F-5 SSE Integration"]
 ```
 
 Cycle detection via DFS prevents circular dependencies. The dependency graph is available as a visualization endpoint for the dashboard.
@@ -310,17 +317,29 @@ If an agent's heartbeat goes silent for **180 seconds** (configurable), the back
 
 ### Three-Tier Shutdown
 
-```
-Tier 1: Cooperative                    Tier 2: SIGTERM              Tier 3: Timeout
-+---------------------------+   +-------------------------+   +------------------+
-| Main agent calls          |   | Process killed           |   | No heartbeat for |
-| request-shutdown          |   | externally               |   | 180 seconds      |
-|                           |   |                          |   |                  |
-| Agent sees flag on next   |   | SessionEnd hook fires:   |   | Scheduler marks  |
-| heartbeat, finishes work, |   | - Generate artifacts     |   | session timed_out|
-| generates artifacts,      |   | - Call unregister-by-path|   | - Worktree offline|
-| calls unregister          |   |   (best-effort)          |   | - WORKTREE_OFFLINE|
-+---------------------------+   +-------------------------+   +------------------+
+```mermaid
+graph LR
+    subgraph Tier1["Tier 1: Cooperative"]
+        C1["Main agent calls request-shutdown"]
+        C2["Agent sees flag on next heartbeat"]
+        C3["Finishes work, generates artifacts"]
+        C4["Calls unregister"]
+        C1 --> C2 --> C3 --> C4
+    end
+
+    subgraph Tier2["Tier 2: SIGTERM"]
+        S1["Process killed externally"]
+        S2["SessionEnd hook fires"]
+        S3["Generate artifacts + unregister-by-path"]
+        S1 --> S2 --> S3
+    end
+
+    subgraph Tier3["Tier 3: Timeout"]
+        T1["No heartbeat for 180 seconds"]
+        T2["Scheduler marks session timed_out"]
+        T3["Worktree offline + WORKTREE_OFFLINE event"]
+        T1 --> T2 --> T3
+    end
 ```
 
 ---
@@ -331,40 +350,21 @@ Agents don't talk to the cloglog API directly. They use **MCP tools** (Model Con
 
 ### Why MCP?
 
-Claude Code (and other AI coding tools) natively support MCP. The agent calls a tool like `start_task` the same way it calls `Read` or `Edit` — it's part of the tool ecosystem. No curl commands, no HTTP clients, no auth token management.
+Three reasons:
+
+1. **Native tool integration.** Claude Code (and other AI coding tools) natively support MCP. The agent calls `start_task` the same way it calls `Read` or `Edit` — it's part of the tool ecosystem. No curl commands, no HTTP clients, no auth token management.
+
+2. **State machine enforcement.** The MCP server is the chokepoint where pipeline guards run. It enforces that spec tasks finish before plan tasks can start, that PR URLs are required when moving to review, and that agents cannot mark tasks as done. These rules live in the server, not in agent prompts — so they can't be worked around.
+
+3. **Agent-to-agent communication.** The MCP server runs a heartbeat timer that polls the backend every 60 seconds. Pending messages from other agents are drained on each heartbeat and surfaced to the agent through tool responses. This gives agents a communication channel without any extra infrastructure.
 
 ### Authentication Flow
 
-```
- Agent Process
- +-------------------+
- | Claude Code       |
- |                   |
- | Calls MCP tool:   |
- | start_task(...)   |
- +--------+----------+
-          | JSON-RPC over stdio
-          v
- +-------------------+
- | MCP Server        |
- | (Node.js)         |
- |                   |
- | Adds headers:     |
- | Authorization:    |
- |   Bearer <key>    |
- | X-MCP-Request:    |
- |   true            |
- +--------+----------+
-          | HTTP
-          v
- +-------------------+
- | cloglog Backend   |
- |                   |
- | Middleware checks: |
- | Has Bearer token? |
- | Has X-MCP-Request?|
- | -> Full access    |
- +-------------------+
+```mermaid
+graph TD
+    A["Claude Code<br/>Calls MCP tool: start_task(...)"] -->|"JSON-RPC over stdio"| M
+    M["MCP Server (Node.js)<br/>Adds headers:<br/>Authorization: Bearer key<br/>X-MCP-Request: true"] -->|"HTTP"| B
+    B["cloglog Backend<br/>Middleware checks:<br/>Has Bearer + X-MCP-Request?<br/>→ Full access"]
 ```
 
 The **three-credential model** ensures separation of concerns:
@@ -459,10 +459,6 @@ Messages appear in the agent's tool response with a prefix:
 - [wt-frontend] I updated the API types, pull latest
 ```
 
-### What Was Tried and Failed
-
-**`sendLoggingMessage`** (MCP protocol logging): The MCP SDK's built-in logging mechanism was attempted first. It failed because logging messages are fire-and-forget with no delivery confirmation, no storage, and no way to target specific agents. The heartbeat piggyback approach was adopted because it uses the existing polling infrastructure agents already depend on.
-
 ---
 
 ## The Board & Dashboard
@@ -471,28 +467,32 @@ The React dashboard is a real-time Kanban board that updates live as agents work
 
 ### Board Layout
 
-```
- +------------------------------------------------------------------+
- | Sidebar          | Board                                          |
- |                  |                                                |
- | Projects         | Backlog    In Progress   Review     Done      |
- | +- Project A     | +-------+ +----------+ +--------+ +--------+ |
- | +- Project B     | | T-12  | | T-8      | | T-5    | | T-1    | |
- |                  | | Setup | | Add auth | | PR #42 | | Scaffold| |
- | Agents           | |       | | wt-agent | |        | |        | |
- | * wt-board  [ON] | +-------+ +----------+ +--------+ +--------+ |
- | * wt-agent  [ON] | | T-15  | | T-11     | | T-9    | | T-3    | |
- | * wt-front [OFF] | | Docs  | | Build UI | | PR #45 | | Models | |
- |                  | +-------+ +----------+ +--------+ +--------+ |
- |                  |                                                |
- | Search [____]    | Backlog Tree (expandable)                     |
- | Notifications    | E-1 Board Context                              |
- |                  |   F-1 Task Management                          |
- |                  |     T-1 Models [done]                          |
- |                  |     T-2 Routes [review]                        |
- |                  |   F-2 Search                                   |
- |                  |     T-5 Implement [in_progress]                |
- +------------------------------------------------------------------+
+```mermaid
+graph LR
+    subgraph Sidebar
+        Projects["Projects<br/>• Project A<br/>• Project B"]
+        Agents["Agents<br/>🟢 wt-board<br/>🟢 wt-agent<br/>⚫ wt-front"]
+        Search["Search / Notifications"]
+    end
+
+    subgraph Board
+        subgraph Backlog
+            T12["T-12 Setup"]
+            T15["T-15 Docs"]
+        end
+        subgraph InProgress["In Progress"]
+            T8["T-8 Add auth<br/>🤖 wt-agent"]
+            T11["T-11 Build UI"]
+        end
+        subgraph Review
+            T5["T-5 PR #42"]
+            T9["T-9 PR #45"]
+        end
+        subgraph Done
+            T1["T-1 Scaffold"]
+            T3["T-3 Models"]
+        end
+    end
 ```
 
 ### Real-Time SSE Updates
@@ -520,12 +520,12 @@ class EventBus:
 
 When an agent changes a task status, the event flows:
 
-```
-Agent calls update_task_status()
-  -> Backend publishes TASK_STATUS_CHANGED event
-    -> SSE endpoint yields event to dashboard
-      -> React hook updates board state
-        -> Task card moves between columns (no page refresh)
+```mermaid
+graph LR
+    A["Agent calls<br/>update_task_status()"] --> B["Backend publishes<br/>TASK_STATUS_CHANGED"]
+    B --> C["SSE endpoint<br/>yields event"]
+    C --> D["React hook<br/>updates board state"]
+    D --> E["Task card moves<br/>between columns"]
 ```
 
 The frontend `useSSE` hook handles 14 event types with targeted state updates:
@@ -624,32 +624,26 @@ No port conflicts between worktrees. No hardcoded ports. Every worktree gets its
 
 ### Infrastructure Lifecycle
 
-```
-create-worktree.sh up          manage-worktrees.sh remove
-        |                               |
-        v                               v
- Create DB -----> Run migrations   Kill processes
- Assign ports     Write .env       Drop database
- Install deps     Generate CLAUDE  Remove .env
-                                   Delete worktree + branch
+```mermaid
+graph LR
+    subgraph Setup["create-worktree.sh"]
+        S1[Create DB] --> S2[Run migrations]
+        S3[Assign ports] --> S4[Write .env]
+        S5[Install deps] --> S6[Generate CLAUDE.md]
+    end
+
+    subgraph Teardown["manage-worktrees.sh remove"]
+        T1[Kill processes]
+        T2[Drop database]
+        T3[Remove .env]
+        T4[Delete worktree + branch]
+        T1 --> T2 --> T3 --> T4
+    end
 ```
 
 ### Bot Identity for PRs
 
-All agent pushes and PR creation use a **GitHub App bot identity**, never the user's personal account:
-
-```bash
-BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests \
-  ~/.agent-vm/credentials/gh-app-token.py)
-
-git remote set-url origin \
-  "https://x-access-token:${BOT_TOKEN}@github.com/owner/repo.git"
-git push -u origin HEAD
-
-GH_TOKEN="$BOT_TOKEN" gh pr create --title "feat: ..." --body "..."
-```
-
-This means every PR shows as authored by the bot, not the human — which matters because the human needs to be able to review and merge their own agents' work.
+All agent pushes and PR creation use a **GitHub App bot identity**, never the user's personal account. Every PR shows as authored by the bot — which matters because the human needs to be able to review and merge their own agents' work.
 
 ---
 
@@ -708,16 +702,10 @@ This means an agent working on the Board context literally cannot write to Agent
 
 ### Type Safety Pipeline
 
-```
-OpenAPI YAML contract
-  |
-  | generate-contract-types.sh
-  v
-frontend/src/api/generated-types.ts
-  |
-  | import
-  v
-React components use typed API responses
+```mermaid
+graph TD
+    A["OpenAPI YAML contract"] -->|"generate-contract-types.sh"| B["frontend/src/api/generated-types.ts"]
+    B -->|"import"| C["React components use typed API responses"]
 ```
 
 Frontend never hand-writes API types. Backend runs `make contract-check` to verify endpoints match the contract. Drift is caught before commit.
@@ -800,88 +788,9 @@ cd mcp-server && make test
 
 ---
 
-## Contributing
-
-### Where to Start
-
-The codebase is organized so you can contribute to one context without understanding the others:
-
-| I want to... | Look at... |
-|---|---|
-| Add a board feature (new column, filter, etc.) | `src/board/` + `frontend/src/components/Board.tsx` |
-| Add an agent capability | `src/agent/` + `mcp-server/src/server.ts` |
-| Add a new MCP tool | `mcp-server/src/server.ts` (tool definition) + `mcp-server/src/tools.ts` (handler) |
-| Add a dashboard component | `frontend/src/components/` |
-| Add a new API endpoint | Context's `routes.py` + register in `src/gateway/app.py` |
-| Add a database migration | `alembic revision --autogenerate -m "description"` |
-
-### Adding a New MCP Tool
-
-1. Define the tool schema in `mcp-server/src/server.ts` with Zod validation:
-   ```typescript
-   server.tool("my_tool", "Description", { param: z.string() }, async (args) => {
-     const result = await client.request("POST", "/api/v1/...", args);
-     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-   });
-   ```
-
-2. Add the backend endpoint in the appropriate context's `routes.py`
-
-3. Register the router in `src/gateway/app.py` if it's a new context
-
-### Adding a Board Feature
-
-1. Add the model/field in `src/board/models.py`
-2. Create a migration: `alembic revision --autogenerate -m "add field"`
-3. Add repository method in `src/board/repository.py`
-4. Add service logic in `src/board/services.py`
-5. Add route in `src/board/routes.py`
-6. Add schema in `src/board/schemas.py`
-7. Publish events via `event_bus.publish()` for SSE updates
-8. Update the frontend to consume the new data
-
-### Testing Expectations
-
-- **Backend**: Unit tests for services + integration tests for routes (against real PostgreSQL)
-- **Frontend**: Component tests with `@testing-library/react` (test interactions, not just rendering)
-- **E2E**: Playwright specs for critical user flows
-- Every PR must include tests. `make quality` must pass. This is enforced by hooks.
-
-### Worktree Development
-
-For isolated development on a context:
-
-```bash
-# Create an isolated worktree for the board context
-./scripts/create-worktree.sh my-feature board
-
-# Work in the worktree
-cd .claude/worktrees/wt-my-feature
-
-# Your writes are restricted to src/board/, tests/board/, src/alembic/
-# The hook will block writes to other contexts
-
-# Clean up when done
-./scripts/manage-worktrees.sh remove my-feature
-```
-
----
-
 ## Glossary
 
-| Term | Definition |
-|---|---|
-| **Worktree** | A git worktree + agent session. One worktree = one agent = one branch. |
-| **Bounded Context** | A DDD boundary (Board, Agent, Document, Gateway) with its own models and rules. |
-| **Pipeline** | The spec -> plan -> impl task ordering within a feature. |
-| **Heartbeat** | 60-second HTTP poll from MCP server to backend, carrying shutdown signals and messages. |
-| **Roll-up** | Automatic status computation from children (tasks -> feature -> epic). |
-| **MCP** | Model Context Protocol — stdio-based tool interface for AI agents. |
-| **SSE** | Server-Sent Events — one-way real-time stream from backend to dashboard. |
-| **EventBus** | In-process pub/sub that fans events to SSE subscribers and the notification listener. |
-| **Wave** | A batch of worktrees launched together to implement a set of features. |
-| **Bot Identity** | GitHub App token used for all agent git operations. |
-| **Quality Gate** | `make quality` — lint + typecheck + test + coverage + contract check. Must pass before commit. |
+For the full ubiquitous language glossary, see [`docs/ddd-context-map.md`](ddd-context-map.md).
 
 ---
 

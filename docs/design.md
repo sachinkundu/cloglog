@@ -428,20 +428,26 @@ cloglog uses **heartbeat-piggybacked messaging**. No WebSockets, no separate cha
 ```mermaid
 sequenceDiagram
     participant Main as Main Agent
+    participant M1 as Main's MCP Server
     participant B as Backend
+    participant M2 as Worktree's MCP Server
     participant W as Worktree Agent
 
-    Main->>B: POST /agents/{worktree_id}/message
+    Main->>M1: send_agent_message(worktree_id, msg)
+    M1->>B: POST /agents/{worktree_id}/message
     Note over B: Queue AgentMessage<br/>(delivered=false)
-    B-->>Main: 202 Accepted
+    B-->>M1: 202 Accepted
+    M1-->>Main: Message queued
 
-    Note over W: 60 seconds later...
+    Note over M2: 60 seconds later... (heartbeat timer)
 
-    W->>B: POST /agents/{id}/heartbeat
+    M2->>B: POST /agents/{id}/heartbeat
     B->>B: Drain pending messages<br/>Mark delivered=true
-    B-->>W: {pending_messages: ["[main-agent] please rebase on main"]}
+    B-->>M2: {pending_messages: ["[main-agent] please rebase"]}
+    Note over M2: Messages stored until<br/>next tool call
 
-    Note over W: Agent reads message<br/>in tool response
+    W->>M2: Any MCP tool call
+    M2-->>W: Tool result + piggybacked messages
 ```
 
 ### Message Delivery Guarantees

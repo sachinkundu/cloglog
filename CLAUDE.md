@@ -187,7 +187,11 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
   # Example: demo for a new message endpoint
   uvx showboat exec demo.md bash 'curl -s -X POST http://localhost:$BACKEND_PORT/api/v1/agents/$WT_ID/message -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" -d "{\"message\": \"hello\"}" | jq .'
   ```
-- **MCP server PRs (new tools):** Start a test backend, register an agent, then call the MCP tool endpoint that the tool wraps. Show the API call and response.
+- **MCP server PRs (new tools):** The MCP server is a thin wrapper — each tool maps to a backend API call. You cannot test MCP tools in your own session (your MCP server loaded before your changes). Instead: (1) curl the backend endpoint that the tool wraps — this proves the feature works, (2) run `cd mcp-server && make test` to verify the tool handler calls the right endpoint, (3) run `cd mcp-server && npm run build` to verify TypeScript compiles. The curl demo of the backend endpoint IS the MCP tool demo.
+  ```bash
+  # Example: demo for a new assign_task MCP tool — exercise the backend endpoint it wraps
+  uvx showboat exec demo.md bash 'curl -s -X PATCH http://localhost:$BACKEND_PORT/api/v1/agents/$WT_ID/assign-task -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" -d "{\"task_id\": \"$TASK_ID\"}" | jq .'
+  ```
 - **Frontend PRs (new UI):** Use Rodney (headless Chrome via `uvx rodney`) to take a screenshot of the new/changed UI. Include before AND after if modifying existing UI.
   ```bash
   uvx rodney screenshot http://localhost:$FRONTEND_PORT --output docs/demos/my-feature/screenshot.png

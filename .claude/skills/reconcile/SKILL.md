@@ -53,12 +53,14 @@ Format the report with clear sections. Use checkmarks for healthy items and warn
 ## Step 4: Fix (only if user passed "fix" as an argument)
 
 If the user asked to fix issues:
-- **Stale worktrees**: run `./scripts/manage-worktrees.sh remove <name>`
+- **Stale worktrees**: run `./scripts/manage-worktrees.sh remove <name>` (handles infra teardown, local branch deletion)
+- **Stale zellij tabs**: close tabs for removed worktrees via `zellij action list-tabs` → `zellij action close-tab --tab-id <ID>`
 - **Stale local branches**: `git branch -d <branch>`
-- **Stale remote branches**: `git push origin --delete <branch>`
-- **Orphaned PRs**: close with `gh pr close <num> --comment "Closed by reconciliation: branch no longer exists"` (use bot token — see CLAUDE.md "Git Identity & PRs")
+- **Stale remote branches**: `git push origin --delete <branch>` (use bot token)
+- **Orphaned PRs**: close with `gh pr close <num> --comment "Closed by reconciliation: branch no longer exists"` (use bot token)
 - **Merged PR + task in review**: tell the user to drag the card to done on the board (agents cannot mark tasks done)
 - **Stale agents**: call `mcp__cloglog__unregister_agent` (this unregisters the current agent — for other agents, flag for manual cleanup)
+- **Pull merged changes**: always run `git pull origin main` at the end to ensure local main has all merged PR changes
 
 Report what was fixed and what needs manual attention.
 

@@ -368,6 +368,131 @@ class TestTransitionGuardsAPI:
         assert "cannot mark tasks as done" in resp.json()["detail"].lower()
 
 
+class TestPipelineOrderingAPI:
+    """Integration tests for pipeline ordering guards (spec → plan → impl)."""
+
+    async def _setup_pipeline(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+    ) -> tuple[str, str, str, str, str]:
+        """Create project, agent, and spec/plan/impl tasks under one feature."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+        pid = uuid.UUID(project["id"])
+
+        epic = Epic(project_id=pid, title="Pipeline Epic", position=0)
+        db_session.add(epic)
+        await db_session.commit()
+        await db_session.refresh(epic)
+
+        feature = Feature(epic_id=epic.id, title="Pipeline Feature", position=0)
+        db_session.add(feature)
+        await db_session.commit()
+        await db_session.refresh(feature)
+
+        spec_task = Task(
+            feature_id=feature.id,
+            title="Write spec",
+            description="Design spec",
+            priority="high",
+            position=0,
+            status="assigned",
+            task_type="spec",
+        )
+        plan_task = Task(
+            feature_id=feature.id,
+            title="Write plan",
+            description="Impl plan",
+            priority="high",
+            position=1,
+            status="assigned",
+            task_type="plan",
+        )
+        impl_task = Task(
+            feature_id=feature.id,
+            title="Implement",
+            description="Build it",
+            priority="high",
+            position=2,
+            status="assigned",
+            task_type="impl",
+        )
+        db_session.add_all([spec_task, plan_task, impl_task])
+        await db_session.commit()
+        for t in (spec_task, plan_task, impl_task):
+            await db_session.refresh(t)
+
+        reg = await client.post(
+            "/api/v1/agents/register",
+            json={
+                "worktree_path": f"/repo/wt-pipe-{uuid.uuid4().hex[:6]}",
+                "branch_name": "wt-pipe",
+            },
+            headers=h,
+        )
+        wt_id = reg.json()["worktree_id"]
+
+        # Assign all tasks to the worktree
+        for t in (spec_task, plan_task, impl_task):
+            await client.patch(
+                f"/api/v1/tasks/{t.id}",
+                json={"worktree_id": wt_id, "status": "assigned"},
+            )
+
+        return wt_id, str(spec_task.id), str(plan_task.id), str(impl_task.id), project["api_key"]
+
+    async def test_pipeline_ordering_spec_before_plan(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Starting plan task when spec is not done returns 409."""
+        wt_id, spec_id, plan_id, _, _ = await self._setup_pipeline(client, db_session)
+
+        # Try to start plan without spec being done — should be blocked
+        resp = await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": plan_id})
+        assert resp.status_code == 409
+        assert "spec" in resp.json()["detail"].lower()
+        assert "not done" in resp.json()["detail"].lower()
+
+    async def test_pipeline_ordering_plan_before_impl(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Starting impl task when plan is not done returns 409."""
+        wt_id, spec_id, plan_id, impl_id, _ = await self._setup_pipeline(client, db_session)
+
+        # Complete spec (simulate user marking done via board API)
+        await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": spec_id})
+        await client.patch(f"/api/v1/tasks/{spec_id}", json={"status": "done"})
+
+        # Try to start impl without plan being done — should be blocked
+        resp = await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": impl_id})
+        assert resp.status_code == 409
+        assert "plan" in resp.json()["detail"].lower()
+        assert "not done" in resp.json()["detail"].lower()
+
+    async def test_pipeline_ordering_allows_after_predecessor_done(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Full pipeline: spec done → plan starts, plan done → impl starts."""
+        wt_id, spec_id, plan_id, impl_id, _ = await self._setup_pipeline(client, db_session)
+
+        # Complete spec
+        await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": spec_id})
+        await client.patch(f"/api/v1/tasks/{spec_id}", json={"status": "done"})
+
+        # Start plan — should succeed
+        resp = await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": plan_id})
+        assert resp.status_code == 200
+
+        # Complete plan
+        await client.patch(f"/api/v1/tasks/{plan_id}", json={"status": "done"})
+
+        # Start impl — should succeed
+        resp = await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": impl_id})
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "in_progress"
+
+
 class TestAssignTaskAPI:
     async def test_assign_task_sets_worktree_id(
         self, client: AsyncClient, db_session: AsyncSession

@@ -65,6 +65,16 @@ uv run pytest tests/agent/test_integration.py::TestTransitionGuardsAPI --no-head
 5 passed
 ```
 
+## Pipeline ordering tests (T-116)
+
+```bash
+uv run pytest tests/agent/test_integration.py::TestPipelineOrderingAPI --no-header -q 2>&1 | tail -1 | sed "s/ in [0-9.]*s//"
+```
+
+```output
+3 passed
+```
+
 ## Full agent test suite
 
 ```bash
@@ -72,5 +82,5 @@ uv run pytest tests/agent/ --no-header -q 2>&1 | tail -1 | sed "s/ in [0-9.]*s//
 ```
 
 ```output
-63 passed
+70 passed
 ```

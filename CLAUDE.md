@@ -187,11 +187,30 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
   # Example: demo for a new message endpoint
   uvx showboat exec demo.md bash 'curl -s -X POST http://localhost:$BACKEND_PORT/api/v1/agents/$WT_ID/message -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" -d "{\"message\": \"hello\"}" | jq .'
   ```
-- **MCP server PRs (new tools):** The MCP server is a thin wrapper — each tool maps to a backend API call. You cannot test MCP tools in your own session (your MCP server loaded before your changes). Instead: (1) curl the backend endpoint that the tool wraps — this proves the feature works, (2) run `cd mcp-server && make test` to verify the tool handler calls the right endpoint, (3) run `cd mcp-server && npm run build` to verify TypeScript compiles. The curl demo of the backend endpoint IS the MCP tool demo.
-  ```bash
-  # Example: demo for a new assign_task MCP tool — exercise the backend endpoint it wraps
-  uvx showboat exec demo.md bash 'curl -s -X PATCH http://localhost:$BACKEND_PORT/api/v1/agents/$WT_ID/assign-task -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" -d "{\"task_id\": \"$TASK_ID\"}" | jq .'
-  ```
+- **MCP server PRs (new tools):** You cannot test MCP tools in your own session — your MCP server loaded before your changes. Two demo approaches, use BOTH:
+  1. **Curl the backend endpoint** the tool wraps — proves the API works:
+     ```bash
+     uvx showboat exec demo.md bash 'curl -s -X PATCH http://localhost:$BACKEND_PORT/api/v1/agents/$WT_ID/assign-task -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" -d "{\"task_id\": \"$TASK_ID\"}" | jq .'
+     ```
+  2. **Launch a fresh Claude session** in a zellij tab to call the actual MCP tool — proves the tool registration and plumbing work end-to-end:
+     ```bash
+     # Build the MCP server with your changes
+     cd mcp-server && npm run build && cd ..
+     # Open a zellij tab, run a one-shot claude session that loads the new build
+     zellij action new-tab --name "mcp-demo"
+     sleep 1
+     zellij action write-chars "cd $(pwd) && claude --dangerously-skip-permissions -p 'Use ToolSearch to find mcp__cloglog__assign_task. Load it and call it with worktree_id=X task_id=Y. Report the result.' > /tmp/mcp-demo-result.txt 2>&1"
+     sleep 0.5
+     zellij action write 13
+     # Wait for it to finish, then read the result
+     sleep 45
+     cat /tmp/mcp-demo-result.txt
+     # Clean up
+     TAB_ID=$(zellij action list-tabs | awk '$3 == "mcp-demo" {print $1}')
+     zellij action close-tab --tab-id "$TAB_ID"
+     rm -f /tmp/mcp-demo-result.txt
+     ```
+     Include the content of `/tmp/mcp-demo-result.txt` in the demo — it's proof the MCP tool works in a real Claude session.
 - **Frontend PRs (new UI):** Use Rodney (headless Chrome via `uvx rodney`) to take a screenshot of the new/changed UI. Include before AND after if modifying existing UI.
   ```bash
   uvx rodney screenshot http://localhost:$FRONTEND_PORT --output docs/demos/my-feature/screenshot.png

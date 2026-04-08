@@ -145,6 +145,17 @@ class BoardRepository:
     async def get_epic(self, epic_id: UUID) -> Epic | None:
         return await self._session.get(Epic, epic_id)
 
+    async def update_epic(self, epic_id: UUID, **fields: object) -> Epic | None:
+        epic = await self._session.get(Epic, epic_id)
+        if epic is None:
+            return None
+        for key, value in fields.items():
+            if value is not None:
+                setattr(epic, key, value)
+        await self._session.commit()
+        await self._session.refresh(epic)
+        return epic
+
     async def delete_epic(self, epic_id: UUID) -> bool:
         epic = await self._session.get(Epic, epic_id)
         if epic is None:
@@ -178,6 +189,17 @@ class BoardRepository:
 
     async def get_feature(self, feature_id: UUID) -> Feature | None:
         return await self._session.get(Feature, feature_id)
+
+    async def update_feature(self, feature_id: UUID, **fields: object) -> Feature | None:
+        feature = await self._session.get(Feature, feature_id)
+        if feature is None:
+            return None
+        for key, value in fields.items():
+            if value is not None:
+                setattr(feature, key, value)
+        await self._session.commit()
+        await self._session.refresh(feature)
+        return feature
 
     async def delete_feature(self, feature_id: UUID) -> bool:
         feature = await self._session.get(Feature, feature_id)

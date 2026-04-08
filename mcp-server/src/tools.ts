@@ -32,6 +32,10 @@ export interface ToolHandlers {
   get_backlog(args: { project_id: string }): Promise<unknown>
   get_board(args: { project_id: string; epic_id?: string; exclude_done?: boolean }): Promise<unknown>
   get_active_tasks(args: { project_id: string }): Promise<unknown>
+  update_epic(args: { epic_id: string; title?: string; description?: string; bounded_context?: string; status?: string }): Promise<unknown>
+  delete_epic(args: { epic_id: string }): Promise<unknown>
+  update_feature(args: { feature_id: string; title?: string; description?: string; status?: string }): Promise<unknown>
+  delete_feature(args: { feature_id: string }): Promise<unknown>
   update_task(args: { task_id: string; title?: string; description?: string; priority?: string }): Promise<unknown>
   delete_task(args: { task_id: string }): Promise<unknown>
 }
@@ -151,6 +155,31 @@ export function createToolHandlers(client: CloglogClient): ToolHandlers {
 
     async get_active_tasks({ project_id }) {
       return client.request('GET', `/api/v1/projects/${project_id}/active-tasks`)
+    },
+
+    async update_epic({ epic_id, title, description, bounded_context, status }) {
+      const fields: Record<string, string> = {}
+      if (title !== undefined) fields.title = title
+      if (description !== undefined) fields.description = description
+      if (bounded_context !== undefined) fields.bounded_context = bounded_context
+      if (status !== undefined) fields.status = status
+      return client.request('PATCH', `/api/v1/epics/${epic_id}`, fields)
+    },
+
+    async delete_epic({ epic_id }) {
+      return client.request('DELETE', `/api/v1/epics/${epic_id}`)
+    },
+
+    async update_feature({ feature_id, title, description, status }) {
+      const fields: Record<string, string> = {}
+      if (title !== undefined) fields.title = title
+      if (description !== undefined) fields.description = description
+      if (status !== undefined) fields.status = status
+      return client.request('PATCH', `/api/v1/features/${feature_id}`, fields)
+    },
+
+    async delete_feature({ feature_id }) {
+      return client.request('DELETE', `/api/v1/features/${feature_id}`)
     },
 
     async update_task({ task_id, title, description, priority }) {

@@ -155,6 +155,46 @@ describe('Tool Handlers', () => {
     expect(result).toHaveProperty('status', 'assigned')
   })
 
+  it('update_epic calls PATCH /epics/{id}', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 'epic-1', title: 'Updated Epic',
+    })
+
+    const result = await handlers.update_epic({ epic_id: 'epic-1', title: 'Updated Epic' })
+    expect(client.request).toHaveBeenCalledWith(
+      'PATCH', '/api/v1/epics/epic-1',
+      { title: 'Updated Epic' }
+    )
+    expect(result).toHaveProperty('title', 'Updated Epic')
+  })
+
+  it('delete_epic calls DELETE /epics/{id}', async () => {
+    await handlers.delete_epic({ epic_id: 'epic-1' })
+    expect(client.request).toHaveBeenCalledWith(
+      'DELETE', '/api/v1/epics/epic-1'
+    )
+  })
+
+  it('update_feature calls PATCH /features/{id}', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 'feat-1', title: 'Updated Feature',
+    })
+
+    const result = await handlers.update_feature({ feature_id: 'feat-1', title: 'Updated Feature' })
+    expect(client.request).toHaveBeenCalledWith(
+      'PATCH', '/api/v1/features/feat-1',
+      { title: 'Updated Feature' }
+    )
+    expect(result).toHaveProperty('title', 'Updated Feature')
+  })
+
+  it('delete_feature calls DELETE /features/{id}', async () => {
+    await handlers.delete_feature({ feature_id: 'feat-1' })
+    expect(client.request).toHaveBeenCalledWith(
+      'DELETE', '/api/v1/features/feat-1'
+    )
+  })
+
   it('get_active_tasks calls GET /projects/{id}/active-tasks', async () => {
     (client.request as ReturnType<typeof vi.fn>).mockResolvedValue([
       { id: 't1', number: 1, title: 'Task 1', status: 'backlog' },

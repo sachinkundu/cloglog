@@ -6,25 +6,9 @@
 2. **Description updates** — `update_task_status` now documents that `pr_url` is required for ALL task types moving to review (not just spec/impl). `start_task` documents the one-active-task and pipeline ordering guards.
 3. **`create_task` already had `task_type`** — verified and tested.
 
-## Test Output
+## Guard Error Surfacing
 
-```
-$ cd mcp-server && npx vitest run
-
- ✓ src/__tests__/tools.test.ts (25 tests) 17ms
- ✓ src/__tests__/heartbeat.test.ts (3 tests) 12ms
- ✓ tests/client.test.ts (4 tests) 11ms
- ✓ tests/server.test.ts (9 tests) 53ms
-
- Test Files  4 passed (4)
-      Tests  41 passed (41)
-```
-
-**Delta: +12 new tests** (18 -> 25 in tools.test.ts, 4 -> 9 in server.test.ts)
-
-## Guard Error Surfacing (server.test.ts)
-
-The key behavioral change is in `server.ts` — guard rejections now return structured error responses:
+The key behavioral change is in `server.ts` — guard rejections now return structured error responses instead of crashing:
 
 ### One-active-task guard
 ```
@@ -48,11 +32,4 @@ Output: { isError: true, content: [{ type: 'text', text: '⛔ cloglog API error:
 ```
 Input: complete_task({ task_id: 't1' })
 Output: { isError: true, content: [{ type: 'text', text: '⛔ cloglog API error: 409 Agents cannot mark tasks as done' }] }
-```
-
-## Quality Gate
-
-```
-$ make quality
-── Quality gate: PASSED ────────────────
 ```

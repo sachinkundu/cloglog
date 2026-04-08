@@ -6,6 +6,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agent.repository import AgentRepository
@@ -191,12 +192,180 @@ class TestTaskLifecycleAPI:
             json={"task_id": task_id},
         )
 
-        # Update to review
+        # Update to review (pr_url now required for all task types)
+        resp = await client.patch(
+            f"/api/v1/agents/{wt_id}/task-status",
+            json={
+                "task_id": task_id,
+                "status": "review",
+                "pr_url": "https://github.com/test/repo/pull/1",
+            },
+        )
+        assert resp.status_code == 204
+
+
+class TestTransitionGuardsAPI:
+    """Integration tests for transition guards (T-114)."""
+
+    async def _setup(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> tuple[str, str, str, str]:
+        """Create project, register agent, create two tasks."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+        task1_id = await _create_task_via_db(db_session, project["id"])
+
+        # Create a second task in the same feature
+        result = await db_session.execute(select(Feature).limit(1))
+        feature = result.scalar_one()
+        task2 = Task(
+            feature_id=feature.id,
+            title="Second task",
+            description="Another task",
+            priority="normal",
+            position=1,
+            status="assigned",
+        )
+        db_session.add(task2)
+        await db_session.commit()
+        await db_session.refresh(task2)
+
+        reg = await client.post(
+            "/api/v1/agents/register",
+            json={
+                "worktree_path": f"/repo/wt-guard-{uuid.uuid4().hex[:6]}",
+                "branch_name": "wt-guard",
+            },
+            headers=h,
+        )
+        wt_id = reg.json()["worktree_id"]
+
+        # Assign both tasks to the worktree
+        assign = {"worktree_id": wt_id, "status": "assigned"}
+        await client.patch(f"/api/v1/tasks/{task1_id}", json=assign)
+        await client.patch(f"/api/v1/tasks/{str(task2.id)}", json=assign)
+
+        return wt_id, task1_id, str(task2.id), project["api_key"]
+
+    async def test_start_task_blocked_when_active_task(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Starting a second task while first is in_progress returns 409."""
+        wt_id, task1_id, task2_id, _ = await self._setup(client, db_session)
+
+        # Start first task
+        resp = await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": task1_id})
+        assert resp.status_code == 200
+
+        # Try starting second — should be blocked
+        resp = await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": task2_id})
+        assert resp.status_code == 409
+        assert "already has active" in resp.json()["detail"]
+
+    async def test_start_task_allowed_after_review_merged(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """After first task is done, agent can start a second task."""
+        wt_id, task1_id, task2_id, _ = await self._setup(client, db_session)
+
+        # Start and complete first task (simulate user marking done via board API)
+        await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": task1_id})
+        await client.patch(f"/api/v1/tasks/{task1_id}", json={"status": "done"})
+
+        # Start second task — should succeed
+        resp = await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": task2_id})
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "in_progress"
+
+    async def test_review_requires_pr_url(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Moving to review without pr_url returns 409."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+        task_id = await _create_task_via_db(db_session, project["id"])
+
+        reg = await client.post(
+            "/api/v1/agents/register",
+            json={
+                "worktree_path": f"/repo/wt-prurl-{uuid.uuid4().hex[:6]}",
+                "branch_name": "wt-prurl",
+            },
+            headers=h,
+        )
+        wt_id = reg.json()["worktree_id"]
+        await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": task_id})
+
+        # Try to move to review without pr_url
         resp = await client.patch(
             f"/api/v1/agents/{wt_id}/task-status",
             json={"task_id": task_id, "status": "review"},
         )
+        assert resp.status_code == 409
+        assert "PR URL" in resp.json()["detail"]
+
+    async def test_review_to_in_progress_allowed(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Agent can move task from review back to in_progress."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+        task_id = await _create_task_via_db(db_session, project["id"])
+
+        reg = await client.post(
+            "/api/v1/agents/register",
+            json={
+                "worktree_path": f"/repo/wt-revip-{uuid.uuid4().hex[:6]}",
+                "branch_name": "wt-revip",
+            },
+            headers=h,
+        )
+        wt_id = reg.json()["worktree_id"]
+        await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": task_id})
+
+        # Move to review with PR URL
+        resp = await client.patch(
+            f"/api/v1/agents/{wt_id}/task-status",
+            json={
+                "task_id": task_id,
+                "status": "review",
+                "pr_url": "https://github.com/test/repo/pull/1",
+            },
+        )
         assert resp.status_code == 204
+
+        # Move back to in_progress
+        resp = await client.patch(
+            f"/api/v1/agents/{wt_id}/task-status",
+            json={"task_id": task_id, "status": "in_progress"},
+        )
+        assert resp.status_code == 204
+
+    async def test_agent_cannot_move_to_done(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Agent moving task to done returns 409."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+        task_id = await _create_task_via_db(db_session, project["id"])
+
+        reg = await client.post(
+            "/api/v1/agents/register",
+            json={
+                "worktree_path": f"/repo/wt-nodone-{uuid.uuid4().hex[:6]}",
+                "branch_name": "wt-nodone",
+            },
+            headers=h,
+        )
+        wt_id = reg.json()["worktree_id"]
+        await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": task_id})
+
+        resp = await client.patch(
+            f"/api/v1/agents/{wt_id}/task-status",
+            json={"task_id": task_id, "status": "done"},
+        )
+        assert resp.status_code == 409
+        assert "cannot mark tasks as done" in resp.json()["detail"].lower()
 
 
 class TestWorktreeListAPI:

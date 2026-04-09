@@ -1,7 +1,7 @@
 """add pr_merged to tasks
 
-Revision ID: f5a6b7c8d9e0
-Revises: e4f5a6b7c8d9
+Revision ID: a68cf6465fc3
+Revises: f5a6b7c8d9e0
 Create Date: 2026-04-09
 
 """
@@ -13,8 +13,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "f5a6b7c8d9e0"
-down_revision: str = "e4f5a6b7c8d9"
+revision: str = "a68cf6465fc3"
+down_revision: str = "f5a6b7c8d9e0"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

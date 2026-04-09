@@ -17,6 +17,7 @@ from src.agent.schemas import (
     HeartbeatResponse,
     RegisterRequest,
     RegisterResponse,
+    ReportArtifactRequest,
     SendMessageRequest,
     StartTaskRequest,
     StartTaskResponse,
@@ -134,6 +135,17 @@ async def add_task_note(
         "note": note.note,
         "created_at": note.created_at,
     }
+
+
+@router.post("/agents/{worktree_id}/report-artifact", status_code=200)
+async def report_artifact(
+    worktree_id: UUID, body: ReportArtifactRequest, service: ServiceDep
+) -> dict[str, object]:
+    """Report the artifact path for a spec/plan task after its PR merges."""
+    try:
+        return await service.report_artifact(worktree_id, body.task_id, body.artifact_path)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
 
 
 @router.post("/agents/{worktree_id}/request-shutdown", status_code=200)

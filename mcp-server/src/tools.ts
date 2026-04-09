@@ -21,6 +21,7 @@ export interface ToolHandlers {
   }): Promise<unknown>
   assign_task(args: { worktree_id: string; task_id: string }): Promise<unknown>
   unregister_agent(args: { worktree_id: string }): Promise<unknown>
+  report_artifact(args: { worktree_id: string; task_id: string; artifact_path: string }): Promise<unknown>
 
   // New tools for API parity
   get_project(args: Record<string, never>): Promise<unknown>
@@ -101,6 +102,13 @@ export function createToolHandlers(client: CloglogClient): ToolHandlers {
 
     async unregister_agent({ worktree_id }) {
       return client.request('POST', `/api/v1/agents/${worktree_id}/unregister`)
+    },
+
+    async report_artifact({ worktree_id, task_id, artifact_path }) {
+      return client.request('POST', `/api/v1/agents/${worktree_id}/report-artifact`, {
+        task_id,
+        artifact_path,
+      })
     },
 
     // New tools for API parity

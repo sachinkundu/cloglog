@@ -142,6 +142,7 @@ class TaskResponse(BaseModel):
     task_type: str
     pr_url: str | None
     pr_merged: bool
+    artifact_path: str | None = None
     worktree_id: UUID | None
     position: int
     number: int
@@ -202,6 +203,7 @@ class BacklogTask(BaseModel):
     task_type: str = "task"
     pr_url: str | None = None
     pr_merged: bool = False
+    artifact_path: str | None = None
 
 
 class TaskCounts(BaseModel):

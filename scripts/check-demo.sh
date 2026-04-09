@@ -42,11 +42,13 @@ if [[ ! -d "docs/demos" ]]; then
 fi
 
 # Look for demo directory matching the feature
+# Normalize slashes to hyphens so branch names like feat/foo match dirs like feat-foo
+FEATURE_NORM="${FEATURE//\//-}"
 DEMO_DIR=""
 if compgen -G "docs/demos/*/" > /dev/null 2>&1; then
   for dir in docs/demos/*/; do
     [[ -d "$dir" ]] || continue
-    if echo "$dir" | grep -qi "$FEATURE"; then
+    if echo "$dir" | grep -qi "$FEATURE_NORM"; then
       DEMO_DIR="$dir"
       break
     fi

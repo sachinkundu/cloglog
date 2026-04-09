@@ -76,6 +76,7 @@ class TaskInfo(BaseModel):
     description: str
     status: str
     priority: str
+    artifact_path: str | None = None
 
 
 class AssignTaskRequest(BaseModel):
@@ -85,6 +86,11 @@ class AssignTaskRequest(BaseModel):
 class AddTaskNoteRequest(BaseModel):
     task_id: UUID
     note: str
+
+
+class ReportArtifactRequest(BaseModel):
+    task_id: UUID
+    artifact_path: str
 
 
 class ArtifactPaths(BaseModel):

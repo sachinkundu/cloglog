@@ -15,6 +15,7 @@ from src.agent.scheduler import run_heartbeat_checker
 from src.agent.services import AgentService
 from src.board.models import Epic, Feature, Project, Task
 from src.board.repository import BoardRepository
+from src.document.repository import DocumentRepository
 
 # --- Helpers ---
 
@@ -612,6 +613,320 @@ class TestAgentService:
         worktree = await repo.get_worktree(wt_id)  # type: ignore[arg-type]
         assert worktree is not None
         assert worktree.status == "online"
+
+    # --- report_artifact tests ---
+
+    async def test_report_artifact_sets_path(self, db_session: AsyncSession) -> None:
+        """report_artifact stores artifact_path on a spec task in review."""
+        project = await _create_project(db_session)
+        epic = Epic(project_id=project.id, title="E", position=0)
+        db_session.add(epic)
+        await db_session.commit()
+        await db_session.refresh(epic)
+
+        feature = Feature(epic_id=epic.id, title="F", position=0)
+        db_session.add(feature)
+        await db_session.commit()
+        await db_session.refresh(feature)
+
+        task = Task(
+            feature_id=feature.id,
+            title="Write spec",
+            description="",
+            priority="normal",
+            position=0,
+            status="review",
+            task_type="spec",
+            pr_url="https://github.com/test/repo/pull/10",
+        )
+        db_session.add(task)
+        await db_session.commit()
+        await db_session.refresh(task)
+
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        reg = await service.register(project.id, "/repo/wt-art", "wt-art")
+        wt_id = reg["worktree_id"]
+
+        result = await service.report_artifact(
+            wt_id,
+            task.id,
+            "docs/specs/feature-1.md",  # type: ignore[arg-type]
+        )
+        assert result["task_id"] == task.id
+        assert result["artifact_path"] == "docs/specs/feature-1.md"
+        assert result["feature_id"] == feature.id
+
+        updated = await BoardRepository(db_session).get_task(task.id)
+        assert updated is not None
+        assert updated.artifact_path == "docs/specs/feature-1.md"
+
+    async def test_report_artifact_rejects_non_spec_plan(self, db_session: AsyncSession) -> None:
+        """report_artifact rejects impl tasks."""
+        project = await _create_project(db_session)
+        epic = Epic(project_id=project.id, title="E", position=0)
+        db_session.add(epic)
+        await db_session.commit()
+        await db_session.refresh(epic)
+
+        feature = Feature(epic_id=epic.id, title="F", position=0)
+        db_session.add(feature)
+        await db_session.commit()
+        await db_session.refresh(feature)
+
+        task = Task(
+            feature_id=feature.id,
+            title="Implement feature",
+            description="",
+            priority="normal",
+            position=0,
+            status="review",
+            task_type="impl",
+            pr_url="https://github.com/test/repo/pull/11",
+        )
+        db_session.add(task)
+        await db_session.commit()
+        await db_session.refresh(task)
+
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        reg = await service.register(project.id, "/repo/wt-art2", "wt-art2")
+        wt_id = reg["worktree_id"]
+
+        with pytest.raises(ValueError, match="only spec and plan tasks produce artifacts"):
+            await service.report_artifact(
+                wt_id,
+                task.id,
+                "docs/impl.md",  # type: ignore[arg-type]
+            )
+
+    async def test_report_artifact_rejects_non_review_status(
+        self, db_session: AsyncSession
+    ) -> None:
+        """report_artifact rejects tasks not in review status."""
+        project = await _create_project(db_session)
+        epic = Epic(project_id=project.id, title="E", position=0)
+        db_session.add(epic)
+        await db_session.commit()
+        await db_session.refresh(epic)
+
+        feature = Feature(epic_id=epic.id, title="F", position=0)
+        db_session.add(feature)
+        await db_session.commit()
+        await db_session.refresh(feature)
+
+        task = Task(
+            feature_id=feature.id,
+            title="Write spec",
+            description="",
+            priority="normal",
+            position=0,
+            status="in_progress",
+            task_type="spec",
+        )
+        db_session.add(task)
+        await db_session.commit()
+        await db_session.refresh(task)
+
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        reg = await service.register(project.id, "/repo/wt-art3", "wt-art3")
+        wt_id = reg["worktree_id"]
+
+        with pytest.raises(ValueError, match="must be in 'review' status"):
+            await service.report_artifact(
+                wt_id,
+                task.id,
+                "docs/specs/feature.md",  # type: ignore[arg-type]
+            )
+
+    async def test_report_artifact_creates_document(self, db_session: AsyncSession) -> None:
+        """report_artifact creates a Document record attached to the feature."""
+        project = await _create_project(db_session)
+        epic = Epic(project_id=project.id, title="E", position=0)
+        db_session.add(epic)
+        await db_session.commit()
+        await db_session.refresh(epic)
+
+        feature = Feature(epic_id=epic.id, title="F", position=0)
+        db_session.add(feature)
+        await db_session.commit()
+        await db_session.refresh(feature)
+
+        task = Task(
+            feature_id=feature.id,
+            title="Write spec for auth",
+            description="",
+            priority="normal",
+            position=0,
+            status="review",
+            task_type="spec",
+            pr_url="https://github.com/test/repo/pull/12",
+        )
+        db_session.add(task)
+        await db_session.commit()
+        await db_session.refresh(task)
+
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        reg = await service.register(project.id, "/repo/wt-art4", "wt-art4")
+        wt_id = reg["worktree_id"]
+
+        await service.report_artifact(
+            wt_id,
+            task.id,
+            "docs/specs/auth.md",  # type: ignore[arg-type]
+        )
+
+        doc_repo = DocumentRepository(db_session)
+        docs = await doc_repo.get_documents_for_entity("feature", feature.id)
+        assert len(docs) == 1
+        assert docs[0].doc_type == "spec"
+        assert docs[0].source_path == "docs/specs/auth.md"
+        assert docs[0].title == "spec — Write spec for auth"
+        assert docs[0].attached_to_id == feature.id
+
+    # --- Pipeline guard artifact tests ---
+
+    async def test_pipeline_blocks_plan_when_spec_has_no_artifact(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Plan task blocked when spec is in review with pr_url but no artifact_path."""
+        project = await _create_project(db_session)
+        epic = Epic(project_id=project.id, title="E", position=0)
+        db_session.add(epic)
+        await db_session.commit()
+        await db_session.refresh(epic)
+
+        feature = Feature(epic_id=epic.id, title="F", position=0)
+        db_session.add(feature)
+        await db_session.commit()
+        await db_session.refresh(feature)
+
+        spec_task = Task(
+            feature_id=feature.id,
+            title="Write spec",
+            description="",
+            priority="normal",
+            position=0,
+            status="review",
+            task_type="spec",
+            pr_url="https://github.com/test/repo/pull/20",
+            number=1,
+        )
+        plan_task = Task(
+            feature_id=feature.id,
+            title="Write plan",
+            description="",
+            priority="normal",
+            position=1,
+            status="backlog",
+            task_type="plan",
+            number=2,
+        )
+        db_session.add_all([spec_task, plan_task])
+        await db_session.commit()
+        await db_session.refresh(spec_task)
+        await db_session.refresh(plan_task)
+
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        reg = await service.register(project.id, "/repo/wt-pipe1", "wt-pipe1")
+        wt_id = reg["worktree_id"]
+
+        with pytest.raises(ValueError, match="artifact not attached"):
+            await service.start_task(wt_id, plan_task.id)  # type: ignore[arg-type]
+
+    async def test_pipeline_allows_plan_when_spec_has_artifact(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Plan task allowed when spec is in review with pr_url AND artifact_path."""
+        project = await _create_project(db_session)
+        epic = Epic(project_id=project.id, title="E", position=0)
+        db_session.add(epic)
+        await db_session.commit()
+        await db_session.refresh(epic)
+
+        feature = Feature(epic_id=epic.id, title="F", position=0)
+        db_session.add(feature)
+        await db_session.commit()
+        await db_session.refresh(feature)
+
+        spec_task = Task(
+            feature_id=feature.id,
+            title="Write spec",
+            description="",
+            priority="normal",
+            position=0,
+            status="review",
+            task_type="spec",
+            pr_url="https://github.com/test/repo/pull/21",
+            artifact_path="docs/specs/feature.md",
+            number=1,
+        )
+        plan_task = Task(
+            feature_id=feature.id,
+            title="Write plan",
+            description="",
+            priority="normal",
+            position=1,
+            status="backlog",
+            task_type="plan",
+            number=2,
+        )
+        db_session.add_all([spec_task, plan_task])
+        await db_session.commit()
+        await db_session.refresh(spec_task)
+        await db_session.refresh(plan_task)
+
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        reg = await service.register(project.id, "/repo/wt-pipe2", "wt-pipe2")
+        wt_id = reg["worktree_id"]
+
+        result = await service.start_task(wt_id, plan_task.id)  # type: ignore[arg-type]
+        assert result["status"] == "in_progress"
+
+    async def test_pipeline_allows_done_spec_without_artifact(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Plan task allowed when spec is done (human override), even without artifact_path."""
+        project = await _create_project(db_session)
+        epic = Epic(project_id=project.id, title="E", position=0)
+        db_session.add(epic)
+        await db_session.commit()
+        await db_session.refresh(epic)
+
+        feature = Feature(epic_id=epic.id, title="F", position=0)
+        db_session.add(feature)
+        await db_session.commit()
+        await db_session.refresh(feature)
+
+        spec_task = Task(
+            feature_id=feature.id,
+            title="Write spec",
+            description="",
+            priority="normal",
+            position=0,
+            status="done",
+            task_type="spec",
+            number=1,
+        )
+        plan_task = Task(
+            feature_id=feature.id,
+            title="Write plan",
+            description="",
+            priority="normal",
+            position=1,
+            status="backlog",
+            task_type="plan",
+            number=2,
+        )
+        db_session.add_all([spec_task, plan_task])
+        await db_session.commit()
+        await db_session.refresh(spec_task)
+        await db_session.refresh(plan_task)
+
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        reg = await service.register(project.id, "/repo/wt-pipe3", "wt-pipe3")
+        wt_id = reg["worktree_id"]
+
+        result = await service.start_task(wt_id, plan_task.id)  # type: ignore[arg-type]
+        assert result["status"] == "in_progress"
 
 
 # --- Scheduler Tests ---

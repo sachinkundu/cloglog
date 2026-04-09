@@ -191,9 +191,17 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 - **Zellij tab management:** See `docs/zellij-guide.md` for the complete guide. Key rules: always name tabs after the worktree (`wt-*`), close only tabs you created, close by name→TAB_ID lookup via `zellij action list-tabs`, never by index.
 
 ### Feature Pipeline Continuity
-- **Agents working on features (F-*) must complete the full pipeline**, not just one task. The pipeline is: spec → plan → impl. After the spec PR merges, create the plan task (if it doesn't exist), start it, write the plan, PR it. After the plan merges, create the impl task, start it, implement, PR it.
-- **After each task's PR merges, check for next work before exiting.** Call `get_my_tasks` — if there are more tasks assigned, start the next one. If no tasks are assigned but the feature pipeline isn't complete (e.g., spec is done but plan and impl are not), create the next pipeline task using `create_task`, start it, and continue.
-- **Never exit after just the spec task.** If your prompt says "write design spec for F-X", that's phase 1. After the spec PR merges, you must continue to phase 2 (impl plan) and phase 3 (implementation) unless the user explicitly tells you to stop.
+- **When launching an agent for a feature (F-*), create ALL three pipeline tasks upfront** and assign them to the agent's worktree. The state machine guards enforce ordering — the agent can't start the plan until the spec is done, can't start impl until the plan is done. But having all tasks assigned means the agent knows its full workload and won't exit prematurely.
+  ```
+  # At launch time, create all three:
+  create_task(feature_id, "Write design spec for F-X", task_type="spec")
+  create_task(feature_id, "Write implementation plan for F-X", task_type="plan")  
+  create_task(feature_id, "Implement F-X", task_type="impl")
+  # Assign all to the worktree via assign_task or start_task
+  ```
+- **Agents must complete the full pipeline**, not just one task. The pipeline is: spec → plan → impl. After the spec PR merges, start the plan task. After the plan PR merges, start the impl task.
+- **After each task's PR merges, call `get_my_tasks`** — if there are more tasks assigned, start the next one. The state machine guards will allow it only if prerequisites are met.
+- **Never exit after just the spec task.** If `get_my_tasks` still returns tasks, you have more work to do.
 
 ### Agent Shutdown
 - **Agents deregister themselves.** When the feature pipeline is complete AND `get_my_tasks` returns empty, generate shutdown artifacts and call `unregister-by-path`. Never rely on the master agent or scripts to deregister.

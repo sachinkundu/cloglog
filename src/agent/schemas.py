@@ -22,7 +22,7 @@ class RegisterResponse(BaseModel):
     session_id: UUID
     current_task: TaskInfo | None = None
     resumed: bool = False
-    agent_token: str = ""
+    agent_token: str | None = None
 
 
 # --- Heartbeat ---

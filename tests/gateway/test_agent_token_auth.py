@@ -111,34 +111,23 @@ async def test_heartbeat_with_wrong_worktree_id_rejected(client: AsyncClient) ->
 
 
 @pytest.mark.asyncio
-async def test_agent_token_rotates_on_reregistration(client: AsyncClient) -> None:
-    """Re-registering the same worktree path invalidates the old token."""
+async def test_agent_token_stable_on_reregistration(client: AsyncClient) -> None:
+    """Re-registering the same worktree path keeps the existing token valid."""
     _project_id, api_key = await _create_project(client)
     reg1 = await _register_agent(client, api_key, "/tmp/token-test-5")
-    old_token = reg1["agent_token"]
+    original_token = reg1["agent_token"]
     wt_id = reg1["worktree_id"]
 
-    # Re-register same path
+    # Re-register same path — token should NOT rotate
     reg2 = await _register_agent(client, api_key, "/tmp/token-test-5")
-    new_token = reg2["agent_token"]
-    assert new_token != old_token
+    assert reg2["agent_token"] is None  # No new token on reconnect
     assert reg2["worktree_id"] == wt_id  # Same worktree
 
-    # Old token should fail
+    # Original token still works
     resp = await client.post(
         f"/api/v1/agents/{wt_id}/heartbeat",
         headers={
-            "Authorization": f"Bearer {old_token}",
-            "X-Dashboard-Key": "",
-        },
-    )
-    assert resp.status_code == 401
-
-    # New token should work
-    resp = await client.post(
-        f"/api/v1/agents/{wt_id}/heartbeat",
-        headers={
-            "Authorization": f"Bearer {new_token}",
+            "Authorization": f"Bearer {original_token}",
             "X-Dashboard-Key": "",
         },
     )

@@ -201,10 +201,10 @@ Tests all state transitions and guards.
 | `test_pipeline_ordering_plan_before_impl` | Start impl before plan done → 409 |
 | `test_pipeline_ordering_standalone_tasks_skip` | task_type="task" ignores pipeline ordering |
 | `test_pr_url_required_for_review` | Any task type → review without pr_url → 409 |
-| `test_pr_url_reuse_blocked` | Task A done with PR-1, Task B tries PR-1 → 409 |
-| `test_pr_url_reuse_allowed_different_feature` | Task in Feature A done with PR-1, Task in Feature B can use PR-1 |
+| `test_pr_url_reuse_blocked_same_feature` | Task A done with PR-1, Task B in same feature tries PR-1 → 409 |
+| `test_pr_url_reuse_blocked_cross_feature` | Task in Feature A done with PR-1, Task in Feature B tries PR-1 → 409. PRs are unique per project, not per feature. (Note: current code only checks within feature — this test documents the desired behavior and will drive a code fix to make the guard project-wide.) |
 | `test_one_active_task_guard` | Start task while another is in_progress → 409 |
-| `test_one_active_task_review_counts` | Task in review blocks starting another (review is active) |
+| `test_one_active_task_review_counts` | Task in review blocks starting another (review is active). **Future direction**: The user is considering relaxing this to allow starting independent tasks (no pipeline dependency) while another is in review. Since task-level dependency tracking (T-36) isn't implemented yet, the current guard blocks all new tasks when one is active. When task dependencies land, this test should be updated to verify: (a) dependent task blocked while predecessor in review, (b) independent task allowed while unrelated task in review. |
 
 ### Scenario 4: Multi-Project Isolation
 
@@ -226,10 +226,10 @@ Tests the access control middleware in `src/gateway/app.py`.
 | Test | What it proves |
 |------|---------------|
 | `test_mcp_access_all_routes` | Authorization + X-MCP-Request → board routes succeed |
-| `test_agent_key_only_agent_routes` | Authorization only → /agents/* succeeds |
+| `test_agent_key_only_agent_routes` | Authorization only → /agents/* succeeds. **Design question**: Should agent-facing routes require MCP server mediation (X-MCP-Request) even for `/agents/*`? Currently agents can hit their own routes directly with just a Bearer token. If the intent is that all agent operations go through MCP, this test would change to verify that raw agent keys are rejected everywhere and only MCP credentials work. |
 | `test_agent_key_blocked_from_board` | Authorization only → /projects/*/board → 403 |
 | `test_dashboard_key_non_agent_routes` | X-Dashboard-Key → board routes succeed |
-| `test_dashboard_key_agent_routes_allowed` | X-Dashboard-Key → agent routes (middleware passes through) |
+| `test_dashboard_key_agent_routes_allowed` | X-Dashboard-Key → agent routes (middleware currently passes through). **Design question**: Should dashboard keys be blocked from agent routes? The current middleware only restricts agent-only keys from board routes, but doesn't restrict dashboard keys from agent routes. If the intent is that dashboard and agent are separate credential domains, this test should verify 403 instead. The spec documents current behavior — implementation can tighten this if desired. |
 | `test_no_credentials_rejected` | No headers → 401 |
 | `test_invalid_dashboard_key_rejected` | X-Dashboard-Key: wrong → 403 |
 | `test_health_endpoint_no_auth` | GET /health → 200 (not under /api/v1/) |
@@ -263,7 +263,7 @@ Tests that board state is always correct after operations.
 | `test_partial_rollup_review` | One task in review → feature status is review |
 | `test_delete_task_updates_counts` | Delete a task → board total_tasks decremented |
 | `test_entity_numbering_sequential` | Create 5 tasks → numbers are sequential (T-1 through T-5) |
-| `test_bulk_import_creates_hierarchy` | Import plan → correct counts, board reflects all entities |
+| `test_bulk_import_creates_hierarchy` | `POST /api/v1/projects/{pid}/import` with nested epics/features/tasks → correct counts, board reflects all entities. (This endpoint exists at `src/board/routes.py:666` and is already tested in `test_project_lifecycle.py:test_bulk_import` and `test_full_workflow.py`.) |
 | `test_board_exclude_done_filter` | Request board with exclude_done=True → done tasks omitted |
 | `test_board_epic_filter` | Request board with epic_id → only that epic's tasks returned |
 

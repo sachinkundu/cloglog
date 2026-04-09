@@ -6,6 +6,8 @@ function mockClient(): CloglogClient {
   return {
     request: vi.fn().mockResolvedValue({}),
     registerAgent: vi.fn().mockResolvedValue({}),
+    setAgentToken: vi.fn(),
+    clearAgentToken: vi.fn(),
   } as unknown as CloglogClient
 }
 

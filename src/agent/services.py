@@ -150,7 +150,13 @@ class AgentService:
         if not predecessors:
             return  # No predecessor tasks exist — allow start
 
-        undone = [t for t in predecessors if t.status != "done"]
+        # Accept "done" or "review with a pr_url" as completed — agents shouldn't
+        # be blocked waiting for the user to drag a card to done on the board
+        # when the PR is already merged.
+        def is_completed(t: Task) -> bool:
+            return t.status == "done" or (t.status == "review" and bool(t.pr_url))
+
+        undone = [t for t in predecessors if not is_completed(t)]
         if undone:
             titles = ", ".join(f"T-{t.number} ({t.status})" for t in undone)
             raise ValueError(

@@ -168,6 +168,8 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
   ```bash
   # Check merge state
   gh pr view <PR_NUM> --json state -q .state
+  # Check CI status
+  gh pr checks <PR_NUM> --json name,state,conclusion
   # Check for inline review comments (this is where most feedback lives)
   gh api repos/sachinkundu/cloglog/pulls/<PR_NUM>/comments --jq '.[] | "\(.id) | \(.path):\(.line) | \(.body[:80])"'
   # Check for issue-style PR comments
@@ -176,6 +178,12 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
   gh api repos/sachinkundu/cloglog/pulls/<PR_NUM>/reviews --jq '.[] | "\(.state) | \(.body[:80])"'
   ```
   When merged: mark tasks as done via `complete_task`, call `unregister_agent`, then exit cleanly.
+- **CI failure recovery.** When `gh pr checks` shows a failure:
+  1. Find the failed run: `RUN_ID=$(gh run list --branch <BRANCH> --workflow ci.yml -L 1 --json databaseId -q '.[0].databaseId')`
+  2. Read the logs: `gh run view $RUN_ID --log-failed`
+  3. Diagnose the failure from the log output
+  4. Push a fix commit — CI re-triggers automatically (the `synchronize` event fires on push)
+  5. If CI is `IN_PROGRESS`, skip and check again on the next poll iteration
 - **Auto-move on PR review comments:** When polling detects new review comments on a task in review, the agent MUST call `update_task_status` to move the task back to `in_progress` before addressing the feedback. This keeps the board accurate — the task visibly returns to the "In Progress" column while the agent works on revisions. After pushing fixes, move it back to `review` with the same PR URL. The `review → in_progress` transition is explicitly allowed by the state machine guards.
 - **Reply to every PR comment you address.** When you fix a reviewer's comment, reply directly to that comment on GitHub explaining what you did. The reviewer needs to see at a glance which comments were handled without digging through diffs.
   ```bash

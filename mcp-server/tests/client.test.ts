@@ -6,6 +6,7 @@ describe('CloglogClient', () => {
     const client = new CloglogClient({
       baseUrl: 'http://localhost:8000',
       apiKey: 'test-key',
+      serviceKey: 'test-service-key',
     })
     expect(client).toBeTruthy()
   })
@@ -14,6 +15,7 @@ describe('CloglogClient', () => {
     const client = new CloglogClient({
       baseUrl: 'http://localhost:8000/',
       apiKey: 'test-key',
+      serviceKey: 'test-service-key',
     })
     expect((client as any).baseUrl).toBe('http://localhost:8000')
   })
@@ -25,6 +27,7 @@ describe('CloglogClient', () => {
       client = new CloglogClient({
         baseUrl: 'http://localhost:8000',
         apiKey: 'test-key',
+      serviceKey: 'test-service-key',
       })
     })
 
@@ -53,8 +56,9 @@ describe('CloglogClient', () => {
         expect.objectContaining({
           method: 'POST',
           headers: expect.objectContaining({
-            Authorization: 'Bearer test-key',
+            Authorization: 'Bearer test-service-key',
             'Content-Type': 'application/json',
+            'X-MCP-Request': 'true',
           }),
           body: JSON.stringify({ worktree_path: '/home/user/project/.git/worktrees/wt-mcp' }),
         }),

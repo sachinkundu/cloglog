@@ -1,0 +1,198 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'frontend/src/**'
+      - 'frontend/package.json'
+      - 'frontend/package-lock.json'
+      - 'frontend/tsconfig*.json'
+      - 'frontend/vite.config.ts'
+      - 'frontend/vitest.config.ts'
+      - 'mcp-server/src/**'
+      - 'mcp-server/package.json'
+      - 'mcp-server/package-lock.json'
+      - 'mcp-server/tsconfig.json'
+      - 'tests/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'Makefile'
+      - 'alembic/**'
+      - 'alembic.ini'
+      - '.github/workflows/ci.yml'
+
+concurrency:
+  group: ci-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: cloglog
+          POSTGRES_PASSWORD: cloglog_dev
+          POSTGRES_DB: cloglog
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cloglog"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            frontend/package-lock.json
+            mcp-server/package-lock.json
+
+      - name: Install Python dependencies
+        run: uv sync --all-extras
+
+      - name: Install frontend dependencies
+        run: cd frontend && npm ci
+
+      - name: Install MCP server dependencies
+        run: cd mcp-server && npm ci
+
+      - name: Run database migrations
+        run: uv run alembic upgrade head
+
+      - name: Lint
+        run: uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/
+
+      - name: Typecheck
+        run: uv run mypy src/
+
+      - name: Backend tests
+        run: uv run pytest tests/ --cov=src --cov-report=term-missing --cov-fail-under=70 -v --tb=short
+
+      - name: Frontend tests
+        run: cd frontend && npx vitest run
+
+      - name: MCP server tests
+        run: cd mcp-server && npm test
+
+      - name: Contract check
+        run: make contract-check
+
+      - name: Upload test artifacts
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-results
+          path: |
+            htmlcov/
+            frontend/coverage/
+          retention-days: 7
+
+  e2e-browser:
+    needs: ci
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: cloglog
+          POSTGRES_PASSWORD: cloglog_dev
+          POSTGRES_DB: cloglog
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cloglog"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check if browser tests needed
+        id: check
+        run: |
+          FILES=$(gh pr diff "$PR_NUMBER" --name-only)
+          if echo "$FILES" | grep -qE '^(frontend/|src/gateway/|tests/e2e/playwright/)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping browser tests — no frontend/gateway/playwright changes"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+
+      - uses: actions/setup-python@v5
+        if: steps.check.outputs.run == 'true'
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@v4
+        if: steps.check.outputs.run == 'true'
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.run == 'true'
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            frontend/package-lock.json
+            tests/e2e/playwright/package-lock.json
+
+      - name: Install Python dependencies
+        if: steps.check.outputs.run == 'true'
+        run: uv sync --all-extras
+
+      - name: Install frontend dependencies
+        if: steps.check.outputs.run == 'true'
+        run: cd frontend && npm ci
+
+      - name: Install Playwright dependencies
+        if: steps.check.outputs.run == 'true'
+        run: cd tests/e2e/playwright && npm ci
+
+      - name: Install Playwright browsers
+        if: steps.check.outputs.run == 'true'
+        run: cd tests/e2e/playwright && npx playwright install --with-deps chromium
+
+      - name: Run database migrations
+        if: steps.check.outputs.run == 'true'
+        run: uv run alembic upgrade head
+
+      - name: Run Playwright tests
+        if: steps.check.outputs.run == 'true'
+        run: cd tests/e2e/playwright && npx playwright test
+        env:
+          BACKEND_PORT: '8001'
+          FRONTEND_PORT: '5174'
+
+      - name: Upload Playwright failure artifacts
+        uses: actions/upload-artifact@v4
+        if: failure() && steps.check.outputs.run == 'true'
+        with:
+          name: playwright-failures
+          path: |
+            tests/e2e/playwright/test-results/
+            tests/e2e/playwright/playwright-report/
+          retention-days: 14

@@ -74,6 +74,11 @@ export function createServer(client: CloglogClient): McpServer {
     async ({ worktree_path }) => {
       const result = await handlers.register_agent({ worktree_path }) as Record<string, unknown>
       currentWorktreeId = result.worktree_id as string
+      // Store agent token for subsequent agent-scoped requests
+      const agentToken = result.agent_token as string | undefined
+      if (agentToken) {
+        client.setAgentToken(agentToken)
+      }
       // Get project ID from the auth token
       const project = await handlers.get_project({}) as Record<string, unknown>
       currentProjectId = project.id as string
@@ -91,6 +96,7 @@ export function createServer(client: CloglogClient): McpServer {
       if (typeof wt !== 'string') return wt
       heartbeat.stop()
       await handlers.unregister_agent({ worktree_id: wt })
+      client.clearAgentToken()
       currentWorktreeId = null
       currentProjectId = null
       return { content: [{ type: 'text' as const, text: `Unregistered ${wt}.` }] }

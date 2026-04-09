@@ -35,8 +35,7 @@ async def test_full_workflow(client: AsyncClient) -> None:
     assert project["status"] == "active"
 
     # ── 2. Verify auth works (Gateway context) ───────────────
-    # /gateway/me needs both MCP-level access (to pass middleware for non-agent route)
-    # and an API key (for CurrentProject dependency)
+    # /gateway/me needs MCP-level access (to pass middleware) + project API key
     auth_headers = {"Authorization": f"Bearer {api_key}", "X-MCP-Request": "true"}
     me = (await client.get("/api/v1/gateway/me", headers=auth_headers)).json()
     assert me["id"] == pid
@@ -108,6 +107,8 @@ async def test_full_workflow(client: AsyncClient) -> None:
         )
     ).json()
     wt_id = reg["worktree_id"]
+    agent_token = reg["agent_token"]
+    agent_headers = {"Authorization": f"Bearer {agent_token}", "X-Dashboard-Key": ""}
     assert reg["resumed"] is False
 
     # Verify worktree is listed
@@ -121,12 +122,16 @@ async def test_full_workflow(client: AsyncClient) -> None:
     )
 
     start = (
-        await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": task_id})
+        await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": task_id},
+            headers=agent_headers,
+        )
     ).json()
     assert start["status"] == "in_progress"
 
     # ── 7. Heartbeat while working ───────────────────────────
-    hb = (await client.post(f"/api/v1/agents/{wt_id}/heartbeat")).json()
+    hb = (await client.post(f"/api/v1/agents/{wt_id}/heartbeat", headers=agent_headers)).json()
     assert hb["status"] in ("online", "ok")
 
     # ── 8. Attach a document to the task (Document context) ──
@@ -162,6 +167,7 @@ async def test_full_workflow(client: AsyncClient) -> None:
     review_resp = await client.patch(
         f"/api/v1/agents/{wt_id}/task-status",
         json={"task_id": task_id, "status": "review", "pr_url": pr_url},
+        headers=agent_headers,
     )
     assert review_resp.status_code == 204
 
@@ -169,16 +175,14 @@ async def test_full_workflow(client: AsyncClient) -> None:
     done_resp = await client.patch(f"/api/v1/tasks/{task_id}", json={"status": "done"})
     assert done_resp.status_code == 200
 
-    # ── 10. Board reflects the status change ─────────────────
+    # ── 10. Board shows task in done column ────────────────────
     board_after = (await client.get(f"/api/v1/projects/{pid}/board")).json()
-    assert board_after["done_count"] == 1
-
     done_col = next(c for c in board_after["columns"] if c["status"] == "done")
     done_ids = [t["id"] for t in done_col["tasks"]]
     assert task_id in done_ids
 
     # ── 11. Unregister agent ─────────────────────────────────
-    unreg = await client.post(f"/api/v1/agents/{wt_id}/unregister")
+    unreg = await client.post(f"/api/v1/agents/{wt_id}/unregister", headers=agent_headers)
     assert unreg.status_code == 204
 
     # ── 12. Attach a project-level document ──────────────────

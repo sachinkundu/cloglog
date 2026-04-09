@@ -22,6 +22,10 @@ def _auth(api_key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key}"}
 
 
+def _agent_auth(agent_token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {agent_token}", "X-Dashboard-Key": ""}
+
+
 async def _setup_project_with_task(client: AsyncClient) -> tuple[dict, str]:
     """Create a project with one task, return (project_dict, task_id)."""
     project = (
@@ -65,6 +69,8 @@ async def test_agent_register(client: AsyncClient) -> None:
     data = resp.json()
     assert "worktree_id" in data
     assert "session_id" in data
+    assert "agent_token" in data
+    assert len(data["agent_token"]) > 0
     assert data["resumed"] is False
 
 
@@ -82,9 +88,10 @@ async def test_agent_register_resumes_existing(client: AsyncClient) -> None:
     )
     assert r1.status_code == 201
     wt_id = r1.json()["worktree_id"]
+    agent_token = r1.json()["agent_token"]
 
     # Unregister (now deletes the worktree record)
-    unr = await client.post(f"/api/v1/agents/{wt_id}/unregister")
+    unr = await client.post(f"/api/v1/agents/{wt_id}/unregister", headers=_agent_auth(agent_token))
     assert unr.status_code == 204
 
     # Re-register same path — creates a brand-new worktree, not a resume
@@ -111,8 +118,9 @@ async def test_agent_heartbeat(client: AsyncClient) -> None:
         headers=h,
     )
     wt_id = reg.json()["worktree_id"]
+    agent_token = reg.json()["agent_token"]
 
-    resp = await client.post(f"/api/v1/agents/{wt_id}/heartbeat")
+    resp = await client.post(f"/api/v1/agents/{wt_id}/heartbeat", headers=_agent_auth(agent_token))
     assert resp.status_code == 200
     assert resp.json()["status"] in ("online", "ok")
     assert "last_heartbeat" in resp.json()
@@ -131,8 +139,9 @@ async def test_agent_list_tasks(client: AsyncClient) -> None:
         headers=h,
     )
     wt_id = reg.json()["worktree_id"]
+    agent_token = reg.json()["agent_token"]
 
-    resp = await client.get(f"/api/v1/agents/{wt_id}/tasks")
+    resp = await client.get(f"/api/v1/agents/{wt_id}/tasks", headers=_agent_auth(agent_token))
     assert resp.status_code == 200
     tasks = resp.json()
     assert isinstance(tasks, list)
@@ -149,6 +158,8 @@ async def test_agent_start_and_move_to_review(client: AsyncClient) -> None:
         headers=h,
     )
     wt_id = reg.json()["worktree_id"]
+    agent_token = reg.json()["agent_token"]
+    ah = _agent_auth(agent_token)
 
     # Assign task to worktree first
     await client.patch(
@@ -157,7 +168,9 @@ async def test_agent_start_and_move_to_review(client: AsyncClient) -> None:
     )
 
     # Start task
-    start_resp = await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": task_id})
+    start_resp = await client.post(
+        f"/api/v1/agents/{wt_id}/start-task", json={"task_id": task_id}, headers=ah
+    )
     assert start_resp.status_code == 200
     assert start_resp.json()["status"] == "in_progress"
 
@@ -165,7 +178,12 @@ async def test_agent_start_and_move_to_review(client: AsyncClient) -> None:
     pr_url = f"https://github.com/test/repo/pull/{uuid.uuid4().hex[:8]}"
     review_resp = await client.patch(
         f"/api/v1/agents/{wt_id}/task-status",
-        json={"task_id": task_id, "status": "review", "pr_url": pr_url},
+        json={
+            "task_id": task_id,
+            "status": "review",
+            "pr_url": pr_url,
+        },
+        headers=ah,
     )
     assert review_resp.status_code == 204
 
@@ -185,6 +203,8 @@ async def test_agent_update_task_status(client: AsyncClient) -> None:
         headers=h,
     )
     wt_id = reg.json()["worktree_id"]
+    agent_token = reg.json()["agent_token"]
+    ah = _agent_auth(agent_token)
 
     # Assign task
     await client.patch(
@@ -192,10 +212,24 @@ async def test_agent_update_task_status(client: AsyncClient) -> None:
         json={"status": "assigned", "worktree_id": wt_id},
     )
 
+    # Start task first
+    start = await client.post(
+        f"/api/v1/agents/{wt_id}/start-task",
+        json={"task_id": task_id},
+        headers=ah,
+    )
+    assert start.status_code == 200
+
+    # Move to review (pr_url required)
     pr_url = f"https://github.com/test/repo/pull/{uuid.uuid4().hex[:8]}"
     resp = await client.patch(
         f"/api/v1/agents/{wt_id}/task-status",
-        json={"task_id": task_id, "status": "review", "pr_url": pr_url},
+        json={
+            "task_id": task_id,
+            "status": "review",
+            "pr_url": pr_url,
+        },
+        headers=ah,
     )
     assert resp.status_code == 204
 
@@ -240,6 +274,7 @@ async def test_agent_unregister(client: AsyncClient) -> None:
         headers=h,
     )
     wt_id = reg.json()["worktree_id"]
+    agent_token = reg.json()["agent_token"]
 
-    resp = await client.post(f"/api/v1/agents/{wt_id}/unregister")
+    resp = await client.post(f"/api/v1/agents/{wt_id}/unregister", headers=_agent_auth(agent_token))
     assert resp.status_code == 204

@@ -6,21 +6,34 @@
 export interface CloglogClientConfig {
   baseUrl: string
   apiKey: string
+  serviceKey: string
 }
 
 export interface RegisterAgentResult {
   worktree_id: string
   current_task: { id: string; title: string } | null
   resumed: boolean
+  agent_token: string
 }
 
 export class CloglogClient {
   private baseUrl: string
   private apiKey: string
+  private serviceKey: string
+  private agentToken: string | null = null
 
   constructor(config: CloglogClientConfig) {
     this.baseUrl = config.baseUrl.replace(/\/$/, '')
     this.apiKey = config.apiKey
+    this.serviceKey = config.serviceKey
+  }
+
+  setAgentToken(token: string): void {
+    this.agentToken = token
+  }
+
+  clearAgentToken(): void {
+    this.agentToken = null
   }
 
   async registerAgent(worktreePath: string): Promise<RegisterAgentResult> {
@@ -31,10 +44,25 @@ export class CloglogClient {
 
   async request(method: string, path: string, body?: unknown): Promise<unknown> {
     const url = `${this.baseUrl}${path}`
+    const isAgentRoute = path.startsWith('/api/v1/agents/')
+    const isRegisterRoute = path === '/api/v1/agents/register'
+    const isUnregisterByPath = path === '/api/v1/agents/unregister-by-path'
+
     const headers: Record<string, string> = {
-      'Authorization': `Bearer ${this.apiKey}`,
       'Content-Type': 'application/json',
-      'X-MCP-Request': 'true',
+    }
+
+    if (isRegisterRoute || isUnregisterByPath) {
+      // Registration/unregister-by-path uses project API key via MCP path
+      headers['Authorization'] = `Bearer ${this.serviceKey}`
+      headers['X-MCP-Request'] = 'true'
+    } else if (isAgentRoute && this.agentToken) {
+      // Agent-scoped routes use per-agent token (no X-MCP-Request)
+      headers['Authorization'] = `Bearer ${this.agentToken}`
+    } else {
+      // Board/document routes use MCP service key
+      headers['Authorization'] = `Bearer ${this.serviceKey}`
+      headers['X-MCP-Request'] = 'true'
     }
 
     const response = await fetch(url, {

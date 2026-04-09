@@ -47,8 +47,8 @@ async def _handle_review_event(event: Event) -> None:
             )
         )
 
-    # Desktop notification (best-effort)
-    if os.environ.get("DISPLAY"):
+    # Desktop notification (best-effort, suppressed during tests)
+    if os.environ.get("DISPLAY") and not os.environ.get("PYTEST_CURRENT_TEST"):
         with contextlib.suppress(FileNotFoundError):
             await asyncio.create_subprocess_exec(
                 "notify-send",

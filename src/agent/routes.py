@@ -27,7 +27,7 @@ from src.agent.schemas import (
 )
 from src.agent.services import AgentService
 from src.board.repository import BoardRepository
-from src.gateway.auth import CurrentProject
+from src.gateway.auth import CurrentAgent, CurrentProject
 from src.shared.database import get_session
 from src.shared.events import Event, EventType, event_bus
 
@@ -51,7 +51,9 @@ async def register_agent(
 
 
 @router.post("/agents/{worktree_id}/heartbeat", response_model=HeartbeatResponse)
-async def heartbeat(worktree_id: UUID, service: ServiceDep) -> dict[str, object]:
+async def heartbeat(
+    worktree_id: UUID, service: ServiceDep, agent: CurrentAgent
+) -> dict[str, object]:
     try:
         return await service.heartbeat(worktree_id)
     except ValueError as e:
@@ -59,7 +61,7 @@ async def heartbeat(worktree_id: UUID, service: ServiceDep) -> dict[str, object]
 
 
 @router.get("/agents/{worktree_id}/tasks", response_model=list[TaskInfo])
-async def get_tasks(worktree_id: UUID, service: ServiceDep) -> list[TaskInfo]:
+async def get_tasks(worktree_id: UUID, service: ServiceDep, agent: CurrentAgent) -> list[TaskInfo]:
     """Get all tasks assigned to this worktree."""
     tasks = await service._board_repo.get_tasks_for_worktree(worktree_id)
     return [TaskInfo.model_validate(t) for t in tasks]
@@ -67,7 +69,7 @@ async def get_tasks(worktree_id: UUID, service: ServiceDep) -> list[TaskInfo]:
 
 @router.patch("/agents/{worktree_id}/assign-task", status_code=200)
 async def assign_task(
-    worktree_id: UUID, body: AssignTaskRequest, service: ServiceDep
+    worktree_id: UUID, body: AssignTaskRequest, service: ServiceDep, agent: CurrentAgent
 ) -> dict[str, object]:
     """Assign a task to a worktree without changing its status."""
     try:
@@ -78,7 +80,7 @@ async def assign_task(
 
 @router.post("/agents/{worktree_id}/start-task", response_model=StartTaskResponse)
 async def start_task(
-    worktree_id: UUID, body: StartTaskRequest, service: ServiceDep
+    worktree_id: UUID, body: StartTaskRequest, service: ServiceDep, agent: CurrentAgent
 ) -> dict[str, object]:
     try:
         return await service.start_task(worktree_id, body.task_id)
@@ -89,7 +91,7 @@ async def start_task(
 
 @router.post("/agents/{worktree_id}/complete-task", response_model=CompleteTaskResponse)
 async def complete_task(
-    worktree_id: UUID, body: CompleteTaskRequest, service: ServiceDep
+    worktree_id: UUID, body: CompleteTaskRequest, service: ServiceDep, agent: CurrentAgent
 ) -> dict[str, object]:
     try:
         return await service.complete_task(worktree_id, body.task_id, pr_url=body.pr_url)
@@ -99,7 +101,7 @@ async def complete_task(
 
 @router.patch("/agents/{worktree_id}/task-status", status_code=204)
 async def update_task_status(
-    worktree_id: UUID, body: UpdateTaskStatusRequest, service: ServiceDep
+    worktree_id: UUID, body: UpdateTaskStatusRequest, service: ServiceDep, agent: CurrentAgent
 ) -> None:
     try:
         await service.update_task_status(worktree_id, body.task_id, body.status, pr_url=body.pr_url)
@@ -109,7 +111,7 @@ async def update_task_status(
 
 @router.post("/agents/{worktree_id}/task-note", status_code=201)
 async def add_task_note(
-    worktree_id: UUID, body: AddTaskNoteRequest, service: ServiceDep
+    worktree_id: UUID, body: AddTaskNoteRequest, service: ServiceDep, agent: CurrentAgent
 ) -> dict[str, object]:
     task = await service._board_repo.get_task(body.task_id)
     if task is None:
@@ -172,7 +174,7 @@ async def send_agent_message(
 
 
 @router.post("/agents/{worktree_id}/unregister", status_code=204)
-async def unregister_agent(worktree_id: UUID, service: ServiceDep) -> None:
+async def unregister_agent(worktree_id: UUID, service: ServiceDep, agent: CurrentAgent) -> None:
     try:
         await service.unregister(worktree_id)
     except ValueError as e:

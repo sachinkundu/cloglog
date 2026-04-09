@@ -12,6 +12,7 @@ import pytest
 from httpx import AsyncClient
 
 from tests.e2e.helpers import (
+    agent_auth,
     create_project_with_tasks,
     register_agent,
 )
@@ -43,14 +44,15 @@ async def test_heartbeat_drains_messages(client: AsyncClient) -> None:
     )
 
     # First heartbeat: message delivered
-    hb1 = await client.post(f"/api/v1/agents/{agent.worktree_id}/heartbeat")
+    headers = agent_auth(agent.agent_token)
+    hb1 = await client.post(f"/api/v1/agents/{agent.worktree_id}/heartbeat", headers=headers)
     assert hb1.status_code == 200
     messages1 = hb1.json()["pending_messages"]
     assert len(messages1) == 1
     assert "drain-test" in messages1[0]
 
     # Second heartbeat: no more messages
-    hb2 = await client.post(f"/api/v1/agents/{agent.worktree_id}/heartbeat")
+    hb2 = await client.post(f"/api/v1/agents/{agent.worktree_id}/heartbeat", headers=headers)
     assert hb2.status_code == 200
     assert hb2.json()["pending_messages"] == []
 
@@ -68,7 +70,8 @@ async def test_message_delivery_order(client: AsyncClient) -> None:
         )
 
     # Heartbeat drains all 3
-    hb = await client.post(f"/api/v1/agents/{agent.worktree_id}/heartbeat")
+    headers = agent_auth(agent.agent_token)
+    hb = await client.post(f"/api/v1/agents/{agent.worktree_id}/heartbeat", headers=headers)
     assert hb.status_code == 200
     messages = hb.json()["pending_messages"]
     assert len(messages) == 3
@@ -95,19 +98,21 @@ async def test_task_assignment_sends_notification(client: AsyncClient) -> None:
     agent = await register_agent(client, pf.api_key)
 
     task_id = pf.task_ids[0]
+    headers = agent_auth(agent.agent_token)
 
     # Drain any registration messages first
-    await client.post(f"/api/v1/agents/{agent.worktree_id}/heartbeat")
+    await client.post(f"/api/v1/agents/{agent.worktree_id}/heartbeat", headers=headers)
 
     # Assign task
     assign_resp = await client.patch(
         f"/api/v1/agents/{agent.worktree_id}/assign-task",
         json={"task_id": task_id},
+        headers=headers,
     )
     assert assign_resp.status_code == 200
 
     # Heartbeat should contain assignment notification
-    hb = await client.post(f"/api/v1/agents/{agent.worktree_id}/heartbeat")
+    hb = await client.post(f"/api/v1/agents/{agent.worktree_id}/heartbeat", headers=headers)
     assert hb.status_code == 200
     messages = hb.json()["pending_messages"]
     assert len(messages) >= 1

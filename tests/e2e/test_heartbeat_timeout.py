@@ -23,6 +23,7 @@ from src.board.repository import BoardRepository
 from src.shared.config import settings
 from src.shared.events import EventType, event_bus
 from tests.e2e.helpers import (
+    agent_auth,
     create_project_with_tasks,
     register_agent,
 )
@@ -110,7 +111,8 @@ async def test_active_session_not_timed_out(client: AsyncClient, db_session: Asy
     agent = await register_agent(client, pf.api_key)
 
     # Send a fresh heartbeat
-    hb = await client.post(f"/api/v1/agents/{agent.worktree_id}/heartbeat")
+    ah = agent_auth(agent.agent_token)
+    hb = await client.post(f"/api/v1/agents/{agent.worktree_id}/heartbeat", headers=ah)
     assert hb.status_code == 200
 
     service = AgentService(AgentRepository(db_session), BoardRepository(db_session))

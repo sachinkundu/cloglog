@@ -12,6 +12,7 @@ import pytest
 from httpx import AsyncClient
 
 from tests.e2e.helpers import (
+    agent_auth,
     auth_headers,
     create_project_with_tasks,
     dashboard_headers,
@@ -80,19 +81,26 @@ async def test_dashboard_key_non_agent_routes(
     assert resp.json()["total_tasks"] == 1
 
 
-async def test_dashboard_key_agent_routes_allowed(
+async def test_agent_token_required_for_agent_routes(
     client: AsyncClient, bare_client: AsyncClient
 ) -> None:
-    """Dashboard key also works on agent routes (e.g. heartbeat)."""
+    """Agent routes require a valid agent token, not just a dashboard key."""
     proj = await create_project_with_tasks(client, n_tasks=0)
-
-    # Register agent first (via dashboard-authenticated client)
     agent = await register_agent(client, proj.api_key)
 
-    # Heartbeat with dashboard key only
+    # Dashboard key alone is insufficient — agent token required
     resp = await bare_client.post(
         f"/api/v1/agents/{agent.worktree_id}/heartbeat",
         headers=dashboard_headers(),
+    )
+    assert resp.status_code == 401
+
+    # Agent token works
+    from tests.e2e.helpers import agent_auth
+
+    resp = await bare_client.post(
+        f"/api/v1/agents/{agent.worktree_id}/heartbeat",
+        headers=agent_auth(agent.agent_token),
     )
     assert resp.status_code == 200
 
@@ -209,12 +217,14 @@ async def test_cross_project_task_access_blocked(
 
     # Register agent in project A
     agent_a = await register_agent(client, proj_a.api_key)
+    ah = agent_auth(agent_a.agent_token)
 
-    # Assign project B's task to project A's agent via dashboard
+    # Assign project B's task to project A's agent
     # This succeeds because assign_task doesn't validate project ownership
     resp = await client.patch(
         f"/api/v1/agents/{agent_a.worktree_id}/assign-task",
         json={"task_id": proj_b.task_ids[0]},
+        headers=ah,
     )
     # NOTE: This documents a known gap — cross-project assignment is not blocked.
     # The endpoint succeeds (200) because it only checks worktree existence,
@@ -224,7 +234,10 @@ async def test_cross_project_task_access_blocked(
     )
 
     # Verify the task now appears in agent A's task list despite being from project B
-    tasks_resp = await client.get(f"/api/v1/agents/{agent_a.worktree_id}/tasks")
+    tasks_resp = await client.get(
+        f"/api/v1/agents/{agent_a.worktree_id}/tasks",
+        headers=ah,
+    )
     assert tasks_resp.status_code == 200
     task_ids = [t["id"] for t in tasks_resp.json()]
     assert proj_b.task_ids[0] in task_ids, (

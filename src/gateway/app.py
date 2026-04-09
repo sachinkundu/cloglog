@@ -36,16 +36,18 @@ def create_app() -> FastAPI:
     )
 
     class ApiAccessControlMiddleware(BaseHTTPMiddleware):
-        """Enforce three-credential access control on all API routes.
+        """Enforce credential-based access control on all API routes.
 
-        Every API request must present one of three valid credentials:
+        Every API request must present one of these valid credentials:
 
-        1. Agent API key (Authorization: Bearer <key>) — only for /agents/* routes
-        2. MCP server (Authorization + X-MCP-Request) — allowed everywhere
-        3. Dashboard key (X-Dashboard-Key) — allowed on non-agent routes
+        1. MCP request (Authorization: Bearer <key> + X-MCP-Request) — allowed everywhere.
+           The middleware passes these through; specific routes use CurrentMcpService
+           to validate the service key when needed.
+        2. Agent token or project API key (Authorization: Bearer <key>) — only /agents/* routes.
+           Validated downstream by CurrentAgent or CurrentProject dependencies.
+        3. Dashboard key (X-Dashboard-Key) — allowed on non-agent routes.
 
-        Unauthenticated requests are rejected. Agents cannot access
-        board/document routes directly — they must go through the MCP server.
+        Agents cannot access board/document routes directly — they must go through MCP.
         """
 
         async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
@@ -65,11 +67,13 @@ def create_app() -> FastAPI:
             )
             is_agent_route = path.startswith("/api/v1/agents/")
 
-            # Path 1: MCP server (API key + X-MCP-Request) — allowed everywhere
+            # Path 1: MCP server (Authorization + X-MCP-Request) — allowed everywhere.
+            # Routes that need MCP service key validation use CurrentMcpService dependency.
             if auth and mcp:
                 return await call_next(request)
 
-            # Path 2: Agent API key only — restricted to agent routes
+            # Path 2: Bearer token only — restricted to agent routes
+            # (validated downstream by CurrentAgent or CurrentProject)
             if auth and not mcp:
                 if is_agent_route:
                     return await call_next(request)

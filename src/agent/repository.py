@@ -83,6 +83,18 @@ class AgentRepository:
         )
         await self._session.commit()
 
+    async def get_worktree_by_token_hash(self, token_hash: str) -> Worktree | None:
+        result = await self._session.execute(
+            select(Worktree).where(Worktree.agent_token_hash == token_hash)
+        )
+        return result.scalar_one_or_none()
+
+    async def set_agent_token_hash(self, worktree_id: UUID, token_hash: str) -> None:
+        await self._session.execute(
+            update(Worktree).where(Worktree.id == worktree_id).values(agent_token_hash=token_hash)
+        )
+        await self._session.commit()
+
     async def get_worktree_by_path(self, project_id: UUID, worktree_path: str) -> Worktree | None:
         result = await self._session.execute(
             select(Worktree).where(

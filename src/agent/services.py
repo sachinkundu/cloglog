@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import uuid as _uuid
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -24,6 +26,11 @@ class AgentService:
     ) -> dict[str, object]:
         """Register or reconnect a worktree. Returns registration info."""
         worktree, is_new = await self._repo.upsert_worktree(project_id, worktree_path, branch_name)
+
+        # Generate per-agent token (rotated on every registration)
+        agent_token = _uuid.uuid4().hex
+        token_hash = hashlib.sha256(agent_token.encode()).hexdigest()
+        await self._repo.set_agent_token_hash(worktree.id, token_hash)
 
         # End any stale active sessions for this worktree
         old_session = await self._repo.get_active_session(worktree.id)
@@ -58,6 +65,7 @@ class AgentService:
             "session_id": session.id,
             "current_task": current_task,
             "resumed": not is_new,
+            "agent_token": agent_token,
         }
 
     # --- Heartbeat ---

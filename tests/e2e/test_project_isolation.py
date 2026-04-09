@@ -15,6 +15,7 @@ from httpx import AsyncClient
 
 from src.shared.events import EventType, event_bus
 from tests.e2e.helpers import (
+    agent_auth,
     create_project_with_tasks,
     mcp_headers,
     register_agent,
@@ -129,9 +130,10 @@ async def test_agent_register_wrong_project_key(client: AsyncClient) -> None:
 
     # Register agent with B's API key — worktree belongs to project B
     agent_b = await register_agent(client, proj_b.api_key)
+    headers_b = agent_auth(agent_b.agent_token)
 
     # A's tasks are NOT assigned to this worktree, so get_tasks returns empty
-    resp = await client.get(f"/api/v1/agents/{agent_b.worktree_id}/tasks")
+    resp = await client.get(f"/api/v1/agents/{agent_b.worktree_id}/tasks", headers=headers_b)
     assert resp.status_code == 200
     tasks = resp.json()
     assert len(tasks) == 0, "Agent in project B should have no tasks from project A"

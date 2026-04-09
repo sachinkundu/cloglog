@@ -11,10 +11,12 @@ import { createServer } from './server.js'
 
 const CLOGLOG_URL = process.env.CLOGLOG_URL ?? 'http://localhost:8000'
 const CLOGLOG_API_KEY = process.env.CLOGLOG_API_KEY ?? ''
+const MCP_SERVICE_KEY = process.env.MCP_SERVICE_KEY ?? ''
 
 const client = new CloglogClient({
   baseUrl: CLOGLOG_URL,
   apiKey: CLOGLOG_API_KEY,
+  serviceKey: MCP_SERVICE_KEY,
 })
 
 const server = createServer(client)

@@ -95,15 +95,15 @@ async def test_agent_blocked_from_documents(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_mcp_server_allowed_on_all_routes(client: AsyncClient) -> None:
-    """Requests with X-MCP-Request header pass through even with API key."""
+    """Requests with X-MCP-Request header pass through middleware."""
     headers = {
-        "Authorization": "Bearer fake-api-key",
+        "Authorization": "Bearer any-key",
         "X-MCP-Request": "true",
         "X-Dashboard-Key": "",
     }
 
     resp = await client.get("/api/v1/projects", headers=headers)
-    # Should not be 403 — MCP server is allowed
+    # Should not be 403 — MCP requests pass middleware
     assert resp.status_code != 403
 
 

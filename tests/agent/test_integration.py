@@ -19,6 +19,11 @@ def _auth(api_key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key}"}
 
 
+def _agent_auth(agent_token: str) -> dict[str, str]:
+    """Auth headers for agent-scoped endpoints (uses agent token, not project API key)."""
+    return {"Authorization": f"Bearer {agent_token}", "X-Dashboard-Key": ""}
+
+
 async def _create_project_via_api(client: AsyncClient) -> dict:
     """Create a project through the API and return the response."""
     resp = await client.post(
@@ -27,6 +32,24 @@ async def _create_project_via_api(client: AsyncClient) -> dict:
     )
     assert resp.status_code == 201
     return resp.json()
+
+
+async def _register_and_get_token(
+    client: AsyncClient,
+    api_key: str,
+    worktree_path: str,
+    branch_name: str = "",
+) -> tuple[str, str]:
+    """Register agent and return (worktree_id, agent_token)."""
+    branch = branch_name or worktree_path.split("/")[-1]
+    resp = await client.post(
+        "/api/v1/agents/register",
+        json={"worktree_path": worktree_path, "branch_name": branch},
+        headers=_auth(api_key),
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    return data["worktree_id"], data["agent_token"]
 
 
 async def _create_task_via_db(db_session: AsyncSession, project_id: str) -> str:
@@ -86,9 +109,13 @@ class TestAgentRegistrationAPI:
         assert r1.status_code == 201
 
         wt_id = r1.json()["worktree_id"]
+        agent_token = r1.json()["agent_token"]
 
         # Unregister (now deletes the worktree record)
-        unreg = await client.post(f"/api/v1/agents/{wt_id}/unregister")
+        unreg = await client.post(
+            f"/api/v1/agents/{wt_id}/unregister",
+            headers=_agent_auth(agent_token),
+        )
         assert unreg.status_code == 204
 
         # Re-register — creates a brand-new worktree, not a resume
@@ -119,15 +146,22 @@ class TestHeartbeatAPI:
             headers=h,
         )
         wt_id = reg.json()["worktree_id"]
+        agent_token = reg.json()["agent_token"]
 
-        resp = await client.post(f"/api/v1/agents/{wt_id}/heartbeat")
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/heartbeat",
+            headers=_agent_auth(agent_token),
+        )
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
 
     async def test_heartbeat_unknown_worktree(self, client: AsyncClient) -> None:
         fake_id = uuid.uuid4()
-        resp = await client.post(f"/api/v1/agents/{fake_id}/heartbeat")
-        assert resp.status_code == 404
+        resp = await client.post(
+            f"/api/v1/agents/{fake_id}/heartbeat",
+            headers=_agent_auth("fake-token"),
+        )
+        assert resp.status_code == 401
 
 
 class TestTaskLifecycleAPI:
@@ -144,6 +178,8 @@ class TestTaskLifecycleAPI:
             headers=h,
         )
         wt_id = reg.json()["worktree_id"]
+        agent_token = reg.json()["agent_token"]
+        ah = _agent_auth(agent_token)
 
         # Assign task to worktree first
         await client.patch(
@@ -152,7 +188,7 @@ class TestTaskLifecycleAPI:
         )
 
         # Get tasks
-        resp = await client.get(f"/api/v1/agents/{wt_id}/tasks")
+        resp = await client.get(f"/api/v1/agents/{wt_id}/tasks", headers=ah)
         assert resp.status_code == 200
         tasks = resp.json()
         assert len(tasks) == 1
@@ -162,6 +198,7 @@ class TestTaskLifecycleAPI:
         resp = await client.post(
             f"/api/v1/agents/{wt_id}/start-task",
             json={"task_id": task_id},
+            headers=ah,
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "in_progress"
@@ -170,6 +207,7 @@ class TestTaskLifecycleAPI:
         resp = await client.post(
             f"/api/v1/agents/{wt_id}/complete-task",
             json={"task_id": task_id},
+            headers=ah,
         )
         assert resp.status_code == 409
         assert "cannot mark tasks as done" in resp.json()["detail"].lower()
@@ -185,11 +223,14 @@ class TestTaskLifecycleAPI:
             headers=h,
         )
         wt_id = reg.json()["worktree_id"]
+        agent_token = reg.json()["agent_token"]
+        ah = _agent_auth(agent_token)
 
         # Start task first
         await client.post(
             f"/api/v1/agents/{wt_id}/start-task",
             json={"task_id": task_id},
+            headers=ah,
         )
 
         # Update to review (pr_url now required for all task types)
@@ -200,6 +241,7 @@ class TestTaskLifecycleAPI:
                 "status": "review",
                 "pr_url": "https://github.com/test/repo/pull/1",
             },
+            headers=ah,
         )
         assert resp.status_code == 204
 
@@ -209,8 +251,11 @@ class TestTransitionGuardsAPI:
 
     async def _setup(
         self, client: AsyncClient, db_session: AsyncSession
-    ) -> tuple[str, str, str, str]:
-        """Create project, register agent, create two tasks."""
+    ) -> tuple[str, str, str, str, str]:
+        """Create project, register agent, create two tasks.
+
+        Returns (wt_id, task1_id, task2_id, api_key, agent_token).
+        """
         project = await _create_project_via_api(client)
         h = _auth(project["api_key"])
         task1_id = await _create_task_via_db(db_session, project["id"])
@@ -239,26 +284,36 @@ class TestTransitionGuardsAPI:
             headers=h,
         )
         wt_id = reg.json()["worktree_id"]
+        agent_token = reg.json()["agent_token"]
 
         # Assign both tasks to the worktree
         assign = {"worktree_id": wt_id, "status": "assigned"}
         await client.patch(f"/api/v1/tasks/{task1_id}", json=assign)
         await client.patch(f"/api/v1/tasks/{str(task2.id)}", json=assign)
 
-        return wt_id, task1_id, str(task2.id), project["api_key"]
+        return wt_id, task1_id, str(task2.id), project["api_key"], agent_token
 
     async def test_start_task_blocked_when_active_task(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
         """Starting a second task while first is in_progress returns 409."""
-        wt_id, task1_id, task2_id, _ = await self._setup(client, db_session)
+        wt_id, task1_id, task2_id, _, agent_token = await self._setup(client, db_session)
+        ah = _agent_auth(agent_token)
 
         # Start first task
-        resp = await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": task1_id})
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": task1_id},
+            headers=ah,
+        )
         assert resp.status_code == 200
 
         # Try starting second — should be blocked
-        resp = await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": task2_id})
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": task2_id},
+            headers=ah,
+        )
         assert resp.status_code == 409
         assert "already has active" in resp.json()["detail"]
 
@@ -266,14 +321,23 @@ class TestTransitionGuardsAPI:
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
         """After first task is done, agent can start a second task."""
-        wt_id, task1_id, task2_id, _ = await self._setup(client, db_session)
+        wt_id, task1_id, task2_id, _, agent_token = await self._setup(client, db_session)
+        ah = _agent_auth(agent_token)
 
         # Start and complete first task (simulate user marking done via board API)
-        await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": task1_id})
+        await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": task1_id},
+            headers=ah,
+        )
         await client.patch(f"/api/v1/tasks/{task1_id}", json={"status": "done"})
 
         # Start second task — should succeed
-        resp = await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": task2_id})
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": task2_id},
+            headers=ah,
+        )
         assert resp.status_code == 200
         assert resp.json()["status"] == "in_progress"
 
@@ -294,12 +358,19 @@ class TestTransitionGuardsAPI:
             headers=h,
         )
         wt_id = reg.json()["worktree_id"]
-        await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": task_id})
+        agent_token = reg.json()["agent_token"]
+        ah = _agent_auth(agent_token)
+        await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": task_id},
+            headers=ah,
+        )
 
         # Try to move to review without pr_url
         resp = await client.patch(
             f"/api/v1/agents/{wt_id}/task-status",
             json={"task_id": task_id, "status": "review"},
+            headers=ah,
         )
         assert resp.status_code == 409
         assert "PR URL" in resp.json()["detail"]
@@ -321,7 +392,13 @@ class TestTransitionGuardsAPI:
             headers=h,
         )
         wt_id = reg.json()["worktree_id"]
-        await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": task_id})
+        agent_token = reg.json()["agent_token"]
+        ah = _agent_auth(agent_token)
+        await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": task_id},
+            headers=ah,
+        )
 
         # Move to review with PR URL
         resp = await client.patch(
@@ -331,6 +408,7 @@ class TestTransitionGuardsAPI:
                 "status": "review",
                 "pr_url": "https://github.com/test/repo/pull/1",
             },
+            headers=ah,
         )
         assert resp.status_code == 204
 
@@ -338,6 +416,7 @@ class TestTransitionGuardsAPI:
         resp = await client.patch(
             f"/api/v1/agents/{wt_id}/task-status",
             json={"task_id": task_id, "status": "in_progress"},
+            headers=ah,
         )
         assert resp.status_code == 204
 
@@ -358,11 +437,18 @@ class TestTransitionGuardsAPI:
             headers=h,
         )
         wt_id = reg.json()["worktree_id"]
-        await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": task_id})
+        agent_token = reg.json()["agent_token"]
+        ah = _agent_auth(agent_token)
+        await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": task_id},
+            headers=ah,
+        )
 
         resp = await client.patch(
             f"/api/v1/agents/{wt_id}/task-status",
             json={"task_id": task_id, "status": "done"},
+            headers=ah,
         )
         assert resp.status_code == 409
         assert "cannot mark tasks as done" in resp.json()["detail"].lower()
@@ -375,8 +461,9 @@ class TestPipelineOrderingAPI:
         self,
         client: AsyncClient,
         db_session: AsyncSession,
-    ) -> tuple[str, str, str, str, str]:
-        """Create project, agent, and spec/plan/impl tasks under one feature."""
+    ) -> tuple[str, str, str, str, str, str]:
+        """Create project, agent, and spec/plan/impl tasks under one feature.
+        Returns (wt_id, spec_id, plan_id, impl_id, api_key, agent_token)."""
         project = await _create_project_via_api(client)
         h = _auth(project["api_key"])
         pid = uuid.UUID(project["id"])
@@ -432,6 +519,7 @@ class TestPipelineOrderingAPI:
             headers=h,
         )
         wt_id = reg.json()["worktree_id"]
+        agent_token = reg.json()["agent_token"]
 
         # Assign all tasks to the worktree
         for t in (spec_task, plan_task, impl_task):
@@ -440,16 +528,28 @@ class TestPipelineOrderingAPI:
                 json={"worktree_id": wt_id, "status": "assigned"},
             )
 
-        return wt_id, str(spec_task.id), str(plan_task.id), str(impl_task.id), project["api_key"]
+        return (
+            wt_id,
+            str(spec_task.id),
+            str(plan_task.id),
+            str(impl_task.id),
+            project["api_key"],
+            agent_token,
+        )
 
     async def test_pipeline_ordering_spec_before_plan(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
         """Starting plan task when spec is not done returns 409."""
-        wt_id, spec_id, plan_id, _, _ = await self._setup_pipeline(client, db_session)
+        wt_id, spec_id, plan_id, _, _, agent_token = await self._setup_pipeline(client, db_session)
+        ah = _agent_auth(agent_token)
 
         # Try to start plan without spec being done — should be blocked
-        resp = await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": plan_id})
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": plan_id},
+            headers=ah,
+        )
         assert resp.status_code == 409
         assert "spec" in resp.json()["detail"].lower()
         assert "not done" in resp.json()["detail"].lower()
@@ -458,14 +558,25 @@ class TestPipelineOrderingAPI:
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
         """Starting impl task when plan is not done returns 409."""
-        wt_id, spec_id, plan_id, impl_id, _ = await self._setup_pipeline(client, db_session)
+        wt_id, spec_id, plan_id, impl_id, _, agent_token = await self._setup_pipeline(
+            client, db_session
+        )
+        ah = _agent_auth(agent_token)
 
         # Complete spec (simulate user marking done via board API)
-        await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": spec_id})
+        await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": spec_id},
+            headers=ah,
+        )
         await client.patch(f"/api/v1/tasks/{spec_id}", json={"status": "done"})
 
         # Try to start impl without plan being done — should be blocked
-        resp = await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": impl_id})
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": impl_id},
+            headers=ah,
+        )
         assert resp.status_code == 409
         assert "plan" in resp.json()["detail"].lower()
         assert "not done" in resp.json()["detail"].lower()
@@ -473,22 +584,37 @@ class TestPipelineOrderingAPI:
     async def test_pipeline_ordering_allows_after_predecessor_done(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
-        """Full pipeline: spec done → plan starts, plan done → impl starts."""
-        wt_id, spec_id, plan_id, impl_id, _ = await self._setup_pipeline(client, db_session)
+        """Full pipeline: spec done -> plan starts, plan done -> impl starts."""
+        wt_id, spec_id, plan_id, impl_id, _, agent_token = await self._setup_pipeline(
+            client, db_session
+        )
+        ah = _agent_auth(agent_token)
 
         # Complete spec
-        await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": spec_id})
+        await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": spec_id},
+            headers=ah,
+        )
         await client.patch(f"/api/v1/tasks/{spec_id}", json={"status": "done"})
 
         # Start plan — should succeed
-        resp = await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": plan_id})
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": plan_id},
+            headers=ah,
+        )
         assert resp.status_code == 200
 
         # Complete plan
         await client.patch(f"/api/v1/tasks/{plan_id}", json={"status": "done"})
 
         # Start impl — should succeed
-        resp = await client.post(f"/api/v1/agents/{wt_id}/start-task", json={"task_id": impl_id})
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": impl_id},
+            headers=ah,
+        )
         assert resp.status_code == 200
         assert resp.json()["status"] == "in_progress"
 
@@ -508,10 +634,13 @@ class TestAssignTaskAPI:
             headers=h,
         )
         wt_id = reg.json()["worktree_id"]
+        agent_token = reg.json()["agent_token"]
+        ah = _agent_auth(agent_token)
 
         resp = await client.patch(
             f"/api/v1/agents/{wt_id}/assign-task",
             json={"task_id": task_id},
+            headers=ah,
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -520,7 +649,7 @@ class TestAssignTaskAPI:
         assert data["status"] == "assigned"
 
         # Verify the task appears in get_my_tasks
-        tasks_resp = await client.get(f"/api/v1/agents/{wt_id}/tasks")
+        tasks_resp = await client.get(f"/api/v1/agents/{wt_id}/tasks", headers=ah)
         assert tasks_resp.status_code == 200
         tasks = tasks_resp.json()
         assert len(tasks) == 1
@@ -542,14 +671,17 @@ class TestAssignTaskAPI:
             headers=h,
         )
         wt_id = reg.json()["worktree_id"]
+        agent_token = reg.json()["agent_token"]
+        ah = _agent_auth(agent_token)
 
         await client.patch(
             f"/api/v1/agents/{wt_id}/assign-task",
             json={"task_id": task_id},
+            headers=ah,
         )
 
         # Heartbeat should deliver the assignment notification
-        hb = await client.post(f"/api/v1/agents/{wt_id}/heartbeat")
+        hb = await client.post(f"/api/v1/agents/{wt_id}/heartbeat", headers=ah)
         assert hb.status_code == 200
         messages = hb.json()["pending_messages"]
         assert len(messages) == 1
@@ -561,8 +693,9 @@ class TestAssignTaskAPI:
         resp = await client.patch(
             f"/api/v1/agents/{fake_id}/assign-task",
             json={"task_id": str(uuid.uuid4())},
+            headers=_agent_auth("fake-token"),
         )
-        assert resp.status_code == 404
+        assert resp.status_code == 401
 
     async def test_assign_task_unknown_task(
         self, client: AsyncClient, db_session: AsyncSession
@@ -576,10 +709,12 @@ class TestAssignTaskAPI:
             headers=h,
         )
         wt_id = reg.json()["worktree_id"]
+        agent_token = reg.json()["agent_token"]
 
         resp = await client.patch(
             f"/api/v1/agents/{wt_id}/assign-task",
             json={"task_id": str(uuid.uuid4())},
+            headers=_agent_auth(agent_token),
         )
         assert resp.status_code == 404
 
@@ -620,8 +755,12 @@ class TestUnregisterAPI:
             headers=h,
         )
         wt_id = reg.json()["worktree_id"]
+        agent_token = reg.json()["agent_token"]
 
-        resp = await client.post(f"/api/v1/agents/{wt_id}/unregister")
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/unregister",
+            headers=_agent_auth(agent_token),
+        )
         assert resp.status_code == 204
 
         # Verify worktree record is deleted
@@ -641,8 +780,12 @@ class TestUnregisterAPI:
         )
         assert resp.status_code == 201
         worktree_id = resp.json()["worktree_id"]
+        agent_token = resp.json()["agent_token"]
 
-        resp = await client.post(f"/api/v1/agents/{worktree_id}/unregister")
+        resp = await client.post(
+            f"/api/v1/agents/{worktree_id}/unregister",
+            headers=_agent_auth(agent_token),
+        )
         assert resp.status_code == 204
 
         resp = await client.get(f"/api/v1/projects/{project['id']}/worktrees")
@@ -762,9 +905,13 @@ class TestHeartbeatTimeoutAPI:
         )
         assert reg.status_code == 201
         wt_id = reg.json()["worktree_id"]
+        agent_token = reg.json()["agent_token"]
 
         # Send a heartbeat to keep it fresh
-        hb = await client.post(f"/api/v1/agents/{wt_id}/heartbeat")
+        hb = await client.post(
+            f"/api/v1/agents/{wt_id}/heartbeat",
+            headers=_agent_auth(agent_token),
+        )
         assert hb.status_code == 200
 
         # Run timeout check — should not affect this agent
@@ -831,10 +978,13 @@ class TestAgentMessagingAPI:
             headers=h,
         )
         wt_id = reg.json()["worktree_id"]
+        agent_token = reg.json()["agent_token"]
+        ah = _agent_auth(agent_token)
 
         resp = await client.post(
             f"/api/v1/agents/{wt_id}/message",
             json={"message": "please rebase", "sender": "main-agent"},
+            headers=ah,
         )
         assert resp.status_code == 202
         assert resp.json()["status"] == "queued"
@@ -857,15 +1007,18 @@ class TestAgentMessagingAPI:
             headers=h,
         )
         wt_id = reg.json()["worktree_id"]
+        agent_token = reg.json()["agent_token"]
+        ah = _agent_auth(agent_token)
 
         # Send a message
         await client.post(
             f"/api/v1/agents/{wt_id}/message",
             json={"message": "rebase on main", "sender": "main-agent"},
+            headers=ah,
         )
 
         # Heartbeat picks it up
-        resp = await client.post(f"/api/v1/agents/{wt_id}/heartbeat")
+        resp = await client.post(f"/api/v1/agents/{wt_id}/heartbeat", headers=ah)
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["pending_messages"]) == 1
@@ -881,23 +1034,27 @@ class TestAgentMessagingAPI:
             headers=h,
         )
         wt_id = reg.json()["worktree_id"]
+        agent_token = reg.json()["agent_token"]
+        ah = _agent_auth(agent_token)
 
         # Send first message and drain via heartbeat
         await client.post(
             f"/api/v1/agents/{wt_id}/message",
             json={"message": "old msg", "sender": "system"},
+            headers=ah,
         )
-        resp1 = await client.post(f"/api/v1/agents/{wt_id}/heartbeat")
+        resp1 = await client.post(f"/api/v1/agents/{wt_id}/heartbeat", headers=ah)
         assert len(resp1.json()["pending_messages"]) == 1
 
         # Send a new message
         await client.post(
             f"/api/v1/agents/{wt_id}/message",
             json={"message": "new msg", "sender": "system"},
+            headers=ah,
         )
 
         # Second heartbeat should only see the new message
-        resp2 = await client.post(f"/api/v1/agents/{wt_id}/heartbeat")
+        resp2 = await client.post(f"/api/v1/agents/{wt_id}/heartbeat", headers=ah)
         msgs = resp2.json()["pending_messages"]
         assert len(msgs) == 1
         assert "new msg" in msgs[0]

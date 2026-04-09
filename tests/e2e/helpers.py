@@ -21,6 +21,7 @@ class ProjectFixture:
 class AgentFixture:
     worktree_id: str
     session_id: str
+    agent_token: str = ""
 
 
 def unique_name(prefix: str = "e2e") -> str:
@@ -37,6 +38,11 @@ def auth_headers(api_key: str) -> dict[str, str]:
 
 def mcp_headers(api_key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key}", "X-MCP-Request": "true"}
+
+
+def agent_auth(token: str) -> dict[str, str]:
+    """Auth headers for agent-scoped endpoints."""
+    return {"Authorization": f"Bearer {token}", "X-Dashboard-Key": ""}
 
 
 def dashboard_headers() -> dict[str, str]:
@@ -100,4 +106,8 @@ async def register_agent(
     )
     assert resp.status_code == 201, f"Register failed: {resp.text}"
     data = resp.json()
-    return AgentFixture(worktree_id=data["worktree_id"], session_id=data["session_id"])
+    return AgentFixture(
+        worktree_id=data["worktree_id"],
+        session_id=data["session_id"],
+        agent_token=data.get("agent_token", ""),
+    )

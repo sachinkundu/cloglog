@@ -15,6 +15,7 @@ from httpx import AsyncClient
 
 from src.shared.events import EventType, event_bus
 from tests.e2e.helpers import (
+    agent_auth,
     auth_headers,
     create_project_with_tasks,
     fake_pr_url,
@@ -30,6 +31,8 @@ async def test_concurrent_task_updates_different_tasks(client: AsyncClient) -> N
 
     agent_a = await register_agent(client, pf.api_key)
     agent_b = await register_agent(client, pf.api_key)
+    ah_a = agent_auth(agent_a.agent_token)
+    ah_b = agent_auth(agent_b.agent_token)
 
     task_1, task_2 = pf.task_ids[0], pf.task_ids[1]
 
@@ -37,22 +40,26 @@ async def test_concurrent_task_updates_different_tasks(client: AsyncClient) -> N
     await client.patch(
         f"/api/v1/agents/{agent_a.worktree_id}/assign-task",
         json={"task_id": task_1},
+        headers=ah_a,
     )
     await client.patch(
         f"/api/v1/agents/{agent_b.worktree_id}/assign-task",
         json={"task_id": task_2},
+        headers=ah_b,
     )
 
     # Start both tasks
     r1 = await client.post(
         f"/api/v1/agents/{agent_a.worktree_id}/start-task",
         json={"task_id": task_1},
+        headers=ah_a,
     )
     assert r1.status_code == 200
 
     r2 = await client.post(
         f"/api/v1/agents/{agent_b.worktree_id}/start-task",
         json={"task_id": task_2},
+        headers=ah_b,
     )
     assert r2.status_code == 200
 
@@ -64,10 +71,12 @@ async def test_concurrent_task_updates_different_tasks(client: AsyncClient) -> N
         client.patch(
             f"/api/v1/agents/{agent_a.worktree_id}/task-status",
             json={"task_id": task_1, "status": "review", "pr_url": pr_a},
+            headers=ah_a,
         ),
         client.patch(
             f"/api/v1/agents/{agent_b.worktree_id}/task-status",
             json={"task_id": task_2, "status": "review", "pr_url": pr_b},
+            headers=ah_b,
         ),
     )
 
@@ -81,6 +90,8 @@ async def test_concurrent_start_same_task_one_wins(client: AsyncClient) -> None:
 
     agent_a = await register_agent(client, pf.api_key)
     agent_b = await register_agent(client, pf.api_key)
+    ah_a = agent_auth(agent_a.agent_token)
+    ah_b = agent_auth(agent_b.agent_token)
 
     task_id = pf.task_ids[0]
 
@@ -88,10 +99,12 @@ async def test_concurrent_start_same_task_one_wins(client: AsyncClient) -> None:
     await client.patch(
         f"/api/v1/agents/{agent_a.worktree_id}/assign-task",
         json={"task_id": task_id},
+        headers=ah_a,
     )
     await client.patch(
         f"/api/v1/agents/{agent_b.worktree_id}/assign-task",
         json={"task_id": task_id},
+        headers=ah_b,
     )
 
     # Race to start the same task
@@ -99,10 +112,12 @@ async def test_concurrent_start_same_task_one_wins(client: AsyncClient) -> None:
         client.post(
             f"/api/v1/agents/{agent_a.worktree_id}/start-task",
             json={"task_id": task_id},
+            headers=ah_a,
         ),
         client.post(
             f"/api/v1/agents/{agent_b.worktree_id}/start-task",
             json={"task_id": task_id},
+            headers=ah_b,
         ),
         return_exceptions=True,
     )
@@ -121,17 +136,20 @@ async def test_concurrent_task_and_board_no_interference(client: AsyncClient) ->
     pf = await create_project_with_tasks(client, n_tasks=1)
 
     agent = await register_agent(client, pf.api_key)
+    ah = agent_auth(agent.agent_token)
     task_id = pf.task_ids[0]
 
     await client.patch(
         f"/api/v1/agents/{agent.worktree_id}/assign-task",
         json={"task_id": task_id},
+        headers=ah,
     )
 
     start_resp, board_resp = await asyncio.gather(
         client.post(
             f"/api/v1/agents/{agent.worktree_id}/start-task",
             json={"task_id": task_id},
+            headers=ah,
         ),
         client.get(f"/api/v1/projects/{pf.id}/board"),
     )
@@ -147,16 +165,20 @@ async def test_sse_events_ordered_under_concurrency(client: AsyncClient) -> None
 
     agent_a = await register_agent(client, pf.api_key)
     agent_b = await register_agent(client, pf.api_key)
+    ah_a = agent_auth(agent_a.agent_token)
+    ah_b = agent_auth(agent_b.agent_token)
 
     task_1, task_2 = pf.task_ids[0], pf.task_ids[1]
 
     await client.patch(
         f"/api/v1/agents/{agent_a.worktree_id}/assign-task",
         json={"task_id": task_1},
+        headers=ah_a,
     )
     await client.patch(
         f"/api/v1/agents/{agent_b.worktree_id}/assign-task",
         json={"task_id": task_2},
+        headers=ah_b,
     )
 
     # Subscribe to events
@@ -168,10 +190,12 @@ async def test_sse_events_ordered_under_concurrency(client: AsyncClient) -> None
             client.post(
                 f"/api/v1/agents/{agent_a.worktree_id}/start-task",
                 json={"task_id": task_1},
+                headers=ah_a,
             ),
             client.post(
                 f"/api/v1/agents/{agent_b.worktree_id}/start-task",
                 json={"task_id": task_2},
+                headers=ah_b,
             ),
         )
 

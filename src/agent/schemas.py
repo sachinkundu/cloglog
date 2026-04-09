@@ -76,6 +76,7 @@ class TaskInfo(BaseModel):
     description: str
     status: str
     priority: str
+    artifact_path: str | None = None
 
 
 class AssignTaskRequest(BaseModel):

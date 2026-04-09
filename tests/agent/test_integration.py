@@ -1102,22 +1102,27 @@ class TestReportArtifactAPI:
             headers=h,
         )
         wt_id = reg.json()["worktree_id"]
+        ah = _agent_auth(reg.json()["agent_token"])
 
         # Start the task
-        await client.post(
+        start_resp = await client.post(
             f"/api/v1/agents/{wt_id}/start-task",
             json={"task_id": str(spec_task.id)},
+            headers=ah,
         )
+        assert start_resp.status_code == 200, f"start-task failed: {start_resp.status_code}"
 
         # Move to review with PR URL
-        await client.patch(
+        review_resp = await client.patch(
             f"/api/v1/agents/{wt_id}/task-status",
             json={
                 "task_id": str(spec_task.id),
                 "status": "review",
                 "pr_url": "https://github.com/test/repo/pull/42",
             },
+            headers=ah,
         )
+        assert review_resp.status_code == 204, f"task-status failed: {review_resp.status_code}"
 
         # Report artifact
         resp = await client.post(
@@ -1126,8 +1131,9 @@ class TestReportArtifactAPI:
                 "task_id": str(spec_task.id),
                 "artifact_path": "docs/specs/my-spec.md",
             },
+            headers=ah,
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 200, f"Expected 200 but got {resp.status_code}: {resp.json()}"
         data = resp.json()
         assert data["artifact_path"] == "docs/specs/my-spec.md"
         assert data["task_id"] == str(spec_task.id)
@@ -1181,11 +1187,13 @@ class TestReportArtifactAPI:
             headers=h,
         )
         wt_id = reg.json()["worktree_id"]
+        ah = _agent_auth(reg.json()["agent_token"])
 
         # Start task, move to review
         await client.post(
             f"/api/v1/agents/{wt_id}/start-task",
             json={"task_id": str(impl_task.id)},
+            headers=ah,
         )
         await client.patch(
             f"/api/v1/agents/{wt_id}/task-status",
@@ -1194,6 +1202,7 @@ class TestReportArtifactAPI:
                 "status": "review",
                 "pr_url": "https://github.com/test/repo/pull/99",
             },
+            headers=ah,
         )
 
         # Try to report artifact on impl task
@@ -1203,6 +1212,7 @@ class TestReportArtifactAPI:
                 "task_id": str(impl_task.id),
                 "artifact_path": "docs/impl.md",
             },
+            headers=ah,
         )
         assert resp.status_code == 409
         assert "only spec and plan" in resp.json()["detail"]

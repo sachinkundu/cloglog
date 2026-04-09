@@ -44,9 +44,9 @@ zellij action write-chars "cd /path/to/worktree && claude --dangerously-skip-per
 sleep 0.5
 zellij action write 13   # Enter to execute shell command
 
-# Return to your tab
+# ALWAYS return to main tab after launching — never leave focus on agent tab
 sleep 2
-zellij action go-to-tab 1
+zellij action go-to-tab-name "main"
 ```
 
 The positional prompt argument (`'prompt here'` after `--dangerously-skip-permissions`) auto-submits. No manual Enter needed for the Claude prompt.

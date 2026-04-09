@@ -232,6 +232,21 @@ export function createServer(client: CloglogClient): McpServer {
     }
   )
 
+  server.tool(
+    'report_artifact',
+    'Report the artifact path for a spec or plan task after its PR merges. Required state machine step — pipeline blocks downstream tasks until artifact is attached.',
+    {
+      worktree_id: z.string().describe('UUID of the worktree'),
+      task_id: z.string().describe('UUID of the spec or plan task'),
+      artifact_path: z.string().describe('Repo-relative path to the artifact file (e.g. docs/specs/F-1-spec.md)'),
+    },
+    async ({ worktree_id, task_id, artifact_path }) => {
+      requireRegistered()
+      await handlers.report_artifact({ worktree_id, task_id, artifact_path })
+      return { content: [{ type: 'text' as const, text: `Artifact reported for task ${task_id}: ${artifact_path}` }] }
+    }
+  )
+
   // ── Board management ──────────────────────────────────
 
   server.tool(

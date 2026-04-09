@@ -35,6 +35,11 @@ fi
 ## Launching Agents in Tabs
 
 ```bash
+# Save current tab name BEFORE switching — you need to come back here
+CURRENT_TAB=$(zellij action list-tabs 2>/dev/null | awk 'NR>1 && $1 == "'$(zellij action list-tabs 2>/dev/null | awk '/\*/{print $1}')'" {print $3}')
+# Simpler: just capture it once at the start of your session
+# CURRENT_TAB="cloglog-base"  # or whatever your tab is named
+
 # Create named tab
 zellij action new-tab --name "wt-search"
 sleep 1
@@ -44,10 +49,12 @@ zellij action write-chars "cd /path/to/worktree && claude --dangerously-skip-per
 sleep 0.5
 zellij action write 13   # Enter to execute shell command
 
-# ALWAYS return to main tab after launching — never leave focus on agent tab
+# ALWAYS return to YOUR tab after launching — never leave focus on agent tab
 sleep 2
-zellij action go-to-tab-name "main"
+zellij action go-to-tab-name "$CURRENT_TAB"
 ```
+
+**Important:** The main agent tab is NOT always called "main" — its name depends on how the session was started. Always save your tab name before switching and return to it by name.
 
 The positional prompt argument (`'prompt here'` after `--dangerously-skip-permissions`) auto-submits. No manual Enter needed for the Claude prompt.
 

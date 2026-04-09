@@ -229,16 +229,105 @@ Vitest runs with `jsdom` — no browser needed. `cd frontend && npx vitest run` 
 
 Node-based, no external dependencies. `cd mcp-server && npm test` works in CI.
 
-### Playwright Browser Tests — Deferred
+### Playwright Browser Tests — Pipelined Second Job
 
 Playwright tests (`tests/e2e/playwright/`) require:
 - A running backend server (uvicorn)
 - A running frontend dev server (vite)
 - Chromium installed (`npx playwright install --with-deps chromium`)
 
-These add ~2 minutes of setup and are more fragile in CI. **Recommendation: defer to a follow-up PR.** The API-level E2E tests in `tests/e2e/test_*.py` already cover cross-context integration. Playwright tests add UI regression coverage, which is valuable but not the first priority for CI.
+These run as a **second job** (`e2e-browser`) that depends on the main `ci` job passing first. This pipelines the work: fast checks run first, and browser tests only run if linting/types/unit tests all pass. No compute is wasted on slow browser tests when fast checks fail.
 
-When added later, Playwright tests should run as a separate job that depends on the main CI job passing first, to avoid wasting compute on browser tests when unit tests fail.
+#### Trigger Scope
+
+The `e2e-browser` job runs when the PR touches frontend or cross-stack paths:
+
+```yaml
+# Job-level condition (the workflow already triggers on all source changes)
+if: >-
+  contains(github.event.pull_request.changed_files_list, 'frontend/') ||
+  contains(github.event.pull_request.changed_files_list, 'src/gateway/') ||
+  contains(github.event.pull_request.changed_files_list, 'tests/e2e/playwright/')
+```
+
+Since GitHub Actions `paths` filters are workflow-level only, the `e2e-browser` job uses a step that checks changed files with `gh pr diff --name-only` and sets an output flag:
+
+```yaml
+e2e-browser:
+  needs: ci
+  runs-on: ubuntu-latest
+  steps:
+    - name: Check if browser tests needed
+      id: check
+      run: |
+        FILES=$(gh pr diff ${{ github.event.pull_request.number }} --name-only)
+        if echo "$FILES" | grep -qE '^(frontend/|src/gateway/|tests/e2e/playwright/)'; then
+          echo "run=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "run=false" >> "$GITHUB_OUTPUT"
+          echo "Skipping browser tests — no frontend/gateway/playwright changes"
+        fi
+      env:
+        GH_TOKEN: ${{ github.token }}
+
+    # All subsequent steps use: if: steps.check.outputs.run == 'true'
+```
+
+#### Chromium Installation
+
+```yaml
+- name: Install Playwright browsers
+  if: steps.check.outputs.run == 'true'
+  run: cd tests/e2e/playwright && npx playwright install --with-deps chromium
+```
+
+This installs Chromium and its system dependencies (fonts, libs) on the Ubuntu runner. Takes ~30-60 seconds.
+
+#### Server Startup
+
+Playwright's config (`playwright.config.ts`) already handles server startup via `webServer` — it launches both uvicorn and vite dev server automatically. The CI job just needs to:
+
+1. Set up the database (same as the `ci` job — PostgreSQL service container + Alembic migrations)
+2. Run `cd tests/e2e/playwright && npx playwright test`
+
+The `webServer` config in `playwright.config.ts` starts both servers with health checks and kills them after tests complete.
+
+#### Failure Artifacts — Video Demo Reel
+
+Playwright is configured with `video: 'retain-on-failure'` and `screenshot: 'only-on-failure'`. On test failure, it generates:
+- **Videos** (`.webm`) of the entire test execution — a visual demo reel showing exactly what went wrong
+- **Screenshots** at the failure point
+- **Traces** (`.zip`) for detailed debugging with `npx playwright show-trace`
+
+These are uploaded as artifacts for humans to review:
+
+```yaml
+- name: Upload Playwright failure artifacts
+  uses: actions/upload-artifact@v4
+  if: failure() && steps.check.outputs.run == 'true'
+  with:
+    name: playwright-failures
+    path: |
+      tests/e2e/playwright/test-results/
+      tests/e2e/playwright/playwright-report/
+    retention-days: 14
+```
+
+The `test-results/` directory contains the videos and screenshots. The `playwright-report/` directory contains an HTML report that can be downloaded and opened locally with `npx playwright show-report`.
+
+**14-day retention** (vs 7 for unit test artifacts) because video artifacts are larger and humans need time to review them.
+
+#### Estimated Additional CI Time
+
+| Step | Time |
+|------|------|
+| Chromium install | ~45s |
+| DB setup + migrations | ~10s |
+| Server startup (uvicorn + vite) | ~10s |
+| Playwright tests (6 spec files) | ~60s |
+| **Total** | **~2 min** |
+
+Combined with the `ci` job (~2 min), total pipeline time is ~4 minutes — still under the 5-minute target.
 
 ---
 
@@ -382,21 +471,23 @@ Plus additional steps not in `make quality`:
 
 `make quality` only covers backend. CI should test the full stack. The frontend and MCP server have their own test suites that aren't included in `make quality` today.
 
-### Future Addition: Playwright E2E
+### Playwright E2E (Pipelined)
 
-When added (separate PR), Playwright tests would run as a second job:
+Playwright browser tests run as a second job (`e2e-browser`) that depends on the `ci` job:
 
 ```yaml
 jobs:
   ci:
-    # ... existing quality gate
+    # ... lint, typecheck, unit tests, contract check (~2 min)
   
   e2e-browser:
     needs: ci
-    # ... Playwright setup + tests
+    # ... Chromium install, server startup, Playwright tests (~2 min)
+    # Skips if PR has no frontend/gateway/playwright changes
+    # Uploads video + screenshot artifacts on failure (14-day retention)
 ```
 
-This ensures browser tests only run after the fast checks pass.
+This ensures browser tests only run after the fast checks pass, and failure videos give humans a visual demo reel of what went wrong. See Section 3 for full details.
 
 ---
 
@@ -555,6 +646,92 @@ jobs:
             htmlcov/
             frontend/coverage/
           retention-days: 7
+
+  e2e-browser:
+    needs: ci
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: cloglog
+          POSTGRES_PASSWORD: cloglog_dev
+          POSTGRES_DB: cloglog
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cloglog"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check if browser tests needed
+        id: check
+        run: |
+          FILES=$(gh pr diff ${{ github.event.pull_request.number }} --name-only)
+          if echo "$FILES" | grep -qE '^(frontend/|src/gateway/|tests/e2e/playwright/)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping browser tests — no frontend/gateway/playwright changes"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - uses: actions/setup-python@v5
+        if: steps.check.outputs.run == 'true'
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@v4
+        if: steps.check.outputs.run == 'true'
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.run == 'true'
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            frontend/package-lock.json
+            tests/e2e/playwright/package-lock.json
+
+      - name: Install dependencies
+        if: steps.check.outputs.run == 'true'
+        run: |
+          uv sync --all-extras
+          cd frontend && npm ci && cd ..
+          cd tests/e2e/playwright && npm ci
+
+      - name: Install Playwright browsers
+        if: steps.check.outputs.run == 'true'
+        run: cd tests/e2e/playwright && npx playwright install --with-deps chromium
+
+      - name: Run database migrations
+        if: steps.check.outputs.run == 'true'
+        run: uv run alembic upgrade head
+
+      - name: Run Playwright tests
+        if: steps.check.outputs.run == 'true'
+        run: cd tests/e2e/playwright && npx playwright test
+        env:
+          BACKEND_PORT: '8001'
+          FRONTEND_PORT: '5174'
+
+      - name: Upload Playwright failure artifacts
+        uses: actions/upload-artifact@v4
+        if: failure() && steps.check.outputs.run == 'true'
+        with:
+          name: playwright-failures
+          path: |
+            tests/e2e/playwright/test-results/
+            tests/e2e/playwright/playwright-report/
+          retention-days: 14
 ```
 
 ---
@@ -565,7 +742,8 @@ jobs:
 |----------|--------|-----------|
 | Single job vs matrix | Single job | Steps share DB; avoids redundant container startup |
 | Required vs advisory | Required | Agents are autonomous; advisory provides no enforcement |
-| Playwright in v1 | Deferred | API-level E2E covers integration; browser tests add setup complexity |
+| Playwright in v1 | Pipelined second job | Runs after fast checks pass; skips if no frontend/gateway changes |
+| Failure videos | Uploaded as artifacts | 14-day retention; humans review the visual demo reel of failures |
 | Path filters | On trigger | Simpler than job-level `if` conditions; GitHub handles it natively |
 | Concurrency | Cancel in-progress | Agent pushes fix → old run should stop immediately |
 | Fix failures first | Yes | CI that starts red is CI no one trusts |
@@ -576,7 +754,6 @@ jobs:
 ## 11. Implementation Sequence
 
 1. **Fix pre-existing test failures** (separate task, prerequisite)
-2. **Create `.github/workflows/ci.yml`** with the workflow above
+2. **Create `.github/workflows/ci.yml`** with both `ci` and `e2e-browser` jobs
 3. **Update CLAUDE.md** — add CI polling commands to agent learnings
 4. **Enable branch protection** on `main` requiring the `ci` check
-5. **Follow-up: Playwright job** (separate feature/task)

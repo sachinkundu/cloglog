@@ -146,10 +146,10 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 ### Execution Workflow (Mandatory)
 - **Always use subagent-driven development** — never ask which execution approach; subagent-driven is always the choice.
 - **Every phase of a feature needs a board task** — not just implementation. The full pipeline creates these tasks under the feature via `create_task` MCP tool:
-  1. **"Write design spec for F-N"** — move to `review` when spec PR is created, `done` when merged
-  2. **"Write implementation plan for F-N"** — move to `review` when plan PR is created, `done` when merged
-  3. **"Implement F-N"** — move to `review` when implementation PR is created, `done` when merged
-- The notification system fires when tasks move to `review`. Without board tasks, the user gets no notification and doesn't know work is ready for their review.
+  1. **"Write design spec for F-N"** — requires a PR. Move to `review` when spec PR is created, `done` when merged. User reviews the spec.
+  2. **"Write implementation plan for F-N"** — does NOT need a PR. Write the plan to `docs/superpowers/plans/`, commit it, and immediately proceed to implementation. The plan is mechanical — it breaks down the approved spec into steps. No separate approval needed.
+  3. **"Implement F-N"** — requires a PR. Move to `review` when implementation PR is created, `done` when merged. User reviews the code.
+- Only spec and implementation need user review. The implementation plan is an internal artifact the agent writes for itself.
 - For the implementation task, use internal session tasks (TaskCreate/TaskUpdate) to track subagent progress. The board task is the high-level "implementation is done, please review."
 - This is non-negotiable. The board must reflect what is being worked on in real-time.
 
@@ -199,7 +199,7 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
   create_task(feature_id, "Implement F-X", task_type="impl")
   # Assign all to the worktree via assign_task or start_task
   ```
-- **Agents must complete the full pipeline**, not just one task. The pipeline is: spec → plan → impl. After the spec PR merges, start the plan task. After the plan PR merges, start the impl task.
+- **Agents must complete the full pipeline**, not just one task. The pipeline is: spec (PR, wait for merge) → plan (no PR, write and proceed) → impl (PR, wait for merge). After the spec PR merges, start the plan task, write the plan, then immediately start the impl task.
 - **After each task's PR merges, call `get_my_tasks`** — if there are more tasks assigned, start the next one. The state machine guards will allow it only if prerequisites are met.
 - **Never exit after just the spec task.** If `get_my_tasks` still returns tasks, you have more work to do.
 

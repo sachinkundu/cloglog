@@ -177,7 +177,7 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
   # Check for review state (CHANGES_REQUESTED, APPROVED, etc.)
   gh api repos/sachinkundu/cloglog/pulls/<PR_NUM>/reviews --jq '.[] | "\(.state) | \(.body[:80])"'
   ```
-  When merged: mark tasks as done via `complete_task`, call `unregister_agent`, then exit cleanly.
+  When merged: (1) for spec/plan tasks, call `report_artifact` with the artifact file path (this is enforced by the pipeline guard — downstream tasks cannot start without it), (2) wait for user to move task to done on the board, (3) pick up next task via `get_my_tasks`.
 - **CI failure recovery.** When `gh pr checks` shows a failure:
   1. Find the failed run: `RUN_ID=$(gh run list --branch <BRANCH> --workflow ci.yml -L 1 --json databaseId -q '.[0].databaseId')`
   2. Read the logs: `gh run view $RUN_ID --log-failed`
@@ -193,7 +193,7 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
   gh api repos/sachinkundu/cloglog/issues/<PR_NUM>/comments -f body="Addressed — ..."
   ```
   Do NOT resolve the thread — that's the reviewer's decision. Just reply with what you changed.
-- **Attach documents after PR merge:** When a spec or plan PR is merged, attach the document to the feature using `attach_document` MCP tool so it appears on the board card.
+- **Report artifacts after PR merge (enforced by state machine):** When a spec or plan PR merges, call `report_artifact` MCP tool with the repo-relative path to the document file (e.g. `docs/specs/F-1-spec.md`). This is not optional — the pipeline guard blocks downstream tasks (plan/impl) until the predecessor's artifact is attached. The tool also creates a Document record on the feature card automatically. Only spec and plan tasks produce artifacts; impl and standalone tasks do not.
 - **SSE events are live:** The board updates in real-time via SSE. When you change task status, the dashboard reflects it immediately.
 - **Worktree removal:** Use `./scripts/manage-worktrees.sh remove <name>` to remove a single worktree after its PR merges. Use `./scripts/manage-worktrees.sh close <wave-name> <name> [name...]` to close a full wave (generates work log, removes all worktrees, updates main).
 - **Zellij tab management:** See `docs/zellij-guide.md` for the complete guide. Key rules: always name tabs after the worktree (`wt-*`), close only tabs you created, close by name→TAB_ID lookup via `zellij action list-tabs`, never by index.

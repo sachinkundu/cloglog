@@ -35,7 +35,9 @@ async def test_full_workflow(client: AsyncClient) -> None:
     assert project["status"] == "active"
 
     # ── 2. Verify auth works (Gateway context) ───────────────
-    auth_headers = {"Authorization": f"Bearer {api_key}"}
+    # /gateway/me needs both MCP-level access (to pass middleware for non-agent route)
+    # and an API key (for CurrentProject dependency)
+    auth_headers = {"Authorization": f"Bearer {api_key}", "X-MCP-Request": "true"}
     me = (await client.get("/api/v1/gateway/me", headers=auth_headers)).json()
     assert me["id"] == pid
 
@@ -153,11 +155,19 @@ async def test_full_workflow(client: AsyncClient) -> None:
     assert len(task_docs) == 1
     assert task_docs[0]["title"] == "Implementation Notes"
 
-    # ── 9. Complete the task ─────────────────────────────────
-    complete = (
-        await client.post(f"/api/v1/agents/{wt_id}/complete-task", json={"task_id": task_id})
-    ).json()
-    assert complete["completed_task_id"] == task_id
+    # ── 9. Move task to review (agents cannot complete tasks) ──
+    import uuid as _uuid
+
+    pr_url = f"https://github.com/test/repo/pull/{_uuid.uuid4().hex[:8]}"
+    review_resp = await client.patch(
+        f"/api/v1/agents/{wt_id}/task-status",
+        json={"task_id": task_id, "status": "review", "pr_url": pr_url},
+    )
+    assert review_resp.status_code == 204
+
+    # Dashboard marks done
+    done_resp = await client.patch(f"/api/v1/tasks/{task_id}", json={"status": "done"})
+    assert done_resp.status_code == 200
 
     # ── 10. Board reflects the status change ─────────────────
     board_after = (await client.get(f"/api/v1/projects/{pid}/board")).json()

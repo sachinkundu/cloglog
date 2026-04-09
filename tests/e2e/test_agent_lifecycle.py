@@ -138,7 +138,8 @@ async def test_agent_list_tasks(client: AsyncClient) -> None:
     assert isinstance(tasks, list)
 
 
-async def test_agent_start_and_complete_task(client: AsyncClient) -> None:
+async def test_agent_start_and_move_to_review(client: AsyncClient) -> None:
+    """Agent starts task and moves to review with PR URL (agents cannot complete tasks)."""
     project, task_id = await _setup_project_with_task(client)
     h = _auth(project["api_key"])
 
@@ -160,12 +161,18 @@ async def test_agent_start_and_complete_task(client: AsyncClient) -> None:
     assert start_resp.status_code == 200
     assert start_resp.json()["status"] == "in_progress"
 
-    # Complete task
-    complete_resp = await client.post(
-        f"/api/v1/agents/{wt_id}/complete-task", json={"task_id": task_id}
+    # Move to review (agents cannot call complete_task)
+    pr_url = f"https://github.com/test/repo/pull/{uuid.uuid4().hex[:8]}"
+    review_resp = await client.patch(
+        f"/api/v1/agents/{wt_id}/task-status",
+        json={"task_id": task_id, "status": "review", "pr_url": pr_url},
     )
-    assert complete_resp.status_code == 200
-    assert complete_resp.json()["completed_task_id"] == task_id
+    assert review_resp.status_code == 204
+
+    # Dashboard marks done
+    done_resp = await client.patch(f"/api/v1/tasks/{task_id}", json={"status": "done"})
+    assert done_resp.status_code == 200
+    assert done_resp.json()["status"] == "done"
 
 
 async def test_agent_update_task_status(client: AsyncClient) -> None:
@@ -185,9 +192,10 @@ async def test_agent_update_task_status(client: AsyncClient) -> None:
         json={"status": "assigned", "worktree_id": wt_id},
     )
 
+    pr_url = f"https://github.com/test/repo/pull/{uuid.uuid4().hex[:8]}"
     resp = await client.patch(
         f"/api/v1/agents/{wt_id}/task-status",
-        json={"task_id": task_id, "status": "review"},
+        json={"task_id": task_id, "status": "review", "pr_url": pr_url},
     )
     assert resp.status_code == 204
 

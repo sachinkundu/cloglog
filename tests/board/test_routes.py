@@ -1155,3 +1155,213 @@ async def test_active_tasks_not_found(client: AsyncClient):
     """active-tasks returns 404 for unknown project."""
     resp = await client.get("/api/v1/projects/00000000-0000-0000-0000-000000000000/active-tasks")
     assert resp.status_code == 404
+
+
+# --- Auto-Attach Document on Review ---
+
+
+async def test_update_spec_task_to_review_auto_attaches_document(client: AsyncClient):
+    """Spec task moved to review with pr_url auto-attaches document."""
+    project = (await client.post("/api/v1/projects", json={"name": "auto-attach-route"})).json()
+    epic = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics",
+            json={"title": "Epic"},
+        )
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
+    task = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "Write spec", "task_type": "spec"},
+        )
+    ).json()
+
+    # Move to in_progress first, then to review with pr_url
+    await client.patch(f"/api/v1/tasks/{task['id']}", json={"status": "in_progress"})
+    resp = await client.patch(
+        f"/api/v1/tasks/{task['id']}",
+        json={"status": "review", "pr_url": "https://github.com/org/repo/pull/99"},
+    )
+    assert resp.status_code == 200
+
+    # Check that a document was created and attached to the feature
+    docs_resp = await client.get(
+        "/api/v1/documents",
+        params={"attached_to_type": "feature", "attached_to_id": feature["id"]},
+    )
+    assert docs_resp.status_code == 200
+    docs = docs_resp.json()
+    assert len(docs) == 1
+    assert docs[0]["doc_type"] == "design_spec"
+    assert docs[0]["source_path"] == "https://github.com/org/repo/pull/99"
+
+
+async def test_update_impl_task_to_review_does_not_attach(client: AsyncClient):
+    """Impl tasks moving to review should NOT auto-attach documents."""
+    project = (await client.post("/api/v1/projects", json={"name": "no-attach-impl"})).json()
+    epic = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics",
+            json={"title": "Epic"},
+        )
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
+    task = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "Implement", "task_type": "impl"},
+        )
+    ).json()
+
+    await client.patch(f"/api/v1/tasks/{task['id']}", json={"status": "in_progress"})
+    await client.patch(
+        f"/api/v1/tasks/{task['id']}",
+        json={"status": "review", "pr_url": "https://github.com/org/repo/pull/100"},
+    )
+
+    docs_resp = await client.get(
+        "/api/v1/documents",
+        params={"attached_to_type": "feature", "attached_to_id": feature["id"]},
+    )
+    assert docs_resp.status_code == 200
+    assert len(docs_resp.json()) == 0
+
+
+# --- PR Merged Field ---
+
+
+async def test_task_response_includes_pr_merged(client: AsyncClient):
+    """Task response includes pr_merged field, default false."""
+    project = (await client.post("/api/v1/projects", json={"name": "pr-merged-test"})).json()
+    epic = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics",
+            json={"title": "Epic"},
+        )
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
+    task = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "Task"},
+        )
+    ).json()
+
+    assert "pr_merged" in task
+    assert task["pr_merged"] is False
+
+
+async def test_update_pr_merged(client: AsyncClient):
+    """pr_merged can be set to true via PATCH."""
+    project = (await client.post("/api/v1/projects", json={"name": "pr-merged-update"})).json()
+    epic = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics",
+            json={"title": "Epic"},
+        )
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
+    task = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={
+                "title": "Task",
+                "task_type": "impl",
+            },
+        )
+    ).json()
+
+    # Set pr_url and pr_merged
+    resp = await client.patch(
+        f"/api/v1/tasks/{task['id']}",
+        json={"pr_url": "https://github.com/org/repo/pull/50", "pr_merged": True},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["pr_merged"] is True
+    assert data["pr_url"] == "https://github.com/org/repo/pull/50"
+
+
+async def test_board_includes_pr_merged(client: AsyncClient):
+    """Board endpoint returns pr_merged in task cards."""
+    project = (await client.post("/api/v1/projects", json={"name": "board-pr-merged"})).json()
+    epic = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics",
+            json={"title": "Epic"},
+        )
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
+    task = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "Task"},
+        )
+    ).json()
+
+    # Mark as merged
+    await client.patch(
+        f"/api/v1/tasks/{task['id']}",
+        json={"pr_merged": True},
+    )
+
+    resp = await client.get(f"/api/v1/projects/{project['id']}/board")
+    assert resp.status_code == 200
+    board = resp.json()
+    backlog_tasks = board["columns"][0]["tasks"]
+    assert len(backlog_tasks) == 1
+    assert backlog_tasks[0]["pr_merged"] is True
+
+
+async def test_active_tasks_includes_pr_merged(client: AsyncClient):
+    """Active tasks endpoint includes pr_merged field."""
+    project = (await client.post("/api/v1/projects", json={"name": "active-pr-merged"})).json()
+    epic = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics",
+            json={"title": "Epic"},
+        )
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
+    await client.post(
+        f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+        json={"title": "Task"},
+    )
+
+    resp = await client.get(f"/api/v1/projects/{project['id']}/active-tasks")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert "pr_merged" in data[0]
+    assert data[0]["pr_merged"] is False

@@ -127,6 +127,7 @@ class TaskUpdate(BaseModel):
     position: int | None = None
     archived: bool | None = None
     pr_url: str | None = None
+    pr_merged: bool | None = None
 
 
 class TaskResponse(BaseModel):
@@ -140,6 +141,7 @@ class TaskResponse(BaseModel):
     priority: str
     task_type: str
     pr_url: str | None
+    pr_merged: bool
     worktree_id: UUID | None
     position: int
     number: int
@@ -182,6 +184,7 @@ class ActiveTaskItem(BaseModel):
     title: str
     status: str
     pr_url: str | None
+    pr_merged: bool
     worktree_id: UUID | None
     feature_id: UUID
     task_type: str
@@ -198,6 +201,7 @@ class BacklogTask(BaseModel):
     priority: str
     task_type: str = "task"
     pr_url: str | None = None
+    pr_merged: bool = False
 
 
 class TaskCounts(BaseModel):

@@ -6,9 +6,10 @@ import hashlib
 import secrets
 from uuid import UUID
 
-from src.board.models import Project
+from src.board.models import Project, Task
 from src.board.repository import BoardRepository
 from src.board.schemas import ImportPlan, SearchResponse, SearchResult
+from src.document.models import Document
 
 EPIC_COLOR_PALETTE = [
     "#7c3aed",  # purple
@@ -51,6 +52,51 @@ class BoardService:
     @staticmethod
     def _hash_key(key: str) -> str:
         return hashlib.sha256(key.encode()).hexdigest()
+
+    # --- Auto-Attach Document ---
+
+    async def auto_attach_document_on_review(self, task: Task, pr_url: str) -> Document | None:
+        """Auto-create a document linking pr_url to the parent feature.
+
+        Called when a spec/plan task moves to review.
+        Returns the created Document, or None if conditions aren't met.
+        """
+        if task.task_type not in ("spec", "plan"):
+            return None
+
+        feature = await self._repo.get_feature(task.feature_id)
+        if feature is None:
+            return None
+
+        # Avoid duplicates: check if this pr_url is already attached
+        session = self._repo._session
+        from sqlalchemy import select
+
+        existing = await session.execute(
+            select(Document).where(
+                Document.attached_to_type == "feature",
+                Document.attached_to_id == task.feature_id,
+                Document.source_path == pr_url,
+            )
+        )
+        if existing.scalar_one_or_none() is not None:
+            return None
+
+        doc_type = "design_spec" if task.task_type == "spec" else "implementation_plan"
+        title = f"{task.task_type.capitalize()} — {task.title}"
+
+        doc = Document(
+            title=title,
+            content="",
+            doc_type=doc_type,
+            source_path=pr_url,
+            attached_to_type="feature",
+            attached_to_id=task.feature_id,
+        )
+        session.add(doc)
+        await session.commit()
+        await session.refresh(doc)
+        return doc
 
     # --- Status Roll-Up ---
 

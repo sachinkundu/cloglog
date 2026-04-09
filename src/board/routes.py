@@ -308,6 +308,22 @@ async def update_task(task_id: UUID, body: TaskUpdate, service: ServiceDep) -> T
                 },
             )
         )
+        # Auto-attach document when spec/plan tasks move to review
+        effective_pr_url = fields.get("pr_url") or task.pr_url
+        if fields["status"] == "review" and effective_pr_url:
+            doc = await service.auto_attach_document_on_review(task, str(effective_pr_url))
+            if doc is not None:
+                await event_bus.publish(
+                    Event(
+                        type=EventType.DOCUMENT_ATTACHED,
+                        project_id=epic.project_id,
+                        data={
+                            "document_id": str(doc.id),
+                            "attached_to_type": "feature",
+                            "attached_to_id": str(task.feature_id),
+                        },
+                    )
+                )
     return TaskResponse.model_validate(task)
 
 
@@ -575,6 +591,7 @@ async def get_backlog(project_id: UUID, service: ServiceDep) -> list[BacklogEpic
                             title=t.title,
                             status=t.status,
                             priority=t.priority,
+                            pr_merged=t.pr_merged,
                         )
                         for t in tasks
                     ],

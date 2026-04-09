@@ -1,5 +1,6 @@
 .superpowers/
 .claude/worktrees/
+AGENT_PROMPT.md
 __pycache__/
 *.pyc
 .venv/

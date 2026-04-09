@@ -23,7 +23,7 @@ BRANCH_NAME="${WORKTREE_NAME}"
 declare -A ALLOWED_DIRS
 ALLOWED_DIRS=(
   [wt-board]="src/board/, tests/board/, src/alembic/"
-  [wt-agent]="src/agent/, tests/agent/, src/alembic/"
+  [wt-agent]="src/agent/, tests/agent/, src/alembic/, mcp-server/"
   [wt-document]="src/document/, tests/document/, src/alembic/"
   [wt-gateway]="src/gateway/, tests/gateway/"
   [wt-gateway-sse]="src/gateway/sse.py, src/shared/events.py, tests/gateway/"
@@ -99,6 +99,13 @@ fi
 
 git worktree add -b "$BRANCH_NAME" "$WORKTREE_DIR" main
 echo "Worktree created."
+
+# Remove stale AGENT_PROMPT.md inherited from previous worktrees
+# The launching agent will write a fresh prompt before starting the agent
+if [[ -f "$WORKTREE_DIR/AGENT_PROMPT.md" ]]; then
+  rm "$WORKTREE_DIR/AGENT_PROMPT.md"
+  echo "  Removed stale AGENT_PROMPT.md (will be written by launcher)"
+fi
 
 # ── Install dependencies ────────────────────────────────────
 

@@ -162,10 +162,26 @@ class AgentService:
         # be blocked waiting for the user to drag a card to done on the board
         # when the PR is already merged.
         def is_completed(t: Task) -> bool:
-            return t.status == "done" or (t.status == "review" and bool(t.pr_url))
+            if t.status == "done":
+                return True  # Human override — bypass artifact check
+            if t.status == "review" and bool(t.pr_url):
+                # For spec/plan predecessors, also require artifact attachment
+                return not (t.task_type in ("spec", "plan") and not t.artifact_path)
+            return False
 
         undone = [t for t in predecessors if not is_completed(t)]
         if undone:
+            missing_artifact = [
+                t for t in undone if t.status == "review" and bool(t.pr_url) and not t.artifact_path
+            ]
+            if missing_artifact:
+                titles = ", ".join(f"T-{t.number}" for t in missing_artifact)
+                raise ValueError(
+                    f"Cannot start {task.task_type} task: "
+                    f"{predecessor_type} task(s) {titles} in review but "
+                    f"artifact not attached. "
+                    f"Call report_artifact first."
+                )
             titles = ", ".join(f"T-{t.number} ({t.status})" for t in undone)
             raise ValueError(
                 f"Cannot start {task.task_type} task: "
@@ -355,6 +371,65 @@ class AgentService:
                 },
             )
         )
+
+    # --- Artifact Reporting ---
+
+    async def report_artifact(
+        self, worktree_id: UUID, task_id: UUID, artifact_path: str
+    ) -> dict[str, object]:
+        """Attach an artifact path to a spec or plan task and create a Document record."""
+        worktree = await self._repo.get_worktree(worktree_id)
+        if worktree is None:
+            raise ValueError(f"Worktree {worktree_id} not found")
+
+        task = await self._board_repo.get_task(task_id)
+        if task is None:
+            raise ValueError(f"Task {task_id} not found")
+
+        if task.task_type not in ("spec", "plan"):
+            raise ValueError(
+                f"Cannot attach artifact to {task.task_type} task: "
+                f"only spec and plan tasks produce artifacts"
+            )
+
+        if task.status != "review":
+            raise ValueError(
+                f"Cannot attach artifact: task must be in 'review' status (current: {task.status})"
+            )
+
+        await self._board_repo.update_task(task_id, artifact_path=artifact_path)
+
+        # Create a Document record attached to the feature
+        from src.document.repository import DocumentRepository
+
+        doc_repo = DocumentRepository(self._board_repo._session)
+        await doc_repo.create_document(
+            title=f"{task.task_type} — {task.title}",
+            content="",
+            doc_type=task.task_type,
+            source_path=artifact_path,
+            attached_to_type="feature",
+            attached_to_id=task.feature_id,
+        )
+
+        await event_bus.publish(
+            Event(
+                type=EventType.TASK_STATUS_CHANGED,
+                project_id=worktree.project_id,
+                data={
+                    "task_id": str(task_id),
+                    "worktree_id": str(worktree_id),
+                    "action": "artifact_attached",
+                    "artifact_path": artifact_path,
+                },
+            )
+        )
+
+        return {
+            "task_id": task_id,
+            "artifact_path": artifact_path,
+            "feature_id": task.feature_id,
+        }
 
     # --- Unregister ---
 

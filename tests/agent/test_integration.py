@@ -1058,3 +1058,151 @@ class TestAgentMessagingAPI:
         msgs = resp2.json()["pending_messages"]
         assert len(msgs) == 1
         assert "new msg" in msgs[0]
+
+
+class TestReportArtifactAPI:
+    async def test_report_artifact_success(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Report artifact on a spec task in review → 200 with artifact_path."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+        pid = uuid.UUID(project["id"])
+
+        epic = Epic(project_id=pid, title="Artifact Epic", position=0)
+        db_session.add(epic)
+        await db_session.commit()
+        await db_session.refresh(epic)
+
+        feature = Feature(epic_id=epic.id, title="Artifact Feature", position=0)
+        db_session.add(feature)
+        await db_session.commit()
+        await db_session.refresh(feature)
+
+        spec_task = Task(
+            feature_id=feature.id,
+            title="Write spec",
+            description="Design spec",
+            priority="high",
+            position=0,
+            status="assigned",
+            task_type="spec",
+        )
+        db_session.add(spec_task)
+        await db_session.commit()
+        await db_session.refresh(spec_task)
+
+        # Register agent
+        reg = await client.post(
+            "/api/v1/agents/register",
+            json={
+                "worktree_path": f"/repo/wt-art-{uuid.uuid4().hex[:6]}",
+                "branch_name": "wt-art",
+            },
+            headers=h,
+        )
+        wt_id = reg.json()["worktree_id"]
+
+        # Start the task
+        await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": str(spec_task.id)},
+        )
+
+        # Move to review with PR URL
+        await client.patch(
+            f"/api/v1/agents/{wt_id}/task-status",
+            json={
+                "task_id": str(spec_task.id),
+                "status": "review",
+                "pr_url": "https://github.com/test/repo/pull/42",
+            },
+        )
+
+        # Report artifact
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/report-artifact",
+            json={
+                "task_id": str(spec_task.id),
+                "artifact_path": "docs/specs/my-spec.md",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["artifact_path"] == "docs/specs/my-spec.md"
+        assert data["task_id"] == str(spec_task.id)
+
+        # Verify artifact_path persisted in DB
+        task_id = spec_task.id
+        db_session.expire_all()
+        board_repo = BoardRepository(db_session)
+        refreshed = await board_repo.get_task(task_id)
+        assert refreshed is not None
+        assert refreshed.artifact_path == "docs/specs/my-spec.md"
+
+    async def test_report_artifact_rejects_impl_task(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Report artifact on an impl task → 409 with 'only spec and plan'."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+        pid = uuid.UUID(project["id"])
+
+        epic = Epic(project_id=pid, title="Impl Epic", position=0)
+        db_session.add(epic)
+        await db_session.commit()
+        await db_session.refresh(epic)
+
+        feature = Feature(epic_id=epic.id, title="Impl Feature", position=0)
+        db_session.add(feature)
+        await db_session.commit()
+        await db_session.refresh(feature)
+
+        impl_task = Task(
+            feature_id=feature.id,
+            title="Implement it",
+            description="Build it",
+            priority="high",
+            position=0,
+            status="assigned",
+            task_type="impl",
+        )
+        db_session.add(impl_task)
+        await db_session.commit()
+        await db_session.refresh(impl_task)
+
+        # Register agent
+        reg = await client.post(
+            "/api/v1/agents/register",
+            json={
+                "worktree_path": f"/repo/wt-impl-art-{uuid.uuid4().hex[:6]}",
+                "branch_name": "wt-impl-art",
+            },
+            headers=h,
+        )
+        wt_id = reg.json()["worktree_id"]
+
+        # Start task, move to review
+        await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": str(impl_task.id)},
+        )
+        await client.patch(
+            f"/api/v1/agents/{wt_id}/task-status",
+            json={
+                "task_id": str(impl_task.id),
+                "status": "review",
+                "pr_url": "https://github.com/test/repo/pull/99",
+            },
+        )
+
+        # Try to report artifact on impl task
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/report-artifact",
+            json={
+                "task_id": str(impl_task.id),
+                "artifact_path": "docs/impl.md",
+            },
+        )
+        assert resp.status_code == 409
+        assert "only spec and plan" in resp.json()["detail"]

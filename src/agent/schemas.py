@@ -88,6 +88,11 @@ class AddTaskNoteRequest(BaseModel):
     note: str
 
 
+class ReportArtifactRequest(BaseModel):
+    task_id: UUID
+    artifact_path: str
+
+
 class ArtifactPaths(BaseModel):
     work_log: str | None = None
     learnings: str | None = None

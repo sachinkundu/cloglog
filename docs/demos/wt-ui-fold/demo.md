@@ -4,18 +4,24 @@
 
 Added a toolbar button to the backlog tree that collapses or expands all epics and features at once.
 
+## Before — All Expanded (default)
+
+The backlog tree shows all epics, features, and tasks expanded. The "Collapse all" button appears in the toolbar.
+
+![Backlog expanded](backlog-expanded.png)
+
+## After — Collapse All clicked
+
+All epics remain visible but features and tasks are hidden. The button switches to "Expand all".
+
+![Backlog collapsed](backlog-collapsed.png)
+
 ## Behavior
 
-1. **Default state** — all epics and features start expanded, button shows "Collapse all" with ▼ icon
+1. **Default state** — all epics and features start expanded, button shows "Collapse all" with down arrow
 2. **Collapse all** — clicking hides all features and tasks under every epic instantly
 3. **Expand all** — clicking reveals all epics, features, and their backlog tasks
 4. **Smart toggle** — manually collapsing any single item switches the button to "Expand all"
-
-## Implementation
-
-- Added `expandAll()` and `collapseAll()` functions that set/clear the `expandedEpics` and `expandedFeatures` state sets
-- Toggle button placed in a new `.backlog-toolbar` div alongside the existing "Show completed" button
-- `allExpanded` computed from whether all visible epics and features are in the expanded sets
 
 ## Test Results
 

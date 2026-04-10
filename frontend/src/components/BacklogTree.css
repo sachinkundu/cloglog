@@ -2,15 +2,37 @@
   overflow-y: auto;
 }
 
-.backlog-completed-toggle {
-  display: block;
+.backlog-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 8px;
+  margin-bottom: 8px;
+}
+
+.backlog-fold-toggle {
   background: none;
   border: none;
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: 11px;
-  padding: 4px 8px;
-  margin-bottom: 8px;
+  padding: 2px 4px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.backlog-fold-toggle:hover {
+  color: var(--text-secondary);
+}
+
+.backlog-completed-toggle {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 4px;
   cursor: pointer;
 }
 

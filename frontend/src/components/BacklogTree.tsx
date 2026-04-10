@@ -170,6 +170,24 @@ export function BacklogTree({ backlog, onItemClick, onReorderEpics, onReorderFea
     })
   }, [onReorderTasks])
 
+  const allExpanded = expandedEpics.size === visibleBacklog.length &&
+    expandedFeatures.size === visibleBacklog.flatMap(e => showCompleted ? e.features : e.features.filter(f => !isFullyDone(f.task_counts))).length
+
+  const collapseAll = () => {
+    setExpandedEpics(new Set())
+    setExpandedFeatures(new Set())
+  }
+
+  const expandAll = () => {
+    setExpandedEpics(new Set(visibleBacklog.map(e => e.epic.id)))
+    setExpandedFeatures(new Set(
+      visibleBacklog.flatMap(e => {
+        const features = showCompleted ? e.features : e.features.filter(f => !isFullyDone(f.task_counts))
+        return features.map(f => f.feature.id)
+      })
+    ))
+  }
+
   const completedEpics = localBacklog.filter(e => isFullyDone(e.task_counts)).length
   const completedFeatures = localBacklog.reduce(
     (sum, e) => sum + e.features.filter(f => isFullyDone(f.task_counts)).length, 0
@@ -178,11 +196,20 @@ export function BacklogTree({ backlog, onItemClick, onReorderEpics, onReorderFea
 
   return (
     <div className="backlog-tree">
-      {completedCount > 0 && (
-        <button className="backlog-completed-toggle" onClick={toggleShowCompleted}>
-          {showCompleted ? 'Hide' : 'Show'} completed ({completedCount})
+      <div className="backlog-toolbar">
+        <button
+          className="backlog-fold-toggle"
+          onClick={allExpanded ? collapseAll : expandAll}
+          title={allExpanded ? 'Collapse all' : 'Expand all'}
+        >
+          {allExpanded ? '\u25BC' : '\u25B6'} {allExpanded ? 'Collapse all' : 'Expand all'}
         </button>
-      )}
+        {completedCount > 0 && (
+          <button className="backlog-completed-toggle" onClick={toggleShowCompleted}>
+            {showCompleted ? 'Hide' : 'Show'} completed ({completedCount})
+          </button>
+        )}
+      </div>
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}

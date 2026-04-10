@@ -25,17 +25,15 @@ Evidence: [GitHub Issue #3174](https://github.com/anthropics/claude-code/issues/
 
 ### MCP SDK API Confirmed
 
-```typescript
-// McpServer.sendLoggingMessage() available
-server.sendLoggingMessage({
-  level: 'info',
-  logger: 'cloglog',
-  data: 'message text'
-})
+    // McpServer.sendLoggingMessage() available
+    server.sendLoggingMessage({
+      level: 'info',
+      logger: 'cloglog',
+      data: 'message text'
+    })
 
-// Requires logging capability in server options
-new McpServer(info, { capabilities: { logging: {} } })
-```
+    // Requires logging capability in server options
+    new McpServer(info, { capabilities: { logging: {} } })
 
 ## Design Decision
 

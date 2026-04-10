@@ -95,12 +95,12 @@ dev: ## Start everything (db + migrate + backend + frontend)
 	@fuser -k 5173/tcp 2>/dev/null && echo "  Killed old frontend on :5173" || true
 	@echo "  Starting backend + frontend..."
 	@trap 'kill 0' EXIT; \
-		uv run uvicorn src.gateway.app:create_app --factory --host 0.0.0.0 --port 8000 --reload & \
+		uv run uvicorn src.gateway.app:create_app --factory --host 0.0.0.0 --port 8000 --reload --reload-exclude '.claude/worktrees' & \
 		(cd frontend && npm run dev) & \
 		wait
 
 run-backend: ## Start the FastAPI backend
-	uv run uvicorn src.gateway.app:create_app --factory --host 0.0.0.0 --port 8000 --reload
+	uv run uvicorn src.gateway.app:create_app --factory --host 0.0.0.0 --port 8000 --reload --reload-exclude '.claude/worktrees'
 
 # ── Database ──────────────────────────────────
 

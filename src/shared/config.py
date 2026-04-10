@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     dashboard_secret: str = "cloglog-dashboard-dev"
     mcp_service_key: str = "cloglog-mcp-dev"
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 settings = Settings()

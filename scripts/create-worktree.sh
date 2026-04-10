@@ -272,8 +272,21 @@ See the Proof-of-Work Demos section in the root CLAUDE.md for details.
 
 ## Infrastructure
 
-This worktree uses isolated infrastructure. Ports and DB are in \`.env\`.
-Source \`scripts/worktree-ports.sh\` for port assignments in demo scripts.
+This worktree uses **isolated infrastructure** — its own backend, frontend, and database.
+Ports and DB are in \`.env\`. Source \`scripts/worktree-ports.sh\` for port assignments.
+
+**You MUST start your own backend and frontend. Never use the main dev server (port 8000/5173).**
+
+\`\`\`bash
+# Source port assignments
+source scripts/worktree-ports.sh
+
+# Start your isolated backend
+uv run uvicorn src.gateway.app:create_app --factory --host 0.0.0.0 --port \$BACKEND_PORT --reload &
+
+# Start your isolated frontend (from frontend/ dir)
+cd frontend && VITE_API_URL=http://localhost:\$BACKEND_PORT/api/v1 npx vite --port \$FRONTEND_PORT &
+\`\`\`
 
 CLAUDE_EOF
 

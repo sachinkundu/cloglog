@@ -5,7 +5,7 @@
       "args": ["/home/sachin/code/cloglog/mcp-server/dist/index.js"],
       "env": {
         "CLOGLOG_URL": "http://localhost:8000",
-        "CLOGLOG_API_KEY": "518b273d7429045608eb0d8ae507051f29c9e8ec6c836ab881881f11b54f72ae"
+        "CLOGLOG_API_KEY": "56293e0a5a9848f88a2b1eab3cf43a8513d5bdab3209bb540dbfa10cd39f612d"
       }
     }
   }

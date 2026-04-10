@@ -18,6 +18,7 @@ const makeTask = (id: string, title: string, status: string, overrides?: Partial
   priority: 'normal',
   task_type: 'task',
   pr_url: null,
+  pr_merged: false,
   worktree_id: null,
   position: 0,
   number: parseInt(id.replace('t', '')),

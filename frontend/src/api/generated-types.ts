@@ -903,6 +903,8 @@ export interface components {
             number: number;
             /** Archived */
             archived: boolean;
+            /** Retired */
+            retired: boolean;
             /**
              * Created At
              * Format: date-time
@@ -1004,6 +1006,8 @@ export interface components {
             number: number;
             /** Archived */
             archived: boolean;
+            /** Retired */
+            retired: boolean;
             /**
              * Created At
              * Format: date-time
@@ -1031,6 +1035,8 @@ export interface components {
             position?: number | null;
             /** Archived */
             archived?: boolean | null;
+            /** Retired */
+            retired?: boolean | null;
         };
         /** UpdateTaskStatusRequest */
         UpdateTaskStatusRequest: {

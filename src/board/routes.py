@@ -349,6 +349,51 @@ async def delete_task(task_id: UUID, service: ServiceDep) -> None:
     )
 
 
+@router.post("/tasks/{task_id}/retire", response_model=TaskResponse)
+async def retire_task(task_id: UUID, service: ServiceDep) -> TaskResponse:
+    """Permanently retire a task — removes it from board and backlog views."""
+    task = await service._repo.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found") from None
+    if task.status != "done":
+        raise HTTPException(status_code=400, detail="Only done tasks can be retired") from None
+    task = await service._repo.update_task(task_id, retired=True)
+    assert task is not None
+    feature = await service._repo.get_feature(task.feature_id)
+    assert feature is not None
+    epic = await service._repo.get_epic(feature.epic_id)
+    assert epic is not None
+    await event_bus.publish(
+        Event(
+            type=EventType.TASK_RETIRED,
+            project_id=epic.project_id,
+            data={"task_id": str(task.id)},
+        )
+    )
+    return TaskResponse.model_validate(task)
+
+
+@router.post(
+    "/projects/{project_id}/retire-done",
+    status_code=200,
+)
+async def retire_all_done(project_id: UUID, service: ServiceDep) -> dict[str, int]:
+    """Retire all archived done tasks for a project in bulk."""
+    project = await service._repo.get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found") from None
+    count = await service.retire_all_done(project_id)
+    if count > 0:
+        await event_bus.publish(
+            Event(
+                type=EventType.BULK_RETIRED,
+                project_id=project_id,
+                data={"retired_count": count},
+            )
+        )
+    return {"retired_count": count}
+
+
 @router.get("/tasks/{task_id}/notes")
 async def get_task_notes(task_id: UUID, service: ServiceDep) -> list[dict[str, object]]:
     notes = await service._repo.get_task_notes(task_id)

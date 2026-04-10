@@ -17,6 +17,7 @@ const baseTask: TaskCardType = {
   position: 0,
   number: 1,
   archived: false,
+  retired: false,
   created_at: '',
   updated_at: '',
   epic_title: 'Auth',

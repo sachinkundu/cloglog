@@ -46,6 +46,7 @@ const makeTask = (id: string, title: string, status: string) => ({
   position: 0,
   number: 1,
   archived: false,
+  retired: false,
   created_at: '',
   updated_at: '',
   epic_title: 'Epic',

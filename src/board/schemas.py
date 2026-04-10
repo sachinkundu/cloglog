@@ -126,6 +126,7 @@ class TaskUpdate(BaseModel):
     worktree_id: UUID | None = None
     position: int | None = None
     archived: bool | None = None
+    retired: bool | None = None
     pr_url: str | None = None
     pr_merged: bool | None = None
 
@@ -147,6 +148,7 @@ class TaskResponse(BaseModel):
     position: int
     number: int
     archived: bool
+    retired: bool
     created_at: datetime
     updated_at: datetime
 

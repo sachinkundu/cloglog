@@ -82,6 +82,8 @@ export function useBoard(projectId: string | null) {
           wt.id === wtId ? { ...wt, status: newStatus } : wt
         )
       })
+    } else if (event.type === 'task_retired' || event.type === 'bulk_retired') {
+      fetchBoard()
     } else if (
       event.type === 'epic_reordered' ||
       event.type === 'feature_reordered' ||

@@ -26,6 +26,8 @@ class EventType(StrEnum):
     EPIC_REORDERED = "epic_reordered"
     FEATURE_REORDERED = "feature_reordered"
     TASK_REORDERED = "task_reordered"
+    TASK_RETIRED = "task_retired"
+    BULK_RETIRED = "bulk_retired"
 
 
 @dataclass

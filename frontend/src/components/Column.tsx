@@ -8,6 +8,7 @@ import './Column.css'
 
 interface ColumnProps {
   column: BoardColumnType
+  projectId?: string | null
   onTaskClick: (taskId: string) => void
   onRefresh?: () => void
   draggable?: boolean
@@ -22,7 +23,7 @@ const COLUMN_LABELS: Record<string, string> = {
   done: 'Done',
 }
 
-export function Column({ column, onTaskClick, onRefresh, draggable = false, worktreeNames, agentFilter }: ColumnProps) {
+export function Column({ column, projectId, onTaskClick, onRefresh, draggable = false, worktreeNames, agentFilter }: ColumnProps) {
   const [showArchived, setShowArchived] = useState(false)
   const isDone = column.status === 'done'
 
@@ -44,6 +45,18 @@ export function Column({ column, onTaskClick, onRefresh, draggable = false, work
   const archiveAll = async () => {
     const unarchived = column.tasks.filter(t => !t.archived)
     await Promise.all(unarchived.map(t => api.archiveTask(t.id)))
+    onRefresh?.()
+  }
+
+  const retireTask = async (taskId: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    await api.retireTask(taskId)
+    onRefresh?.()
+  }
+
+  const retireAll = async () => {
+    if (!projectId) return
+    await api.retireDone(projectId)
     onRefresh?.()
   }
 
@@ -70,13 +83,20 @@ export function Column({ column, onTaskClick, onRefresh, draggable = false, work
 
         {isDone && archivedTasks.length > 0 && (
           <div className="archived-section">
-            <button
-              className="archived-toggle"
-              onClick={() => setShowArchived(prev => !prev)}
-            >
-              <span className="backlog-toggle">{showArchived ? '\u25BC' : '\u25B6'}</span>
-              Archived ({archivedTasks.length})
-            </button>
+            <div className="archived-header">
+              <button
+                className="archived-toggle"
+                onClick={() => setShowArchived(prev => !prev)}
+              >
+                <span className="backlog-toggle">{showArchived ? '\u25BC' : '\u25B6'}</span>
+                Archived ({archivedTasks.length})
+              </button>
+              {showArchived && (
+                <button className="retire-all-btn" onClick={retireAll} title="Retire all archived tasks">
+                  Retire All
+                </button>
+              )}
+            </div>
             {showArchived && (
               <div className="archived-tasks">
                 {archivedTasks.map(task => (
@@ -85,7 +105,14 @@ export function Column({ column, onTaskClick, onRefresh, draggable = false, work
                     className="archived-task"
                     onClick={() => onTaskClick(task.id)}
                   >
-                    {task.title}
+                    <span className="archived-task-title">{task.title}</span>
+                    <button
+                      className="retire-btn"
+                      onClick={(e) => retireTask(task.id, e)}
+                      title="Retire this task"
+                    >
+                      Retire
+                    </button>
                   </div>
                 ))}
               </div>

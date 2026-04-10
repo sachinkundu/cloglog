@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearch } from '../hooks/useSearch'
 import type { SearchResult } from '../api/types'
+import type { ParsedQuery } from '../lib/searchQualifiers'
 import './SearchWidget.css'
 
 interface SearchWidgetProps {
@@ -22,8 +23,24 @@ function breadcrumb(result: SearchResult): string | undefined {
   return undefined
 }
 
+function filterLabel(parsed: ParsedQuery): string | null {
+  if (!parsed.statusFilter) return null
+  const filters = parsed.statusFilter
+  if (
+    filters.length === 3 &&
+    filters.includes('backlog') &&
+    filters.includes('in_progress') &&
+    filters.includes('review')
+  ) {
+    return 'open'
+  }
+  if (filters.length === 1 && filters[0] === 'done') return 'closed'
+  if (filters.length === 1 && filters[0] === 'archived') return 'archived'
+  return filters.join(', ')
+}
+
 export function SearchWidget({ projectId, onSelect }: SearchWidgetProps) {
-  const { results, loading, search, clear } = useSearch(projectId)
+  const { results, loading, parsed, search, clear } = useSearch(projectId)
   const [inputValue, setInputValue] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(-1)
   const [focused, setFocused] = useState(false)
@@ -132,6 +149,11 @@ export function SearchWidget({ projectId, onSelect }: SearchWidgetProps) {
       />
       {!focused && !inputValue && (
         <span className="search-shortcut-hint" data-testid="search-hint">⌘K</span>
+      )}
+      {parsed && filterLabel(parsed) && (
+        <span className="search-filter-pill" data-testid="search-filter-pill">
+          {filterLabel(parsed)}
+        </span>
       )}
       {showDropdown && (
         <div className="search-dropdown" data-testid="search-dropdown" role="listbox">

@@ -910,6 +910,102 @@ async def test_search_returns_all_entity_types(client: AsyncClient):
     assert data["total"] == 3
 
 
+async def test_search_status_filter_open(client: AsyncClient):
+    """status_filter restricts results to tasks with matching statuses."""
+    h = await _create_test_hierarchy(client, "search-status-open")
+    pid = h["project"]["id"]
+    fid = h["feature"]["id"]
+
+    # Default task is backlog (open). Create a done task too.
+    await client.post(
+        f"/api/v1/projects/{pid}/features/{fid}/tasks",
+        json={"title": "Write Login Tests Done"},
+    )
+    done_task = (await client.get(f"/api/v1/projects/{pid}/search", params={"q": "Done"})).json()[
+        "results"
+    ]
+    done_tid = done_task[0]["id"]
+    await client.patch(f"/api/v1/tasks/{done_tid}", json={"status": "done"})
+
+    # Filter for open statuses only
+    resp = await client.get(
+        f"/api/v1/projects/{pid}/search",
+        params={"q": "Login Tests", "status_filter": ["backlog", "in_progress", "review"]},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    statuses = {r["status"] for r in data["results"]}
+    assert "done" not in statuses
+    assert data["total"] >= 1
+
+
+async def test_search_status_filter_closed(client: AsyncClient):
+    """status_filter=done returns only done tasks."""
+    h = await _create_test_hierarchy(client, "search-status-closed")
+    pid = h["project"]["id"]
+    tid = h["task"]["id"]
+
+    # Move task to done
+    await client.patch(f"/api/v1/tasks/{tid}", json={"status": "done"})
+
+    resp = await client.get(
+        f"/api/v1/projects/{pid}/search",
+        params={"q": "Login Tests", "status_filter": ["done"]},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] >= 1
+    assert all(r["status"] == "done" for r in data["results"])
+
+
+async def test_search_status_filter_excludes_epics_features(client: AsyncClient):
+    """When status_filter is set, only tasks are searched (not epics/features)."""
+    project = (await client.post("/api/v1/projects", json={"name": "search-filter-types"})).json()
+    pid = project["id"]
+    epic = (
+        await client.post(
+            f"/api/v1/projects/{pid}/epics",
+            json={"title": "Shared Keyword Widget"},
+        )
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{pid}/epics/{epic['id']}/features",
+            json={"title": "Widget Config"},
+        )
+    ).json()
+    await client.post(
+        f"/api/v1/projects/{pid}/features/{feature['id']}/tasks",
+        json={"title": "Widget Styling"},
+    )
+
+    # Without filter — all types
+    resp = await client.get(f"/api/v1/projects/{pid}/search", params={"q": "Widget"})
+    assert {r["type"] for r in resp.json()["results"]} == {"epic", "feature", "task"}
+
+    # With filter — only tasks
+    resp = await client.get(
+        f"/api/v1/projects/{pid}/search",
+        params={"q": "Widget", "status_filter": ["backlog"]},
+    )
+    data = resp.json()
+    assert all(r["type"] == "task" for r in data["results"])
+    assert data["total"] >= 1
+
+
+async def test_search_no_status_filter_returns_all(client: AsyncClient):
+    """Without status_filter, search returns all entity types as before."""
+    h = await _create_test_hierarchy(client, "search-no-filter")
+    pid = h["project"]["id"]
+    resp = await client.get(f"/api/v1/projects/{pid}/search", params={"q": "Auth"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] >= 1
+    # Should include the epic at minimum
+    types = {r["type"] for r in data["results"]}
+    assert "epic" in types
+
+
 # --- Reorder endpoints ---
 
 

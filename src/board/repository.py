@@ -441,12 +441,22 @@ class BoardRepository:
 
     # --- Search ---
 
+    # Status groups for GitHub-style is: qualifiers
+    STATUS_OPEN = ("backlog", "in_progress", "review")
+    STATUS_CLOSED = ("done",)
+
     async def search(
-        self, project_id: UUID, query: str, limit: int = 20
+        self,
+        project_id: UUID,
+        query: str,
+        limit: int = 20,
+        *,
+        status_filter: list[str] | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         """Search epics, features, and tasks by title or entity number.
 
         Supports patterns like "E-1", "F-21", "T-3", "1", or free text.
+        Optional status_filter restricts task results by status.
         Returns (results, total_count).
         """
         # Parse query for entity number pattern (e.g. E-1, F-21, T-3, or bare 1)
@@ -459,6 +469,19 @@ class BoardRepository:
             exact_number = number_match.group(2)
 
         pattern = f"%{query}%"
+
+        # Build status filter SQL clause for tasks
+        task_status_clause = ""
+        params: dict[str, Any] = {
+            "project_id": project_id,
+            "pattern": pattern,
+            "exact_number": exact_number,
+        }
+        if status_filter:
+            placeholders = ", ".join(f":sf_{i}" for i in range(len(status_filter)))
+            task_status_clause = f" AND t.status IN ({placeholders})"
+            for i, s in enumerate(status_filter):
+                params[f"sf_{i}"] = s
 
         # Build individual SELECT statements
         epic_select = """
@@ -480,7 +503,7 @@ class BoardRepository:
               AND (f.title ILIKE :pattern OR f.number::text = :exact_number)
         """
 
-        task_select = """
+        task_select = f"""
             SELECT t.id, 'task' AS type, t.title, t.number, t.status,
                    e.title AS epic_title, e.color AS epic_color, f.title AS feature_title,
                    3 AS type_priority
@@ -489,10 +512,14 @@ class BoardRepository:
             JOIN epics e ON f.epic_id = e.id
             WHERE e.project_id = :project_id
               AND (t.title ILIKE :pattern OR t.number::text = :exact_number)
+              {task_status_clause}
         """
 
-        # Filter by type prefix if present
-        if type_prefix == "E":
+        # When status_filter is set, only search tasks (epics/features don't have
+        # the same status semantics).
+        if status_filter:
+            union_sql = task_select
+        elif type_prefix == "E":
             union_sql = epic_select
         elif type_prefix == "F":
             union_sql = feature_select
@@ -503,10 +530,7 @@ class BoardRepository:
 
         # Count query
         count_sql = f"SELECT COUNT(*) FROM ({union_sql}) AS search_results"
-        count_result = await self._session.execute(
-            text(count_sql),
-            {"project_id": project_id, "pattern": pattern, "exact_number": exact_number},
-        )
+        count_result = await self._session.execute(text(count_sql), params)
         total = count_result.scalar_one()
 
         # Results query with ordering and limit
@@ -518,12 +542,7 @@ class BoardRepository:
         """
         results_result = await self._session.execute(
             text(results_sql),
-            {
-                "project_id": project_id,
-                "pattern": pattern,
-                "exact_number": exact_number,
-                "limit": limit,
-            },
+            {**params, "limit": limit},
         )
 
         rows = results_result.fetchall()

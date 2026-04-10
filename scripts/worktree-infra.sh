@@ -17,8 +17,8 @@ source "$SCRIPT_DIR/worktree-ports.sh"
 # PostgreSQL connection defaults (match docker-compose.yml)
 PG_HOST="${PG_HOST:-127.0.0.1}"
 PG_PORT="${PG_PORT:-5432}"
-PG_USER="${PG_USER:-postgres}"
-PG_PASSWORD="${PG_PASSWORD:-postgres}"
+PG_USER="${PG_USER:-cloglog}"
+PG_PASSWORD="${PG_PASSWORD:-cloglog_dev}"
 export PGPASSWORD="$PG_PASSWORD"
 
 CMD="${1:-}"

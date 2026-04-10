@@ -20,6 +20,7 @@ class RegisterResponse(BaseModel):
 
     worktree_id: UUID
     session_id: UUID
+    project_id: UUID
     current_task: TaskInfo | None = None
     resumed: bool = False
     agent_token: str | None = None

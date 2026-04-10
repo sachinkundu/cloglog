@@ -11,6 +11,7 @@ export interface CloglogClientConfig {
 
 export interface RegisterAgentResult {
   worktree_id: string
+  project_id: string
   current_task: { id: string; title: string } | null
   resumed: boolean
   agent_token: string
@@ -53,9 +54,8 @@ export class CloglogClient {
     }
 
     if (isRegisterRoute || isUnregisterByPath) {
-      // Registration/unregister-by-path uses project API key via MCP path
-      headers['Authorization'] = `Bearer ${this.serviceKey}`
-      headers['X-MCP-Request'] = 'true'
+      // Registration/unregister-by-path uses project API key
+      headers['Authorization'] = `Bearer ${this.apiKey}`
     } else if (isAgentRoute && this.agentToken) {
       // Agent-scoped routes use per-agent token (no X-MCP-Request)
       headers['Authorization'] = `Bearer ${this.agentToken}`

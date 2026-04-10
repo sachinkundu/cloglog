@@ -40,6 +40,7 @@ describe('register_agent tool', () => {
   it('calls client.request and returns result as text content', async () => {
     const mockResponse = {
       worktree_id: 'wt-abc',
+      project_id: 'proj-1',
       current_task: { id: 'task-1', title: 'Build feature X' },
       resumed: true,
     }
@@ -70,6 +71,7 @@ describe('unregister_agent tool', () => {
     const client = mockClient()
     ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
       worktree_id: 'wt-abc',
+      project_id: 'proj-1',
     })
 
     const server = createServer(client)
@@ -105,7 +107,7 @@ describe('guard error handling', () => {
     client = mockClient()
     ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
       worktree_id: 'wt-abc',
-      id: 'proj-1',
+      project_id: 'proj-1',
     })
 
     const server = createServer(client)

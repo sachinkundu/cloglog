@@ -56,9 +56,8 @@ describe('CloglogClient', () => {
         expect.objectContaining({
           method: 'POST',
           headers: expect.objectContaining({
-            Authorization: 'Bearer test-service-key',
+            Authorization: 'Bearer test-key',
             'Content-Type': 'application/json',
-            'X-MCP-Request': 'true',
           }),
           body: JSON.stringify({ worktree_path: '/home/user/project/.git/worktrees/wt-mcp' }),
         }),

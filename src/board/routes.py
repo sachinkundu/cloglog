@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import Annotated
 from uuid import UUID
 
@@ -83,7 +84,23 @@ async def get_project(project_id: UUID, service: ServiceDep) -> ProjectResponse:
 
 
 @router.delete("/projects/{project_id}", status_code=204)
-async def delete_project(project_id: UUID, service: ServiceDep) -> None:
+async def delete_project(
+    project_id: UUID,
+    service: ServiceDep,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> None:
+    project = await service._repo.get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found") from None
+
+    # Gracefully unregister all agents: ends sessions, publishes
+    # WORKTREE_OFFLINE events, and deletes worktree records.
+    agent_service = AgentService(AgentRepository(session), BoardRepository(session))
+    worktrees = await agent_service._repo.get_worktrees_for_project(project_id)
+    for wt in worktrees:
+        with contextlib.suppress(ValueError):
+            await agent_service.unregister(wt.id)
+
     deleted = await service._repo.delete_project(project_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Project not found") from None

@@ -37,6 +37,44 @@ async def test_get_project_not_found(client: AsyncClient):
     assert resp.status_code == 404
 
 
+async def test_delete_project_succeeds_without_agents(client: AsyncClient):
+    resp = await client.post("/api/v1/projects", json={"name": "delete-clean"})
+    project_id = resp.json()["id"]
+    del_resp = await client.delete(f"/api/v1/projects/{project_id}")
+    assert del_resp.status_code == 204
+    # Confirm it's gone
+    get_resp = await client.get(f"/api/v1/projects/{project_id}")
+    assert get_resp.status_code == 404
+
+
+async def test_delete_project_cascades_agents(client: AsyncClient):
+    """DELETE /projects/{id} cascade-deletes worktrees and their sessions/messages."""
+    resp = await client.post("/api/v1/projects", json={"name": "delete-has-agents"})
+    project = resp.json()
+    api_key = project["api_key"]
+
+    # Register an agent so a worktree record exists
+    reg_resp = await client.post(
+        "/api/v1/agents/register",
+        json={"worktree_path": "/tmp/wt-delete-test", "branch_name": "wt-delete-test"},
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    assert reg_resp.status_code in (200, 201)
+
+    # Delete should succeed even with registered agents (cascade)
+    del_resp = await client.delete(f"/api/v1/projects/{project['id']}")
+    assert del_resp.status_code == 204
+
+    # Confirm project is gone
+    get_resp = await client.get(f"/api/v1/projects/{project['id']}")
+    assert get_resp.status_code == 404
+
+
+async def test_delete_project_not_found(client: AsyncClient):
+    resp = await client.delete("/api/v1/projects/00000000-0000-0000-0000-000000000000")
+    assert resp.status_code == 404
+
+
 # --- Epic endpoints ---
 
 

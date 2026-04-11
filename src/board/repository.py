@@ -34,6 +34,7 @@ class BoardRepository:
         return list(result.scalars().all())
 
     async def delete_project(self, project_id: UUID) -> bool:
+        """Delete a project. Caller must remove agent worktrees first."""
         project = await self._session.get(Project, project_id)
         if project is None:
             return False

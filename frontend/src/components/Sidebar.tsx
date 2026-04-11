@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import type { Project, Worktree } from '../api/types'
+import { api } from '../api/client'
 import { AgentPanel } from './AgentPanel'
 import './Sidebar.css'
 
@@ -32,18 +34,71 @@ export function Sidebar({ projects, selectedProjectId, worktrees, boardStats, ag
   const navigate = useNavigate()
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('sidebar-collapsed') === 'true')
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; projectId: string } | null>(null)
+  const [deleteConfirm, setDeleteConfirm] = useState<{
+    projectId: string
+    projectName: string
+    epicCount: number
+    featureCount: number
+    taskCount: number
+    agentCount: number
+  } | null>(null)
+  const [deleteInput, setDeleteInput] = useState('')
 
   const handleContextMenu = useCallback((e: React.MouseEvent, projectId: string) => {
     e.preventDefault()
     setContextMenu({ x: e.clientX, y: e.clientY, projectId })
   }, [])
 
-  const handleDelete = useCallback(() => {
-    if (contextMenu) {
-      onDeleteProject?.(contextMenu.projectId)
-      setContextMenu(null)
+  const handleDeleteClick = useCallback(async () => {
+    if (!contextMenu) return
+    const projectId = contextMenu.projectId
+    const project = projects.find(p => p.id === projectId)
+    setContextMenu(null)
+
+    // Fetch summary of what will be deleted
+    try {
+      const [backlog, projectWorktrees] = await Promise.all([
+        api.getBacklog(projectId),
+        api.getWorktrees(projectId),
+      ])
+      let featureCount = 0
+      let taskCount = 0
+      for (const epic of backlog) {
+        for (const feature of epic.features) {
+          featureCount++
+          taskCount += feature.tasks.length
+        }
+      }
+      setDeleteConfirm({
+        projectId,
+        projectName: project?.name ?? 'Unknown',
+        epicCount: backlog.length,
+        featureCount,
+        taskCount,
+        agentCount: projectWorktrees.length,
+      })
+      setDeleteInput('')
+    } catch {
+      // If we can't fetch summary, still allow deletion with minimal info
+      setDeleteConfirm({
+        projectId,
+        projectName: project?.name ?? 'Unknown',
+        epicCount: 0,
+        featureCount: 0,
+        taskCount: 0,
+        agentCount: 0,
+      })
+      setDeleteInput('')
     }
-  }, [contextMenu, onDeleteProject])
+  }, [contextMenu, projects])
+
+  const handleConfirmDelete = useCallback(() => {
+    if (deleteConfirm && deleteInput === 'DELETE') {
+      onDeleteProject?.(deleteConfirm.projectId)
+      setDeleteConfirm(null)
+      setDeleteInput('')
+    }
+  }, [deleteConfirm, deleteInput, onDeleteProject])
 
   // Close context menu on click anywhere
   useEffect(() => {
@@ -141,10 +196,68 @@ export function Sidebar({ projects, selectedProjectId, worktrees, boardStats, ag
           style={{ top: contextMenu.y, left: contextMenu.x }}
           data-testid="context-menu"
         >
-          <button className="context-menu-item danger" onClick={handleDelete}>
+          <button className="context-menu-item danger" onClick={e => { e.stopPropagation(); handleDeleteClick() }}>
             Delete project
           </button>
         </div>
+      )}
+
+      {deleteConfirm && createPortal(
+        <div className="delete-confirm-overlay" onClick={() => setDeleteConfirm(null)}>
+          <div className="delete-confirm-dialog" onClick={e => e.stopPropagation()} data-testid="delete-confirm-dialog">
+            <h3 className="delete-confirm-title">Delete project</h3>
+            <p className="delete-confirm-project-name">{deleteConfirm.projectName}</p>
+
+            <div className="delete-confirm-summary">
+              <p className="delete-confirm-warning">This will permanently delete:</p>
+              <ul className="delete-confirm-list">
+                {deleteConfirm.epicCount > 0 && (
+                  <li>{deleteConfirm.epicCount} epic{deleteConfirm.epicCount !== 1 ? 's' : ''}</li>
+                )}
+                {deleteConfirm.featureCount > 0 && (
+                  <li>{deleteConfirm.featureCount} feature{deleteConfirm.featureCount !== 1 ? 's' : ''}</li>
+                )}
+                {deleteConfirm.taskCount > 0 && (
+                  <li>{deleteConfirm.taskCount} task{deleteConfirm.taskCount !== 1 ? 's' : ''}</li>
+                )}
+                {deleteConfirm.agentCount > 0 && (
+                  <li>{deleteConfirm.agentCount} registered agent{deleteConfirm.agentCount !== 1 ? 's' : ''}</li>
+                )}
+                {deleteConfirm.epicCount === 0 && deleteConfirm.featureCount === 0 &&
+                  deleteConfirm.taskCount === 0 && deleteConfirm.agentCount === 0 && (
+                  <li>No epics, features, tasks, or agents</li>
+                )}
+              </ul>
+            </div>
+
+            <label className="delete-confirm-label">
+              Type <strong>DELETE</strong> to confirm
+            </label>
+            <input
+              className="delete-confirm-input"
+              type="text"
+              value={deleteInput}
+              onChange={e => setDeleteInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handleConfirmDelete() }}
+              placeholder="DELETE"
+              autoFocus
+              data-testid="delete-confirm-input"
+            />
+
+            <div className="delete-confirm-actions">
+              <button className="delete-confirm-cancel" onClick={() => setDeleteConfirm(null)}>Cancel</button>
+              <button
+                className="delete-confirm-button"
+                disabled={deleteInput !== 'DELETE'}
+                onClick={handleConfirmDelete}
+                data-testid="delete-confirm-button"
+              >
+                Delete project
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body,
       )}
     </aside>
   )

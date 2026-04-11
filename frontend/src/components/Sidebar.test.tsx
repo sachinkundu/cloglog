@@ -1,9 +1,22 @@
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi } from 'vitest'
 import { Sidebar } from './Sidebar'
 import type { Project, Worktree } from '../api/types'
+
+vi.mock('../api/client', () => ({
+  api: {
+    getBacklog: vi.fn().mockResolvedValue([
+      { epic: { id: 'e1', title: 'Epic 1' }, features: [
+        { feature: { id: 'f1', title: 'Feature 1' }, tasks: [{ id: 't1' }, { id: 't2' }], task_counts: {} },
+      ], task_counts: {} },
+    ]),
+    getWorktrees: vi.fn().mockResolvedValue([
+      { id: 'wt1', name: 'wt-test', status: 'online' },
+    ]),
+  },
+}))
 
 const mockProjects: Project[] = [
   { id: 'p1', name: 'Alpha', description: 'desc', repo_url: '', status: 'active', created_at: '' },
@@ -233,7 +246,7 @@ describe('Sidebar', () => {
     expect(screen.getByText('Delete project')).toBeInTheDocument()
   })
 
-  it('calls onDeleteProject when delete is clicked in context menu', async () => {
+  it('shows confirmation dialog and calls onDeleteProject after typing DELETE', async () => {
     const user = userEvent.setup()
     const onDelete = vi.fn()
     render(
@@ -244,6 +257,25 @@ describe('Sidebar', () => {
     const projectBtn = screen.getByText('Alpha').closest('button')!
     await user.pointer({ keys: '[MouseRight]', target: projectBtn })
     await user.click(screen.getByText('Delete project'))
+
+    // Confirmation dialog should appear with summary
+    await waitFor(() => {
+      expect(screen.getByTestId('delete-confirm-dialog')).toBeInTheDocument()
+    })
+    const dialog = screen.getByTestId('delete-confirm-dialog')
+    expect(within(dialog).getByText('Alpha')).toBeInTheDocument()
+    expect(screen.getByText(/1 epic/)).toBeInTheDocument()
+    expect(screen.getByText(/1 feature/)).toBeInTheDocument()
+    expect(screen.getByText(/2 tasks/)).toBeInTheDocument()
+    expect(screen.getByText(/1 registered agent/)).toBeInTheDocument()
+
+    // Button should be disabled until DELETE is typed
+    expect(screen.getByTestId('delete-confirm-button')).toBeDisabled()
+
+    // Type DELETE and confirm
+    await user.type(screen.getByTestId('delete-confirm-input'), 'DELETE')
+    expect(screen.getByTestId('delete-confirm-button')).not.toBeDisabled()
+    await user.click(screen.getByTestId('delete-confirm-button'))
     expect(onDelete).toHaveBeenCalledWith('p1')
   })
 

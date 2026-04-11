@@ -138,7 +138,7 @@ class TaskNote(Base):
     id: Mapped[_uuid.UUID] = mapped_column(
         primary_key=True, default=_uuid.uuid4, server_default=text("gen_random_uuid()")
     )
-    task_id: Mapped[_uuid.UUID] = mapped_column(ForeignKey("tasks.id"))
+    task_id: Mapped[_uuid.UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
     note: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
@@ -154,7 +154,7 @@ class Notification(Base):
         primary_key=True, default=_uuid.uuid4, server_default=text("gen_random_uuid()")
     )
     project_id: Mapped[_uuid.UUID] = mapped_column(ForeignKey("projects.id"))
-    task_id: Mapped[_uuid.UUID] = mapped_column(ForeignKey("tasks.id"))
+    task_id: Mapped[_uuid.UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
     task_title: Mapped[str] = mapped_column(String(500))
     task_number: Mapped[int] = mapped_column(default=0)
     read: Mapped[bool] = mapped_column(default=False)

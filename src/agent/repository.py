@@ -114,7 +114,19 @@ class AgentRepository:
         return result.scalar_one_or_none()
 
     async def delete_worktree(self, worktree_id: UUID) -> None:
-        """Delete worktree and all associated sessions."""
+        """Delete worktree and all associated sessions and messages."""
+        messages = (
+            (
+                await self._session.execute(
+                    select(AgentMessage).where(AgentMessage.worktree_id == worktree_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for msg in messages:
+            await self._session.delete(msg)
+
         sessions = (
             (await self._session.execute(select(Session).where(Session.worktree_id == worktree_id)))
             .scalars()

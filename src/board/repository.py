@@ -286,7 +286,7 @@ class BoardRepository:
             query = query.where(Epic.id == epic_id)
         if exclude_done:
             query = query.where(Task.status != "done")
-        query = query.order_by(Task.position)
+        query = query.order_by(Feature.position, Task.position)
         result = await self._session.execute(query)
         return list(result.unique().scalars().all())
 

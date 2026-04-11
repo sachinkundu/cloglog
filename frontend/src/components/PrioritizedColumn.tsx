@@ -25,6 +25,7 @@ interface FeatureGroup {
   featureId: string
   featureTitle: string
   featureNumber: number
+  featurePosition: number
   epicColor: string
   tasks: TaskCardType[]
 }
@@ -51,12 +52,13 @@ export function PrioritizedColumn({
   })
 
   const featureGroups = useMemo(() => {
-    // Build feature number lookup from backlog
-    const featureMeta = new Map<string, { number: number; title: string; epicColor: string }>()
+    // Build feature metadata lookup from backlog
+    const featureMeta = new Map<string, { number: number; position: number; title: string; epicColor: string }>()
     for (const epicEntry of backlog) {
       for (const feat of epicEntry.features) {
         featureMeta.set(feat.feature.id, {
           number: feat.feature.number ?? 0,
+          position: feat.feature.position ?? 0,
           title: feat.feature.title,
           epicColor: epicEntry.epic.color,
         })
@@ -73,6 +75,7 @@ export function PrioritizedColumn({
           featureId: fid,
           featureTitle: meta?.title ?? task.feature_title ?? 'Unknown Feature',
           featureNumber: meta?.number ?? 0,
+          featurePosition: meta?.position ?? 0,
           epicColor: meta?.epicColor ?? task.epic_color ?? '#64748b',
           tasks: [],
         })
@@ -93,6 +96,7 @@ export function PrioritizedColumn({
             featureId: feat.feature.id,
             featureTitle: meta?.title ?? feat.feature.title,
             featureNumber: meta?.number ?? feat.feature.number ?? 0,
+            featurePosition: meta?.position ?? feat.feature.position ?? 0,
             epicColor: epicEntry.epic.color,
             tasks: [],
           })
@@ -162,8 +166,15 @@ export function PrioritizedColumn({
     const newIndex = ids.indexOf(over.id as string)
     if (oldIndex === -1 || newIndex === -1) return
 
-    setGroupOrder(arrayMove(ids, oldIndex, newIndex))
-  }, [orderedGroups])
+    const newIds = arrayMove(ids, oldIndex, newIndex)
+    setGroupOrder(newIds)
+
+    // Persist feature positions to backend
+    const updates = newIds.map((id, i) =>
+      api.updateFeature(id, { position: i })
+    )
+    Promise.all(updates).catch(() => onRefresh?.())
+  }, [orderedGroups, onRefresh])
 
   const handleTaskReorder = useCallback((featureId: string, event: DragEndEvent) => {
     const { active, over } = event

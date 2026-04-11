@@ -28,6 +28,7 @@ const baseTask: TaskCard = {
   position: 0,
   number: 0,
   archived: false,
+  retired: false,
   created_at: '',
   updated_at: '',
   epic_title: 'Security',

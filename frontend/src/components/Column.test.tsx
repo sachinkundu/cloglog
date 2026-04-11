@@ -5,7 +5,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { Column } from './Column'
 import type { BoardColumn } from '../api/types'
 
-const makeTask = (id: string, title: string, status: string, archived = false, worktree_id: string | null = null) => ({
+const makeTask = (id: string, title: string, status: string, archived = false, worktree_id: string | null = null, retired = false) => ({
   id,
   feature_id: 'f1',
   title,
@@ -19,6 +19,7 @@ const makeTask = (id: string, title: string, status: string, archived = false, w
   position: 0,
   number: 1,
   archived,
+  retired,
   created_at: '',
   updated_at: '',
   epic_title: 'Epic',
@@ -26,11 +27,12 @@ const makeTask = (id: string, title: string, status: string, archived = false, w
   epic_color: '#7c3aed',
 })
 
-function renderColumn(column: BoardColumn, props?: { draggable?: boolean; onRefresh?: () => void }) {
+function renderColumn(column: BoardColumn, props?: { draggable?: boolean; onRefresh?: () => void; projectId?: string }) {
   return render(
     <DndContext>
       <Column
         column={column}
+        projectId={props?.projectId ?? 'p1'}
         onTaskClick={vi.fn()}
         draggable={props?.draggable}
         onRefresh={props?.onRefresh}
@@ -217,5 +219,77 @@ describe('Column', () => {
     expect(column).toBeTruthy()
     // Not actively being dragged over, so no drop-target class
     expect(column?.classList.contains('column-drop-target')).toBe(false)
+  })
+
+  // --- Retire button tests ---
+
+  it('shows Retire button on archived tasks when expanded', async () => {
+    const user = userEvent.setup()
+    renderColumn({
+      status: 'done',
+      tasks: [makeTask('t1', 'Archived Task', 'done', true)],
+    })
+
+    await user.click(screen.getByText('Archived (1)'))
+    expect(screen.getByTitle('Retire this task')).toBeInTheDocument()
+  })
+
+  it('shows Retire All button when archived section is expanded', async () => {
+    const user = userEvent.setup()
+    renderColumn({
+      status: 'done',
+      tasks: [makeTask('t1', 'Archived Task', 'done', true)],
+    })
+
+    await user.click(screen.getByText('Archived (1)'))
+    expect(screen.getByText('Retire All')).toBeInTheDocument()
+  })
+
+  it('calls retireTask API and onRefresh when clicking Retire', async () => {
+    const user = userEvent.setup()
+    const { api } = await import('../api/client')
+    const retireSpy = vi.spyOn(api, 'retireTask').mockResolvedValue({})
+    const onRefresh = vi.fn()
+    renderColumn(
+      { status: 'done', tasks: [makeTask('t1', 'To Retire', 'done', true)] },
+      { onRefresh },
+    )
+
+    await user.click(screen.getByText('Archived (1)'))
+    await user.click(screen.getByTitle('Retire this task'))
+    expect(retireSpy).toHaveBeenCalledWith('t1')
+    expect(onRefresh).toHaveBeenCalled()
+    retireSpy.mockRestore()
+  })
+
+  it('calls retireDone API and onRefresh when clicking Retire All', async () => {
+    const user = userEvent.setup()
+    const { api } = await import('../api/client')
+    const retireAllSpy = vi.spyOn(api, 'retireDone').mockResolvedValue({ retired_count: 2 })
+    const onRefresh = vi.fn()
+    renderColumn(
+      {
+        status: 'done',
+        tasks: [
+          makeTask('t1', 'Archived 1', 'done', true),
+          makeTask('t2', 'Archived 2', 'done', true),
+        ],
+      },
+      { onRefresh, projectId: 'proj-123' },
+    )
+
+    await user.click(screen.getByText('Archived (2)'))
+    await user.click(screen.getByText('Retire All'))
+    expect(retireAllSpy).toHaveBeenCalledWith('proj-123')
+    expect(onRefresh).toHaveBeenCalled()
+    retireAllSpy.mockRestore()
+  })
+
+  it('does not show Retire All when archived section is collapsed', () => {
+    renderColumn({
+      status: 'done',
+      tasks: [makeTask('t1', 'Archived Task', 'done', true)],
+    })
+    expect(screen.queryByText('Retire All')).not.toBeInTheDocument()
   })
 })

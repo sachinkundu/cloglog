@@ -276,7 +276,7 @@ class BoardRepository:
             select(Task)
             .join(Feature, Task.feature_id == Feature.id)
             .join(Epic, Feature.epic_id == Epic.id)
-            .where(Epic.project_id == project_id)
+            .where(Epic.project_id == project_id, Task.retired == False)  # noqa: E712
             .options(joinedload(Task.feature).joinedload(Feature.epic))
         )
         if statuses:
@@ -299,6 +299,7 @@ class BoardRepository:
                 Epic.project_id == project_id,
                 Task.status != "done",
                 Task.archived == False,  # noqa: E712
+                Task.retired == False,  # noqa: E712
             )
             .options(joinedload(Task.feature).joinedload(Feature.epic))
             .order_by(Task.position)
@@ -307,14 +308,18 @@ class BoardRepository:
         return list(result.unique().scalars().all())
 
     async def get_backlog_tree(self, project_id: UUID) -> list[Epic]:
-        """Get all epics with features and tasks eager-loaded for the backlog tree."""
+        """Get all epics with features and non-retired tasks eager-loaded."""
         result = await self._session.execute(
             select(Epic)
             .where(Epic.project_id == project_id)
             .options(joinedload(Epic.features).joinedload(Feature.tasks))
             .order_by(Epic.position)
         )
-        return list(result.unique().scalars().all())
+        epics = list(result.unique().scalars().all())
+        for epic in epics:
+            for feature in epic.features:
+                feature.tasks = [t for t in feature.tasks if not t.retired]
+        return epics
 
     async def get_tasks_for_feature(self, feature_id: UUID) -> list[Task]:
         result = await self._session.execute(
@@ -327,6 +332,28 @@ class BoardRepository:
             select(Task).where(Task.worktree_id == worktree_id).order_by(Task.position)
         )
         return list(result.scalars().all())
+
+    async def retire_done_tasks(self, project_id: UUID) -> int:
+        """Retire all archived done tasks for a project. Returns count retired."""
+        from sqlalchemy import CursorResult, update
+
+        result = await self._session.execute(
+            update(Task)
+            .where(
+                Task.feature_id.in_(
+                    select(Feature.id)
+                    .join(Epic, Feature.epic_id == Epic.id)
+                    .where(Epic.project_id == project_id)
+                ),
+                Task.status == "done",
+                Task.archived == True,  # noqa: E712
+                Task.retired == False,  # noqa: E712
+            )
+            .values(retired=True)
+        )
+        await self._session.commit()
+        assert isinstance(result, CursorResult)
+        return int(result.rowcount)
 
     # --- Dependencies ---
 

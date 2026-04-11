@@ -114,7 +114,7 @@ export function Board({ board, backlog, projectId, onTaskClick, onItemClick, onR
           onDragCancel={handleDragCancel}
         >
           {flowColumns.map(col => (
-            <Column key={col.status} column={col} onTaskClick={onTaskClick} onRefresh={onRefresh} draggable worktreeNames={worktreeNames} agentFilter={agentFilter} />
+            <Column key={col.status} column={col} projectId={projectId} onTaskClick={onTaskClick} onRefresh={onRefresh} draggable worktreeNames={worktreeNames} agentFilter={agentFilter} />
           ))}
           <DragOverlay>
             {activeTask ? (

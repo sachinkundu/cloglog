@@ -60,6 +60,14 @@ export const api = {
       body: JSON.stringify({ archived: true }),
     }),
 
+  retireTask: (taskId: string) =>
+    fetchJSON(`/tasks/${taskId}/retire`, { method: 'POST' }),
+
+  retireDone: (projectId: string) =>
+    fetchJSON<{ retired_count: number }>(`/projects/${projectId}/retire-done`, {
+      method: 'POST',
+    }),
+
   // Notifications
   getNotifications: (projectId: string) =>
     fetchJSON<AppNotification[]>(`/projects/${projectId}/notifications`),

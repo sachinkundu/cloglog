@@ -1,4 +1,5 @@
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 from httpx import AsyncClient
 
@@ -1461,3 +1462,171 @@ async def test_active_tasks_includes_pr_merged(client: AsyncClient):
     assert len(data) == 1
     assert "pr_merged" in data[0]
     assert data[0]["pr_merged"] is False
+
+
+# --- Retire endpoints ---
+
+
+async def _create_done_task(client: AsyncClient) -> tuple[dict, dict, dict, dict]:
+    """Helper: create project/epic/feature/task and move task to done."""
+    name = f"retire-{uuid4().hex[:6]}"
+    project = (await client.post("/api/v1/projects", json={"name": name})).json()
+    epic = (
+        await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "Epic"})
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
+    task = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "Task to retire"},
+        )
+    ).json()
+    await client.patch(f"/api/v1/tasks/{task['id']}", json={"status": "done"})
+    return project, epic, feature, task
+
+
+async def test_retire_task(client: AsyncClient):
+    """POST /tasks/{id}/retire sets retired=True for done tasks."""
+    project, _, _, task = await _create_done_task(client)
+
+    resp = await client.post(f"/api/v1/tasks/{task['id']}/retire")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["retired"] is True
+    assert data["status"] == "done"
+
+
+async def test_retire_task_not_done_rejected(client: AsyncClient):
+    """Cannot retire a task that isn't done."""
+    project = (await client.post("/api/v1/projects", json={"name": "retire-reject"})).json()
+    epic = (
+        await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "Epic"})
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
+    task = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "Still in backlog"},
+        )
+    ).json()
+
+    resp = await client.post(f"/api/v1/tasks/{task['id']}/retire")
+    assert resp.status_code == 400
+    assert "done" in resp.json()["detail"].lower()
+
+
+async def test_retire_task_not_found(client: AsyncClient):
+    resp = await client.post("/api/v1/tasks/00000000-0000-0000-0000-000000000000/retire")
+    assert resp.status_code == 404
+
+
+async def test_retired_task_excluded_from_board(client: AsyncClient):
+    """Retired tasks don't appear in board response."""
+    project, _, _, task = await _create_done_task(client)
+
+    # Board should include the task before retire
+    resp = await client.get(f"/api/v1/projects/{project['id']}/board")
+    all_tasks = [t for col in resp.json()["columns"] for t in col["tasks"]]
+    assert any(t["id"] == task["id"] for t in all_tasks)
+
+    # Retire it
+    await client.post(f"/api/v1/tasks/{task['id']}/retire")
+
+    # Board should NOT include it now
+    resp = await client.get(f"/api/v1/projects/{project['id']}/board")
+    all_tasks = [t for col in resp.json()["columns"] for t in col["tasks"]]
+    assert not any(t["id"] == task["id"] for t in all_tasks)
+
+
+async def test_retired_task_excluded_from_backlog(client: AsyncClient):
+    """Retired tasks don't appear in backlog response."""
+    project, _, _, task = await _create_done_task(client)
+
+    # Retire it
+    await client.post(f"/api/v1/tasks/{task['id']}/retire")
+
+    resp = await client.get(f"/api/v1/projects/{project['id']}/backlog")
+    all_tasks = [t for epic in resp.json() for feat in epic["features"] for t in feat["tasks"]]
+    assert not any(t["id"] == task["id"] for t in all_tasks)
+
+
+async def test_retired_task_still_in_search(client: AsyncClient):
+    """Retired tasks still appear in search results."""
+    project, _, _, task = await _create_done_task(client)
+    await client.post(f"/api/v1/tasks/{task['id']}/retire")
+
+    resp = await client.get(
+        f"/api/v1/projects/{project['id']}/search", params={"q": "Task to retire"}
+    )
+    assert resp.status_code == 200
+    results = resp.json()["results"]
+    assert any(r["id"] == task["id"] for r in results)
+
+
+async def test_retire_all_done(client: AsyncClient):
+    """POST /projects/{id}/retire-done retires all archived done tasks."""
+    project = (await client.post("/api/v1/projects", json={"name": "retire-all"})).json()
+    epic = (
+        await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "Epic"})
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
+
+    # Create two tasks, both done + archived
+    for title in ["T1", "T2"]:
+        t = (
+            await client.post(
+                f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+                json={"title": title},
+            )
+        ).json()
+        await client.patch(f"/api/v1/tasks/{t['id']}", json={"status": "done"})
+        await client.patch(f"/api/v1/tasks/{t['id']}", json={"archived": True})
+
+    # Create a third task, done but NOT archived (should not be retired)
+    t3 = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "T3-not-archived"},
+        )
+    ).json()
+    await client.patch(f"/api/v1/tasks/{t3['id']}", json={"status": "done"})
+
+    resp = await client.post(f"/api/v1/projects/{project['id']}/retire-done")
+    assert resp.status_code == 200
+    assert resp.json()["retired_count"] == 2
+
+    # Board should still show T3 but not T1/T2
+    resp = await client.get(f"/api/v1/projects/{project['id']}/board")
+    done_col = next(c for c in resp.json()["columns"] if c["status"] == "done")
+    titles = [t["title"] for t in done_col["tasks"]]
+    assert "T3-not-archived" in titles
+    assert "T1" not in titles
+    assert "T2" not in titles
+
+
+async def test_retire_emits_event(client: AsyncClient):
+    """POST /tasks/{id}/retire emits TASK_RETIRED event."""
+    project, _, _, task = await _create_done_task(client)
+
+    with patch("src.board.routes.event_bus.publish", new_callable=AsyncMock) as mock_publish:
+        resp = await client.post(f"/api/v1/tasks/{task['id']}/retire")
+        assert resp.status_code == 200
+        mock_publish.assert_called_once()
+        event = mock_publish.call_args[0][0]
+        assert event.type == "task_retired"
+        assert event.data["task_id"] == task["id"]

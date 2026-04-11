@@ -137,6 +137,12 @@ class BoardService:
 
         await session.commit()
 
+    # --- Retire ---
+
+    async def retire_all_done(self, project_id: UUID) -> int:
+        """Retire all archived done tasks for a project. Returns count retired."""
+        return await self._repo.retire_done_tasks(project_id)
+
     # --- Dependencies ---
 
     async def has_cycle(self, feature_id: UUID, depends_on_id: UUID) -> bool:

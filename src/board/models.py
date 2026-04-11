@@ -116,6 +116,7 @@ class Task(Base):
     position: Mapped[int] = mapped_column(default=0)
     number: Mapped[int] = mapped_column(default=0)
     archived: Mapped[bool] = mapped_column(default=False)
+    retired: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )

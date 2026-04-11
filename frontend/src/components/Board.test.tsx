@@ -23,6 +23,7 @@ const makeTask = (id: string, title: string, status: string, overrides?: Partial
   position: 0,
   number: parseInt(id.replace('t', '')),
   archived: false,
+  retired: false,
   created_at: '',
   updated_at: '',
   epic_title: 'Epic A',

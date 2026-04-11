@@ -305,6 +305,12 @@ async def update_task(task_id: UUID, body: TaskUpdate, service: ServiceDep) -> T
         existing = await service._repo.get_task(task_id)
         if existing is not None:
             old_status = existing.status
+            # Auto-assign position at end when moving to prioritized
+            if fields["status"] == "prioritized" and old_status != "prioritized":
+                max_pos = await service._repo.get_max_task_position(
+                    existing.feature_id, "prioritized"
+                )
+                fields["position"] = max_pos + 1
     task = await service._repo.update_task(task_id, **fields)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")

@@ -620,6 +620,15 @@ class BoardRepository:
             features[feature_id].position = pos
         await self._session.commit()
 
+    async def get_max_task_position(self, feature_id: UUID, status: str) -> int:
+        """Get the maximum position among tasks with a given status in a feature."""
+        result = await self._session.execute(
+            select(func.max(Task.position)).where(
+                Task.feature_id == feature_id, Task.status == status
+            )
+        )
+        return result.scalar_one() or 0
+
     async def reorder_tasks(self, feature_id: UUID, positions: list[tuple[UUID, int]]) -> None:
         """Reorder tasks within a feature by updating their positions."""
         ids = [pid for pid, _ in positions]

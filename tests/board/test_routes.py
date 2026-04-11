@@ -161,6 +161,48 @@ async def test_update_task(client: AsyncClient):
     assert resp.json()["status"] == "in_progress"
 
 
+async def test_prioritized_tasks_get_incrementing_positions(client: AsyncClient):
+    """Moving tasks to prioritized auto-assigns incrementing positions."""
+    project = (await client.post("/api/v1/projects", json={"name": "prio-pos-test"})).json()
+    epic = (
+        await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "Epic"})
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Feature"},
+        )
+    ).json()
+    # Create 3 tasks in backlog
+    tasks = []
+    for i in range(3):
+        t = (
+            await client.post(
+                f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+                json={"title": f"Task {i}"},
+            )
+        ).json()
+        tasks.append(t)
+
+    # Move them to prioritized one by one
+    for t in tasks:
+        await client.patch(f"/api/v1/tasks/{t['id']}", json={"status": "prioritized"})
+
+    # Fetch the board and check prioritized column order
+    board = (await client.get(f"/api/v1/projects/{project['id']}/board")).json()
+    prioritized = next(c for c in board["columns"] if c["status"] == "prioritized")
+    prio_ids = [t["id"] for t in prioritized["tasks"]]
+
+    # Order should match the order they were moved (Task 0, Task 1, Task 2)
+    assert prio_ids == [t["id"] for t in tasks]
+
+    # Refresh — order should be preserved
+    board2 = (await client.get(f"/api/v1/projects/{project['id']}/board")).json()
+    prioritized2 = next(c for c in board2["columns"] if c["status"] == "prioritized")
+    prio_ids2 = [t["id"] for t in prioritized2["tasks"]]
+    assert prio_ids2 == prio_ids
+
+
 async def test_update_task_status_emits_event(client: AsyncClient):
     """When task status changes, a TASK_STATUS_CHANGED event is published."""
     project = (await client.post("/api/v1/projects", json={"name": "event-test"})).json()

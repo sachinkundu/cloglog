@@ -29,7 +29,7 @@ fi
 
 rm -f /tmp/quality-check-$$.log
 
-# Demo check — only required on push and PR creation, not on every commit
+# Demo check and e2e tests — only required on push and PR creation, not on every commit
 if echo "$COMMAND" | grep -qE '(git push|gh pr create)'; then
   if ! make demo-check > /tmp/demo-check-$$.log 2>&1; then
     echo "Blocked: demo check failed. Create a demo before pushing/creating PR." >&2
@@ -39,6 +39,19 @@ if echo "$COMMAND" | grep -qE '(git push|gh pr create)'; then
     exit 2
   fi
   rm -f /tmp/demo-check-$$.log
+
+  # Playwright e2e tests — run if playwright dir exists and has tests
+  if [[ -f "tests/e2e/playwright/package.json" ]]; then
+    echo "Running Playwright e2e tests..." >&2
+    if ! (cd tests/e2e/playwright && npx playwright test --reporter=list) > /tmp/e2e-check-$$.log 2>&1; then
+      echo "Blocked: Playwright e2e tests failed. Fix before pushing." >&2
+      echo "---" >&2
+      tail -20 /tmp/e2e-check-$$.log >&2
+      rm -f /tmp/e2e-check-$$.log
+      exit 2
+    fi
+    rm -f /tmp/e2e-check-$$.log
+  fi
 fi
 
 exit 0

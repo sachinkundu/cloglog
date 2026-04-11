@@ -11,7 +11,7 @@ test.describe('SSE Live Updates', () => {
       seededProject.projectId,
       seededProject.featureId,
       'SSE New Task',
-      seededProject.apiKey,
+
     );
 
     // Should appear in backlog without refresh
@@ -28,7 +28,7 @@ test.describe('SSE Live Updates', () => {
     await expect(page.locator('.backlog-task', { hasText: 'Backlog Task' })).toBeVisible();
 
     // Move it to in_progress via API
-    await api.updateTaskStatus(backlogTask.id, 'in_progress', seededProject.apiKey);
+    await api.updateTaskStatus(backlogTask.id, 'in_progress');
 
     // Should move to In Progress column
     const inProgressCol = page.locator('.column').filter({
@@ -46,7 +46,7 @@ test.describe('SSE Live Updates', () => {
     await expect(page.locator('.backlog-task', { hasText: 'Backlog Task' })).toBeVisible();
 
     // Delete via API
-    await api.deleteTask(backlogTask.id, seededProject.apiKey);
+    await api.deleteTask(backlogTask.id);
 
     // Should disappear
     await expect(page.locator('.backlog-task', { hasText: 'Backlog Task' })).not.toBeVisible({
@@ -59,7 +59,7 @@ test.describe('SSE Live Updates', () => {
     await expect(page.locator('.backlog-epic')).toBeVisible();
 
     // Create new epic via API
-    await api.createEpic(seededProject.projectId, 'SSE New Epic', seededProject.apiKey);
+    await api.createEpic(seededProject.projectId, 'SSE New Epic');
 
     // Should appear in backlog tree
     await expect(page.locator('.backlog-epic-title', { hasText: 'SSE New Epic' })).toBeVisible({

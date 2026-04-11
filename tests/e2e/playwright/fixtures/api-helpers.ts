@@ -1,4 +1,5 @@
 const API_BASE = process.env.E2E_API_BASE ?? 'http://localhost:8001/api/v1';
+const DASHBOARD_KEY = process.env.E2E_DASHBOARD_KEY ?? 'cloglog-dashboard-dev';
 
 interface ProjectResponse {
   id: string;
@@ -30,17 +31,17 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
   const { headers, ...rest } = options;
   const res = await fetch(`${API_BASE}${path}`, {
     ...rest,
-    headers: { 'Content-Type': 'application/json', ...(headers as Record<string, string>) },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Dashboard-Key': DASHBOARD_KEY,
+      ...(headers as Record<string, string>),
+    },
   });
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`API ${options.method ?? 'GET'} ${path} failed (${res.status}): ${body}`);
   }
   return res.json() as Promise<T>;
-}
-
-function authHeaders(apiKey: string): Record<string, string> {
-  return { Authorization: `Bearer ${apiKey}` };
 }
 
 export class ApiHelper {
@@ -51,11 +52,10 @@ export class ApiHelper {
     });
   }
 
-  async createEpic(projectId: string, title: string, apiKey: string): Promise<EpicResponse> {
+  async createEpic(projectId: string, title: string): Promise<EpicResponse> {
     return apiFetch<EpicResponse>(`/projects/${projectId}/epics`, {
       method: 'POST',
       body: JSON.stringify({ title }),
-      headers: authHeaders(apiKey),
     });
   }
 
@@ -63,12 +63,10 @@ export class ApiHelper {
     projectId: string,
     epicId: string,
     title: string,
-    apiKey: string,
   ): Promise<FeatureResponse> {
     return apiFetch<FeatureResponse>(`/projects/${projectId}/epics/${epicId}/features`, {
       method: 'POST',
       body: JSON.stringify({ title }),
-      headers: authHeaders(apiKey),
     });
   }
 
@@ -76,28 +74,27 @@ export class ApiHelper {
     projectId: string,
     featureId: string,
     title: string,
-    apiKey: string,
     description?: string,
   ): Promise<TaskResponse> {
     return apiFetch<TaskResponse>(`/projects/${projectId}/features/${featureId}/tasks`, {
       method: 'POST',
       body: JSON.stringify({ title, description: description ?? '' }),
-      headers: authHeaders(apiKey),
     });
   }
 
-  async updateTaskStatus(taskId: string, status: string, apiKey: string): Promise<TaskResponse> {
+  async updateTaskStatus(taskId: string, status: string): Promise<TaskResponse> {
     return apiFetch<TaskResponse>(`/tasks/${taskId}`, {
       method: 'PATCH',
       body: JSON.stringify({ status }),
-      headers: authHeaders(apiKey),
     });
   }
 
-  async deleteTask(taskId: string, apiKey: string): Promise<void> {
+  async deleteTask(taskId: string): Promise<void> {
     await fetch(`${API_BASE}/tasks/${taskId}`, {
       method: 'DELETE',
-      headers: authHeaders(apiKey),
+      headers: {
+        'X-Dashboard-Key': DASHBOARD_KEY,
+      },
     });
   }
 }

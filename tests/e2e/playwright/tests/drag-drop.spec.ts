@@ -41,8 +41,8 @@ test.describe('Drag and Drop', () => {
 
   test('reorder epics in backlog', async ({ page, seededProject, api }) => {
     // Create a second epic
-    const epic2 = await api.createEpic(seededProject.projectId, 'Second Epic', seededProject.apiKey);
-    await api.createFeature(seededProject.projectId, epic2.id, 'Second Feature', seededProject.apiKey);
+    const epic2 = await api.createEpic(seededProject.projectId, 'Second Epic');
+    await api.createFeature(seededProject.projectId, epic2.id, 'Second Feature');
 
     await page.goto(`/projects/${seededProject.projectId}`);
     await expect(page.locator('.backlog-epic')).toHaveCount(2);
@@ -66,8 +66,8 @@ test.describe('Drag and Drop', () => {
 
   test('order persists after refresh', async ({ page, seededProject, api }) => {
     // Create second epic
-    const epic2 = await api.createEpic(seededProject.projectId, 'Persistent Epic', seededProject.apiKey);
-    await api.createFeature(seededProject.projectId, epic2.id, 'Persistent Feature', seededProject.apiKey);
+    const epic2 = await api.createEpic(seededProject.projectId, 'Persistent Epic');
+    await api.createFeature(seededProject.projectId, epic2.id, 'Persistent Feature');
 
     await page.goto(`/projects/${seededProject.projectId}`);
     await expect(page.locator('.backlog-epic')).toHaveCount(2);

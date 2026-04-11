@@ -22,7 +22,7 @@ fi
 # Skip if this branch only has doc/spec changes (no code to demo)
 # Use merge-base so rebased branches don't show phantom diffs from already-merged work
 MERGE_BASE=$(git merge-base main HEAD 2>/dev/null || echo "main")
-CODE_CHANGES=$(git diff "$MERGE_BASE" --name-only 2>/dev/null | grep -vE '^docs/|^CLAUDE\.md|^\.claude/|^scripts/' | head -1 || true)
+CODE_CHANGES=$(git diff "$MERGE_BASE" --name-only 2>/dev/null | grep -vE '^docs/|^CLAUDE\.md|^\.claude/|^scripts/|^\.github/|^tests/e2e/|package-lock\.json$' | head -1 || true)
 if [[ -z "$CODE_CHANGES" ]]; then
   echo "  Docs-only branch — no demo required."
   exit 0

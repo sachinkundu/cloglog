@@ -15,6 +15,8 @@ import {
 } from '@dnd-kit/sortable'
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
 import { useDroppable } from '@dnd-kit/core'
+import { useSortable } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import type { BacklogEpic, TaskCard as TaskCardType } from '../api/types'
 import { api } from '../api/client'
 import { formatEntityNumber } from '../utils/format'
@@ -135,7 +137,7 @@ export function PrioritizedColumn({
         }
       }
     }
-    return Array.from(groups.values())
+    return Array.from(groups.values()).sort((a, b) => a.featurePosition - b.featurePosition)
   }, [tasks, backlog])
 
   const [groupOrder, setGroupOrder] = useState<string[]>([])
@@ -170,10 +172,10 @@ export function PrioritizedColumn({
     setGroupOrder(newIds)
 
     // Persist feature positions to backend
-    const updates = newIds.map((id, i) =>
-      api.updateFeature(id, { position: i })
-    )
-    Promise.all(updates).catch(() => onRefresh?.())
+    for (let i = 0; i < newIds.length; i++) {
+      api.updateFeature(newIds[i], { position: i })
+        .catch(() => onRefresh?.())
+    }
   }, [orderedGroups, onRefresh])
 
   const handleTaskReorder = useCallback((featureId: string, event: DragEndEvent) => {
@@ -255,40 +257,8 @@ export function PrioritizedColumn({
             strategy={verticalListSortingStrategy}
           >
             {orderedGroups.map(group => (
-              <SortableItem key={group.featureId} id={group.featureId}>
+              <SortableFeatureGroup key={group.featureId} group={group} onItemClick={onItemClick}>
                 <div className="prioritized-feature">
-                  <div
-                    className="prioritized-feature-header"
-                    style={{ borderLeftColor: group.epicColor }}
-                  >
-                    <span
-                      className="deprioritize-handle"
-                      draggable
-                      title="Drag back to Backlog"
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onDragStart={(e) => {
-                        e.stopPropagation()
-                        e.dataTransfer.setData('application/x-deprioritize', JSON.stringify({
-                          featureId: group.featureId,
-                          taskIds: group.tasks.map(t => t.id),
-                        }))
-                        e.dataTransfer.effectAllowed = 'move'
-                      }}
-                    >
-                      &#x2630;
-                    </span>
-                    <span
-                      className="prioritized-feature-title"
-                      onClick={() => onItemClick('feature', group.featureId)}
-                    >
-                      {group.featureNumber > 0 && (
-                        <span className="entity-number">
-                          {formatEntityNumber('feature', group.featureNumber)}{' '}
-                        </span>
-                      )}
-                      {group.featureTitle}
-                    </span>
-                  </div>
                   <DndContext
                     sensors={sensors}
                     collisionDetection={closestCenter}
@@ -319,11 +289,54 @@ export function PrioritizedColumn({
                     </SortableContext>
                   </DndContext>
                 </div>
-              </SortableItem>
+              </SortableFeatureGroup>
             ))}
           </SortableContext>
         </DndContext>
       </div>
+    </div>
+  )
+}
+
+function SortableFeatureGroup({ group, onItemClick, children }: {
+  group: FeatureGroup
+  onItemClick: (type: 'epic' | 'feature' | 'task', id: string) => void
+  children: React.ReactNode
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: group.featureId })
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  }
+
+  return (
+    <div ref={setNodeRef} style={style}>
+      <div
+        className="prioritized-feature-header"
+        style={{ borderLeftColor: group.epicColor }}
+      >
+        <span
+          className="deprioritize-handle"
+          title="Drag to reorder or drag to Backlog"
+          {...attributes}
+          {...listeners}
+        >
+          &#x2630;
+        </span>
+        <span
+          className="prioritized-feature-title"
+          onClick={() => onItemClick('feature', group.featureId)}
+        >
+          {group.featureNumber > 0 && (
+            <span className="entity-number">
+              {formatEntityNumber('feature', group.featureNumber)}{' '}
+            </span>
+          )}
+          {group.featureTitle}
+        </span>
+      </div>
+      {children}
     </div>
   )
 }

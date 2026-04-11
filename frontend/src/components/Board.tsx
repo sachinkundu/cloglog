@@ -15,6 +15,7 @@ import { api } from '../api/client'
 import { BacklogTree } from './BacklogTree'
 import { BoardHeader } from './BoardHeader'
 import { Column } from './Column'
+import { PrioritizedColumn } from './PrioritizedColumn'
 import { TaskCard } from './TaskCard'
 import './Board.css'
 
@@ -31,7 +32,8 @@ interface BoardProps {
 }
 
 export function Board({ board, backlog, projectId, onTaskClick, onItemClick, onRefresh, onMoveTask, worktreeNames, agentFilter }: BoardProps) {
-  const flowColumns = board.columns.filter(col => col.status !== 'backlog')
+  const flowColumns = board.columns.filter(col => col.status !== 'backlog' && col.status !== 'prioritized')
+  const prioritizedColumn = board.columns.find(col => col.status === 'prioritized')
   const [activeTask, setActiveTask] = useState<TaskCardType | null>(null)
 
   const sensors = useSensors(
@@ -49,6 +51,15 @@ export function Board({ board, backlog, projectId, onTaskClick, onItemClick, onR
 
   const handleReorderTasks = useCallback((featureId: string, items: { id: string; position: number }[]) => {
     api.reorderTasks(featureId, items).catch(() => onRefresh?.())
+  }, [onRefresh])
+
+  const handlePrioritizeFeature = useCallback((featureId: string, taskIds: string[]) => {
+    const updates: Promise<unknown>[] = taskIds.map(id =>
+      api.updateTask(id, { status: 'prioritized' })
+    )
+    // Also mark the feature itself as prioritized so taskless features show up
+    updates.push(api.updateFeature(featureId, { status: 'prioritized' }))
+    Promise.all(updates).then(() => onRefresh?.()).catch(() => onRefresh?.())
   }, [onRefresh])
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
@@ -87,11 +98,39 @@ export function Board({ board, backlog, projectId, onTaskClick, onItemClick, onR
     setActiveTask(null)
   }, [])
 
+  const [backlogDragOver, setBacklogDragOver] = useState(false)
+
+  const handleDeprioritize = useCallback((featureId: string, taskIds: string[]) => {
+    const updates: Promise<unknown>[] = taskIds.map(id =>
+      api.updateTask(id, { status: 'backlog' })
+    )
+    updates.push(api.updateFeature(featureId, { status: 'planned' }))
+    Promise.all(updates).then(() => onRefresh?.()).catch(() => onRefresh?.())
+  }, [onRefresh])
+
   return (
     <div className="board">
       <BoardHeader board={board} projectId={projectId} onItemClick={onItemClick} />
       <div className="board-columns">
-        <div className="board-backlog">
+        <div
+          className={`board-backlog${backlogDragOver ? ' column-drop-target' : ''}`}
+          onDragOver={(e) => {
+            if (e.dataTransfer.types.includes('application/x-deprioritize')) {
+              e.preventDefault()
+              e.dataTransfer.dropEffect = 'move'
+              setBacklogDragOver(true)
+            }
+          }}
+          onDragLeave={() => setBacklogDragOver(false)}
+          onDrop={(e) => {
+            setBacklogDragOver(false)
+            const data = e.dataTransfer.getData('application/x-deprioritize')
+            if (!data) return
+            e.preventDefault()
+            const { featureId, taskIds } = JSON.parse(data) as { featureId: string; taskIds: string[] }
+            handleDeprioritize(featureId, taskIds)
+          }}
+        >
           <div className="column-header">
             <span className="column-dot col-backlog" />
             <span className="column-title">Backlog</span>
@@ -107,6 +146,17 @@ export function Board({ board, backlog, projectId, onTaskClick, onItemClick, onR
             onReorderTasks={handleReorderTasks}
           />
         </div>
+        {prioritizedColumn && (
+          <PrioritizedColumn
+            tasks={prioritizedColumn.tasks}
+            backlog={backlog}
+            onTaskClick={onTaskClick}
+            onItemClick={onItemClick}
+            onRefresh={onRefresh}
+            onMoveTask={onMoveTask}
+            onPrioritizeFeature={handlePrioritizeFeature}
+          />
+        )}
         <DndContext
           sensors={sensors}
           onDragStart={handleDragStart}

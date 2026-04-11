@@ -238,13 +238,13 @@ async def test_get_board(client: AsyncClient):
     assert len(backlog["tasks"]) == 2
 
 
-async def test_get_board_has_four_columns(client: AsyncClient):
+async def test_get_board_has_five_columns(client: AsyncClient):
     project = (await client.post("/api/v1/projects", json={"name": "columns-test"})).json()
     resp = await client.get(f"/api/v1/projects/{project['id']}/board")
     assert resp.status_code == 200
     data = resp.json()
     statuses = [c["status"] for c in data["columns"]]
-    assert statuses == ["backlog", "in_progress", "review", "done"]
+    assert statuses == ["backlog", "prioritized", "in_progress", "review", "done"]
 
 
 async def test_archive_task_persists(client: AsyncClient):

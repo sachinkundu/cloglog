@@ -109,3 +109,15 @@
   color: var(--text-muted);
   font-size: 13px;
 }
+
+.search-filter-pill {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent-primary, #818cf8);
+  background: color-mix(in srgb, var(--accent-primary, #818cf8) 15%, transparent);
+  padding: 2px 8px;
+  border-radius: 10px;
+  margin-left: 6px;
+  vertical-align: middle;
+}

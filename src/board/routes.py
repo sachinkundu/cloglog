@@ -423,9 +423,10 @@ async def search_project(
     service: ServiceDep,
     q: str = Query(..., min_length=1),
     limit: int = Query(20, ge=1, le=50),
+    status_filter: Annotated[list[str] | None, Query()] = None,
 ) -> SearchResponse:
     try:
-        return await service.search(project_id, q, limit)
+        return await service.search(project_id, q, limit, status_filter=status_filter)
     except ValueError:
         raise HTTPException(status_code=404, detail="Project not found") from None
 

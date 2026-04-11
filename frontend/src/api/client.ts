@@ -89,11 +89,26 @@ export const api = {
     }),
 
   // Search
-  search: (projectId: string, q: string, limit?: number, signal?: AbortSignal) =>
-    fetchJSON<SearchResponse>(
-      `/projects/${projectId}/search?q=${encodeURIComponent(q)}&limit=${limit ?? 20}`,
+  search: (
+    projectId: string,
+    q: string,
+    limit?: number,
+    signal?: AbortSignal,
+    statusFilter?: string[] | null,
+  ) => {
+    const params = new URLSearchParams()
+    params.set('q', q)
+    params.set('limit', String(limit ?? 20))
+    if (statusFilter) {
+      for (const s of statusFilter) {
+        params.append('status_filter', s)
+      }
+    }
+    return fetchJSON<SearchResponse>(
+      `/projects/${projectId}/search?${params.toString()}`,
       { signal },
-    ),
+    )
+  },
 
   // Reorder
   reorderEpics: (projectId: string, items: { id: string; position: number }[]) =>

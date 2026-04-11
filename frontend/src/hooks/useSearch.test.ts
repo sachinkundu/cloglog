@@ -27,6 +27,7 @@ describe('useSearch', () => {
 
     expect(result.current.results).toEqual([])
     expect(result.current.loading).toBe(false)
+    expect(result.current.parsed).toBeNull()
   })
 
   it('empty query clears results without API call', () => {
@@ -65,7 +66,7 @@ describe('useSearch', () => {
     })
 
     expect(mockSearch).toHaveBeenCalledTimes(1)
-    expect(mockSearch).toHaveBeenCalledWith('p1', 'test', 20, expect.any(AbortSignal))
+    expect(mockSearch).toHaveBeenCalledWith('p1', 'test', 20, expect.any(AbortSignal), null)
     expect(result.current.results).toEqual(mockResults.results)
     expect(result.current.loading).toBe(false)
   })
@@ -140,5 +141,78 @@ describe('useSearch', () => {
 
     expect(result.current.results).toEqual([])
     expect(result.current.loading).toBe(false)
+    expect(result.current.parsed).toBeNull()
+  })
+
+  it('passes status_filter when is:open qualifier is used', async () => {
+    const mockResults = {
+      query: 'agent',
+      results: [{ id: 'r1', type: 'task' as const, title: 'Agent Task', number: 1, status: 'backlog' }],
+      total: 1,
+    }
+    mockSearch.mockResolvedValue(mockResults)
+
+    const { result } = renderHook(() => useSearch('p1'))
+
+    act(() => {
+      result.current.search('is:open agent')
+    })
+
+    await act(async () => {
+      vi.advanceTimersByTime(200)
+    })
+
+    expect(mockSearch).toHaveBeenCalledTimes(1)
+    expect(mockSearch).toHaveBeenCalledWith(
+      'p1',
+      'agent',
+      20,
+      expect.any(AbortSignal),
+      expect.arrayContaining(['backlog', 'in_progress', 'review']),
+    )
+    expect(result.current.parsed?.statusFilter).toEqual(
+      expect.arrayContaining(['backlog', 'in_progress', 'review']),
+    )
+  })
+
+  it('passes status_filter when is:closed qualifier is used', async () => {
+    const mockResults = {
+      query: 'migration',
+      results: [],
+      total: 0,
+    }
+    mockSearch.mockResolvedValue(mockResults)
+
+    const { result } = renderHook(() => useSearch('p1'))
+
+    act(() => {
+      result.current.search('is:closed migration')
+    })
+
+    await act(async () => {
+      vi.advanceTimersByTime(200)
+    })
+
+    expect(mockSearch).toHaveBeenCalledWith(
+      'p1',
+      'migration',
+      20,
+      expect.any(AbortSignal),
+      ['done'],
+    )
+  })
+
+  it('qualifier-only query does not call API (no text)', () => {
+    const { result } = renderHook(() => useSearch('p1'))
+
+    act(() => {
+      result.current.search('is:open')
+    })
+
+    expect(mockSearch).not.toHaveBeenCalled()
+    // But parsed state is still set
+    expect(result.current.parsed?.statusFilter).toEqual(
+      expect.arrayContaining(['backlog', 'in_progress', 'review']),
+    )
   })
 })

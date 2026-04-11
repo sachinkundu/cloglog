@@ -4,15 +4,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { SearchWidget } from './SearchWidget'
 import type { SearchResult } from '../api/types'
 
+import type { ParsedQuery } from '../lib/searchQualifiers'
+
 const mockSearch = vi.fn()
 const mockClear = vi.fn()
 let mockResults: SearchResult[] = []
 let mockLoading = false
+let mockParsed: ParsedQuery | null = null
 
 vi.mock('../hooks/useSearch', () => ({
   useSearch: () => ({
     results: mockResults,
     loading: mockLoading,
+    parsed: mockParsed,
     search: mockSearch,
     clear: mockClear,
   }),
@@ -37,6 +41,7 @@ describe('SearchWidget', () => {
     vi.clearAllMocks()
     mockResults = []
     mockLoading = false
+    mockParsed = null
   })
 
   it('renders search input with placeholder', () => {
@@ -189,5 +194,37 @@ describe('SearchWidget', () => {
 
     expect(screen.getByText('My Feature')).toBeInTheDocument()
     expect(screen.getByText('My Epic')).toBeInTheDocument()
+  })
+
+  it('shows filter pill when is:open qualifier is active', () => {
+    mockParsed = { text: 'agent', statusFilter: ['backlog', 'in_progress', 'review'] }
+    render(<SearchWidget projectId="p1" onSelect={vi.fn()} />)
+
+    const pill = screen.getByTestId('search-filter-pill')
+    expect(pill).toBeInTheDocument()
+    expect(pill).toHaveTextContent('open')
+  })
+
+  it('shows filter pill for is:closed qualifier', () => {
+    mockParsed = { text: 'migration', statusFilter: ['done'] }
+    render(<SearchWidget projectId="p1" onSelect={vi.fn()} />)
+
+    const pill = screen.getByTestId('search-filter-pill')
+    expect(pill).toHaveTextContent('closed')
+  })
+
+  it('shows filter pill for is:archived qualifier', () => {
+    mockParsed = { text: 'old', statusFilter: ['archived'] }
+    render(<SearchWidget projectId="p1" onSelect={vi.fn()} />)
+
+    const pill = screen.getByTestId('search-filter-pill')
+    expect(pill).toHaveTextContent('archived')
+  })
+
+  it('does not show filter pill when no qualifier active', () => {
+    mockParsed = null
+    render(<SearchWidget projectId="p1" onSelect={vi.fn()} />)
+
+    expect(screen.queryByTestId('search-filter-pill')).not.toBeInTheDocument()
   })
 })

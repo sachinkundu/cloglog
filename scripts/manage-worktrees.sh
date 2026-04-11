@@ -32,6 +32,27 @@ echo "  Worktrees: ${WORKTREES[*]}"
 echo "═══════════════════════════════════════════════════"
 echo ""
 
+# --- Resolve API key for agent unregistration ---
+CLOGLOG_BACKEND="${CLOGLOG_URL:-http://localhost:8000}"
+API_KEY="${CLOGLOG_API_KEY:-}"
+if [[ -z "$API_KEY" ]]; then
+  # Try .mcp.json in repo root
+  if [[ -f "${REPO_ROOT}/.mcp.json" ]]; then
+    API_KEY=$(python3 -c "
+import json
+d=json.load(open('${REPO_ROOT}/.mcp.json'))
+print(d.get('mcpServers',{}).get('cloglog',{}).get('env',{}).get('CLOGLOG_API_KEY',''))
+" 2>/dev/null || true)
+  fi
+fi
+if [[ -n "$API_KEY" ]]; then
+  echo "  API key resolved for agent unregistration"
+else
+  echo "  Warning: no API key found — agents will not be unregistered"
+  echo "  Set CLOGLOG_API_KEY or add it to .mcp.json"
+fi
+echo ""
+
 # --- Close mode: generate wave work log ---
 if [[ "$MODE" == "close" ]]; then
   DATE=$(date +%Y-%m-%d)
@@ -84,6 +105,32 @@ if [[ "$MODE" == "close" ]]; then
   echo "  Written to: $LOG_FILE"
   echo ""
 fi
+
+# --- Unregister agents ---
+echo "── Unregistering agents ──"
+for wt in "${WORKTREES[@]}"; do
+  WT_DIR="${REPO_ROOT}/.claude/worktrees/${wt}"
+  if [[ -n "$API_KEY" ]]; then
+    echo "  Unregistering $wt..."
+    HTTP_CODE=$(curl -s -o /tmp/unreg-${wt}.log -w "%{http_code}" --max-time 5 \
+      -X POST "${CLOGLOG_BACKEND}/api/v1/agents/unregister-by-path" \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer ${API_KEY}" \
+      -d "{\"worktree_path\": \"${WT_DIR}\"}" 2>/dev/null || echo "000")
+    if [[ "$HTTP_CODE" == "204" ]]; then
+      echo "    Unregistered (204)"
+    elif [[ "$HTTP_CODE" == "404" ]]; then
+      echo "    Not registered (404) — skipping"
+    elif [[ "$HTTP_CODE" == "000" ]]; then
+      echo "    Warning: backend unreachable — agent record may linger"
+    else
+      echo "    Warning: unexpected response ($HTTP_CODE) — continuing"
+    fi
+  else
+    echo "  Skipping $wt (no API key)"
+  fi
+done
+echo ""
 
 # --- Tear down infrastructure ---
 echo "── Tearing down infrastructure ──"

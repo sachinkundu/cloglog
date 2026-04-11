@@ -1,4 +1,5 @@
 const API_BASE = process.env.E2E_API_BASE ?? 'http://localhost:8001/api/v1';
+const DASHBOARD_KEY = process.env.E2E_DASHBOARD_KEY ?? 'cloglog-dashboard-dev';
 
 interface ProjectResponse {
   id: string;
@@ -30,7 +31,7 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
   const { headers, ...rest } = options;
   const res = await fetch(`${API_BASE}${path}`, {
     ...rest,
-    headers: { 'Content-Type': 'application/json', ...(headers as Record<string, string>) },
+    headers: { 'Content-Type': 'application/json', 'X-Dashboard-Key': DASHBOARD_KEY, ...(headers as Record<string, string>) },
   });
   if (!res.ok) {
     const body = await res.text();

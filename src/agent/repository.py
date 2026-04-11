@@ -95,6 +95,15 @@ class AgentRepository:
         )
         await self._session.commit()
 
+    async def get_offline_worktrees(self, project_id: UUID) -> list[Worktree]:
+        result = await self._session.execute(
+            select(Worktree).where(
+                Worktree.project_id == project_id,
+                Worktree.status == "offline",
+            )
+        )
+        return list(result.scalars().all())
+
     async def get_worktree_by_path(self, project_id: UUID, worktree_path: str) -> Worktree | None:
         result = await self._session.execute(
             select(Worktree).where(
@@ -105,7 +114,19 @@ class AgentRepository:
         return result.scalar_one_or_none()
 
     async def delete_worktree(self, worktree_id: UUID) -> None:
-        """Delete worktree and all associated sessions."""
+        """Delete worktree and all associated sessions and messages."""
+        messages = (
+            (
+                await self._session.execute(
+                    select(AgentMessage).where(AgentMessage.worktree_id == worktree_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for msg in messages:
+            await self._session.delete(msg)
+
         sessions = (
             (await self._session.execute(select(Session).where(Session.worktree_id == worktree_id)))
             .scalars()

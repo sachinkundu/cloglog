@@ -10,6 +10,8 @@ from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agent.models import Worktree as WorktreeModel
+from src.agent.repository import AgentRepository
+from src.agent.services import AgentService
 from src.board.repository import BoardRepository
 from src.board.schemas import (
     ActiveTaskItem,
@@ -772,3 +774,25 @@ async def request_worktree_shutdown(
     if getattr(result, "rowcount", 0) == 0:
         raise HTTPException(status_code=404, detail="Worktree not found") from None
     return {"shutdown_requested": True}
+
+
+@router.post(
+    "/projects/{project_id}/worktrees/remove-offline",
+    status_code=200,
+)
+async def remove_offline_agents(
+    project_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, int]:
+    """Remove all offline agent records for a project. Dashboard-facing endpoint."""
+    agent_service = AgentService(AgentRepository(session), BoardRepository(session))
+    count = await agent_service.remove_offline_agents(project_id)
+    if count > 0:
+        await event_bus.publish(
+            Event(
+                type=EventType.BULK_AGENTS_REMOVED,
+                project_id=project_id,
+                data={"removed_count": count},
+            )
+        )
+    return {"removed_count": count}

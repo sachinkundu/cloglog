@@ -1216,3 +1216,70 @@ class TestReportArtifactAPI:
         )
         assert resp.status_code == 409
         assert "only spec and plan" in resp.json()["detail"]
+
+
+class TestBulkRemoveOfflineAgents:
+    async def test_removes_offline_agents(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Bulk remove deletes offline agents and returns count."""
+        project = await _create_project_via_api(client)
+        api_key = project["api_key"]
+        project_id = project["id"]
+
+        # Register two agents
+        wt1_id, _ = await _register_and_get_token(client, api_key, "/repo/wt-old1")
+        wt2_id, _ = await _register_and_get_token(client, api_key, "/repo/wt-old2")
+
+        # Mark both offline via repo
+        repo = AgentRepository(db_session)
+        await repo.set_worktree_offline(uuid.UUID(wt1_id))
+        await repo.set_worktree_offline(uuid.UUID(wt2_id))
+
+        # Bulk remove
+        resp = await client.post(f"/api/v1/projects/{project_id}/worktrees/remove-offline")
+        assert resp.status_code == 200
+        assert resp.json() == {"removed_count": 2}
+
+        # Verify no worktrees remain
+        resp = await client.get(f"/api/v1/projects/{project_id}/worktrees")
+        assert resp.json() == []
+
+    async def test_does_not_remove_online_agents(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Bulk remove only removes offline agents, leaves online ones."""
+        project = await _create_project_via_api(client)
+        api_key = project["api_key"]
+        project_id = project["id"]
+
+        # Register two agents — one stays online, one goes offline
+        wt_online_id, _ = await _register_and_get_token(client, api_key, "/repo/wt-online")
+        wt_offline_id, _ = await _register_and_get_token(client, api_key, "/repo/wt-offline")
+
+        repo = AgentRepository(db_session)
+        await repo.set_worktree_offline(uuid.UUID(wt_offline_id))
+
+        resp = await client.post(f"/api/v1/projects/{project_id}/worktrees/remove-offline")
+        assert resp.status_code == 200
+        assert resp.json() == {"removed_count": 1}
+
+        # Online agent still exists
+        resp = await client.get(f"/api/v1/projects/{project_id}/worktrees")
+        worktrees = resp.json()
+        assert len(worktrees) == 1
+        assert worktrees[0]["id"] == wt_online_id
+        assert worktrees[0]["status"] == "online"
+
+    async def test_returns_zero_when_no_offline(self, client: AsyncClient) -> None:
+        """Returns zero count when there are no offline agents."""
+        project = await _create_project_via_api(client)
+        api_key = project["api_key"]
+        project_id = project["id"]
+
+        # Register one online agent
+        await _register_and_get_token(client, api_key, "/repo/wt-alive")
+
+        resp = await client.post(f"/api/v1/projects/{project_id}/worktrees/remove-offline")
+        assert resp.status_code == 200
+        assert resp.json() == {"removed_count": 0}

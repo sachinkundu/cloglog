@@ -28,6 +28,7 @@ class EventType(StrEnum):
     TASK_REORDERED = "task_reordered"
     TASK_RETIRED = "task_retired"
     BULK_RETIRED = "bulk_retired"
+    BULK_AGENTS_REMOVED = "bulk_agents_removed"
 
 
 @dataclass

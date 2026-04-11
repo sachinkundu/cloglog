@@ -150,6 +150,12 @@ export const api = {
       { method: 'POST' },
     ),
 
+  removeOfflineAgents: (projectId: string) =>
+    fetchJSON<{ removed_count: number }>(
+      `/projects/${projectId}/worktrees/remove-offline`,
+      { method: 'POST' },
+    ),
+
   // SSE stream URL (not a fetch — used by EventSource, which can't send headers)
   streamUrl: (projectId: string) =>
     `${BASE_URL}/projects/${projectId}/stream?dashboard_key=${encodeURIComponent(DASHBOARD_KEY)}`,

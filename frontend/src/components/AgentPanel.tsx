@@ -23,6 +23,7 @@ function formatHeartbeat(ts: string | null): string {
 export function AgentPanel({ worktrees, projectId, agentTaskCounts, onRefresh }: AgentPanelProps) {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [shutdownPending, setShutdownPending] = useState<Set<string>>(new Set())
+  const [removingOffline, setRemovingOffline] = useState(false)
 
   const handleShutdown = async (worktreeId: string) => {
     setShutdownPending(prev => new Set(prev).add(worktreeId))
@@ -38,11 +39,35 @@ export function AgentPanel({ worktrees, projectId, agentTaskCounts, onRefresh }:
     }
   }
 
+  const offlineCount = worktrees.filter(wt => wt.status === 'offline').length
+
+  const handleRemoveOffline = async () => {
+    setRemovingOffline(true)
+    try {
+      await api.removeOfflineAgents(projectId)
+      onRefresh?.()
+    } finally {
+      setRemovingOffline(false)
+    }
+  }
+
   if (worktrees.length === 0) return null
 
   return (
     <section className="agent-panel">
-      <h2 className="sidebar-section-title">Manage Agents</h2>
+      <div className="agent-panel-header-row">
+        <h2 className="sidebar-section-title">Manage Agents</h2>
+        {offlineCount > 0 && (
+          <button
+            className="agent-panel-remove-offline"
+            onClick={handleRemoveOffline}
+            disabled={removingOffline}
+            title={`Remove ${offlineCount} offline agent${offlineCount !== 1 ? 's' : ''}`}
+          >
+            {removingOffline ? 'Removing...' : `Remove Offline (${offlineCount})`}
+          </button>
+        )}
+      </div>
       <div className="agent-panel-list">
         {worktrees.map(wt => {
           const isExpanded = expanded === wt.id

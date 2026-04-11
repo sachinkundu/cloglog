@@ -310,6 +310,49 @@ describe('BacklogTree', () => {
     expect(activeEl.compareDocumentPosition(doneEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
+  it('renders collapse all button when tree is expanded', () => {
+    render(<BacklogTree backlog={mockBacklog} onItemClick={vi.fn()} />)
+    expect(screen.getByTitle('Collapse all')).toBeInTheDocument()
+    expect(screen.getByText(/Collapse all/)).toBeInTheDocument()
+  })
+
+  it('collapses all epics and features when collapse all is clicked', async () => {
+    const user = userEvent.setup()
+    render(<BacklogTree backlog={mockBacklog} onItemClick={vi.fn()} />)
+    // Features and tasks visible initially
+    expect(screen.getByText('OAuth')).toBeInTheDocument()
+    expect(screen.getByText('Callback handler')).toBeInTheDocument()
+    // Click collapse all
+    await user.click(screen.getByText(/Collapse all/))
+    // Features and tasks hidden
+    expect(screen.queryByText('OAuth')).not.toBeInTheDocument()
+    expect(screen.queryByText('Callback handler')).not.toBeInTheDocument()
+    // Button now shows expand all
+    expect(screen.getByText(/Expand all/)).toBeInTheDocument()
+  })
+
+  it('expands all epics and features when expand all is clicked', async () => {
+    const user = userEvent.setup()
+    render(<BacklogTree backlog={mockBacklog} onItemClick={vi.fn()} />)
+    // Collapse first
+    await user.click(screen.getByText(/Collapse all/))
+    expect(screen.queryByText('OAuth')).not.toBeInTheDocument()
+    // Expand all
+    await user.click(screen.getByText(/Expand all/))
+    expect(screen.getByText('OAuth')).toBeInTheDocument()
+    expect(screen.getByText('Callback handler')).toBeInTheDocument()
+  })
+
+  it('shows expand all when some items are manually collapsed', async () => {
+    const user = userEvent.setup()
+    render(<BacklogTree backlog={mockBacklog} onItemClick={vi.fn()} />)
+    // Collapse the epic manually via the toggle
+    const toggles = screen.getAllByText('\u25BC')
+    await user.click(toggles[0]) // collapse epic
+    // Button should now show expand all since not everything is expanded
+    expect(screen.getByText(/Expand all/)).toBeInTheDocument()
+  })
+
   it('hides completed features within a visible epic', () => {
     const backlogMixed: BacklogEpic[] = [{
       epic: {

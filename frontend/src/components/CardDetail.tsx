@@ -44,7 +44,7 @@ export function CardDetail({ task, onClose }: CardDetailProps) {
             {task.priority === 'expedite' && (
               <span className="status-badge expedite">expedite</span>
             )}
-            {task.pr_url && <PrLink url={task.pr_url} />}
+            {task.pr_url && <PrLink url={task.pr_url} merged={task.pr_merged} />}
           </div>
           <button className="card-detail-close" onClick={onClose}>x</button>
         </div>

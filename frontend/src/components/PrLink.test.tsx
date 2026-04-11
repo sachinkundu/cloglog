@@ -39,4 +39,20 @@ describe('PrLink', () => {
     render(<PrLink url={url} />)
     expect(screen.getByRole('link')).toHaveAttribute('title', url)
   })
+
+  it('shows merged badge when merged is true', () => {
+    render(<PrLink url="https://github.com/sachinkundu/cloglog/pull/45" merged />)
+    expect(screen.getByText('Merged')).toBeInTheDocument()
+    expect(screen.getByText('Merged')).toHaveClass('pr-merged-badge')
+  })
+
+  it('does not show merged badge when merged is false', () => {
+    render(<PrLink url="https://github.com/sachinkundu/cloglog/pull/45" merged={false} />)
+    expect(screen.queryByText('Merged')).not.toBeInTheDocument()
+  })
+
+  it('does not show merged badge when merged is not provided', () => {
+    render(<PrLink url="https://github.com/sachinkundu/cloglog/pull/45" />)
+    expect(screen.queryByText('Merged')).not.toBeInTheDocument()
+  })
 })

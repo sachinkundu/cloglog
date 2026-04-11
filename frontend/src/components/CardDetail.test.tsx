@@ -23,6 +23,7 @@ const baseTask: TaskCard = {
   priority: 'normal',
   task_type: 'task',
   pr_url: null,
+  pr_merged: false,
   worktree_id: null,
   position: 0,
   number: 0,
@@ -138,6 +139,12 @@ describe('CardDetail', () => {
   it('does not show PR link when pr_url is null', () => {
     render(<CardDetail task={baseTask} onClose={vi.fn()} />)
     expect(screen.queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it('shows merged badge in card detail when pr_merged is true', () => {
+    const task = { ...baseTask, pr_url: 'https://github.com/sachinkundu/cloglog/pull/77', pr_merged: true, status: 'done' }
+    render(<CardDetail task={task} onClose={vi.fn()} />)
+    expect(screen.getByText('Merged')).toBeInTheDocument()
   })
 
   it('loads and displays document content when a doc chip is clicked', async () => {

@@ -13,6 +13,7 @@ const makeTask = (overrides?: Partial<TaskCardType>): TaskCardType => ({
   priority: 'normal',
   task_type: 'task',
   pr_url: null,
+  pr_merged: false,
   worktree_id: null,
   position: 0,
   number: 1,

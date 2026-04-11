@@ -14,6 +14,7 @@ const makeTask = (id: string, title: string, status: string, archived = false, w
   priority: 'normal',
   task_type: 'task',
   pr_url: null as string | null,
+  pr_merged: false,
   worktree_id,
   position: 0,
   number: 1,

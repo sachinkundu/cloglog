@@ -21,3 +21,23 @@
   flex-shrink: 0;
   opacity: 0.8;
 }
+
+.pr-link-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pr-merged-badge {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--green, #2ea043) 18%, transparent);
+  color: var(--green, #2ea043);
+  text-transform: uppercase;
+}

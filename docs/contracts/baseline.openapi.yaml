@@ -1494,6 +1494,15 @@ components:
           type: string
           title: Epic Color
           default: ''
+        pr_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Pr Url
+        pr_merged:
+          type: boolean
+          title: Pr Merged
+          default: false
       type: object
       required:
       - id

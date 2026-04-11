@@ -42,6 +42,7 @@ const makeTask = (id: string, title: string, status: string) => ({
   priority: 'normal' as const,
   task_type: 'task',
   pr_url: null as string | null,
+  pr_merged: false,
   worktree_id: null,
   position: 0,
   number: 1,

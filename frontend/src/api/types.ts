@@ -115,5 +115,6 @@ export type SSEEvent = {
     | 'notification_created'
     | 'dependency_added'
     | 'dependency_removed'
+    | 'bulk_agents_removed'
   data: Record<string, string>
 }

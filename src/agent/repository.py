@@ -95,6 +95,15 @@ class AgentRepository:
         )
         await self._session.commit()
 
+    async def get_offline_worktrees(self, project_id: UUID) -> list[Worktree]:
+        result = await self._session.execute(
+            select(Worktree).where(
+                Worktree.project_id == project_id,
+                Worktree.status == "offline",
+            )
+        )
+        return list(result.scalars().all())
+
     async def get_worktree_by_path(self, project_id: UUID, worktree_path: str) -> Worktree | None:
         result = await self._session.execute(
             select(Worktree).where(

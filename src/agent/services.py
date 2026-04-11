@@ -478,6 +478,17 @@ class AgentService:
             raise ValueError(f"Worktree not found for path: {worktree_path}")
         await self.unregister(worktree.id, artifacts=artifacts)
 
+    async def remove_offline_agents(self, project_id: UUID) -> int:
+        """Delete all offline worktree records for a project. Returns count removed."""
+        offline = await self._repo.get_offline_worktrees(project_id)
+        for wt in offline:
+            # End any lingering sessions
+            session = await self._repo.get_active_session(wt.id)
+            if session is not None:
+                await self._repo.end_session(session.id)
+            await self._repo.delete_worktree(wt.id)
+        return len(offline)
+
     # --- Heartbeat Timeout ---
 
     async def check_heartbeat_timeouts(self) -> list[UUID]:

@@ -986,3 +986,49 @@ class TestHeartbeatScheduler:
 
         # Should have been called at least twice — once errored, once succeeded
         assert call_count >= 2
+
+
+class TestRemoveOfflineAgents:
+    async def test_removes_offline_worktrees(self, db_session: AsyncSession) -> None:
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+        service = AgentService(repo, BoardRepository(db_session))
+
+        # Register two agents, mark both offline
+        await service.register(project.id, "/repo/wt-x", "wt-x")
+        await service.register(project.id, "/repo/wt-y", "wt-y")
+        worktrees = await repo.get_worktrees_for_project(project.id)
+        for wt in worktrees:
+            await repo.set_worktree_offline(wt.id)
+
+        count = await service.remove_offline_agents(project.id)
+        assert count == 2
+
+        remaining = await repo.get_worktrees_for_project(project.id)
+        assert len(remaining) == 0
+
+    async def test_leaves_online_worktrees(self, db_session: AsyncSession) -> None:
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+        service = AgentService(repo, BoardRepository(db_session))
+
+        await service.register(project.id, "/repo/wt-alive", "wt-alive")
+        reg = await service.register(project.id, "/repo/wt-dead", "wt-dead")
+        await repo.set_worktree_offline(reg["worktree_id"])
+
+        count = await service.remove_offline_agents(project.id)
+        assert count == 1
+
+        remaining = await repo.get_worktrees_for_project(project.id)
+        assert len(remaining) == 1
+        assert remaining[0].worktree_path == "/repo/wt-alive"
+
+    async def test_returns_zero_when_none_offline(self, db_session: AsyncSession) -> None:
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+        service = AgentService(repo, BoardRepository(db_session))
+
+        await service.register(project.id, "/repo/wt-active", "wt-active")
+
+        count = await service.remove_offline_agents(project.id)
+        assert count == 0

@@ -3,6 +3,35 @@
   border-top: 1px solid var(--border-subtle);
 }
 
+.agent-panel-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px;
+}
+
+.agent-panel-remove-offline {
+  padding: 2px 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  background: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.agent-panel-remove-offline:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.agent-panel-remove-offline:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .agent-panel-list {
   display: flex;
   flex-direction: column;

@@ -31,6 +31,7 @@ export function useSSE(
       'notification_created',
       'dependency_added',
       'dependency_removed',
+      'bulk_agents_removed',
     ] as const
 
     for (const type of eventTypes) {

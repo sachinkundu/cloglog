@@ -227,6 +227,89 @@ describe('useBoard', () => {
     expect(mockApi.getBoard).toHaveBeenCalled()
   })
 
+  it('moveTask optimistically moves a task to a new column', async () => {
+    const board = makeBoard([
+      { status: 'in_progress', tasks: [makeTask('t1', 'Task', 'in_progress')] },
+      { status: 'review', tasks: [] },
+    ])
+    mockApi.getBoard.mockResolvedValue(board)
+    mockApi.getBacklog.mockResolvedValue([])
+    mockApi.getWorktrees.mockResolvedValue(worktrees)
+
+    const { result } = renderHook(() => useBoard('p1'))
+
+    await waitFor(() => {
+      expect(result.current.board).not.toBeNull()
+    })
+
+    act(() => {
+      result.current.moveTask('t1', 'review')
+    })
+
+    const reviewCol = result.current.board!.columns.find(c => c.status === 'review')
+    expect(reviewCol!.tasks).toHaveLength(1)
+    expect(reviewCol!.tasks[0].id).toBe('t1')
+
+    const ipCol = result.current.board!.columns.find(c => c.status === 'in_progress')
+    expect(ipCol!.tasks).toHaveLength(0)
+  })
+
+  it('moveTask is a no-op when task is already in the target column', async () => {
+    const board = makeBoard([
+      { status: 'review', tasks: [makeTask('t1', 'Task', 'review')] },
+    ])
+    mockApi.getBoard.mockResolvedValue(board)
+    mockApi.getBacklog.mockResolvedValue([])
+    mockApi.getWorktrees.mockResolvedValue(worktrees)
+
+    const { result } = renderHook(() => useBoard('p1'))
+
+    await waitFor(() => {
+      expect(result.current.board).not.toBeNull()
+    })
+
+    const boardBefore = result.current.board
+
+    act(() => {
+      result.current.moveTask('t1', 'review')
+    })
+
+    // Should return same reference — no state change
+    expect(result.current.board).toBe(boardBefore)
+  })
+
+  it('SSE task_status_changed is a no-op when task is already in the target column', async () => {
+    const board = makeBoard([
+      { status: 'in_progress', tasks: [makeTask('t1', 'Task', 'in_progress')] },
+      { status: 'review', tasks: [] },
+    ])
+    mockApi.getBoard.mockResolvedValue(board)
+    mockApi.getBacklog.mockResolvedValue([])
+    mockApi.getWorktrees.mockResolvedValue(worktrees)
+
+    const { result } = renderHook(() => useBoard('p1'))
+
+    await waitFor(() => {
+      expect(result.current.board).not.toBeNull()
+    })
+
+    // Simulate optimistic move first
+    act(() => {
+      result.current.moveTask('t1', 'review')
+    })
+
+    mockApi.getBoard.mockClear()
+    const boardAfterMove = result.current.board
+
+    // SSE arrives for the same move — should be a no-op
+    act(() => {
+      sseHandler!({ type: 'task_status_changed', data: { task_id: 't1', new_status: 'review' } })
+    })
+
+    expect(mockApi.getBoard).not.toHaveBeenCalled()
+    expect(result.current.board).toBe(boardAfterMove)
+  })
+
   it('falls back to refetch when task_id not found in current board', async () => {
     const board = makeBoard([
       { status: 'in_progress', tasks: [makeTask('t1', 'Task', 'in_progress')] },

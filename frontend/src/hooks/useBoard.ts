@@ -44,6 +44,8 @@ export function useBoard(projectId: string | null) {
         for (const col of prev.columns) {
           const task = col.tasks.find(t => t.id === task_id)
           if (task) {
+            // Skip if the task is already in the target column (optimistic update already applied)
+            if (col.status === new_status) return prev
             movedTask = { ...task, status: new_status }
             break
           }
@@ -96,5 +98,34 @@ export function useBoard(projectId: string | null) {
 
   useSSE(projectId, handleSSE)
 
-  return { board, backlog, worktrees, loading, error, refetch: fetchBoard }
+  /** Optimistically move a task to a new column without full refetch. */
+  const moveTask = useCallback((taskId: string, newStatus: string) => {
+    setBoard(prev => {
+      if (!prev) return prev
+
+      let movedTask = null
+      for (const col of prev.columns) {
+        const task = col.tasks.find(t => t.id === taskId)
+        if (task) {
+          if (task.status === newStatus) return prev // already there
+          movedTask = { ...task, status: newStatus }
+          break
+        }
+      }
+      if (!movedTask) return prev
+
+      const updatedColumns = prev.columns.map(col => ({
+        ...col,
+        tasks: col.tasks.filter(t => t.id !== taskId),
+      }))
+      const destCol = updatedColumns.find(c => c.status === newStatus)
+      if (destCol) {
+        destCol.tasks = [...destCol.tasks, movedTask]
+      }
+      const doneCount = updatedColumns.find(c => c.status === 'done')?.tasks.length ?? 0
+      return { ...prev, columns: updatedColumns, done_count: doneCount }
+    })
+  }, [])
+
+  return { board, backlog, worktrees, loading, error, refetch: fetchBoard, moveTask }
 }

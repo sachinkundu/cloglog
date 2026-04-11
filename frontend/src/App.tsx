@@ -30,7 +30,7 @@ export default function App() {
 
   const selectedProjectId = projectId ?? null
   const { projects, loading: projectsLoading } = useProjects()
-  const { board, backlog, worktrees, loading: boardLoading, refetch } = useBoard(selectedProjectId)
+  const { board, backlog, worktrees, loading: boardLoading, refetch, moveTask } = useBoard(selectedProjectId)
   const { graph: depGraph } = useDependencyGraph(selectedProjectId)
 
   const [agentFilter, setAgentFilter] = useState<string | null>(null)
@@ -129,6 +129,7 @@ export default function App() {
           onTaskClick={handleTaskClick}
           onItemClick={openDetail}
           onRefresh={refetch}
+          onMoveTask={moveTask}
           worktreeNames={worktreeNames}
           agentFilter={agentFilter}
         />

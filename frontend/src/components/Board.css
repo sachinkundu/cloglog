@@ -25,4 +25,10 @@
   opacity: 0.9;
   transform: rotate(2deg);
   pointer-events: none;
+  max-width: 280px;
+}
+
+.drag-overlay-card .task-card {
+  animation: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
 }

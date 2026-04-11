@@ -25,11 +25,12 @@ interface BoardProps {
   onTaskClick: (taskId: string) => void
   onItemClick: (type: 'epic' | 'feature' | 'task', id: string) => void
   onRefresh?: () => void
+  onMoveTask?: (taskId: string, newStatus: string) => void
   worktreeNames?: Record<string, string>
   agentFilter?: string | null
 }
 
-export function Board({ board, backlog, projectId, onTaskClick, onItemClick, onRefresh, worktreeNames, agentFilter }: BoardProps) {
+export function Board({ board, backlog, projectId, onTaskClick, onItemClick, onRefresh, onMoveTask, worktreeNames, agentFilter }: BoardProps) {
   const flowColumns = board.columns.filter(col => col.status !== 'backlog')
   const [activeTask, setActiveTask] = useState<TaskCardType | null>(null)
 
@@ -67,11 +68,20 @@ export function Board({ board, backlog, projectId, onTaskClick, onItemClick, onR
     const targetStatus = over.data.current?.status as string | undefined
     if (!targetStatus || targetStatus === task.status) return
 
-    // Optimistically update via API, then refresh
+    // Optimistic local move — no full refetch needed
+    onMoveTask?.(task.id, targetStatus)
+
+    // Persist to backend; only refetch on failure to restore correct state
     api.updateTask(task.id, { status: targetStatus })
-      .then(() => onRefresh?.())
+      .then(() => {
+        // User-initiated drag to review: dismiss the auto-notification
+        // so it doesn't alert the user about their own action
+        if (targetStatus === 'review') {
+          api.dismissTaskNotification(projectId, task.id).catch(() => {})
+        }
+      })
       .catch(() => onRefresh?.())
-  }, [onRefresh])
+  }, [onMoveTask, onRefresh, projectId])
 
   const handleDragCancel = useCallback(() => {
     setActiveTask(null)

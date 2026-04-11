@@ -69,14 +69,14 @@ grep "RETIRED" src/shared/events.py
 ## Migration exists
 
 ```bash
-head -4 src/alembic/versions/a1b2c3d4e5f6_add_retired_to_tasks.py
+head -4 src/alembic/versions/4cab82be967b_add_retired_to_tasks.py
 ```
 
 ```output
 """add_retired_to_tasks
 
-Revision ID: a1b2c3d4e5f6
-Revises: 11d3e808a91d
+Revision ID: 4cab82be967b
+Revises: f5a6b7c8d9e2
 ```
 
 ## Backend retire tests pass

@@ -44,7 +44,7 @@ from src.shared.events import Event, EventType, event_bus
 
 router = APIRouter()
 
-BOARD_COLUMNS = ["backlog", "in_progress", "review", "done"]
+BOARD_COLUMNS = ["backlog", "prioritized", "in_progress", "review", "done"]
 
 
 def _get_service(session: Annotated[AsyncSession, Depends(get_session)]) -> BoardService:

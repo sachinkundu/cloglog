@@ -27,7 +27,7 @@ interface BacklogTreeProps {
   onReorderTasks?: (featureId: string, items: { id: string; position: number }[]) => void
 }
 
-const ACTIVE_STATUSES = new Set(['in_progress', 'review'])
+const ACTIVE_STATUSES = new Set(['prioritized', 'in_progress', 'review'])
 
 function SegmentedProgress({ tasks }: { tasks: Array<{ status: string }> }) {
   const total = tasks.length
@@ -47,6 +47,12 @@ function SegmentedProgress({ tasks }: { tasks: Array<{ status: string }> }) {
 
 function isFullyDone(counts: { total: number; done: number }, status?: string) {
   return status === 'done' || (counts.total > 0 && counts.done === counts.total)
+}
+
+function isFeatureHiddenFromBacklog(f: { task_counts: { total: number; done: number }; feature: { status: string }; tasks: Array<{ status: string }> }) {
+  return isFullyDone(f.task_counts, f.feature.status) ||
+    f.feature.status === 'prioritized' ||
+    (f.tasks.length > 0 && !f.tasks.some(t => t.status === 'backlog'))
 }
 
 export function BacklogTree({ backlog, onItemClick, onReorderEpics, onReorderFeatures, onReorderTasks }: BacklogTreeProps) {
@@ -174,7 +180,7 @@ export function BacklogTree({ backlog, onItemClick, onReorderEpics, onReorderFea
   }, [onReorderTasks])
 
   const allExpanded = expandedEpics.size === visibleBacklog.length &&
-    expandedFeatures.size === visibleBacklog.flatMap(e => showCompleted ? e.features : e.features.filter(f => !isFullyDone(f.task_counts, f.feature.status))).length
+    expandedFeatures.size === visibleBacklog.flatMap(e => showCompleted ? e.features : e.features.filter(f => !isFeatureHiddenFromBacklog(f))).length
 
   const collapseAll = () => {
     setExpandedEpics(new Set())
@@ -185,7 +191,7 @@ export function BacklogTree({ backlog, onItemClick, onReorderEpics, onReorderFea
     setExpandedEpics(new Set(visibleBacklog.map(e => e.epic.id)))
     setExpandedFeatures(new Set(
       visibleBacklog.flatMap(e => {
-        const features = showCompleted ? e.features : e.features.filter(f => !isFullyDone(f.task_counts, f.feature.status))
+        const features = showCompleted ? e.features : e.features.filter(f => !isFeatureHiddenFromBacklog(f))
         return features.map(f => f.feature.id)
       })
     ))
@@ -193,7 +199,7 @@ export function BacklogTree({ backlog, onItemClick, onReorderEpics, onReorderFea
 
   const completedEpics = localBacklog.filter(e => isFullyDone(e.task_counts, e.epic.status)).length
   const completedFeatures = localBacklog.reduce(
-    (sum, e) => sum + e.features.filter(f => isFullyDone(f.task_counts, f.feature.status)).length, 0
+    (sum, e) => sum + e.features.filter(f => isFeatureHiddenFromBacklog(f)).length, 0
   )
   const completedCount = completedEpics + completedFeatures
 
@@ -230,7 +236,7 @@ export function BacklogTree({ backlog, onItemClick, onReorderEpics, onReorderFea
                   const bDone = isFullyDone(b.task_counts, b.feature.status) ? 1 : 0
                   return aDone - bDone
                 })
-              : features.filter(f => !isFullyDone(f.task_counts, f.feature.status))
+              : features.filter(f => !isFeatureHiddenFromBacklog(f))
             const allTasks = visibleFeatures.flatMap(f => f.tasks)
 
             return (
@@ -287,6 +293,24 @@ export function BacklogTree({ backlog, onItemClick, onReorderEpics, onReorderFea
                                   >
                                     {feature.number != null && feature.number > 0 && <span className="entity-number">{formatEntityNumber('feature', feature.number)} </span>}
                                     {feature.title}
+                                  </span>
+                                  <span
+                                    className="prioritize-handle"
+                                    draggable
+                                    title="Drag to Prioritized column"
+                                    onPointerDown={(e) => e.stopPropagation()}
+                                    onDragStart={(e) => {
+                                      e.stopPropagation()
+                                      e.dataTransfer.setData('application/x-feature', JSON.stringify({
+                                        featureId: feature.id,
+                                        featureTitle: feature.title,
+                                        epicColor: epic.color,
+                                        taskIds: backlogTasks.map(t => t.id),
+                                      }))
+                                      e.dataTransfer.effectAllowed = 'move'
+                                    }}
+                                  >
+                                    &#x2630;
                                   </span>
                                   <SegmentedProgress tasks={tasks} />
                                 </div>

@@ -54,6 +54,12 @@ export const api = {
       body: JSON.stringify(updates),
     }),
 
+  updateFeature: (featureId: string, updates: Record<string, unknown>) =>
+    fetchJSON(`/features/${featureId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    }),
+
   archiveTask: (taskId: string) =>
     fetchJSON(`/tasks/${taskId}`, {
       method: 'PATCH',

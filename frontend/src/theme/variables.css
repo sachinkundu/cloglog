@@ -35,6 +35,7 @@
 
   /* Column colors */
   --col-backlog: #64748b;
+  --col-prioritized: #3b82f6;
   --col-in-progress: #f59e0b;
   --col-review: #a78bfa;
   --col-done: #10b981;

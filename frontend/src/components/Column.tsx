@@ -18,6 +18,7 @@ interface ColumnProps {
 
 const COLUMN_LABELS: Record<string, string> = {
   backlog: 'Backlog',
+  prioritized: 'Prioritized',
   in_progress: 'In Progress',
   review: 'Review',
   done: 'Done',

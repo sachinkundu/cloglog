@@ -1,0 +1,96 @@
+.prioritized-column {
+  min-width: 280px;
+  max-width: 320px;
+}
+
+.prioritized-content {
+  overflow-y: auto;
+  flex: 1;
+  padding: 0 4px;
+}
+
+.prioritized-empty {
+  color: var(--text-muted, #888);
+  font-size: 12px;
+  padding: 16px 12px;
+  text-align: center;
+  border: 1px dashed var(--border, #333);
+  border-radius: 8px;
+  margin: 4px;
+}
+
+.prioritized-feature {
+  margin-bottom: 8px;
+  border: 1px solid var(--border, #ffffff0a);
+  border-radius: 6px;
+  background: var(--surface, #ffffff04);
+}
+
+.prioritized-feature-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-left: 3px solid;
+  border-radius: 6px 6px 0 0;
+  cursor: grab;
+}
+
+.prioritized-feature-title {
+  font-size: 12px;
+  color: var(--text, #ccc);
+  cursor: pointer;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prioritized-feature-title:hover {
+  color: var(--text-bright, #fff);
+}
+
+.deprioritize-handle {
+  cursor: grab;
+  color: var(--text-muted, #666);
+  font-size: 12px;
+  padding: 2px 6px;
+  opacity: 0.4;
+  transition: opacity 0.15s, color 0.15s;
+  flex-shrink: 0;
+  user-select: none;
+  border-radius: 4px;
+}
+
+.prioritized-feature-header:hover .deprioritize-handle {
+  opacity: 1;
+}
+
+.deprioritize-handle:hover {
+  color: var(--col-backlog, #64748b);
+  background: var(--surface, #ffffff08);
+}
+
+.deprioritize-handle:active {
+  cursor: grabbing;
+}
+
+.prioritized-tasks-list {
+  padding: 0 4px 4px;
+}
+
+.prioritized-task {
+  padding: 6px 8px;
+  background: var(--surface, #ffffff08);
+  border-radius: 4px;
+  margin-bottom: 3px;
+  border: 1px solid var(--border, #ffffff0a);
+  font-size: 12px;
+  color: var(--text, #e0e0e0);
+  cursor: pointer;
+}
+
+.prioritized-task:hover {
+  border-color: var(--col-prioritized, #3b82f6);
+}

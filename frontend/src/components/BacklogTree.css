@@ -124,6 +124,31 @@
   color: var(--text-bright, #fff);
 }
 
+.prioritize-handle {
+  cursor: grab;
+  color: var(--text-muted, #666);
+  font-size: 12px;
+  padding: 2px 6px;
+  opacity: 0.4;
+  transition: opacity 0.15s, color 0.15s;
+  flex-shrink: 0;
+  user-select: none;
+  border-radius: 4px;
+}
+
+.backlog-feature-header:hover .prioritize-handle {
+  opacity: 1;
+}
+
+.prioritize-handle:hover {
+  color: var(--col-prioritized, #3b82f6);
+  background: var(--surface, #ffffff08);
+}
+
+.prioritize-handle:active {
+  cursor: grabbing;
+}
+
 .backlog-tasks {
   margin-left: 20px;
 }

@@ -21,6 +21,7 @@
 }
 
 .column-dot.col-backlog { background: var(--col-backlog); }
+.column-dot.col-prioritized { background: var(--col-prioritized); }
 .column-dot.col-in_progress { background: var(--col-in-progress); }
 .column-dot.col-review { background: var(--col-review); }
 .column-dot.col-done { background: var(--col-done); }

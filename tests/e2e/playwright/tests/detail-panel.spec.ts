@@ -7,7 +7,6 @@ test.describe('Detail Panel', () => {
       seededProject.projectId,
       seededProject.featureId,
       'Described Task',
-      seededProject.apiKey,
       'This is a test description',
     );
 
@@ -23,7 +22,6 @@ test.describe('Detail Panel', () => {
       seededProject.projectId,
       seededProject.featureId,
       'Markdown Task',
-      seededProject.apiKey,
       '**bold text** and `code`',
     );
 

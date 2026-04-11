@@ -71,12 +71,12 @@ test.describe('Backlog Tree', () => {
 
   test('show completed toggle', async ({ page, seededProject, api }) => {
     // Create a feature where all tasks are done
-    const epic2 = await api.createEpic(seededProject.projectId, 'Done Epic', seededProject.apiKey);
-    const feat2 = await api.createFeature(seededProject.projectId, epic2.id, 'Done Feature', seededProject.apiKey);
-    const task = await api.createTask(seededProject.projectId, feat2.id, 'Done Task', seededProject.apiKey);
-    await api.updateTaskStatus(task.id, 'in_progress', seededProject.apiKey);
-    await api.updateTaskStatus(task.id, 'review', seededProject.apiKey);
-    await api.updateTaskStatus(task.id, 'done', seededProject.apiKey);
+    const epic2 = await api.createEpic(seededProject.projectId, 'Done Epic');
+    const feat2 = await api.createFeature(seededProject.projectId, epic2.id, 'Done Feature');
+    const task = await api.createTask(seededProject.projectId, feat2.id, 'Done Task');
+    await api.updateTaskStatus(task.id, 'in_progress');
+    await api.updateTaskStatus(task.id, 'review');
+    await api.updateTaskStatus(task.id, 'done');
 
     await page.goto(`/projects/${seededProject.projectId}`);
 

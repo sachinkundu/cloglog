@@ -367,7 +367,7 @@ async def test_one_active_task_guard(client: AsyncClient) -> None:
 
 
 async def test_one_active_task_review_counts(client: AsyncClient) -> None:
-    """A task in review still counts as active — cannot start another."""
+    """A task in review (PR not merged) still counts as active — cannot start another."""
     pf, agent, task_ids, ah = await _setup_agent_with_assigned_task(client, n_tasks=2)
     task_1, task_2 = task_ids[0], task_ids[1]
 
@@ -390,3 +390,35 @@ async def test_one_active_task_review_counts(client: AsyncClient) -> None:
         headers=ah,
     )
     assert resp.status_code == 409, f"Expected 409, got {resp.status_code}: {resp.text}"
+
+
+async def test_merged_pr_frees_agent_for_next_task(client: AsyncClient) -> None:
+    """A task in review with pr_merged=True does NOT block starting another task."""
+    pf, agent, task_ids, ah = await _setup_agent_with_assigned_task(client, n_tasks=2)
+    task_1, task_2 = task_ids[0], task_ids[1]
+
+    # Start task 1 and move to review
+    await client.post(
+        f"/api/v1/agents/{agent.worktree_id}/start-task",
+        json={"task_id": task_1},
+        headers=ah,
+    )
+    await client.patch(
+        f"/api/v1/agents/{agent.worktree_id}/task-status",
+        json={"task_id": task_1, "status": "review", "pr_url": fake_pr_url()},
+        headers=ah,
+    )
+
+    # Mark the PR as merged via dashboard
+    await client.patch(
+        f"/api/v1/tasks/{task_1}",
+        json={"pr_merged": True},
+    )
+
+    # Now starting task 2 should succeed — merged PR frees the agent
+    resp = await client.post(
+        f"/api/v1/agents/{agent.worktree_id}/start-task",
+        json={"task_id": task_2},
+        headers=ah,
+    )
+    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"

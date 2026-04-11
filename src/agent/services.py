@@ -204,10 +204,16 @@ class AgentService:
         if task is None:
             raise ValueError(f"Task {task_id} not found")
 
-        # Guard: one active task per agent — reject if already working on something
+        # Guard: one active task per agent — reject if already working on something.
+        # Tasks in review with a merged PR are considered finished (agent is free).
         existing_tasks = await self._board_repo.get_tasks_for_worktree(worktree_id)
-        active_statuses = ("in_progress", "review")
-        active = [t for t in existing_tasks if t.id != task_id and t.status in active_statuses]
+        active = [
+            t
+            for t in existing_tasks
+            if t.id != task_id
+            and t.status in ("in_progress", "review")
+            and not (t.status == "review" and t.pr_merged)
+        ]
         if active:
             titles = ", ".join(f"T-{t.number} '{t.title}' ({t.status})" for t in active)
             raise ValueError(

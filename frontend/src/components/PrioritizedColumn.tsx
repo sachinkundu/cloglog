@@ -79,17 +79,55 @@ export function PrioritizedColumn({
       }
       groups.get(fid)!.tasks.push(task)
     }
-    // Add prioritized features with no tasks (taskless features)
+    // Add prioritized features with no prioritized tasks, and pull in
+    // backlog tasks for features that have any prioritized tasks
     for (const epicEntry of backlog) {
       for (const feat of epicEntry.features) {
-        if (feat.feature.status === 'prioritized' && !groups.has(feat.feature.id)) {
+        const hasPrioritizedTasks = groups.has(feat.feature.id)
+        const isPrioritizedFeature = feat.feature.status === 'prioritized'
+
+        if (isPrioritizedFeature && !hasPrioritizedTasks) {
+          // Taskless prioritized feature — show it with any backlog tasks
+          const meta = featureMeta.get(feat.feature.id)
           groups.set(feat.feature.id, {
             featureId: feat.feature.id,
-            featureTitle: feat.feature.title,
-            featureNumber: feat.feature.number ?? 0,
+            featureTitle: meta?.title ?? feat.feature.title,
+            featureNumber: meta?.number ?? feat.feature.number ?? 0,
             epicColor: epicEntry.epic.color,
             tasks: [],
           })
+        }
+
+        // Pull in backlog tasks for features already in the prioritized column
+        if (hasPrioritizedTasks || isPrioritizedFeature) {
+          const group = groups.get(feat.feature.id)
+          if (group) {
+            const existingIds = new Set(group.tasks.map(t => t.id))
+            for (const bt of feat.tasks) {
+              if (bt.status === 'backlog' && !existingIds.has(bt.id)) {
+                // Convert BacklogTask to a minimal TaskCard-like object
+                group.tasks.push({
+                  id: bt.id,
+                  feature_id: feat.feature.id,
+                  title: bt.title,
+                  description: '',
+                  status: bt.status,
+                  priority: bt.priority,
+                  worktree_id: null,
+                  position: group.tasks.length,
+                  number: bt.number,
+                  archived: false,
+                  retired: false,
+                  created_at: '',
+                  updated_at: '',
+                  epic_title: epicEntry.epic.title,
+                  feature_title: feat.feature.title,
+                  epic_color: epicEntry.epic.color,
+                  pr_merged: false,
+                } as TaskCardType)
+              }
+            }
+          }
         }
       }
     }

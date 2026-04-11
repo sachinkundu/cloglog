@@ -52,6 +52,7 @@ function isFullyDone(counts: { total: number; done: number }, status?: string) {
 function isFeatureHiddenFromBacklog(f: { task_counts: { total: number; done: number }; feature: { status: string }; tasks: Array<{ status: string }> }) {
   return isFullyDone(f.task_counts, f.feature.status) ||
     f.feature.status === 'prioritized' ||
+    f.tasks.some(t => t.status === 'prioritized') ||
     (f.tasks.length > 0 && !f.tasks.some(t => t.status === 'backlog'))
 }
 

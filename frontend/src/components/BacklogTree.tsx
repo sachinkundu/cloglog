@@ -45,8 +45,8 @@ function SegmentedProgress({ tasks }: { tasks: Array<{ status: string }> }) {
   )
 }
 
-function isFullyDone(counts: { total: number; done: number }) {
-  return counts.total > 0 && counts.done === counts.total
+function isFullyDone(counts: { total: number; done: number }, status?: string) {
+  return status === 'done' || (counts.total > 0 && counts.done === counts.total)
 }
 
 export function BacklogTree({ backlog, onItemClick, onReorderEpics, onReorderFeatures, onReorderTasks }: BacklogTreeProps) {
@@ -86,11 +86,14 @@ export function BacklogTree({ backlog, onItemClick, onReorderEpics, onReorderFea
 
   const visibleBacklog = showCompleted
     ? [...localBacklog].sort((a, b) => {
-        const aDone = isFullyDone(a.task_counts) ? 1 : 0
-        const bDone = isFullyDone(b.task_counts) ? 1 : 0
+        const aDone = isFullyDone(a.task_counts, a.epic.status) ? 1 : 0
+        const bDone = isFullyDone(b.task_counts, b.epic.status) ? 1 : 0
         return aDone - bDone
       })
-    : localBacklog.filter(e => !isFullyDone(e.task_counts))
+    : localBacklog.filter(e =>
+        !isFullyDone(e.task_counts, e.epic.status) &&
+        (e.features.length === 0 || e.features.some(f => !isFullyDone(f.task_counts, f.feature.status)))
+      )
 
   const toggleEpic = (id: string) => {
     setExpandedEpics(prev => {
@@ -171,7 +174,7 @@ export function BacklogTree({ backlog, onItemClick, onReorderEpics, onReorderFea
   }, [onReorderTasks])
 
   const allExpanded = expandedEpics.size === visibleBacklog.length &&
-    expandedFeatures.size === visibleBacklog.flatMap(e => showCompleted ? e.features : e.features.filter(f => !isFullyDone(f.task_counts))).length
+    expandedFeatures.size === visibleBacklog.flatMap(e => showCompleted ? e.features : e.features.filter(f => !isFullyDone(f.task_counts, f.feature.status))).length
 
   const collapseAll = () => {
     setExpandedEpics(new Set())
@@ -182,15 +185,15 @@ export function BacklogTree({ backlog, onItemClick, onReorderEpics, onReorderFea
     setExpandedEpics(new Set(visibleBacklog.map(e => e.epic.id)))
     setExpandedFeatures(new Set(
       visibleBacklog.flatMap(e => {
-        const features = showCompleted ? e.features : e.features.filter(f => !isFullyDone(f.task_counts))
+        const features = showCompleted ? e.features : e.features.filter(f => !isFullyDone(f.task_counts, f.feature.status))
         return features.map(f => f.feature.id)
       })
     ))
   }
 
-  const completedEpics = localBacklog.filter(e => isFullyDone(e.task_counts)).length
+  const completedEpics = localBacklog.filter(e => isFullyDone(e.task_counts, e.epic.status)).length
   const completedFeatures = localBacklog.reduce(
-    (sum, e) => sum + e.features.filter(f => isFullyDone(f.task_counts)).length, 0
+    (sum, e) => sum + e.features.filter(f => isFullyDone(f.task_counts, f.feature.status)).length, 0
   )
   const completedCount = completedEpics + completedFeatures
 
@@ -223,11 +226,11 @@ export function BacklogTree({ backlog, onItemClick, onReorderEpics, onReorderFea
           {visibleBacklog.map(({ epic, features, task_counts }) => {
             const visibleFeatures = showCompleted
               ? [...features].sort((a, b) => {
-                  const aDone = isFullyDone(a.task_counts) ? 1 : 0
-                  const bDone = isFullyDone(b.task_counts) ? 1 : 0
+                  const aDone = isFullyDone(a.task_counts, a.feature.status) ? 1 : 0
+                  const bDone = isFullyDone(b.task_counts, b.feature.status) ? 1 : 0
                   return aDone - bDone
                 })
-              : features.filter(f => !isFullyDone(f.task_counts))
+              : features.filter(f => !isFullyDone(f.task_counts, f.feature.status))
             const allTasks = visibleFeatures.flatMap(f => f.tasks)
 
             return (

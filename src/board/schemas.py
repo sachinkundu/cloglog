@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 # --- Project ---
 
@@ -14,6 +14,13 @@ class ProjectCreate(BaseModel):
     name: str
     description: str = ""
     repo_url: str = ""
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def reject_empty_description(cls, v: object) -> object:
+        if v == "":
+            raise ValueError("description must not be empty")
+        return v
 
 
 class ProjectResponse(BaseModel):

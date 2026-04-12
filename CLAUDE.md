@@ -108,13 +108,10 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 
 ### Testing
 - **Run all tests FIRST, before writing any code.** Establish a green baseline so you know any failures are caused by your changes, not pre-existing issues.
-- **Before adding a dependency, check what's already installed.** Search `package.json` / `pyproject.toml` first. If the dependency is already used elsewhere, check how existing tests handle it — don't add unnecessary mocks or workarounds.
 - **Every PR must include automated tests.** No exceptions. If you write code, you write tests for it.
-- Frontend work requires component tests (@testing-library/react), not just "it renders" smoke tests. Test interactions, conditional rendering, error states.
-- Backend work requires both unit tests (business logic) and integration tests (API endpoints against real DB).
-- PRs without tests will be rejected in review.
+- **Worktree agents: delegate test writing to the `test-writer` subagent.** It carries the codified testing standards (real DB, no mocks, @testing-library/react patterns, coverage requirements). See `.claude/agents/test-writer.md`.
 - **Frontend worktrees need `cd frontend && npm install`** before tests will run — node_modules are not shared across worktrees.
-- **Cross-feature integration tests:** When modifying a component that was recently changed by another feature, write at least one test covering both features together. Check `git log --oneline <file>` to see recent changes. Two features that independently modify the same component can break each other in ways neither feature's tests catch.
+- **Cross-feature integration tests:** When modifying a component that was recently changed by another feature, write at least one test covering both features together. Check `git log --oneline <file>` to see recent changes.
 
 ### PR Quality
 - **PR body structure matters.** The reviewer opens the PR and needs context fast. Use this order:

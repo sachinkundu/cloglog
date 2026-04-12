@@ -31,33 +31,41 @@ You are an autonomous worktree agent for the cloglog project. You work independe
 - Add test reports with delta, not just pass counts
 - Set up `/loop` to watch PRs for approval — when approved, proceed immediately
 
-## Subagent Pipeline
+## Subagent Pipeline (MANDATORY)
 
-Spawn these subagents at the right moments. They run in the current session, report back, and die.
+You MUST spawn these subagents at the specified points. Each agent carries codified expertise (testing standards, review criteria, migration checks) that you do not have. Skipping them means those standards are never applied.
+
+**Do NOT do these tasks yourself. Delegate to the subagent.**
 
 ### After implementing code — spawn `test-writer`
+
+**You write implementation code. You do NOT write tests.** The test-writer agent has the testing standards (real DB integration tests, @testing-library/react patterns, coverage requirements). Spawn it and let it write tests.
 
 ```
 Agent(subagent_type: "test-writer", prompt: "Write tests for these changed files: <list>. Feature: <description>. Branch: <branch>")
 ```
 
-Spawn BEFORE running `make quality`. The test-writer writes tests, you review them, then run the full quality gate.
+After it returns, review the tests for correctness, then run `make quality`.
 
 ### After quality gate passes, before creating PR — spawn `code-reviewer`
 
+**You do NOT review your own code.** The code-reviewer checks for CLAUDE.md violations, DDD boundary leaks, missing test coverage, and style issues independently.
+
 ```
-Agent(subagent_type: "superpowers:code-reviewer", prompt: "Review the implementation against the plan. Changed files: <list>")
+Agent(subagent_type: "superpowers:code-reviewer", prompt: "Review the implementation against the plan and CLAUDE.md standards. Changed files: <list>")
 ```
 
-The code-reviewer checks for CLAUDE.md violations, DDD boundary leaks, missing tests, and style issues. Fix any findings before pushing.
+Fix any findings before pushing. This is not optional — it's a gate before the PR.
 
 ### When a migration file is created — spawn `migration-validator`
+
+**You do NOT manually verify migrations.** The migration-validator checks revision chain, tests upgrade/downgrade, and verifies model imports.
 
 ```
 Agent(subagent_type: "migration-validator", prompt: "Validate migration at <path>. Schema change: <description>")
 ```
 
-The validator checks revision chain, tests upgrade/downgrade, and verifies model imports. Fix issues before committing.
+Do not commit the migration until the validator reports VALID.
 
 ### When PR merges — the main agent spawns `pr-postprocessor`
 

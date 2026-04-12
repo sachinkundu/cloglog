@@ -93,25 +93,47 @@ Use **absolute paths** when referencing the prompt file. Agents cannot reliably 
 
 Do **not** inline shell variables in prompts. Write the prompt to a file, then reference it.
 
-## Step 4: Launch Agents
+## Step 4: Create Worktrees and Launch Agents
 
 For each task/feature, launch sequentially (not in parallel):
 
-1. **Create a zellij tab** named after the worktree:
-   ```bash
-   zellij action new-tab --name wt-<descriptive-name>
-   ```
+### 4a. Create the git worktree
 
-2. **Launch claude with worktree isolation** in the zellij tab:
-   ```bash
-   zellij action write-chars "claude --dangerously-skip-permissions 'Read /absolute/path/to/AGENT_PROMPT.md and begin.'"
-   sleep 0.3
-   zellij action write 13
-   ```
+```bash
+WORKTREE_NAME="wt-<descriptive-name>"
+WORKTREE_PATH="$(git rev-parse --show-toplevel)/.claude/worktrees/${WORKTREE_NAME}"
+git worktree add -b "${WORKTREE_NAME}" "${WORKTREE_PATH}" HEAD
+```
 
-   The agent runs in its own worktree via Claude Code's native isolation.
+### 4b. Register agent on the board
 
-3. **One agent at a time** with a brief pause between each. Each needs its own tab to be active.
+Call `mcp__cloglog__register_agent` with the worktree name and path. This is done here (not deferred to the agent) so the board reflects the launch immediately.
+
+### 4c. Run project-specific worktree setup
+
+If the project has `.cloglog/on-worktree-create.sh`, run it:
+```bash
+if [[ -x ".cloglog/on-worktree-create.sh" ]]; then
+  WORKTREE_PATH="${WORKTREE_PATH}" WORKTREE_NAME="${WORKTREE_NAME}" .cloglog/on-worktree-create.sh
+fi
+```
+
+### 4d. Write AGENT_PROMPT.md into the worktree
+
+Copy the assembled prompt to `${WORKTREE_PATH}/AGENT_PROMPT.md`.
+
+### 4e. Create zellij tab and launch agent
+
+```bash
+zellij action new-tab --name "${WORKTREE_NAME}" --cwd "${WORKTREE_PATH}"
+zellij action write-chars "claude --dangerously-skip-permissions 'Read ${WORKTREE_PATH}/AGENT_PROMPT.md and begin.'"
+sleep 0.3
+zellij action write 13
+```
+
+### 4f. One agent at a time
+
+Wait briefly between each agent launch. Each needs its own zellij tab.
 
 ## Step 5: Verification
 

@@ -161,35 +161,6 @@ async def test_unregister_one_leaves_other_active(client: AsyncClient) -> None:
     assert hb.status_code == 200
 
 
-async def test_messages_isolated_between_agents(client: AsyncClient) -> None:
-    """A message sent to agent A is not visible to agent B."""
-    pf = await create_project_with_tasks(client, n_tasks=2)
-
-    agent_a = await register_agent(client, pf.api_key)
-    agent_b = await register_agent(client, pf.api_key)
-    headers_a = agent_auth(agent_a.agent_token)
-    headers_b = agent_auth(agent_b.agent_token)
-
-    # Send message to A
-    msg_resp = await client.post(
-        f"/api/v1/agents/{agent_a.worktree_id}/message",
-        json={"message": "hello agent A", "sender": "test"},
-        headers=headers_a,
-    )
-    assert msg_resp.status_code == 202
-
-    # B's heartbeat returns no messages
-    hb_b = await client.post(f"/api/v1/agents/{agent_b.worktree_id}/heartbeat", headers=headers_b)
-    assert hb_b.status_code == 200
-    assert hb_b.json()["pending_messages"] == []
-
-    # A's heartbeat returns the message
-    hb_a = await client.post(f"/api/v1/agents/{agent_a.worktree_id}/heartbeat", headers=headers_a)
-    assert hb_a.status_code == 200
-    assert len(hb_a.json()["pending_messages"]) == 1
-    assert "hello agent A" in hb_a.json()["pending_messages"][0]
-
-
 async def test_concurrent_heartbeats(client: AsyncClient) -> None:
     """Two agents can heartbeat concurrently without conflict."""
     pf = await create_project_with_tasks(client, n_tasks=2)

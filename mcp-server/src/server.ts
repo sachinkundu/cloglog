@@ -9,27 +9,14 @@ export function createServer(client: CloglogClient): McpServer {
   let currentWorktreeId: string | null = null
   let currentProjectId: string | null = null
   let shutdownRequested = false
-  let pendingMessages: string[] = []
   const heartbeat = new HeartbeatTimer(async () => {
     if (currentWorktreeId) {
       const resp = await client.request('POST', `/api/v1/agents/${currentWorktreeId}/heartbeat`) as Record<string, unknown>
       if (resp?.shutdown_requested) {
         shutdownRequested = true
       }
-      // Pick up pending messages from heartbeat response
-      const messages = resp?.pending_messages as string[] | undefined
-      if (messages && messages.length > 0) {
-        pendingMessages.push(...messages)
-      }
     }
   })
-
-  /** Drain pending messages and return them as a suffix for tool responses */
-  function drainMessages(): string {
-    if (pendingMessages.length === 0) return ''
-    const msgs = pendingMessages.splice(0, pendingMessages.length)
-    return '\n\n📨 MESSAGES:\n' + msgs.map(m => `- ${m}`).join('\n')
-  }
 
   const server = new McpServer({
     name: 'cloglog-mcp',
@@ -115,7 +102,6 @@ export function createServer(client: CloglogClient): McpServer {
       if (shutdownRequested) {
         text += '\n\n⚠️ SHUTDOWN REQUESTED: The master agent has requested this worktree to shut down. Finish your current work, generate shutdown artifacts (work-log.md and learnings.md in shutdown-artifacts/), call unregister_agent, and exit.'
       }
-      text += drainMessages()
       return { content: [{ type: 'text' as const, text }] }
     }
   )
@@ -129,7 +115,6 @@ export function createServer(client: CloglogClient): McpServer {
       if (typeof wt !== 'string') return wt
       await handlers.start_task({ worktree_id: wt, task_id })
       let text = `Task ${task_id} started.`
-      text += drainMessages()
       return { content: [{ type: 'text' as const, text }] }
     })
   )
@@ -144,7 +129,6 @@ export function createServer(client: CloglogClient): McpServer {
     async ({ worktree_id, task_id }) => {
       const result = await handlers.assign_task({ worktree_id, task_id })
       let text = JSON.stringify(result, null, 2)
-      text += drainMessages()
       return { content: [{ type: 'text' as const, text }] }
     }
   )
@@ -164,7 +148,6 @@ export function createServer(client: CloglogClient): McpServer {
       if (shutdownRequested) {
         text += '\n\n⚠️ SHUTDOWN REQUESTED: The master agent has requested this worktree to shut down. Finish your current work, generate shutdown artifacts (work-log.md and learnings.md in shutdown-artifacts/), call unregister_agent, and exit.'
       }
-      text += drainMessages()
       return { content: [{ type: 'text' as const, text }] }
     })
   )
@@ -182,7 +165,6 @@ export function createServer(client: CloglogClient): McpServer {
       if (typeof wt !== 'string') return wt
       await handlers.update_task_status({ worktree_id: wt, task_id, status, pr_url })
       let text = `Task ${task_id} moved to ${status}.`
-      text += drainMessages()
       return { content: [{ type: 'text' as const, text }] }
     })
   )
@@ -463,19 +445,6 @@ export function createServer(client: CloglogClient): McpServer {
     async ({ feature_id }) => {
       await handlers.delete_feature({ feature_id })
       return { content: [{ type: 'text' as const, text: `Feature ${feature_id} deleted.` }] }
-    }
-  )
-
-  server.tool(
-    'send_agent_message',
-    'Send a message to another agent by worktree ID. The message is delivered on the target agent\'s next heartbeat (within ~60s) via tool response piggyback.',
-    {
-      worktree_id: z.string().describe('UUID of the target agent worktree'),
-      message: z.string().describe('Message to deliver'),
-    },
-    async ({ worktree_id, message }) => {
-      await handlers.send_agent_message({ worktree_id, message, sender: currentWorktreeId ?? 'main-agent' })
-      return { content: [{ type: 'text' as const, text: `Message queued for delivery to agent ${worktree_id}.` }] }
     }
   )
 

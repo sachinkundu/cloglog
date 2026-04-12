@@ -273,6 +273,22 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 - Each worktree runs on isolated ports and database. Source `scripts/worktree-ports.sh` in demo scripts.
 - Demo scope: feature walkthrough only. Regression testing is handled by E2E tests.
 
+### Agent Messaging (Monitor + File Append)
+- **Agents communicate via inbox files, not the backend API.** Each agent has an inbox at `/tmp/cloglog-inbox-{worktree_id}`.
+- **Receiving:** On registration, start a persistent Monitor on your inbox:
+  ```
+  Monitor("tail -f /tmp/cloglog-inbox-{your_worktree_id}", persistent: true, description: "Agent inbox")
+  ```
+  Messages arrive as Monitor notifications in real-time — no polling needed.
+- **Sending:** To message another agent, append to their inbox file:
+  ```bash
+  echo "[{your_worktree_name}] your message here" >> /tmp/cloglog-inbox-{target_worktree_id}
+  ```
+- **Inbox lifecycle:** Create the file on agent registration (`touch`), clean up on worktree removal (`rm`).
+- **Format:** One message per line, prefixed with `[sender]`.
+- **Why not the backend?** The old `send_agent_message` MCP tool and heartbeat piggyback mechanism were removed. Monitor + file append gives sub-second delivery with zero infrastructure overhead.
+- **Main agent inbox:** The main session should also Monitor its own inbox file so worktree agents can report back (e.g., "PR #N merged").
+
 ### Infrastructure Isolation
 - **Each worktree has its own ports and database.** Created automatically by `create-worktree.sh`.
 - Port assignments are in the worktree's `.env` file. Source `scripts/worktree-ports.sh` for env vars.

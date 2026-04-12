@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid as _uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint, text
+from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.shared.database import Base
@@ -60,21 +60,3 @@ class Session(Base):
     metadata_: Mapped[str] = mapped_column("metadata", Text, default="{}")
 
     worktree: Mapped[Worktree] = relationship(back_populates="sessions")
-
-
-class AgentMessage(Base):
-    """Pending message for delivery to an agent via heartbeat piggyback."""
-
-    __tablename__ = "agent_messages"
-
-    id: Mapped[_uuid.UUID] = mapped_column(
-        primary_key=True, default=_uuid.uuid4, server_default=text("gen_random_uuid()")
-    )
-    worktree_id: Mapped[_uuid.UUID] = mapped_column(ForeignKey("worktrees.id"))
-    message: Mapped[str] = mapped_column(Text)
-    sender: Mapped[str] = mapped_column(String(100), default="system")
-    delivered: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC)
-    )
-    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)

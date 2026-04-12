@@ -657,37 +657,6 @@ class TestAssignTaskAPI:
         # Status should be unchanged (still "assigned" from creation)
         assert tasks[0]["status"] == "assigned"
 
-    async def test_assign_task_sends_notification_message(
-        self, client: AsyncClient, db_session: AsyncSession
-    ) -> None:
-        """Assigning a task queues a message for the target agent."""
-        project = await _create_project_via_api(client)
-        h = _auth(project["api_key"])
-        task_id = await _create_task_via_db(db_session, project["id"])
-
-        reg = await client.post(
-            "/api/v1/agents/register",
-            json={"worktree_path": "/repo/wt-assign-msg", "branch_name": "wt-assign-msg"},
-            headers=h,
-        )
-        wt_id = reg.json()["worktree_id"]
-        agent_token = reg.json()["agent_token"]
-        ah = _agent_auth(agent_token)
-
-        await client.patch(
-            f"/api/v1/agents/{wt_id}/assign-task",
-            json={"task_id": task_id},
-            headers=ah,
-        )
-
-        # Heartbeat should deliver the assignment notification
-        hb = await client.post(f"/api/v1/agents/{wt_id}/heartbeat", headers=ah)
-        assert hb.status_code == 200
-        messages = hb.json()["pending_messages"]
-        assert len(messages) == 1
-        assert "New task assigned" in messages[0]
-        assert "Implement auth" in messages[0]
-
     async def test_assign_task_unknown_worktree(self, client: AsyncClient) -> None:
         fake_id = uuid.uuid4()
         resp = await client.patch(
@@ -965,99 +934,6 @@ class TestHeartbeatTimeoutAPI:
         worktrees = resp.json()
         assert len(worktrees) == 1
         assert worktrees[0]["status"] == "online"
-
-
-class TestAgentMessagingAPI:
-    async def test_send_message_endpoint(self, client: AsyncClient) -> None:
-        project = await _create_project_via_api(client)
-        h = _auth(project["api_key"])
-
-        reg = await client.post(
-            "/api/v1/agents/register",
-            json={"worktree_path": "/repo/wt-msg", "branch_name": "wt-msg"},
-            headers=h,
-        )
-        wt_id = reg.json()["worktree_id"]
-        agent_token = reg.json()["agent_token"]
-        ah = _agent_auth(agent_token)
-
-        resp = await client.post(
-            f"/api/v1/agents/{wt_id}/message",
-            json={"message": "please rebase", "sender": "main-agent"},
-            headers=ah,
-        )
-        assert resp.status_code == 202
-        assert resp.json()["status"] == "queued"
-
-    async def test_send_message_unknown_agent(self, client: AsyncClient) -> None:
-        fake_id = uuid.uuid4()
-        resp = await client.post(
-            f"/api/v1/agents/{fake_id}/message",
-            json={"message": "hello", "sender": "system"},
-        )
-        assert resp.status_code == 404
-
-    async def test_heartbeat_delivers_messages(self, client: AsyncClient) -> None:
-        project = await _create_project_via_api(client)
-        h = _auth(project["api_key"])
-
-        reg = await client.post(
-            "/api/v1/agents/register",
-            json={"worktree_path": "/repo/wt-hb-msg", "branch_name": "wt-hb-msg"},
-            headers=h,
-        )
-        wt_id = reg.json()["worktree_id"]
-        agent_token = reg.json()["agent_token"]
-        ah = _agent_auth(agent_token)
-
-        # Send a message
-        await client.post(
-            f"/api/v1/agents/{wt_id}/message",
-            json={"message": "rebase on main", "sender": "main-agent"},
-            headers=ah,
-        )
-
-        # Heartbeat picks it up
-        resp = await client.post(f"/api/v1/agents/{wt_id}/heartbeat", headers=ah)
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data["pending_messages"]) == 1
-        assert "[main-agent] rebase on main" in data["pending_messages"][0]
-
-    async def test_message_delivery_marks_delivered(self, client: AsyncClient) -> None:
-        project = await _create_project_via_api(client)
-        h = _auth(project["api_key"])
-
-        reg = await client.post(
-            "/api/v1/agents/register",
-            json={"worktree_path": "/repo/wt-del-msg", "branch_name": "wt-del-msg"},
-            headers=h,
-        )
-        wt_id = reg.json()["worktree_id"]
-        agent_token = reg.json()["agent_token"]
-        ah = _agent_auth(agent_token)
-
-        # Send first message and drain via heartbeat
-        await client.post(
-            f"/api/v1/agents/{wt_id}/message",
-            json={"message": "old msg", "sender": "system"},
-            headers=ah,
-        )
-        resp1 = await client.post(f"/api/v1/agents/{wt_id}/heartbeat", headers=ah)
-        assert len(resp1.json()["pending_messages"]) == 1
-
-        # Send a new message
-        await client.post(
-            f"/api/v1/agents/{wt_id}/message",
-            json={"message": "new msg", "sender": "system"},
-            headers=ah,
-        )
-
-        # Second heartbeat should only see the new message
-        resp2 = await client.post(f"/api/v1/agents/{wt_id}/heartbeat", headers=ah)
-        msgs = resp2.json()["pending_messages"]
-        assert len(msgs) == 1
-        assert "new msg" in msgs[0]
 
 
 class TestReportArtifactAPI:

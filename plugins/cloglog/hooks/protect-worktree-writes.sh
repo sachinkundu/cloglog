@@ -49,12 +49,12 @@ CONFIG=$(find_config "$CWD") || exit 0
 
 # --- Look up allowed directories for this worktree scope ---
 # Supports prefix matching: "frontend-auth" matches "frontend" scope
-ALLOWED=$(python3 -c "
-import yaml, sys, json
+ALLOWED=$(CONFIG_PATH="$CONFIG" SCOPE_KEY="$SCOPE_NAME" python3 -c "
+import yaml, sys, json, os
 
-cfg = yaml.safe_load(open('$CONFIG'))
+cfg = yaml.safe_load(open(os.environ['CONFIG_PATH']))
 scopes = cfg.get('worktree_scopes', {})
-scope_name = '$SCOPE_NAME'
+scope_name = os.environ['SCOPE_KEY']
 
 # Exact match first
 if scope_name in scopes:
@@ -80,24 +80,24 @@ fi
 REL_PATH="${FILE_PATH#$CWD/}"
 
 # Check if file is in an allowed directory
-MATCH=$(python3 -c "
-import json, sys
-allowed = json.loads('$ALLOWED')
-rel_path = '$REL_PATH'
+ALLOWED_JSON="$ALLOWED" REL_PATH_VAL="$REL_PATH" python3 -c "
+import json, sys, os
+allowed = json.loads(os.environ['ALLOWED_JSON'])
+rel_path = os.environ['REL_PATH_VAL']
 for pattern in allowed:
     if rel_path.startswith(pattern):
         sys.exit(0)
 sys.exit(1)
-" 2>/dev/null)
+" 2>/dev/null
 
 if [[ $? -eq 0 ]]; then
   exit 0
 fi
 
 # Format allowed dirs for error message
-ALLOWED_DIRS=$(python3 -c "
-import json
-dirs = json.loads('$ALLOWED')
+ALLOWED_DIRS=$(ALLOWED_JSON="$ALLOWED" python3 -c "
+import json, os
+dirs = json.loads(os.environ['ALLOWED_JSON'])
 print(' '.join(dirs))
 " 2>/dev/null)
 

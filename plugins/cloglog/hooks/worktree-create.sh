@@ -1,6 +1,6 @@
 #!/bin/bash
 # WorktreeCreate hook: fires when Claude Code creates a native worktree.
-# Registers agent on the cloglog board and runs project-specific setup.
+# Registers agent on the board and runs project-specific setup.
 
 INPUT=$(cat)
 WORKTREE_PATH=$(echo "$INPUT" | jq -r '.worktree_path // empty')

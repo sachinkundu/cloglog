@@ -109,9 +109,6 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 - **Conflict marker check:** After resolving merge conflicts, run `grep -rn "^<<<<<<" src/ frontend/src/` to catch leftover markers.
 - **`raise ... from None`** in except clauses — ruff B904 requires this for `raise HTTPException` inside `except` blocks.
 
-### Git Identity
-- NEVER push or create PRs as the user. Always use the `github-bot` skill for all GitHub operations.
-
 ### Pydantic Schema Gotcha
 - **When adding a field to an API update call, verify the Pydantic schema includes it.** `model_dump(exclude_unset=True)` silently drops fields not in the schema — the API returns 200 but nothing is saved. No error, no warning. Always grep for the `XUpdate` model and confirm the field exists before assuming the API will persist it.
 
@@ -158,11 +155,7 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 - **Commit or stash all pending changes before creating worktrees.** Worktrees branch off the current HEAD and inherit any uncommitted changes in the working tree. If the main session has pending work (e.g., uncommitted fixes, config changes), agents in new worktrees will see those diffs and mistakenly treat them as their own work. Always `git stash` or commit before running `create-worktree.sh`.
 - **Never commit CONTRACT.yaml.** It's a local reference file copied by `create-worktree.sh`. It is in `.gitignore`.
 - **Task lifecycle in worktrees:** Move tasks through `in_progress → review` using `update_task_status` MCP tool. Before moving to review, add a structured test report via `add_task_note` covering: (1) **Pre-existing tests** — how many existed, were any affected? (2) **Modified tests** — which tests changed and why? (3) **New tests** — what was added, what edge cases covered? (4) **Testing strategy** — why these tests, what risks considered? (5) **Results** — final pass/fail with clear delta (e.g., "3 modified, 1 new, 0 removed"). This is a demo of your testing judgment, not just a pass count.
-- **PR polling — check BOTH comment types and merge state.** Use the `github-bot` skill for the exact commands. Reviewers primarily use inline review comments — always check both inline and issue-style comments.
-  When merged: (1) for spec/plan tasks, call `report_artifact` with the artifact file path (this is enforced by the pipeline guard — downstream tasks cannot start without it), (2) the agent is free to start the next task immediately — a merged PR in review no longer blocks `start_task`, (3) the user moves the task to done on the board at their own pace.
-- **CI failure recovery.** Use the `github-bot` skill for the exact commands. Diagnose from logs, push a fix commit — CI re-triggers automatically.
-- **Auto-move on PR review comments:** When polling detects new review comments on a task in review, the agent MUST call `update_task_status` to move the task back to `in_progress` before addressing the feedback. After pushing fixes, move it back to `review` with the same PR URL.
-- **Reply to every PR comment you address.** Use the `github-bot` skill for reply commands. Do NOT resolve threads — that's the reviewer's decision.
+- **PR polling, CI recovery, and comment replies:** Use the `github-bot` skill — it has the exact commands and the polling loop setup. When merged: (1) for spec/plan tasks, call `report_artifact`, (2) start the next task immediately, (3) the user moves the task to done at their own pace.
 - **Report artifacts after PR merge (enforced by state machine):** When a spec or plan PR merges, call `report_artifact` MCP tool with the repo-relative path to the document file (e.g. `docs/specs/F-1-spec.md`). This is not optional — the pipeline guard blocks downstream tasks (plan/impl) until the predecessor's artifact is attached. The tool also creates a Document record on the feature card automatically. Only spec and plan tasks produce artifacts; impl and standalone tasks do not.
 - **SSE events are live:** The board updates in real-time via SSE. When you change task status, the dashboard reflects it immediately.
 - **Worktree removal:** Use `./scripts/manage-worktrees.sh remove <name>` to remove a single worktree after its PR merges. Use `./scripts/manage-worktrees.sh close <wave-name> <name> [name...]` to close a full wave (generates work log, removes all worktrees, updates main).

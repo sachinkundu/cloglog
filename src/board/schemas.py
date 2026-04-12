@@ -88,6 +88,7 @@ class FeatureUpdate(BaseModel):
     title: str | None = None
     description: str | None = None
     status: str | None = None
+    position: int | None = None
 
 
 class FeatureResponse(BaseModel):

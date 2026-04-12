@@ -286,7 +286,7 @@ class BoardRepository:
             query = query.where(Epic.id == epic_id)
         if exclude_done:
             query = query.where(Task.status != "done")
-        query = query.order_by(Task.position)
+        query = query.order_by(Feature.position, Task.position)
         result = await self._session.execute(query)
         return list(result.unique().scalars().all())
 
@@ -619,6 +619,15 @@ class BoardRepository:
         for feature_id, pos in positions:
             features[feature_id].position = pos
         await self._session.commit()
+
+    async def get_max_task_position(self, feature_id: UUID, status: str) -> int:
+        """Get the maximum position among tasks with a given status in a feature."""
+        result = await self._session.execute(
+            select(func.max(Task.position)).where(
+                Task.feature_id == feature_id, Task.status == status
+            )
+        )
+        return result.scalar_one() or 0
 
     async def reorder_tasks(self, feature_id: UUID, positions: list[tuple[UUID, int]]) -> None:
         """Reorder tasks within a feature by updating their positions."""

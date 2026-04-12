@@ -63,6 +63,18 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/remind-pr-board-update.sh",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }

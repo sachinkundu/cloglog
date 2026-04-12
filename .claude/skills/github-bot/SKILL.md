@@ -79,16 +79,20 @@ The loop runs every 5 minutes. When polling detects new review comments, move th
 
 Always reply to comments you address. Do NOT resolve threads — that's the reviewer's decision.
 
+**Important:** The `/pulls/comments/{id}/replies` endpoint only works for standalone diff comments ("Add single comment"). Review comments created via "Start a Review" return 404 on that endpoint. Use an issue-style comment instead to address all review feedback:
+
 ```bash
 BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
 
-# Reply to an inline review comment
+# Post a summary reply addressing review comments (works for all comment types)
+GH_TOKEN="$BOT_TOKEN" gh api repos/sachinkundu/cloglog/issues/<PR_NUM>/comments \
+  -f body="Addressed review feedback in commit abc123:
+1. **Comment about X** — Fixed by doing Y
+2. **Comment about Z** — Changed to W"
+
+# Reply to a standalone diff comment (only works for non-review comments)
 GH_TOKEN="$BOT_TOKEN" gh api repos/sachinkundu/cloglog/pulls/comments/<COMMENT_ID>/replies \
   -f body="Fixed — changed X to Y in file.py:42"
-
-# Reply to an issue-style comment
-GH_TOKEN="$BOT_TOKEN" gh api repos/sachinkundu/cloglog/issues/<PR_NUM>/comments \
-  -f body="Addressed — ..."
 ```
 
 ### CI Failure Recovery

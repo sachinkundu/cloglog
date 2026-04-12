@@ -20,6 +20,11 @@
             "type": "command",
             "command": ".claude/hooks/protect-worktree-writes.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/block-sensitive-files.sh",
+            "timeout": 5
           }
         ]
       },
@@ -34,6 +39,16 @@
           {
             "type": "command",
             "command": ".claude/hooks/prefer-mcp-over-api.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/log-agent-spawn.sh",
             "timeout": 5
           }
         ]

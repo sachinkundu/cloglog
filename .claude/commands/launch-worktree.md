@@ -2,6 +2,57 @@ Launch worktree agents for one or more tasks. Handles the full lifecycle: clean 
 
 The user may specify tasks by number (T-138), by feature (F-13), or describe what they want. Resolve entity numbers using MCP search or board tools.
 
+## Agent Routing — decide which agents the work needs
+
+Before creating worktrees, analyze the task/feature to determine which agents to spawn. This is NOT a manual decision — the skill examines the work and routes automatically.
+
+### How to analyze
+
+1. Read the task description and feature description
+2. Check which bounded contexts are affected:
+   ```bash
+   # If the task mentions specific contexts or files, check them
+   # Backend contexts: src/board/, src/agent/, src/document/, src/gateway/
+   # Frontend: frontend/src/
+   # MCP server: mcp-server/src/
+   # Migrations: src/alembic/
+   ```
+3. Apply the routing table:
+
+| Signal in task/feature description | Agent(s) to spawn |
+|---|---|
+| New API endpoints, changes to request/response shapes | `ddd-architect` → `ddd-reviewer` → then `worktree-agent` |
+| Backend-only changes (bug fixes, guards, services) | `worktree-agent` only |
+| Frontend-only changes (UI, components, CSS) | `worktree-agent` only |
+| Full-stack (backend + frontend + possibly MCP) | `ddd-architect` → `ddd-reviewer` → multiple `worktree-agent`s (one per context) |
+| Schema/model changes mentioned | `worktree-agent` (will spawn `migration-validator` internally) |
+| Any implementation task | `worktree-agent` spawns `test-writer` and `code-reviewer` internally |
+
+### DDD contract flow (when needed)
+
+If the routing table says `ddd-architect` is needed:
+
+1. **Before creating worktrees**, spawn the architect as a subagent in the current session:
+   ```
+   Agent(subagent_type: "ddd-architect", prompt: "Design the API contract for <feature>. Plan: <plan path>. Write to docs/contracts/<name>.openapi.yaml")
+   ```
+2. When the architect finishes, spawn the reviewer:
+   ```
+   Agent(subagent_type: "ddd-reviewer", prompt: "Review the contract at docs/contracts/<name>.openapi.yaml against <plan path>")
+   ```
+3. If reviewer says REVISION REQUIRED, send feedback back to architect (max 3 rounds)
+4. Once APPROVED, commit the contract and proceed to create worktrees
+5. Copy the contract into each worktree via `create-worktree.sh` (it handles this)
+
+### When contracts are NOT needed
+
+- Bug fixes to existing endpoints (shape doesn't change)
+- Frontend-only work (uses existing API)
+- Backend logic changes that don't affect the API surface (guards, services, queries)
+- Script/infra changes
+
+**Rule:** If in doubt, check the task description for words like "endpoint", "API", "response", "request", "schema". If none appear, skip the contract.
+
 ## Pre-flight checks
 
 Before creating ANY worktree:
@@ -74,9 +125,13 @@ Priority: <priority>
 1. Register: `register_agent` with this worktree path
 2. Start task: `start_task` with the task ID
 3. Run existing tests first to establish baseline
-4. Implement with tests
-5. Create PR, move task to review with PR URL
-6. Poll for comments and merge
+4. Implement the feature
+5. Spawn `test-writer` subagent for your changed files
+6. Run `make quality`
+7. Spawn `code-reviewer` subagent before pushing
+8. Fix any findings, then create PR
+9. Move task to review with PR URL
+10. Poll for comments and merge
 ```
 
 ## Launching in zellij

@@ -1,7 +1,7 @@
 """E2E tests for bulk removal of offline agents.
 
 Covers: the dashboard-facing endpoint that removes all offline
-worktree records for a project, including agents with pending messages.
+worktree records for a project.
 """
 
 from __future__ import annotations
@@ -84,69 +84,6 @@ async def test_bulk_remove_offline_with_db(client: AsyncClient, db_session: Asyn
     assert len(worktrees) == 1
     assert worktrees[0]["id"] == online.worktree_id
     assert worktrees[0]["status"] == "online"
-
-
-async def test_bulk_remove_offline_with_pending_messages(
-    client: AsyncClient, db_session: AsyncSession
-) -> None:
-    """Offline agents with pending messages are removed without FK errors."""
-    pf = await create_project_with_tasks(client, n_tasks=0)
-
-    agent = await register_agent(client, pf.api_key)
-
-    # Send messages to the agent (they stay pending — never drained)
-    for i in range(3):
-        resp = await client.post(
-            f"/api/v1/agents/{agent.worktree_id}/message",
-            json={"message": f"pending-msg-{i}", "sender": "test"},
-        )
-        assert resp.status_code == 202
-
-    # Mark agent offline
-    repo = AgentRepository(db_session)
-    await repo.set_worktree_offline(uuid.UUID(agent.worktree_id))
-
-    # Bulk remove should succeed despite pending messages
-    resp = await client.post(f"/api/v1/projects/{pf.id}/worktrees/remove-offline")
-    assert resp.status_code == 200
-    assert resp.json()["removed_count"] == 1
-
-    # Agent is gone
-    wt_resp = await client.get(f"/api/v1/projects/{pf.id}/worktrees")
-    assert len(wt_resp.json()) == 0
-
-
-async def test_bulk_remove_offline_with_delivered_messages(
-    client: AsyncClient, db_session: AsyncSession
-) -> None:
-    """Offline agents with already-delivered messages are also cleaned up."""
-    pf = await create_project_with_tasks(client, n_tasks=0)
-
-    agent = await register_agent(client, pf.api_key)
-
-    # Send a message
-    await client.post(
-        f"/api/v1/agents/{agent.worktree_id}/message",
-        json={"message": "delivered-msg", "sender": "test"},
-    )
-
-    # Drain it via heartbeat (marks as delivered)
-    from tests.e2e.helpers import agent_auth
-
-    hb = await client.post(
-        f"/api/v1/agents/{agent.worktree_id}/heartbeat",
-        headers=agent_auth(agent.agent_token),
-    )
-    assert hb.status_code == 200
-    assert len(hb.json()["pending_messages"]) == 1
-
-    # Mark offline and remove
-    repo = AgentRepository(db_session)
-    await repo.set_worktree_offline(uuid.UUID(agent.worktree_id))
-
-    resp = await client.post(f"/api/v1/projects/{pf.id}/worktrees/remove-offline")
-    assert resp.status_code == 200
-    assert resp.json()["removed_count"] == 1
 
 
 async def test_bulk_remove_is_project_scoped(client: AsyncClient, db_session: AsyncSession) -> None:

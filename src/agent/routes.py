@@ -18,7 +18,6 @@ from src.agent.schemas import (
     RegisterRequest,
     RegisterResponse,
     ReportArtifactRequest,
-    SendMessageRequest,
     StartTaskRequest,
     StartTaskResponse,
     TaskInfo,
@@ -172,17 +171,6 @@ async def unregister_by_path(
         await service.unregister_by_path(project.id, body.worktree_path, artifacts=artifacts)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
-
-
-@router.post("/agents/{worktree_id}/message", status_code=202)
-async def send_agent_message(
-    worktree_id: UUID, body: SendMessageRequest, service: ServiceDep
-) -> dict[str, str]:
-    try:
-        await service.send_message(worktree_id, body.message, body.sender)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from None
-    return {"status": "queued"}
 
 
 @router.post("/agents/{worktree_id}/unregister", status_code=204)

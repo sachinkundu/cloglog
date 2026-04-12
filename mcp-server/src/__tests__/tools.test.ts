@@ -128,18 +128,6 @@ describe('Tool Handlers', () => {
     )
   })
 
-  it('send_agent_message calls POST /agents/{wt}/message', async () => {
-    await handlers.send_agent_message({
-      worktree_id: 'wt-target',
-      message: 'please rebase on main',
-      sender: 'wt-sender',
-    })
-    expect(client.request).toHaveBeenCalledWith(
-      'POST', '/api/v1/agents/wt-target/message',
-      { message: 'please rebase on main', sender: 'wt-sender' }
-    )
-  })
-
   it('assign_task calls PATCH /agents/{wt}/assign-task', async () => {
     (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
       task_id: 't1',

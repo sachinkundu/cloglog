@@ -104,7 +104,9 @@ async def update_task_status(
     worktree_id: UUID, body: UpdateTaskStatusRequest, service: ServiceDep, agent: CurrentAgent
 ) -> None:
     try:
-        await service.update_task_status(worktree_id, body.task_id, body.status, pr_url=body.pr_url)
+        await service.update_task_status(
+            worktree_id, body.task_id, body.status, pr_url=body.pr_url, skip_pr=body.skip_pr
+        )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None
 

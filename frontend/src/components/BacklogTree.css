@@ -73,6 +73,10 @@
   width: 12px;
 }
 
+.backlog-toggle-empty {
+  cursor: default;
+}
+
 .seg-progress {
   margin-left: auto;
   width: 48px;

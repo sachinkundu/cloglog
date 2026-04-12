@@ -34,12 +34,18 @@ make test-board       # Board context tests only
 make test-agent       # Agent context tests only
 make test-document    # Document context tests only
 make test-gateway     # Gateway context tests only
+make test-e2e         # Backend E2E integration tests (pytest)
+make test-e2e-browser # Playwright browser E2E tests (headless)
 make lint             # Ruff linter
 make typecheck        # mypy type checking
 make run-backend      # Start FastAPI dev server
+make dev              # Start both backend + frontend dev servers
 make db-up            # Start PostgreSQL via Docker Compose
+make db-down          # Stop PostgreSQL
 make db-migrate       # Run Alembic migrations
+make db-revision      # Create new Alembic migration
 make contract-check   # Validate backend matches API contract
+make coverage         # Run tests with coverage report
 ```
 
 ### Frontend
@@ -102,13 +108,10 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 
 ### Testing
 - **Run all tests FIRST, before writing any code.** Establish a green baseline so you know any failures are caused by your changes, not pre-existing issues.
-- **Before adding a dependency, check what's already installed.** Search `package.json` / `pyproject.toml` first. If the dependency is already used elsewhere, check how existing tests handle it — don't add unnecessary mocks or workarounds.
 - **Every PR must include automated tests.** No exceptions. If you write code, you write tests for it.
-- Frontend work requires component tests (@testing-library/react), not just "it renders" smoke tests. Test interactions, conditional rendering, error states.
-- Backend work requires both unit tests (business logic) and integration tests (API endpoints against real DB).
-- PRs without tests will be rejected in review.
+- **Worktree agents: delegate test writing to the `test-writer` subagent.** It carries the codified testing standards (real DB, no mocks, @testing-library/react patterns, coverage requirements). See `.claude/agents/test-writer.md`.
 - **Frontend worktrees need `cd frontend && npm install`** before tests will run — node_modules are not shared across worktrees.
-- **Cross-feature integration tests:** When modifying a component that was recently changed by another feature, write at least one test covering both features together. Check `git log --oneline <file>` to see recent changes. Two features that independently modify the same component can break each other in ways neither feature's tests catch.
+- **Cross-feature integration tests:** When modifying a component that was recently changed by another feature, write at least one test covering both features together. Check `git log --oneline <file>` to see recent changes.
 
 ### PR Quality
 - **PR body structure matters.** The reviewer opens the PR and needs context fast. Use this order:
@@ -125,6 +128,13 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 ### Git Identity
 - NEVER push or create PRs as the user. Always use the bot identity. See "Git Identity & PRs" section above.
 - If you're unsure whether you're pushing as the bot, check `git remote -v` after setting the URL.
+
+### Pydantic Schema Gotcha
+- **When adding a field to an API update call, verify the Pydantic schema includes it.** `model_dump(exclude_unset=True)` silently drops fields not in the schema — the API returns 200 but nothing is saved. No error, no warning. Always grep for the `XUpdate` model and confirm the field exists before assuming the API will persist it.
+
+### Debugging Persistence Bugs
+- **Check the DB before writing code.** For any "X doesn't persist on refresh" bug: (1) check DB state, (2) reproduce the action, (3) check DB again. If unchanged → write path is broken. If changed → read/render path is broken. One query narrows the problem instantly.
+- **Restart Vite for structural changes.** New imports, new components, JSX restructuring — restart the dev server. HMR silently fails on structural changes and the browser keeps running old JavaScript with no visible error.
 
 ### Cross-Context Integration
 - **Router registration:** If your context has `routes.py`, it MUST be registered in `src/gateway/app.py` via `app.include_router()`. If you can't edit `app.py` due to worktree discipline, add a comment at the top of your routes.py noting it needs registration, and mention it in your PR description.
@@ -178,7 +188,7 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
   # Check for review state (CHANGES_REQUESTED, APPROVED, etc.)
   gh api repos/sachinkundu/cloglog/pulls/<PR_NUM>/reviews --jq '.[] | "\(.state) | \(.body[:80])"'
   ```
-  When merged: (1) for spec/plan tasks, call `report_artifact` with the artifact file path (this is enforced by the pipeline guard — downstream tasks cannot start without it), (2) wait for user to move task to done on the board, (3) pick up next task via `get_my_tasks`.
+  When merged: (1) for spec/plan tasks, call `report_artifact` with the artifact file path (this is enforced by the pipeline guard — downstream tasks cannot start without it), (2) the agent is free to start the next task immediately — a merged PR in review no longer blocks `start_task`, (3) the user moves the task to done on the board at their own pace.
 - **CI failure recovery.** When `gh pr checks` shows a failure:
   1. Find the failed run: `RUN_ID=$(gh run list --branch <BRANCH> --workflow ci.yml -L 1 --json databaseId -q '.[0].databaseId')`
   2. Read the logs: `gh run view $RUN_ID --log-failed`
@@ -267,7 +277,7 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 - **Each worktree has its own ports and database.** Created automatically by `create-worktree.sh`.
 - Port assignments are in the worktree's `.env` file. Source `scripts/worktree-ports.sh` for env vars.
 - Database is named `cloglog_<worktree_name>` (hyphens replaced with underscores).
-- **Cleanup is automatic:** `manage-worktrees.sh remove` tears down the database and kills port processes.
+- **Cleanup is automatic:** `manage-worktrees.sh remove` unregisters agents (publishes WORKTREE_OFFLINE), tears down the database, and kills port processes.
 - Never hardcode ports. Always use `$BACKEND_PORT`, `$FRONTEND_PORT` from the env.
 
 ---

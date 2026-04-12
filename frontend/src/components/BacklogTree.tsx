@@ -282,12 +282,16 @@ export function BacklogTree({ backlog, onItemClick, onReorderEpics, onReorderFea
                             <SortableItem key={feature.id} id={feature.id}>
                               <div className="backlog-feature">
                                 <div className="backlog-feature-header">
-                                  <span
-                                    className="backlog-toggle"
-                                    onClick={() => toggleFeature(feature.id)}
-                                  >
-                                    {expandedFeatures.has(feature.id) ? '\u25BC' : '\u25B6'}
-                                  </span>
+                                  {backlogTasks.length > 0 ? (
+                                    <span
+                                      className="backlog-toggle"
+                                      onClick={() => toggleFeature(feature.id)}
+                                    >
+                                      {expandedFeatures.has(feature.id) ? '\u25BC' : '\u25B6'}
+                                    </span>
+                                  ) : (
+                                    <span className="backlog-toggle backlog-toggle-empty" />
+                                  )}
                                   <span
                                     className="backlog-feature-title"
                                     onClick={() => onItemClick('feature', feature.id)}

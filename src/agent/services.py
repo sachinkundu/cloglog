@@ -330,8 +330,9 @@ class AgentService:
         if status == "review" and not pr_url and not task.pr_url and not skip_pr:
             raise ValueError(
                 "Cannot move task to review without a PR URL. "
-                "Provide pr_url parameter with the GitHub PR link, "
-                "or set skip_pr=true for docs/research tasks with no code changes."
+                "Provide pr_url parameter with the GitHub PR link. "
+                "If this task has zero source code changes (no .py/.ts/.tsx/.js files modified), "
+                "set skip_pr=true instead."
             )
 
         # Guard: pr_url must not be reused by another done task in same feature

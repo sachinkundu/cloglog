@@ -159,7 +159,7 @@ export function createServer(client: CloglogClient): McpServer {
       task_id: z.string().describe('UUID of the task'),
       status: z.string().describe('Target status: backlog, in_progress, review, done'),
       pr_url: z.string().optional().describe('GitHub PR URL (REQUIRED when moving to review, unless skip_pr is true)'),
-      skip_pr: z.boolean().optional().describe('Skip PR requirement for docs/research tasks with no code changes'),
+      skip_pr: z.boolean().optional().describe('Skip PR requirement ONLY for tasks with zero source code changes (no .py, .ts, .tsx, .js files modified). Valid for: research, prototypes, documentation-only tasks. Any change to src/, tests/, frontend/src/, or mcp-server/src/ MUST have a PR.'),
     },
     wrapHandler(async ({ task_id, status, pr_url, skip_pr }: { task_id: string; status: string; pr_url?: string; skip_pr?: boolean }) => {
       const wt = requireRegistered()

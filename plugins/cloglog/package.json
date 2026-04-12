@@ -1,0 +1,7 @@
+{
+  "name": "cloglog",
+  "version": "0.1.0",
+  "description": "Agent orchestration workflow for cloglog-managed projects. Board-driven planning pipeline, worktree lifecycle, PR discipline, and multi-agent coordination.",
+  "claude-code-plugin": true,
+  "keywords": ["claude-code", "plugin", "workflow", "agents"]
+}

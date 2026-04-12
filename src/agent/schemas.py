@@ -61,6 +61,7 @@ class UpdateTaskStatusRequest(BaseModel):
     task_id: UUID
     status: str  # review, blocked, etc.
     pr_url: str | None = None
+    skip_pr: bool = False  # Allow review without PR for docs/research tasks
 
 
 class TaskInfo(BaseModel):

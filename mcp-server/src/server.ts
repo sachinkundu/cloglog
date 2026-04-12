@@ -154,16 +154,17 @@ export function createServer(client: CloglogClient): McpServer {
 
   server.tool(
     'update_task_status',
-    'Move task to a specific column. Agents can move to review (pr_url REQUIRED for ALL task types) but CANNOT move to done — only the user can.',
+    'Move task to a specific column. Agents can move to review (pr_url REQUIRED unless skip_pr=true for docs/research tasks) but CANNOT move to done — only the user can.',
     {
       task_id: z.string().describe('UUID of the task'),
       status: z.string().describe('Target status: backlog, in_progress, review, done'),
-      pr_url: z.string().optional().describe('GitHub PR URL (REQUIRED when moving ANY task to review)'),
+      pr_url: z.string().optional().describe('GitHub PR URL (REQUIRED when moving to review, unless skip_pr is true)'),
+      skip_pr: z.boolean().optional().describe('Skip PR requirement ONLY for tasks with zero source code changes (no .py, .ts, .tsx, .js files modified). Valid for: research, prototypes, documentation-only tasks. Any change to src/, tests/, frontend/src/, or mcp-server/src/ MUST have a PR.'),
     },
-    wrapHandler(async ({ task_id, status, pr_url }: { task_id: string; status: string; pr_url?: string }) => {
+    wrapHandler(async ({ task_id, status, pr_url, skip_pr }: { task_id: string; status: string; pr_url?: string; skip_pr?: boolean }) => {
       const wt = requireRegistered()
       if (typeof wt !== 'string') return wt
-      await handlers.update_task_status({ worktree_id: wt, task_id, status, pr_url })
+      await handlers.update_task_status({ worktree_id: wt, task_id, status, pr_url, skip_pr })
       let text = `Task ${task_id} moved to ${status}.`
       return { content: [{ type: 'text' as const, text }] }
     })

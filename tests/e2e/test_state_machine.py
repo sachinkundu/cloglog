@@ -257,6 +257,43 @@ async def test_pr_url_required_for_review(client: AsyncClient) -> None:
     assert resp.status_code == 409, f"Expected 409, got {resp.status_code}: {resp.text}"
 
 
+async def test_skip_pr_allows_review_without_pr_url(client: AsyncClient) -> None:
+    """Moving to review with skip_pr=true succeeds without a PR URL."""
+    pf, agent, task_ids, ah = await _setup_agent_with_assigned_task(client)
+
+    await client.post(
+        f"/api/v1/agents/{agent.worktree_id}/start-task",
+        json={"task_id": task_ids[0]},
+        headers=ah,
+    )
+
+    resp = await client.patch(
+        f"/api/v1/agents/{agent.worktree_id}/task-status",
+        json={"task_id": task_ids[0], "status": "review", "skip_pr": True},
+        headers=ah,
+    )
+    assert resp.status_code == 204, f"Expected 204, got {resp.status_code}: {resp.text}"
+
+
+async def test_skip_pr_still_rejected_without_flag(client: AsyncClient) -> None:
+    """Moving to review without pr_url AND without skip_pr is still rejected."""
+    pf, agent, task_ids, ah = await _setup_agent_with_assigned_task(client)
+
+    await client.post(
+        f"/api/v1/agents/{agent.worktree_id}/start-task",
+        json={"task_id": task_ids[0]},
+        headers=ah,
+    )
+
+    resp = await client.patch(
+        f"/api/v1/agents/{agent.worktree_id}/task-status",
+        json={"task_id": task_ids[0], "status": "review"},
+        headers=ah,
+    )
+    assert resp.status_code == 409
+    assert "skip_pr" in resp.json()["detail"]
+
+
 async def test_pr_url_reuse_blocked_same_feature(client: AsyncClient) -> None:
     """Two tasks in the same feature cannot use the same PR URL."""
     pf, agent, task_ids, ah = await _setup_agent_with_assigned_task(client, n_tasks=2)

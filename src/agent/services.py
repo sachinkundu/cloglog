@@ -302,7 +302,12 @@ class AgentService:
         return {"completed_task_id": task_id, "next_task": next_task}
 
     async def update_task_status(
-        self, worktree_id: UUID, task_id: UUID, status: str, pr_url: str | None = None
+        self,
+        worktree_id: UUID,
+        task_id: UUID,
+        status: str,
+        pr_url: str | None = None,
+        skip_pr: bool = False,
     ) -> None:
         """Update a task's status (e.g. to review, blocked)."""
         # Guard: agents cannot move tasks to done — only user can via board UI
@@ -321,11 +326,13 @@ class AgentService:
         if task is None:
             raise ValueError(f"Task {task_id} not found")
 
-        # Guard: moving to review requires pr_url for ALL task types
-        if status == "review" and not pr_url and not task.pr_url:
+        # Guard: moving to review requires pr_url unless skip_pr is set
+        if status == "review" and not pr_url and not task.pr_url and not skip_pr:
             raise ValueError(
                 "Cannot move task to review without a PR URL. "
-                "Provide pr_url parameter with the GitHub PR link."
+                "Provide pr_url parameter with the GitHub PR link. "
+                "If this task has zero source code changes (no .py/.ts/.tsx/.js files modified), "
+                "set skip_pr=true instead."
             )
 
         # Guard: pr_url must not be reused by another done task in same feature

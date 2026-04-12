@@ -5,7 +5,7 @@ export interface ToolHandlers {
   get_my_tasks(args: { worktree_id: string }): Promise<unknown>
   start_task(args: { worktree_id: string; task_id: string }): Promise<unknown>
   complete_task(args: { worktree_id: string; task_id: string; pr_url?: string }): Promise<unknown>
-  update_task_status(args: { worktree_id: string; task_id: string; status: string; pr_url?: string }): Promise<unknown>
+  update_task_status(args: { worktree_id: string; task_id: string; status: string; pr_url?: string; skip_pr?: boolean }): Promise<unknown>
   add_task_note(args: { worktree_id: string; task_id: string; note: string }): Promise<unknown>
   attach_document(args: {
     entity_type: string; entity_id: string; type: string;
@@ -61,11 +61,12 @@ export function createToolHandlers(client: CloglogClient): ToolHandlers {
       })
     },
 
-    async update_task_status({ worktree_id, task_id, status, pr_url }) {
+    async update_task_status({ worktree_id, task_id, status, pr_url, skip_pr }) {
       return client.request('PATCH', `/api/v1/agents/${worktree_id}/task-status`, {
         task_id,
         status,
         ...(pr_url ? { pr_url } : {}),
+        ...(skip_pr ? { skip_pr } : {}),
       })
     },
 

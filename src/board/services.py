@@ -8,7 +8,13 @@ from uuid import UUID
 
 from src.board.models import Project, Task
 from src.board.repository import BoardRepository
-from src.board.schemas import ImportPlan, SearchResponse, SearchResult
+from src.board.schemas import (
+    ImportPlan,
+    ProjectStatsResponse,
+    SearchResponse,
+    SearchResult,
+    TaskCountsByStatus,
+)
 from src.document.models import Document
 
 EPIC_COLOR_PALETTE = [
@@ -97,6 +103,33 @@ class BoardService:
         await session.commit()
         await session.refresh(doc)
         return doc
+
+    # --- Stats ---
+
+    async def get_project_stats(self, project_id: UUID, agent_count: int) -> ProjectStatsResponse:
+        """Compute aggregate project statistics."""
+        counts = await self._repo.get_task_counts_by_status(project_id)
+        done_features, total_features = await self._repo.get_feature_completion(project_id)
+
+        completion = 0.0
+        if total_features > 0:
+            completion = round((done_features / total_features) * 100, 2)
+
+        task_counts = TaskCountsByStatus(
+            backlog=counts.get("backlog", 0),
+            prioritized=counts.get("prioritized", 0),
+            in_progress=counts.get("in_progress", 0),
+            review=counts.get("review", 0),
+            done=counts.get("done", 0),
+            total=sum(counts.values()),
+        )
+
+        return ProjectStatsResponse(
+            project_id=project_id,
+            task_counts=task_counts,
+            agent_count=agent_count,
+            feature_completion_percentage=completion,
+        )
 
     # --- Status Roll-Up ---
 

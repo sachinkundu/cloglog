@@ -1,13 +1,13 @@
 #!/bin/bash
-# Demo: Search filters — is:open, is:closed, is:archived qualifiers
+# Demo: GET /projects/{id}/stats endpoint
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-echo "# Search Filters Demo"
+echo "# Project Stats Endpoint Demo"
 echo ""
 
-# Start backend from worktree — rename .env temporarily to avoid pydantic issues
+# Start backend from worktree
 cd "$SCRIPT_DIR"
 mv .env .env.bak 2>/dev/null || true
 uv run uvicorn src.gateway.app:create_app --factory --port 18999 --host 127.0.0.1 > /dev/null 2>&1 &
@@ -24,68 +24,63 @@ API="http://127.0.0.1:18999/api/v1"
 DK="X-Dashboard-Key: cloglog-dashboard-dev"
 CT="Content-Type: application/json"
 
-echo "## Setup: project with tasks in backlog, in_progress, done"
+echo "## Setup: project with tasks in various statuses"
 echo ""
-PROJECT=$(curl -sf -X POST "$API/projects" -H "$CT" -H "$DK" -d '{"name": "search-demo-'$RANDOM'"}')
+PROJECT=$(curl -sf -X POST "$API/projects" -H "$CT" -H "$DK" -d '{"name": "stats-demo-'$RANDOM'"}')
 PID=$(echo "$PROJECT" | jq -r '.id')
 
-EPIC=$(curl -sf -X POST "$API/projects/$PID/epics" -H "$CT" -H "$DK" -d '{"title": "Demo Epic"}')
+EPIC=$(curl -sf -X POST "$API/projects/$PID/epics" -H "$CT" -H "$DK" -d '{"title": "Stats Epic"}')
 EID=$(echo "$EPIC" | jq -r '.id')
 
-FEATURE=$(curl -sf -X POST "$API/projects/$PID/epics/$EID/features" -H "$CT" -H "$DK" -d '{"title": "Demo Feature"}')
-FID=$(echo "$FEATURE" | jq -r '.id')
+F1=$(curl -sf -X POST "$API/projects/$PID/epics/$EID/features" -H "$CT" -H "$DK" -d '{"title": "Feature Alpha"}')
+F1ID=$(echo "$F1" | jq -r '.id')
 
-curl -sf -X POST "$API/projects/$PID/features/$FID/tasks" -H "$CT" -H "$DK" -d '{"title": "Agent auth backlog task"}' > /dev/null
+F2=$(curl -sf -X POST "$API/projects/$PID/epics/$EID/features" -H "$CT" -H "$DK" -d '{"title": "Feature Beta"}')
+F2ID=$(echo "$F2" | jq -r '.id')
 
-T2=$(curl -sf -X POST "$API/projects/$PID/features/$FID/tasks" -H "$CT" -H "$DK" -d '{"title": "Agent deploy in progress"}')
-T2ID=$(echo "$T2" | jq -r '.id')
-curl -sf -X PATCH "$API/tasks/$T2ID" -H "$CT" -H "$DK" -d '{"status": "in_progress"}' > /dev/null
+# Create tasks in different statuses
+curl -sf -X POST "$API/projects/$PID/features/$F1ID/tasks" -H "$CT" -H "$DK" -d '{"title": "Backlog task 1"}' > /dev/null
+curl -sf -X POST "$API/projects/$PID/features/$F1ID/tasks" -H "$CT" -H "$DK" -d '{"title": "Backlog task 2"}' > /dev/null
 
-T3=$(curl -sf -X POST "$API/projects/$PID/features/$FID/tasks" -H "$CT" -H "$DK" -d '{"title": "Agent migration done"}')
+T3=$(curl -sf -X POST "$API/projects/$PID/features/$F1ID/tasks" -H "$CT" -H "$DK" -d '{"title": "In-progress task"}')
 T3ID=$(echo "$T3" | jq -r '.id')
-curl -sf -X PATCH "$API/tasks/$T3ID" -H "$CT" -H "$DK" -d '{"status": "done"}' > /dev/null
+curl -sf -X PATCH "$API/tasks/$T3ID" -H "$CT" -H "$DK" -d '{"status": "in_progress"}' > /dev/null
 
-echo "Created 3 tasks: backlog, in_progress, done"
+T4=$(curl -sf -X POST "$API/projects/$PID/features/$F2ID/tasks" -H "$CT" -H "$DK" -d '{"title": "Done task 1"}')
+T4ID=$(echo "$T4" | jq -r '.id')
+curl -sf -X PATCH "$API/tasks/$T4ID" -H "$CT" -H "$DK" -d '{"status": "done"}' > /dev/null
+
+T5=$(curl -sf -X POST "$API/projects/$PID/features/$F2ID/tasks" -H "$CT" -H "$DK" -d '{"title": "Review task"}')
+T5ID=$(echo "$T5" | jq -r '.id')
+curl -sf -X PATCH "$API/tasks/$T5ID" -H "$CT" -H "$DK" -d '{"status": "review"}' > /dev/null
+
+echo "Created 5 tasks: 2 backlog, 1 in_progress, 1 review, 1 done"
+echo "Created 2 features (Feature Beta has all tasks done -> should count as done)"
 echo ""
 
-echo "## 1. Search without filter (returns all 3)"
+echo "## 1. GET /projects/{id}/stats"
 echo '```json'
-curl -sf "$API/projects/$PID/search?q=Agent" -H "$DK" | jq '.results[] | {title, status}'
+curl -sf "$API/projects/$PID/stats" -H "$DK" | jq .
 echo '```'
 echo ""
 
-echo "## 2. is:open filter (backlog + in_progress only)"
+echo "## 2. Stats for nonexistent project (404)"
 echo '```json'
-curl -sf "$API/projects/$PID/search?q=Agent&status_filter=backlog&status_filter=in_progress&status_filter=review" -H "$DK" | jq '.results[] | {title, status}'
+curl -s -w "\nHTTP %{http_code}\n" "$API/projects/00000000-0000-0000-0000-000000000000/stats" -H "$DK" | head -3
 echo '```'
 echo ""
 
-echo "## 3. is:closed filter (done only)"
+echo "## 3. Mark Feature Beta as done and check updated completion"
+echo ""
+curl -sf -X PATCH "$API/features/$F2ID" -H "$CT" -H "$DK" -d '{"status": "done"}' > /dev/null
+echo "Marked Feature Beta as done."
 echo '```json'
-curl -sf "$API/projects/$PID/search?q=Agent&status_filter=done" -H "$DK" | jq '.results[] | {title, status}'
+curl -sf "$API/projects/$PID/stats" -H "$DK" | jq '{feature_completion_percentage, task_counts: {total: .task_counts.total, done: .task_counts.done}}'
 echo '```'
-echo ""
-
-echo "## Frontend qualifier parsing"
-echo ""
-echo '- `is:open agent` → q=agent&status_filter=backlog&status_filter=in_progress&status_filter=review'
-echo '- `is:closed migration` → q=migration&status_filter=done'
-echo '- `is:archived old` → q=old&status_filter=archived'
-echo ""
-echo "Filter pill badge shows next to search input when qualifier is active."
 echo ""
 
 echo "## Test Results"
-echo ""
-echo "### Backend (14 search tests, 4 new)"
 echo '```'
 cd /home/sachin/code/cloglog
-uv run pytest "$SCRIPT_DIR/tests/board/test_routes.py" -v -k search 2>&1 | grep -E "PASSED|FAILED|passed|failed" | tail -20
-echo '```'
-echo ""
-
-echo "### Frontend (33 tests, 12 new)"
-echo '```'
-cd "$SCRIPT_DIR/frontend"
-npx vitest run src/lib/searchQualifiers.test.ts src/hooks/useSearch.test.ts src/components/SearchWidget.test.tsx 2>&1 | tail -8
+uv run pytest "$SCRIPT_DIR/tests/board/test_routes.py" -v -k stats 2>&1 | grep -E "PASSED|FAILED|passed|failed" | tail -20
 echo '```'

@@ -590,6 +590,35 @@ class BoardRepository:
 
         return results, total
 
+    # --- Stats ---
+
+    async def get_task_counts_by_status(self, project_id: UUID) -> dict[str, int]:
+        """Count non-retired tasks grouped by status for a project."""
+        result = await self._session.execute(
+            select(Task.status, func.count())
+            .join(Feature, Task.feature_id == Feature.id)
+            .join(Epic, Feature.epic_id == Epic.id)
+            .where(Epic.project_id == project_id, Task.retired == False)  # noqa: E712
+            .group_by(Task.status)
+        )
+        counts: dict[str, int] = {}
+        for status, count in result.all():
+            counts[status] = count
+        return counts
+
+    async def get_feature_completion(self, project_id: UUID) -> tuple[int, int]:
+        """Return (done_count, total_count) of features for a project."""
+        result = await self._session.execute(
+            select(
+                func.count().filter(Feature.status == "done"),
+                func.count(),
+            )
+            .join(Epic, Feature.epic_id == Epic.id)
+            .where(Epic.project_id == project_id)
+        )
+        row = result.one()
+        return row[0], row[1]
+
     # --- Reorder ---
 
     async def reorder_epics(self, project_id: UUID, positions: list[tuple[UUID, int]]) -> None:

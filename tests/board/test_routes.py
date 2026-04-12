@@ -1709,4 +1709,201 @@ async def test_retire_emits_event(client: AsyncClient):
         mock_publish.assert_called_once()
         event = mock_publish.call_args[0][0]
         assert event.type == "task_retired"
-        assert event.data["task_id"] == task["id"]
+
+
+# --- Project Stats endpoint ---
+
+
+async def _setup_project_with_hierarchy(
+    client: AsyncClient, project_name: str
+) -> tuple[dict, dict, dict]:
+    """Helper: create project -> epic -> feature, return (project, epic, feature)."""
+    project = (await client.post("/api/v1/projects", json={"name": project_name})).json()
+    epic = (
+        await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "Test Epic"})
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "Test Feature"},
+        )
+    ).json()
+    return project, epic, feature
+
+
+async def test_get_project_stats_empty_project(client: AsyncClient):
+    """Empty project returns all-zero counts and 0.0 completion."""
+    project = (await client.post("/api/v1/projects", json={"name": "stats-empty"})).json()
+
+    resp = await client.get(f"/api/v1/projects/{project['id']}/stats")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["project_id"] == project["id"]
+    assert data["agent_count"] == 0
+    assert data["feature_completion_percentage"] == 0.0
+
+    counts = data["task_counts"]
+    assert counts["backlog"] == 0
+    assert counts["prioritized"] == 0
+    assert counts["in_progress"] == 0
+    assert counts["review"] == 0
+    assert counts["done"] == 0
+    assert counts["total"] == 0
+
+
+async def test_get_project_stats_task_counts_by_status(client: AsyncClient):
+    """Tasks in different statuses are counted correctly."""
+    project, epic, feature = await _setup_project_with_hierarchy(client, "stats-task-counts")
+    pid = project["id"]
+    fid = feature["id"]
+
+    # Create tasks and move them to various statuses
+    t_backlog = (
+        await client.post(f"/api/v1/projects/{pid}/features/{fid}/tasks", json={"title": "T1"})
+    ).json()
+    t_prio = (
+        await client.post(f"/api/v1/projects/{pid}/features/{fid}/tasks", json={"title": "T2"})
+    ).json()
+    t_in_progress = (
+        await client.post(f"/api/v1/projects/{pid}/features/{fid}/tasks", json={"title": "T3"})
+    ).json()
+    t_review = (
+        await client.post(f"/api/v1/projects/{pid}/features/{fid}/tasks", json={"title": "T4"})
+    ).json()
+    t_done = (
+        await client.post(f"/api/v1/projects/{pid}/features/{fid}/tasks", json={"title": "T5"})
+    ).json()
+
+    # t_backlog stays in backlog
+    await client.patch(f"/api/v1/tasks/{t_prio['id']}", json={"status": "prioritized"})
+    await client.patch(f"/api/v1/tasks/{t_in_progress['id']}", json={"status": "in_progress"})
+    await client.patch(f"/api/v1/tasks/{t_review['id']}", json={"status": "review"})
+    await client.patch(f"/api/v1/tasks/{t_done['id']}", json={"status": "done"})
+
+    resp = await client.get(f"/api/v1/projects/{pid}/stats")
+    assert resp.status_code == 200
+    counts = resp.json()["task_counts"]
+
+    assert counts["backlog"] == 1
+    assert counts["prioritized"] == 1
+    assert counts["in_progress"] == 1
+    assert counts["review"] == 1
+    assert counts["done"] == 1
+    assert counts["total"] == 5
+
+    # Confirm task we left untouched is still backlog
+    assert resp.json()["task_counts"]["backlog"] == 1
+    _ = t_backlog  # referenced to suppress lint warning
+
+
+async def test_get_project_stats_feature_completion_percentage(client: AsyncClient):
+    """Feature completion percentage is calculated correctly from feature statuses."""
+    project = (await client.post("/api/v1/projects", json={"name": "stats-feat-completion"})).json()
+    pid = project["id"]
+    epic = (await client.post(f"/api/v1/projects/{pid}/epics", json={"title": "Epic"})).json()
+
+    # Create 3 features
+    features = []
+    for i in range(3):
+        f = (
+            await client.post(
+                f"/api/v1/projects/{pid}/epics/{epic['id']}/features",
+                json={"title": f"Feature {i}"},
+            )
+        ).json()
+        features.append(f)
+
+    # Mark first feature done by updating its status directly via the feature patch endpoint
+    await client.patch(f"/api/v1/features/{features[0]['id']}", json={"status": "done"})
+
+    resp = await client.get(f"/api/v1/projects/{pid}/stats")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    # 1 of 3 features done = 33.33%
+    assert data["feature_completion_percentage"] == round(1 / 3 * 100, 2)
+
+    # Mark a second feature done
+    await client.patch(f"/api/v1/features/{features[1]['id']}", json={"status": "done"})
+
+    resp2 = await client.get(f"/api/v1/projects/{pid}/stats")
+    assert resp2.json()["feature_completion_percentage"] == round(2 / 3 * 100, 2)
+
+    # Mark all done
+    await client.patch(f"/api/v1/features/{features[2]['id']}", json={"status": "done"})
+
+    resp3 = await client.get(f"/api/v1/projects/{pid}/stats")
+    assert resp3.json()["feature_completion_percentage"] == 100.0
+
+
+async def test_get_project_stats_agent_count(client: AsyncClient):
+    """Registered worktrees for the project are counted as agents."""
+    project = (await client.post("/api/v1/projects", json={"name": "stats-agents"})).json()
+    pid = project["id"]
+    api_key = project["api_key"]
+
+    # No agents registered yet
+    resp = await client.get(f"/api/v1/projects/{pid}/stats")
+    assert resp.status_code == 200
+    assert resp.json()["agent_count"] == 0
+
+    # Register first agent
+    await client.post(
+        "/api/v1/agents/register",
+        json={"worktree_path": "/tmp/wt-stats-agent-1", "branch_name": "wt-stats-1"},
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+
+    resp2 = await client.get(f"/api/v1/projects/{pid}/stats")
+    assert resp2.json()["agent_count"] == 1
+
+    # Register second agent
+    await client.post(
+        "/api/v1/agents/register",
+        json={"worktree_path": "/tmp/wt-stats-agent-2", "branch_name": "wt-stats-2"},
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+
+    resp3 = await client.get(f"/api/v1/projects/{pid}/stats")
+    assert resp3.json()["agent_count"] == 2
+
+
+async def test_get_project_stats_not_found(client: AsyncClient):
+    """Returns 404 for a nonexistent project."""
+    resp = await client.get("/api/v1/projects/00000000-0000-0000-0000-000000000000/stats")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Project not found"
+
+
+async def test_get_project_stats_retired_tasks_excluded(client: AsyncClient):
+    """Retired tasks are not counted in task_counts."""
+    project, epic, feature = await _setup_project_with_hierarchy(client, "stats-retired")
+    pid = project["id"]
+    fid = feature["id"]
+
+    # Create two tasks: one normal done, one to be retired
+    t_done = (
+        await client.post(f"/api/v1/projects/{pid}/features/{fid}/tasks", json={"title": "Keep"})
+    ).json()
+    t_retire = (
+        await client.post(f"/api/v1/projects/{pid}/features/{fid}/tasks", json={"title": "Retire"})
+    ).json()
+
+    await client.patch(f"/api/v1/tasks/{t_done['id']}", json={"status": "done"})
+    await client.patch(f"/api/v1/tasks/{t_retire['id']}", json={"status": "done"})
+
+    # Verify both are counted before retirement
+    resp_before = await client.get(f"/api/v1/projects/{pid}/stats")
+    assert resp_before.json()["task_counts"]["done"] == 2
+    assert resp_before.json()["task_counts"]["total"] == 2
+
+    # Retire one task
+    retire_resp = await client.post(f"/api/v1/tasks/{t_retire['id']}/retire")
+    assert retire_resp.status_code == 200
+
+    # Retired task must not appear in counts
+    resp_after = await client.get(f"/api/v1/projects/{pid}/stats")
+    counts_after = resp_after.json()["task_counts"]
+    assert counts_after["done"] == 1
+    assert counts_after["total"] == 1

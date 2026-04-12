@@ -310,3 +310,22 @@ class ReorderItem(BaseModel):
 
 class ReorderRequest(BaseModel):
     items: list[ReorderItem]
+
+
+# --- Project Stats ---
+
+
+class TaskCountsByStatus(BaseModel):
+    backlog: int = 0
+    prioritized: int = 0
+    in_progress: int = 0
+    review: int = 0
+    done: int = 0
+    total: int = 0
+
+
+class ProjectStatsResponse(BaseModel):
+    project_id: UUID
+    task_counts: TaskCountsByStatus
+    agent_count: int = 0
+    feature_completion_percentage: float = 0.0

@@ -32,6 +32,7 @@ from src.board.schemas import (
     ImportPlan,
     ProjectCreate,
     ProjectResponse,
+    ProjectStatsResponse,
     ProjectWithKey,
     ReorderRequest,
     SearchResponse,
@@ -81,6 +82,21 @@ async def get_project(project_id: UUID, service: ServiceDep) -> ProjectResponse:
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return ProjectResponse.model_validate(project)
+
+
+@router.get("/projects/{project_id}/stats", response_model=ProjectStatsResponse)
+async def get_project_stats(
+    project_id: UUID,
+    service: ServiceDep,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ProjectStatsResponse:
+    project = await service._repo.get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found") from None
+    agent_repo = AgentRepository(session)
+    worktrees = await agent_repo.get_worktrees_for_project(project_id)
+    agent_count = len(worktrees)
+    return await service.get_project_stats(project_id, agent_count)
 
 
 @router.delete("/projects/{project_id}", status_code=204)

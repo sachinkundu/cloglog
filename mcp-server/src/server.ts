@@ -443,5 +443,33 @@ export function createServer(client: CloglogClient): McpServer {
     }
   )
 
+  // ── Feature dependencies ─────────────────────────────
+
+  server.tool(
+    'add_dependency',
+    'Add a dependency between two features. The feature_id feature will depend on depends_on_id (i.e. depends_on_id must be completed first). Validates both features are in the same project and rejects cycles.',
+    {
+      feature_id: z.string().describe('UUID of the feature that depends on another'),
+      depends_on_id: z.string().describe('UUID of the feature that must be completed first'),
+    },
+    wrapHandler(async ({ feature_id, depends_on_id }: { feature_id: string; depends_on_id: string }) => {
+      await handlers.add_dependency({ feature_id, depends_on_id })
+      return { content: [{ type: 'text' as const, text: `Dependency added: feature ${feature_id} now depends on ${depends_on_id}.` }] }
+    })
+  )
+
+  server.tool(
+    'remove_dependency',
+    'Remove a dependency between two features.',
+    {
+      feature_id: z.string().describe('UUID of the feature'),
+      depends_on_id: z.string().describe('UUID of the dependency to remove'),
+    },
+    wrapHandler(async ({ feature_id, depends_on_id }: { feature_id: string; depends_on_id: string }) => {
+      await handlers.remove_dependency({ feature_id, depends_on_id })
+      return { content: [{ type: 'text' as const, text: `Dependency removed: feature ${feature_id} no longer depends on ${depends_on_id}.` }] }
+    })
+  )
+
   return server
 }

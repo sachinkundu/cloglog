@@ -255,6 +255,56 @@ describe('Tool Handlers', () => {
     )
   })
 
+  it('add_dependency calls POST /features/{id}/dependencies', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({ status: 'created' })
+
+    const result = await handlers.add_dependency({ feature_id: 'feat-1', depends_on_id: 'feat-2' })
+    expect(client.request).toHaveBeenCalledWith(
+      'POST', '/api/v1/features/feat-1/dependencies',
+      { depends_on_id: 'feat-2' }
+    )
+    expect(result).toHaveProperty('status', 'created')
+  })
+
+  it('remove_dependency calls DELETE /features/{id}/dependencies/{depends_on_id}', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true })
+
+    await handlers.remove_dependency({ feature_id: 'feat-1', depends_on_id: 'feat-2' })
+    expect(client.request).toHaveBeenCalledWith(
+      'DELETE', '/api/v1/features/feat-1/dependencies/feat-2'
+    )
+  })
+
+  it('add_dependency propagates API errors (cycle detection)', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('cloglog API error: 400 Adding this dependency would create a cycle')
+    )
+
+    await expect(
+      handlers.add_dependency({ feature_id: 'feat-1', depends_on_id: 'feat-2' })
+    ).rejects.toThrow('cycle')
+  })
+
+  it('add_dependency propagates API errors (duplicate)', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('cloglog API error: 409 Dependency already exists')
+    )
+
+    await expect(
+      handlers.add_dependency({ feature_id: 'feat-1', depends_on_id: 'feat-2' })
+    ).rejects.toThrow('409')
+  })
+
+  it('remove_dependency propagates API errors (not found)', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('cloglog API error: 404 Dependency not found')
+    )
+
+    await expect(
+      handlers.remove_dependency({ feature_id: 'feat-1', depends_on_id: 'feat-2' })
+    ).rejects.toThrow('404')
+  })
+
   it('start_task propagates API errors (guard rejections)', async () => {
     (client.request as ReturnType<typeof vi.fn>).mockRejectedValue(
       new Error('cloglog API error: 409 Cannot start task: agent already has active task(s)')

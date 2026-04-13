@@ -166,6 +166,10 @@ export function createServer(client: CloglogClient): McpServer {
       if (typeof wt !== 'string') return wt
       await handlers.update_task_status({ worktree_id: wt, task_id, status, pr_url, skip_pr })
       let text = `Task ${task_id} moved to ${status}.`
+      if (status === 'review' && pr_url) {
+        const prNum = pr_url.match(/\/pull\/(\d+)/)?.[1] ?? '???'
+        text += `\n\nCRITICAL — You MUST set up a PR polling loop NOW. Without it you will never know when the PR is merged or has review comments. Run:\n\n/loop 5m Check PR #${prNum} for review comments, CI status, and merge state using the github-bot skill. If new comments: move task to in_progress, address feedback, push fix, move back to review. If merged: call report_artifact (for spec/plan tasks), then call get_my_tasks and start the next task.`
+      }
       return { content: [{ type: 'text' as const, text }] }
     })
   )

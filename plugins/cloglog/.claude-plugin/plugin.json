@@ -1,0 +1,16 @@
+{
+  "name": "cloglog",
+  "description": "Agent orchestration workflow for cloglog-managed projects. Board-driven planning pipeline, worktree lifecycle, PR discipline, and multi-agent coordination.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Sachin Kundu"
+  },
+  "license": "MIT",
+  "keywords": [
+    "workflow",
+    "agents",
+    "orchestration",
+    "kanban",
+    "worktree"
+  ]
+}

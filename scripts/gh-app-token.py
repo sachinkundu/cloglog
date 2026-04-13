@@ -35,7 +35,6 @@ r = requests.post(
     f"https://api.github.com/app/installations/{INSTALLATION_ID}/access_tokens",
     headers={"Authorization": f"Bearer {encoded}", "Accept": "application/vnd.github+json"},
     json={
-        "repositories": ["cloglog"],
         "permissions": {"contents": "write", "pull_requests": "write", "issues": "write", "workflows": "write"},
     },
 )

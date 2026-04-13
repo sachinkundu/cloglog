@@ -1,18 +1,32 @@
 ---
 name: github-bot
-description: Use this skill for ALL GitHub operations — pushing code, creating PRs, commenting on PRs, checking PR status, replying to review comments, or any gh CLI / git push command. Every GitHub interaction must go through the bot identity, never the user's personal account. Trigger on any git push, gh pr, gh api, or GitHub-related action.
+description: Use for ALL GitHub operations — pushing code, creating PRs, commenting on PRs, checking PR status, replying to review comments, or any gh CLI / git push command. Every GitHub interaction must go through the bot identity, never the user's personal account.
+user-invocable: true
 ---
 
 # GitHub Bot Identity
 
-Every GitHub operation in this repo must use the GitHub App bot identity. The user cannot merge their own PRs — all work must appear as authored by the bot.
+Every GitHub operation must use the GitHub App bot identity. The user cannot merge their own PRs — all work must appear as authored by the bot.
+
+## Prerequisites
+
+- `scripts/gh-app-token.py` must exist in the project root (or a known location). This script generates a short-lived installation token from the GitHub App's PEM key.
+- The PEM key must be at `~/.agent-vm/credentials/github-app.pem`.
 
 ## Getting a Bot Token
 
-The token script lives in the repo at `scripts/gh-app-token.py`. The PEM key stays outside the repo at `~/.agent-vm/credentials/github-app.pem`. Tokens are valid for ~1 hour.
-
 ```bash
 BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
+```
+
+Tokens are valid for ~1 hour. Always get a fresh one at the start of each operation sequence.
+
+## Detecting the Repository
+
+All commands use dynamic repo detection instead of hardcoded repo names:
+
+```bash
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
 ```
 
 ## Operations
@@ -23,7 +37,8 @@ Every operation below requires `BOT_TOKEN`. Always chain commands in a single sh
 
 ```bash
 BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
-git remote set-url origin "https://x-access-token:${BOT_TOKEN}@github.com/sachinkundu/cloglog.git"
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
+git remote set-url origin "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git"
 git push -u origin HEAD
 GH_TOKEN="$BOT_TOKEN" gh pr create --title "feat: ..." --body "$(cat <<'EOF'
 ## Summary
@@ -37,7 +52,7 @@ EOF
 
 Note: `git push` requires `remote set-url` because the `gh` CLI doesn't support push. All other GitHub operations use `GH_TOKEN="$BOT_TOKEN" gh ...`.
 
-After creating the PR, **immediately update the board** — call `update_task_status` to move the active task to `review` with the PR URL.
+After creating the PR, **immediately update the board** — call `mcp__cloglog__update_task_status` to move the active task to `review` with the PR URL.
 
 ### Check PR Status
 
@@ -45,6 +60,7 @@ Use this when polling for PR review feedback. Check all five sources — merge s
 
 ```bash
 BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
 
 # Merge state
 GH_TOKEN="$BOT_TOKEN" gh pr view <PR_NUM> --json state -q .state
@@ -53,15 +69,15 @@ GH_TOKEN="$BOT_TOKEN" gh pr view <PR_NUM> --json state -q .state
 GH_TOKEN="$BOT_TOKEN" gh pr checks <PR_NUM> --json name,state,conclusion
 
 # Inline review comments (where most feedback lives)
-GH_TOKEN="$BOT_TOKEN" gh api repos/sachinkundu/cloglog/pulls/<PR_NUM>/comments \
+GH_TOKEN="$BOT_TOKEN" gh api repos/${REPO}/pulls/<PR_NUM>/comments \
   --jq '.[] | "\(.id) | \(.path):\(.line) | \(.body[:120])"'
 
 # Issue-style PR comments
-GH_TOKEN="$BOT_TOKEN" gh api repos/sachinkundu/cloglog/issues/<PR_NUM>/comments \
+GH_TOKEN="$BOT_TOKEN" gh api repos/${REPO}/issues/<PR_NUM>/comments \
   --jq '.[] | "\(.id) | \(.body[:120])"'
 
 # Review state (CHANGES_REQUESTED, APPROVED, etc.)
-GH_TOKEN="$BOT_TOKEN" gh api repos/sachinkundu/cloglog/pulls/<PR_NUM>/reviews \
+GH_TOKEN="$BOT_TOKEN" gh api repos/${REPO}/pulls/<PR_NUM>/reviews \
   --jq '.[] | "\(.state) | \(.body[:120])"'
 ```
 
@@ -83,15 +99,16 @@ Always reply to comments you address. Do NOT resolve threads — that's the revi
 
 ```bash
 BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
 
 # Post a summary reply addressing review comments (works for all comment types)
-GH_TOKEN="$BOT_TOKEN" gh api repos/sachinkundu/cloglog/issues/<PR_NUM>/comments \
+GH_TOKEN="$BOT_TOKEN" gh api repos/${REPO}/issues/<PR_NUM>/comments \
   -f body="Addressed review feedback in commit abc123:
 1. **Comment about X** — Fixed by doing Y
 2. **Comment about Z** — Changed to W"
 
 # Reply to a standalone diff comment (only works for non-review comments)
-GH_TOKEN="$BOT_TOKEN" gh api repos/sachinkundu/cloglog/pulls/comments/<COMMENT_ID>/replies \
+GH_TOKEN="$BOT_TOKEN" gh api repos/${REPO}/pulls/comments/<COMMENT_ID>/replies \
   -f body="Fixed — changed X to Y in file.py:42"
 ```
 
@@ -116,3 +133,4 @@ Diagnose from the logs, push a fix commit — CI re-triggers automatically on pu
 2. **Get a fresh token per batch** — tokens last ~1 hour but always get a fresh one at the start of a GitHub operation sequence.
 3. **Check both comment types** — GitHub has inline review comments (`pulls/<N>/comments`) and issue-style comments (`issues/<N>/comments`). Always check both.
 4. **Board update is atomic with PR creation** — creating a PR without updating the board is incomplete.
+5. **Use dynamic repo detection** — never hardcode the repository name. Always use `$REPO` derived from `gh repo view` or `git remote`.

@@ -1,0 +1,14 @@
+project: cloglog
+project_id: 4d9e825a-c911-4110-bcd5-9072d1887813
+backend_url: http://localhost:8000
+quality_command: make quality
+
+worktree_scopes:
+  board: [src/board/, tests/board/, src/alembic/]
+  agent: [src/agent/, tests/agent/, src/alembic/]
+  document: [src/document/, tests/document/, src/alembic/]
+  gateway: [src/gateway/, tests/gateway/, src/shared/]
+  frontend: [frontend/]
+  mcp: [mcp-server/]
+  assign: [src/gateway/, src/board/, tests/gateway/, tests/board/]
+  e2e: [tests/e2e/]

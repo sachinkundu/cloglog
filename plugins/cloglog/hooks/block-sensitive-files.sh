@@ -1,5 +1,5 @@
 #!/bin/bash
-# Block edits to .env files, credentials, secrets, and .mcp.json.
+# PreToolUse hook: block edits to .env files, credentials, secrets, and .mcp.json.
 # These files contain API keys, port assignments, and infra config
 # that should never be modified by agents.
 

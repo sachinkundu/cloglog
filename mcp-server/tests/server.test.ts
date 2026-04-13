@@ -146,6 +146,33 @@ describe('guard error handling', () => {
     expect(result.content[0].text).toContain('PR URL')
   })
 
+  it('update_task_status includes loop instruction when moving to review with pr_url', async () => {
+    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValueOnce({})
+
+    const result = await tools.update_task_status.handler({
+      task_id: 't1', status: 'review',
+      pr_url: 'https://github.com/org/repo/pull/99',
+    })
+    expect(result.isError).toBeFalsy()
+    const text = result.content[0].text
+    expect(text).toContain('moved to review')
+    expect(text).toContain('CRITICAL')
+    expect(text).toContain('/loop 5m')
+    expect(text).toContain('PR #99')
+  })
+
+  it('update_task_status does NOT include loop instruction for non-review status', async () => {
+    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValueOnce({})
+
+    const result = await tools.update_task_status.handler({
+      task_id: 't1', status: 'in_progress',
+    })
+    expect(result.isError).toBeFalsy()
+    const text = result.content[0].text
+    expect(text).toContain('moved to in_progress')
+    expect(text).not.toContain('/loop')
+  })
+
   it('update_task_status returns isError when agent tries done', async () => {
     ;(client.request as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
       new Error('cloglog API error: 409 {"detail":"Agents cannot mark tasks as done"}')

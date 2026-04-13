@@ -1,19 +1,57 @@
 #!/bin/bash
-# SessionEnd hook: calls unregister and generates shutdown artifacts for worktree agents.
-# Only runs if cwd is inside a worktree directory.
-# IMPORTANT: Unregister runs FIRST (most critical), artifacts after.
+# SessionEnd hook: generates shutdown artifacts and unregisters worktree agents.
+# Detects worktree via git (comparing --git-common-dir vs --git-dir).
+# Reads backend_url from .cloglog/config.yaml.
 
 INPUT=$(cat)
 CWD=$(echo "$INPUT" | jq -r '.cwd')
 
-# Fast exit: not a worktree agent
-[[ "$CWD" == *"/.claude/worktrees/"* ]] || exit 0
+# --- Detect if we're in a worktree ---
+GIT_DIR=$(cd "$CWD" && git rev-parse --git-dir 2>/dev/null) || exit 0
+GIT_COMMON=$(cd "$CWD" && git rev-parse --git-common-dir 2>/dev/null) || exit 0
 
-WORKTREE_NAME=$(echo "$CWD" | grep -oP '\.claude/worktrees/\K[^/]+')
+# Normalize to absolute paths for comparison
+GIT_DIR=$(cd "$CWD" && cd "$GIT_DIR" && pwd)
+GIT_COMMON=$(cd "$CWD" && cd "$GIT_COMMON" && pwd)
+
+# If git-dir == git-common-dir, this is the main repo, not a worktree
+[[ "$GIT_DIR" != "$GIT_COMMON" ]] || exit 0
+
+WORKTREE_NAME=$(basename "$CWD")
 ARTIFACTS_DIR="${CWD}/shutdown-artifacts"
 mkdir -p "$ARTIFACTS_DIR"
 
-# --- Resolve API key FIRST (fast) ---
+# --- Find config ---
+find_config() {
+  local dir="$1"
+  while [[ "$dir" != "/" ]]; do
+    if [[ -f "$dir/.cloglog/config.yaml" ]]; then
+      echo "$dir/.cloglog/config.yaml"
+      return 0
+    fi
+    dir=$(dirname "$dir")
+  done
+  local repo_root
+  repo_root=$(cd "$1" && git rev-parse --show-toplevel 2>/dev/null) || return 1
+  if [[ -f "$repo_root/.cloglog/config.yaml" ]]; then
+    echo "$repo_root/.cloglog/config.yaml"
+    return 0
+  fi
+  return 1
+}
+
+CONFIG=$(find_config "$CWD") || true
+
+BACKEND_URL="http://localhost:8000"
+if [[ -n "$CONFIG" ]]; then
+  BACKEND_URL=$(python3 -c "
+import yaml
+cfg = yaml.safe_load(open('$CONFIG'))
+print(cfg.get('backend_url', 'http://localhost:8000'))
+" 2>/dev/null) || BACKEND_URL="http://localhost:8000"
+fi
+
+# --- Resolve API key ---
 API_KEY="${CLOGLOG_API_KEY:-}"
 if [[ -z "$API_KEY" ]]; then
   API_KEY=$(grep CLOGLOG_API_KEY "${CWD}/.env" 2>/dev/null | cut -d= -f2 || true)
@@ -29,7 +67,7 @@ print(d.get('mcpServers',{}).get('cloglog',{}).get('env',{}).get('CLOGLOG_API_KE
   fi
 fi
 
-# --- Generate minimal artifacts (fast file writes only) ---
+# --- Generate shutdown artifacts ---
 {
   echo "# Work Log: ${WORKTREE_NAME}"
   echo ""
@@ -65,9 +103,9 @@ fi
   echo "<!-- Fill in during consolidation -->"
 } > "${ARTIFACTS_DIR}/learnings.md"
 
-# --- Call unregister-by-path (critical path) ---
+# --- Call unregister-by-path ---
 if [[ -n "$API_KEY" ]]; then
-  curl -s --max-time 5 -X POST "http://localhost:8000/api/v1/agents/unregister-by-path" \
+  curl -s --max-time 5 -X POST "${BACKEND_URL}/api/v1/agents/unregister-by-path" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer ${API_KEY}" \
     -d "{

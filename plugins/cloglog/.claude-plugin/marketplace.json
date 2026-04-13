@@ -1,0 +1,14 @@
+{
+  "name": "cloglog-dev",
+  "owner": {
+    "name": "Sachin Kundu"
+  },
+  "plugins": [
+    {
+      "name": "cloglog",
+      "description": "Agent orchestration workflow for cloglog-managed projects.",
+      "version": "0.1.0",
+      "source": "./"
+    }
+  ]
+}

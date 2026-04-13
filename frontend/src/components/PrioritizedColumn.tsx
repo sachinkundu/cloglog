@@ -257,7 +257,7 @@ export function PrioritizedColumn({
             strategy={verticalListSortingStrategy}
           >
             {orderedGroups.map(group => (
-              <SortableFeatureGroup key={group.featureId} group={group} onItemClick={onItemClick}>
+              <SortableFeatureGroup key={group.featureId} group={group} onItemClick={onItemClick} onDeprioritize={() => deprioritizeFeature(group)}>
                 <div className="prioritized-feature">
                   <DndContext
                     sensors={sensors}
@@ -298,9 +298,10 @@ export function PrioritizedColumn({
   )
 }
 
-function SortableFeatureGroup({ group, onItemClick, children }: {
+function SortableFeatureGroup({ group, onItemClick, onDeprioritize, children }: {
   group: FeatureGroup
   onItemClick: (type: 'epic' | 'feature' | 'task', id: string) => void
+  onDeprioritize: () => void
   children: React.ReactNode
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: group.featureId })
@@ -335,6 +336,13 @@ function SortableFeatureGroup({ group, onItemClick, children }: {
           )}
           {group.featureTitle}
         </span>
+        <button
+          className="deprioritize-btn"
+          title="Move back to Backlog"
+          onClick={(e) => { e.stopPropagation(); onDeprioritize() }}
+        >
+          &#x2715;
+        </button>
       </div>
       {children}
     </div>

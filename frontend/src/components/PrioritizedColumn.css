@@ -76,6 +76,30 @@
   cursor: grabbing;
 }
 
+.deprioritize-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted, #666);
+  font-size: 11px;
+  padding: 2px 5px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+  flex-shrink: 0;
+  border-radius: 4px;
+  line-height: 1;
+}
+
+.prioritized-feature-header:hover .deprioritize-btn {
+  opacity: 0.6;
+}
+
+.deprioritize-btn:hover {
+  opacity: 1 !important;
+  color: var(--danger, #ef4444);
+  background: var(--surface, #ffffff08);
+}
+
 .prioritized-tasks-list {
   padding: 0 4px 4px;
 }

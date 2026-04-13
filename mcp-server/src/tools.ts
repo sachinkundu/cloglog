@@ -38,6 +38,8 @@ export interface ToolHandlers {
   delete_feature(args: { feature_id: string }): Promise<unknown>
   update_task(args: { task_id: string; title?: string; description?: string; priority?: string }): Promise<unknown>
   delete_task(args: { task_id: string }): Promise<unknown>
+  add_dependency(args: { feature_id: string; depends_on_id: string }): Promise<unknown>
+  remove_dependency(args: { feature_id: string; depends_on_id: string }): Promise<unknown>
 }
 
 export function createToolHandlers(client: CloglogClient): ToolHandlers {
@@ -193,6 +195,14 @@ export function createToolHandlers(client: CloglogClient): ToolHandlers {
 
     async delete_task({ task_id }) {
       return client.request('DELETE', `/api/v1/tasks/${task_id}`)
+    },
+
+    async add_dependency({ feature_id, depends_on_id }) {
+      return client.request('POST', `/api/v1/features/${feature_id}/dependencies`, { depends_on_id })
+    },
+
+    async remove_dependency({ feature_id, depends_on_id }) {
+      return client.request('DELETE', `/api/v1/features/${feature_id}/dependencies/${depends_on_id}`)
     },
   }
 }

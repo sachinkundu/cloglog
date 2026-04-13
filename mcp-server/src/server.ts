@@ -8,13 +8,9 @@ export function createServer(client: CloglogClient): McpServer {
   const handlers = createToolHandlers(client)
   let currentWorktreeId: string | null = null
   let currentProjectId: string | null = null
-  let shutdownRequested = false
   const heartbeat = new HeartbeatTimer(async () => {
     if (currentWorktreeId) {
-      const resp = await client.request('POST', `/api/v1/agents/${currentWorktreeId}/heartbeat`) as Record<string, unknown>
-      if (resp?.shutdown_requested) {
-        shutdownRequested = true
-      }
+      await client.request('POST', `/api/v1/agents/${currentWorktreeId}/heartbeat`)
     }
   })
 
@@ -98,10 +94,7 @@ export function createServer(client: CloglogClient): McpServer {
       const wt = requireRegistered()
       if (typeof wt !== 'string') return wt
       const result = await handlers.get_my_tasks({ worktree_id: wt })
-      let text = JSON.stringify(result, null, 2)
-      if (shutdownRequested) {
-        text += '\n\n⚠️ SHUTDOWN REQUESTED: The master agent has requested this worktree to shut down. Finish your current work, generate shutdown artifacts (work-log.md and learnings.md in shutdown-artifacts/), call unregister_agent, and exit.'
-      }
+      const text = JSON.stringify(result, null, 2)
       return { content: [{ type: 'text' as const, text }] }
     }
   )
@@ -114,7 +107,7 @@ export function createServer(client: CloglogClient): McpServer {
       const wt = requireRegistered()
       if (typeof wt !== 'string') return wt
       await handlers.start_task({ worktree_id: wt, task_id })
-      let text = `Task ${task_id} started.`
+      const text = `Task ${task_id} started.`
       return { content: [{ type: 'text' as const, text }] }
     })
   )
@@ -128,7 +121,7 @@ export function createServer(client: CloglogClient): McpServer {
     },
     async ({ worktree_id, task_id }) => {
       const result = await handlers.assign_task({ worktree_id, task_id })
-      let text = JSON.stringify(result, null, 2)
+      const text = JSON.stringify(result, null, 2)
       return { content: [{ type: 'text' as const, text }] }
     }
   )
@@ -144,10 +137,7 @@ export function createServer(client: CloglogClient): McpServer {
       const wt = requireRegistered()
       if (typeof wt !== 'string') return wt
       const result = await handlers.complete_task({ worktree_id: wt, task_id, pr_url })
-      let text = JSON.stringify(result, null, 2)
-      if (shutdownRequested) {
-        text += '\n\n⚠️ SHUTDOWN REQUESTED: The master agent has requested this worktree to shut down. Finish your current work, generate shutdown artifacts (work-log.md and learnings.md in shutdown-artifacts/), call unregister_agent, and exit.'
-      }
+      const text = JSON.stringify(result, null, 2)
       return { content: [{ type: 'text' as const, text }] }
     })
   )

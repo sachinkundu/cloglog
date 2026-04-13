@@ -72,6 +72,35 @@ class AgentService:
             "agent_token": agent_token,
         }
 
+    # --- Shutdown ---
+
+    async def request_shutdown(self, worktree_id: UUID) -> None:
+        """Request agent shutdown via inbox file for instant Monitor delivery."""
+        import json
+        from pathlib import Path
+
+        worktree = await self._repo.get_worktree(worktree_id)
+        if worktree is None:
+            raise ValueError(f"Worktree {worktree_id} not found")
+
+        # Write shutdown message to inbox file — Monitor picks this up instantly
+        inbox_path = Path(f"/tmp/cloglog-inbox-{worktree_id}")
+        message = json.dumps(
+            {
+                "type": "shutdown",
+                "message": (
+                    "SHUTDOWN REQUESTED: The master agent has requested this worktree "
+                    "to shut down. Finish your current work, generate shutdown artifacts "
+                    "(work-log.md and learnings.md in shutdown-artifacts/), call "
+                    "unregister_agent, and exit."
+                ),
+            }
+        )
+        inbox_path.write_text(message + "\n")
+
+        # Also set the DB flag as fallback for agents not yet using Monitor
+        await self._repo.request_shutdown(worktree_id)
+
     # --- Heartbeat ---
 
     async def heartbeat(self, worktree_id: UUID) -> dict[str, object]:
@@ -83,13 +112,9 @@ class AgentService:
         updated = await self._repo.update_heartbeat(session.id)
         assert updated is not None
 
-        worktree = await self._repo.get_worktree(worktree_id)
-        shutdown = worktree.shutdown_requested if worktree else False
-
         return {
             "status": "ok",
             "last_heartbeat": updated.last_heartbeat,
-            "shutdown_requested": shutdown,
         }
 
     # --- Task Assignment ---

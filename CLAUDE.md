@@ -4,6 +4,8 @@
 
 cloglog is a multi-project Kanban dashboard for managing autonomous AI coding agents running in agent-vm sandboxes.
 
+**This project uses the cloglog plugin** (`plugins/cloglog/`) for workflow discipline — planning pipeline, PR workflow, agent lifecycle, and worktree management. Generic workflow rules are provided by the plugin. This file contains cloglog-specific instructions.
+
 ## Architecture
 
 DDD bounded contexts — each context owns its own models, services, repository, and routes:
@@ -19,11 +21,11 @@ For the full context map, relationship types, and ubiquitous language glossary, 
 
 ## Worktree Discipline
 
-If you are working in a worktree (`wt-*` branch), you MUST only touch files in your assigned context. The directory mappings are defined in `scripts/create-worktree.sh` — that is the source of truth.
+If you are working in a worktree (`wt-*` branch), you MUST only touch files in your assigned context. The directory mappings are defined in `.cloglog/config.yaml` under `worktree_scopes`.
 
 Do NOT modify files outside your assigned directories. If you need a change in another context, note it and coordinate.
 
-**This is enforced by a Claude Code hook** (`.claude/hooks/protect-worktree-writes.sh`). Writes to files outside your assigned directories will be blocked automatically.
+**This is enforced by the cloglog plugin's `protect-worktree-writes` hook.** Writes to files outside your assigned directories will be blocked automatically.
 
 ## Commands
 
@@ -72,7 +74,7 @@ cd mcp-server && make build  # Build TypeScript
 
 Before completing any task or creating a PR, run `make quality` and verify it passes.
 
-**This is enforced by a Claude Code hook** (`.claude/hooks/quality-gate-before-commit.sh`). Any `git commit`, `git push`, or `gh pr create` will automatically run `make quality` first and block if it fails.
+**This is enforced by the cloglog plugin's `quality-gate` hook.** Any `git commit`, `git push`, or `gh pr create` will automatically run the quality command first and block if it fails.
 
 ## Git Identity & PRs
 
@@ -86,34 +88,25 @@ These are CRITICAL. Every agent, every worktree, every task. No exceptions.
 
 2. **Boy Scout Rule: leave the code better than you found it.** Fix pre-existing problems before adding new code. If you find broken tests, fix them first. If you find inconsistent naming, fix it. If you find a bug in code you're touching, fix it. Never pile new work on top of existing problems.
 
-## Agent Learnings
+## Project-Specific Agent Instructions
 
-Hard-won lessons from previous waves. Every agent in every worktree MUST follow these.
+These instructions are specific to cloglog's architecture and tech stack. They supplement the generic workflow rules provided by the cloglog plugin.
 
-### Testing
-- **Run all tests FIRST, before writing any code.** Establish a green baseline so you know any failures are caused by your changes, not pre-existing issues.
-- **Every PR must include automated tests.** No exceptions. If you write code, you write tests for it.
-- **Worktree agents: delegate test writing to the `test-writer` subagent.** It carries the codified testing standards (real DB, no mocks, @testing-library/react patterns, coverage requirements). See `.claude/agents/test-writer.md`.
+### Spec Phase — DDD Contract Design
+- For features that add or modify API endpoints, spawn the `ddd-architect` agent to design the API contract following DDD principles (aggregate boundaries, ubiquitous language, context boundary respect).
+- Spawn the `ddd-reviewer` agent to review the contract. Allow up to 3 revision rounds.
+- The contract is an OpenAPI YAML file at `docs/contracts/<wave-name>.openapi.yaml`.
+
+### Implementation Phase — Subagents
+- **Spawn `test-writer`** for writing tests. It carries codified testing standards (real DB, no mocks, @testing-library/react patterns, coverage requirements). See `.claude/agents/test-writer.md`.
+- **Spawn `migration-validator`** when touching database models. It validates Alembic migration files (revision chain, upgrade/downgrade, model imports).
 - **Frontend worktrees need `cd frontend && npm install`** before tests will run — node_modules are not shared across worktrees.
-- **Cross-feature integration tests:** When modifying a component that was recently changed by another feature, write at least one test covering both features together. Check `git log --oneline <file>` to see recent changes.
-
-### PR Quality
-- **PR body structure matters.** The reviewer opens the PR and needs context fast. Use this order:
-  1. **Summary** — 1-3 bullets on what and why
-  2. **Demo** — immediately after the summary. Embed the demo output (curl responses, screenshots, state machine transitions) directly in the PR body. The reviewer should see proof the feature works before reading any code. Link to the full `demo.md` if it's long, but inline the highlights.
-  3. **Test Report** — what tests were added, output, coverage delta
-- The demo in the PR body is the most important thing after the summary. It gives the reviewer full context: "this is what the PR does, and here's proof it works." Code review is 10x easier when you already understand what the code is supposed to do.
-- Frontend PRs should include screenshots of the UI inline in the PR body.
-- Run the full quality gate (`make quality`) before pushing. Don't assume it passes.
-- **Proactive rebase:** When other PRs merge to main while yours is open, rebase before the reviewer has to ask.
-- **Conflict marker check:** After resolving merge conflicts, run `grep -rn "^<<<<<<" src/ frontend/src/` to catch leftover markers.
-- **`raise ... from None`** in except clauses — ruff B904 requires this for `raise HTTPException` inside `except` blocks.
 
 ### Pydantic Schema Gotcha
 - **When adding a field to an API update call, verify the Pydantic schema includes it.** `model_dump(exclude_unset=True)` silently drops fields not in the schema — the API returns 200 but nothing is saved. No error, no warning. Always grep for the `XUpdate` model and confirm the field exists before assuming the API will persist it.
 
 ### Debugging Persistence Bugs
-- **Check the DB before writing code.** For any "X doesn't persist on refresh" bug: (1) check DB state, (2) reproduce the action, (3) check DB again. If unchanged → write path is broken. If changed → read/render path is broken. One query narrows the problem instantly.
+- **Check the DB before writing code.** For any "X doesn't persist on refresh" bug: (1) check DB state, (2) reproduce the action, (3) check DB again. If unchanged -> write path is broken. If changed -> read/render path is broken. One query narrows the problem instantly.
 - **Restart Vite for structural changes.** New imports, new components, JSX restructuring — restart the dev server. HMR silently fails on structural changes and the browser keeps running old JavaScript with no visible error.
 
 ### Cross-Context Integration
@@ -123,130 +116,26 @@ Hard-won lessons from previous waves. Every agent in every worktree MUST follow 
 - **Concurrent worktree merges:** When multiple worktrees are active, the last to merge faces conflicts in shared files (`events.py`, `schemas.py`, `types.ts`, `package.json`). Plan for this — rebase frequently and resolve conflicts before requesting review.
 - **Model imports in tests:** All model classes must be imported in `tests/conftest.py` so `Base.metadata.create_all` creates all tables. If you add a new model, verify the import exists.
 
-### Autonomous Agent Behavior
-- **NEVER wait for user input.** Worktree agents are fully autonomous. Make your own design decisions. All communication with the user happens via PR comments on GitHub — never via the terminal.
-- **Never use interactive skills that ask questions.** Do not use the brainstorming skill's question-and-answer flow. Write design specs directly with your own recommendations, create the PR, and let the user review it there.
-- **Decline visual companion offers.** If a skill offers to show mockups in a browser, decline and include diagrams/mockups as text or markdown in the spec instead.
-
-### Planning Before Implementation
-- **Never create implementation tasks without going through the planning pipeline first.** The pipeline is: design spec → implementation plan → then create tasks and execute.
-- Features on the board represent work to be planned, not pre-decomposed task lists. The implementation tasks emerge from the planning process.
-- If you need to note a feature idea, create the feature on the board but leave it empty. The planning pipeline fills in the tasks.
-
-### Execution Workflow (Mandatory)
-- **Always use subagent-driven development** — never ask which execution approach; subagent-driven is always the choice.
-- **Every phase of a feature needs a board task** — not just implementation. The full pipeline creates these tasks under the feature via `create_task` MCP tool:
-  1. **"Write design spec for F-N"** — requires a PR. Move to `review` when spec PR is created, `done` when merged. User reviews the spec.
-  2. **"Write implementation plan for F-N"** — does NOT need a PR. Write the plan to `docs/superpowers/plans/`, commit it, and immediately proceed to implementation. The plan is mechanical — it breaks down the approved spec into steps. No separate approval needed.
-  3. **"Implement F-N"** — requires a PR. Move to `review` when implementation PR is created, `done` when merged. User reviews the code.
-- Only spec and implementation need user review. The implementation plan is an internal artifact the agent writes for itself.
-- For the implementation task, use internal session tasks (TaskCreate/TaskUpdate) to track subagent progress. The board task is the high-level "implementation is done, please review."
-- This is non-negotiable. The board must reflect what is being worked on in real-time.
-
 ### API Contract Enforcement
-- **Every wave must have an API contract** designed before worktrees launch. The contract is an OpenAPI YAML file at `docs/contracts/<wave-name>.openapi.yaml`.
-- The contract is designed by the DDD Architect agent and reviewed by the DDD Reviewer agent during the planning phase. These agents enforce DDD principles: aggregate boundaries, ubiquitous language, context boundary respect, and consumer sufficiency.
 - **Frontend worktrees**: Import API types from `generated-types.ts` (auto-generated from the contract). NEVER hand-write API response types.
 - **Backend worktrees**: Implement endpoints matching the contract exactly. Run `make contract-check` before committing.
 - If you need to change the API shape, STOP and update the contract first — don't work around it.
 - `make quality` validates contract compliance automatically. Your commit will be blocked if your implementation drifts from the contract.
 
-### Worktree Hygiene
-- **Commit or stash all pending changes before creating worktrees.** Worktrees branch off the current HEAD and inherit any uncommitted changes in the working tree. If the main session has pending work (e.g., uncommitted fixes, config changes), agents in new worktrees will see those diffs and mistakenly treat them as their own work. Always `git stash` or commit before running `create-worktree.sh`.
-- **Never commit CONTRACT.yaml.** It's a local reference file copied by `create-worktree.sh`. It is in `.gitignore`.
-- **Task lifecycle in worktrees:** Move tasks through `in_progress → review` using `update_task_status` MCP tool. Before moving to review, add a structured test report via `add_task_note` covering: (1) **Pre-existing tests** — how many existed, were any affected? (2) **Modified tests** — which tests changed and why? (3) **New tests** — what was added, what edge cases covered? (4) **Testing strategy** — why these tests, what risks considered? (5) **Results** — final pass/fail with clear delta (e.g., "3 modified, 1 new, 0 removed"). This is a demo of your testing judgment, not just a pass count.
-- **PR polling, CI recovery, and comment replies:** Use the `github-bot` skill — it has the exact commands and the polling loop setup. When merged: (1) for spec/plan tasks, call `report_artifact`, (2) start the next task immediately, (3) the user moves the task to done at their own pace.
-- **Report artifacts after PR merge (enforced by state machine):** When a spec or plan PR merges, call `report_artifact` MCP tool with the repo-relative path to the document file (e.g. `docs/specs/F-1-spec.md`). This is not optional — the pipeline guard blocks downstream tasks (plan/impl) until the predecessor's artifact is attached. The tool also creates a Document record on the feature card automatically. Only spec and plan tasks produce artifacts; impl and standalone tasks do not.
-- **SSE events are live:** The board updates in real-time via SSE. When you change task status, the dashboard reflects it immediately.
-- **Worktree removal:** Use `./scripts/manage-worktrees.sh remove <name>` to remove a single worktree after its PR merges. Use `./scripts/manage-worktrees.sh close <wave-name> <name> [name...]` to close a full wave (generates work log, removes all worktrees, updates main).
-- **Zellij tab management:** See `docs/zellij-guide.md` for the complete guide. Key rules: always name tabs after the worktree (`wt-*`), close only tabs you created, close by name→TAB_ID lookup via `zellij action list-tabs`, never by index.
-
-### Feature Pipeline Continuity
-- **When launching an agent for a feature (F-*), create ALL three pipeline tasks upfront** and assign them to the agent's worktree. The state machine guards enforce ordering — the agent can't start the plan until the spec is done, can't start impl until the plan is done. But having all tasks assigned means the agent knows its full workload and won't exit prematurely.
-  ```
-  # At launch time, create all three:
-  create_task(feature_id, "Write design spec for F-X", task_type="spec")
-  create_task(feature_id, "Write implementation plan for F-X", task_type="plan")  
-  create_task(feature_id, "Implement F-X", task_type="impl")
-  # Assign all to the worktree via assign_task or start_task
-  ```
-- **Agents must complete the full pipeline**, not just one task. The pipeline is: spec (PR, wait for merge) → plan (no PR, write and proceed) → impl (PR, wait for merge). After the spec PR merges, start the plan task, write the plan, then immediately start the impl task.
-- **After each task's PR merges, call `get_my_tasks`** — if there are more tasks assigned, start the next one. The state machine guards will allow it only if prerequisites are met.
-- **Never exit after just the spec task.** If `get_my_tasks` still returns tasks, you have more work to do.
-
-### Agent Shutdown
-- **Agents deregister themselves.** When the feature pipeline is complete AND `get_my_tasks` returns empty, generate shutdown artifacts and call `unregister-by-path`. Never rely on the master agent or scripts to deregister.
-- **Do NOT exit prematurely.** Check `get_my_tasks` AND verify the feature pipeline is complete before shutting down. If your feature has spec done but no plan or impl, you still have work to do.
-- **Three-tier shutdown:** (1) **Cooperative** — main agent calls `POST /agents/{id}/request-shutdown`, agent sees `shutdown_requested: true` on next heartbeat, finishes current work, generates artifacts, unregisters. (2) **SIGTERM** — if agent doesn't respond within a few minutes, send SIGTERM. SessionEnd hook generates artifacts and calls unregister (best-effort). (3) **Heartbeat timeout** (F-10) — if all else fails, stale sessions are cleaned up after 3 minutes.
-- **SessionEnd hook handles SIGTERM.** If killed externally, the `.claude/hooks/agent-shutdown.sh` hook generates work logs and calls unregister automatically.
-- **Artifact handoff is explicit.** The unregister call includes paths to `shutdown-artifacts/work-log.md` and `shutdown-artifacts/learnings.md`. The `WORKTREE_OFFLINE` event carries these paths for the main agent to consolidate.
-- **Main agent consolidation.** On receiving `WORKTREE_OFFLINE` with artifacts: read the files, copy work log to `docs/superpowers/work-logs/`, merge learnings into CLAUDE.md, commit, then run `./scripts/manage-worktrees.sh remove {name}`.
-
-### Proof-of-Work Demos
-- **Every PR must include a `demo.md` that RUNS what you built, not describes it.** A demo is proof that your code works, not a summary of what you changed.
-- **A demo is NOT:** test output, a list of files changed, a description of what was implemented, or grep of source code. Those belong in the PR description, not the demo.
-- **A demo IS:** executing the actual feature and showing the output. Think "if I were showing this to a colleague, what would I type in the terminal or click in the browser?"
-- **Backend PRs (new endpoints, API changes):** Use Showboat `exec` blocks to curl each new/changed endpoint. Show the request AND the response. Start the backend on your worktree port first.
-  ```bash
-  # Example: demo for a new message endpoint
-  uvx showboat exec demo.md bash 'curl -s -X POST http://localhost:$BACKEND_PORT/api/v1/agents/$WT_ID/message -H "Content-Type: application/json" -H "Authorization: Bearer $API_KEY" -d "{\"message\": \"hello\"}" | jq .'
-  ```
-- **MCP server PRs (new tools):** You cannot test MCP tools in your own session — your MCP server loaded before your changes. Two demo approaches, use BOTH:
-  1. **Curl the backend endpoint** the tool wraps — proves the API works:
-     ```bash
-     uvx showboat exec demo.md bash 'curl -s -X PATCH http://localhost:$BACKEND_PORT/api/v1/agents/$WT_ID/assign-task -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" -d "{\"task_id\": \"$TASK_ID\"}" | jq .'
-     ```
-  2. **Launch a fresh Claude session** in a zellij tab to call the actual MCP tool — proves the tool registration and plumbing work end-to-end:
-     ```bash
-     # Build the MCP server with your changes
-     cd mcp-server && npm run build && cd ..
-     # Open a zellij tab, run a one-shot claude session that loads the new build
-     zellij action new-tab --name "mcp-demo"
-     sleep 1
-     zellij action write-chars "cd $(pwd) && claude --dangerously-skip-permissions -p 'Use ToolSearch to find mcp__cloglog__assign_task. Load it and call it with worktree_id=X task_id=Y. Report the result.' > /tmp/mcp-demo-result.txt 2>&1"
-     sleep 0.5
-     zellij action write 13
-     # Wait for it to finish, then read the result
-     sleep 45
-     cat /tmp/mcp-demo-result.txt
-     # Clean up
-     TAB_ID=$(zellij action list-tabs | awk '$3 == "mcp-demo" {print $1}')
-     zellij action close-tab --tab-id "$TAB_ID"
-     rm -f /tmp/mcp-demo-result.txt
-     ```
-     Include the content of `/tmp/mcp-demo-result.txt` in the demo — it's proof the MCP tool works in a real Claude session.
-- **Frontend PRs (new UI):** Use Rodney (headless Chrome via `uvx rodney`) to take a screenshot of the new/changed UI. Include before AND after if modifying existing UI.
-  ```bash
-  uvx rodney screenshot http://localhost:$FRONTEND_PORT --output docs/demos/my-feature/screenshot.png
-  uvx showboat image demo.md docs/demos/my-feature/screenshot.png
-  ```
-- **State machine / guard PRs:** Show both the happy path (allowed transition) AND the rejection (blocked transition with error message).
-- `make quality` will fail if a PR is missing its demo.
-- Each worktree runs on isolated ports and database. Source `scripts/worktree-ports.sh` in demo scripts.
-- Demo scope: feature walkthrough only. Regression testing is handled by E2E tests.
-
-### Agent Messaging (Monitor + File Append)
-- **Agents communicate via inbox files, not the backend API.** Each agent has an inbox at `/tmp/cloglog-inbox-{worktree_id}`.
-- **Receiving:** On registration, start a persistent Monitor on your inbox:
-  ```
-  Monitor("tail -f /tmp/cloglog-inbox-{your_worktree_id}", persistent: true, description: "Agent inbox")
-  ```
-  Messages arrive as Monitor notifications in real-time — no polling needed.
-- **Sending:** To message another agent, append to their inbox file:
-  ```bash
-  echo "[{your_worktree_name}] your message here" >> /tmp/cloglog-inbox-{target_worktree_id}
-  ```
-- **Inbox lifecycle:** Create the file on agent registration (`touch`), clean up on worktree removal (`rm`).
-- **Format:** One message per line, prefixed with `[sender]`.
-- **Why not the backend?** The old `send_agent_message` MCP tool and heartbeat piggyback mechanism were removed. Monitor + file append gives sub-second delivery with zero infrastructure overhead.
-- **Main agent inbox:** The main session should also Monitor its own inbox file so worktree agents can report back (e.g., "PR #N merged").
+### Ruff Linting
+- **`raise ... from None`** in except clauses — ruff B904 requires this for `raise HTTPException` inside `except` blocks.
 
 ### Infrastructure Isolation
-- **Each worktree has its own ports and database.** Created automatically by `create-worktree.sh`.
+- **Each worktree has its own ports and database.** Created by `.cloglog/on-worktree-create.sh`.
 - Port assignments are in the worktree's `.env` file. Source `scripts/worktree-ports.sh` for env vars.
 - Database is named `cloglog_<worktree_name>` (hyphens replaced with underscores).
-- **Cleanup is automatic:** `manage-worktrees.sh remove` unregisters agents (publishes WORKTREE_OFFLINE), tears down the database, and kills port processes.
 - Never hardcode ports. Always use `$BACKEND_PORT`, `$FRONTEND_PORT` from the env.
+
+### Proof-of-Work Demos (cloglog-specific)
+- **Backend PRs:** Use Showboat `exec` blocks to curl each new/changed endpoint. Start the backend on your worktree port first.
+- **MCP server PRs:** Curl the backend endpoint AND launch a fresh Claude session in a zellij tab to call the actual MCP tool.
+- **Frontend PRs:** Use Rodney (headless Chrome via `uvx rodney`) to take screenshots.
+- Each worktree runs on isolated ports. Source `scripts/worktree-ports.sh` in demo scripts.
 
 ---
 

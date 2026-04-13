@@ -87,7 +87,7 @@ Detect the tech stack and generate the appropriate setup script:
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$1"
+cd "${WORKTREE_PATH:?WORKTREE_PATH must be set}"
 uv sync
 ```
 
@@ -95,7 +95,7 @@ uv sync
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$1"
+cd "${WORKTREE_PATH:?WORKTREE_PATH must be set}"
 npm install
 ```
 
@@ -103,7 +103,7 @@ npm install
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$1"
+cd "${WORKTREE_PATH:?WORKTREE_PATH must be set}"
 cargo build
 ```
 

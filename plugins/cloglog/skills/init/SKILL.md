@@ -163,66 +163,93 @@ This project is managed by the cloglog Kanban dashboard. Follow these rules:
 
 **Idempotency**: Check if the `## Workflow Discipline (cloglog)` section already exists. If so, replace it rather than appending a duplicate.
 
-## Step 6: GitHub Bot Identity Setup
+## Step 6: GitHub & Bot Identity Setup
 
-The cloglog workflow requires all git pushes and PRs to go through a GitHub App bot identity. This prevents agents from pushing as the user's personal account.
+The cloglog workflow requires a GitHub repo and a GitHub App bot identity for all git operations. Check three things in order.
 
-### 6a. Check if the GitHub App is already configured
+### 6a. Check if the project has a GitHub remote
+
+```bash
+git remote get-url origin 2>/dev/null
+```
+
+**If no remote exists**, the code hasn't been pushed to GitHub yet. Guide the user:
+
+> **No GitHub remote found.** Before agents can create PRs, this project needs a GitHub repository.
+>
+> 1. Create a repo on GitHub (or use `gh repo create`)
+> 2. Add the remote: `git remote add origin git@github.com:<owner>/<repo>.git`
+> 3. Push: `git push -u origin main`
+> 4. Run `/cloglog init` again to continue setup.
+
+Record in the summary: `GitHub repo: not configured`. The init can continue for everything else — the bot check will be skipped.
+
+### 6b. Check if the GitHub App bot exists
 
 Look for:
-- `scripts/gh-app-token.py` in the project
 - `~/.agent-vm/credentials/github-app.pem` on disk
+- `scripts/gh-app-token.py` in this project OR in any other project under `~/code/`
 
-If both exist, the bot is ready. Skip to Step 7.
+**If the PEM exists** (bot has been set up before):
 
-### 6b. If not configured, guide the user
+Copy the token script if this project doesn't have it yet:
+```bash
+if [[ ! -f scripts/gh-app-token.py ]]; then
+  OTHER=$(find ~/code -path "*/scripts/gh-app-token.py" -not -path "$(pwd)/*" 2>/dev/null | head -1)
+  if [[ -n "$OTHER" ]]; then
+    mkdir -p scripts
+    cp "$OTHER" scripts/gh-app-token.py
+    chmod +x scripts/gh-app-token.py
+  fi
+fi
+```
 
-Tell the user:
+**If the PEM does not exist** (first-time setup):
 
 > **GitHub Bot Identity Required**
 >
-> The cloglog workflow requires a GitHub App bot for all git operations (push, PR creation, comments). This ensures agent work is attributed to the bot, not your personal account.
+> The cloglog workflow requires a GitHub App bot for all git operations. This ensures agent work is attributed to the bot, not your personal account.
 >
-> **If you already have a GitHub App configured for another cloglog project:**
-> The same bot works across all projects — you just need to grant it access to this repo.
-> 1. Go to your GitHub App settings → Install App → select this repository
-> 2. Copy `scripts/gh-app-token.py` from your existing project (or the plugin will create a symlink)
->
-> **If this is your first cloglog project:**
+> **Setup steps:**
 > 1. Create a GitHub App at https://github.com/settings/apps/new
 >    - Name: something like "cloglog-bot"
 >    - Permissions: Contents (read/write), Pull requests (read/write), Issues (read/write)
 >    - Install it on the repositories you want to manage
-> 2. Generate a private key (PEM) and save it to `~/.agent-vm/credentials/github-app.pem`
-> 3. Note the App ID and Installation ID
+> 2. Generate a private key and save it to `~/.agent-vm/credentials/github-app.pem`
+> 3. Note the App ID and Installation ID — update `scripts/gh-app-token.py` accordingly
 >
 > Run `/cloglog init` again once the bot is set up.
 
-### 6c. Create or link `scripts/gh-app-token.py`
+Record in the summary: `GitHub bot: needs setup`. The init can continue — agents just won't be able to create PRs until this is done.
 
-If the script doesn't exist in this project but exists in another cloglog project, offer to copy or symlink it:
+### 6c. Verify bot has access to THIS repo
 
-```bash
-# Check if it exists elsewhere
-OTHER=$(find ~/code -path "*/scripts/gh-app-token.py" -not -path "$(pwd)/*" 2>/dev/null | head -1)
-if [[ -n "$OTHER" ]]; then
-  mkdir -p scripts
-  cp "$OTHER" scripts/gh-app-token.py
-  chmod +x scripts/gh-app-token.py
-fi
-```
-
-### 6d. Verify bot access to this repo
+Only run this if both the remote and the bot exist:
 
 ```bash
 BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py 2>/dev/null)
 if [[ -n "$BOT_TOKEN" ]]; then
   REPO=$(git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
-  GH_TOKEN="$BOT_TOKEN" gh repo view "$REPO" --json name -q .name 2>/dev/null && echo "Bot has access to this repo" || echo "WARNING: Bot does not have access to this repo. Install the GitHub App on this repository."
+  if GH_TOKEN="$BOT_TOKEN" gh repo view "$REPO" --json name -q .name 2>/dev/null; then
+    echo "Bot has access to this repo"
+  else
+    echo "Bot does NOT have access to this repo"
+  fi
 fi
 ```
 
-If verification fails, warn the user that PRs will fall back to their personal identity until the bot is configured.
+**If the bot does not have access:**
+
+> **GitHub App not installed on this repository.**
+>
+> The bot exists but doesn't have permission for this repo. Fix:
+> 1. Go to https://github.com/settings/installations
+> 2. Click your GitHub App installation → "Configure"
+> 3. Under "Repository access", add this repository
+>
+> This is the only step needed — the bot credentials are already set up.
+
+Record in the summary: `GitHub bot: needs repo access`.
 
 ## Step 7: Add `.cloglog/` to Git
 

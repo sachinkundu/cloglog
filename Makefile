@@ -94,7 +94,7 @@ dev: ## Start everything (db + migrate + backend + frontend)
 	@fuser -k 8000/tcp 2>/dev/null && echo "  Killed old backend on :8000" || true
 	@fuser -k 5173/tcp 2>/dev/null && echo "  Killed old frontend on :5173" || true
 	@echo "  Starting backend + frontend..."
-	@trap 'kill 0' EXIT; \
+	@trap 'kill 0; fuser -k 8000/tcp 2>/dev/null; fuser -k 5173/tcp 2>/dev/null' EXIT INT TERM; \
 		uv run uvicorn src.gateway.app:create_app --factory --host 0.0.0.0 --port 8000 --reload --reload-exclude '.claude/worktrees' & \
 		(cd frontend && npm run dev) & \
 		wait

@@ -35,13 +35,17 @@ Use `mcp__cloglog__get_board` to get all tasks. For each task in `review` or `in
 
 Use `mcp__cloglog__get_board` — the board response includes worktree/agent info on tasks. Look for:
 - Agents with zero active tasks (not done) — should unregister
-- Tasks assigned to a worktree that no longer exists (check with `git worktree list`)
+- Tasks assigned to a worktree that no longer exists
+
+**IMPORTANT:** Only check worktrees that belong to THIS project. Project worktrees live under `$(git rev-parse --show-toplevel)/.claude/worktrees/`. Use `git worktree list --porcelain` and **filter to only entries whose path starts with your project's `.claude/worktrees/` directory**. Ignore worktrees from other tools (claude-squad, vibe-kanban, etc.) or other projects entirely.
 
 ### Check 3: Worktrees vs branches
 
-Run `git worktree list --porcelain` and for each worktree beyond the main one:
+Run `git worktree list --porcelain` and **filter to only worktrees under this project's `.claude/worktrees/` directory**. For each:
 - Check if its branch is fully merged into main: `git branch --merged main | grep <branch>`
 - If merged — can be removed
+
+**Never touch worktrees outside your project's directory.** Other tools manage their own worktrees.
 
 ### Check 4: Stale branches
 
@@ -60,7 +64,7 @@ Format the report with clear sections. Use checkmarks for healthy items and warn
 
 Always fix issues automatically — no separate "fix" step. For each issue found:
 
-- **Stale worktrees**: `git worktree remove --force <path>`, then delete the local branch with `git branch -D <branch>`
+- **Stale worktrees** (only under this project's `.claude/worktrees/`): `git worktree remove --force <path>`, then delete the local branch with `git branch -D <branch>`. Run `.cloglog/on-worktree-destroy.sh` if it exists.
 - **Stale zellij tabs**: find tabs for removed worktrees via `zellij action query-tab-names`, close with `zellij action close-tab`
 - **Stale local branches**: `git branch -d <branch>`
 - **Stale remote branches**: use bot token — `git push origin --delete <branch>`

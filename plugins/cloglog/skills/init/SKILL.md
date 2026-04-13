@@ -163,15 +163,76 @@ This project is managed by the cloglog Kanban dashboard. Follow these rules:
 
 **Idempotency**: Check if the `## Workflow Discipline (cloglog)` section already exists. If so, replace it rather than appending a duplicate.
 
-## Step 6: Add `.cloglog/` to Git
+## Step 6: GitHub Bot Identity Setup
+
+The cloglog workflow requires all git pushes and PRs to go through a GitHub App bot identity. This prevents agents from pushing as the user's personal account.
+
+### 6a. Check if the GitHub App is already configured
+
+Look for:
+- `scripts/gh-app-token.py` in the project
+- `~/.agent-vm/credentials/github-app.pem` on disk
+
+If both exist, the bot is ready. Skip to Step 7.
+
+### 6b. If not configured, guide the user
+
+Tell the user:
+
+> **GitHub Bot Identity Required**
+>
+> The cloglog workflow requires a GitHub App bot for all git operations (push, PR creation, comments). This ensures agent work is attributed to the bot, not your personal account.
+>
+> **If you already have a GitHub App configured for another cloglog project:**
+> The same bot works across all projects — you just need to grant it access to this repo.
+> 1. Go to your GitHub App settings → Install App → select this repository
+> 2. Copy `scripts/gh-app-token.py` from your existing project (or the plugin will create a symlink)
+>
+> **If this is your first cloglog project:**
+> 1. Create a GitHub App at https://github.com/settings/apps/new
+>    - Name: something like "cloglog-bot"
+>    - Permissions: Contents (read/write), Pull requests (read/write), Issues (read/write)
+>    - Install it on the repositories you want to manage
+> 2. Generate a private key (PEM) and save it to `~/.agent-vm/credentials/github-app.pem`
+> 3. Note the App ID and Installation ID
+>
+> Run `/cloglog init` again once the bot is set up.
+
+### 6c. Create or link `scripts/gh-app-token.py`
+
+If the script doesn't exist in this project but exists in another cloglog project, offer to copy or symlink it:
+
+```bash
+# Check if it exists elsewhere
+OTHER=$(find ~/code -path "*/scripts/gh-app-token.py" -not -path "$(pwd)/*" 2>/dev/null | head -1)
+if [[ -n "$OTHER" ]]; then
+  mkdir -p scripts
+  cp "$OTHER" scripts/gh-app-token.py
+  chmod +x scripts/gh-app-token.py
+fi
+```
+
+### 6d. Verify bot access to this repo
+
+```bash
+BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py 2>/dev/null)
+if [[ -n "$BOT_TOKEN" ]]; then
+  REPO=$(git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
+  GH_TOKEN="$BOT_TOKEN" gh repo view "$REPO" --json name -q .name 2>/dev/null && echo "Bot has access to this repo" || echo "WARNING: Bot does not have access to this repo. Install the GitHub App on this repository."
+fi
+```
+
+If verification fails, warn the user that PRs will fall back to their personal identity until the bot is configured.
+
+## Step 7: Add `.cloglog/` to Git
 
 ```bash
 git add .cloglog/
 ```
 
-If CLAUDE.md was modified, add that too. Do not commit automatically — let the user decide when to commit.
+If CLAUDE.md was modified, add that too. If `scripts/gh-app-token.py` was created, add that too. Do not commit automatically — let the user decide when to commit.
 
-## Step 7: Summary
+## Step 8: Summary
 
 Present what was configured:
 
@@ -183,8 +244,13 @@ Present what was configured:
 | Config location | `.cloglog/config.yaml` |
 | MCP configured | yes/no (+ instructions if manual setup needed) |
 | CLAUDE.md | updated/created |
+| GitHub bot | configured/needs setup |
 
 Remind the user to:
 1. Set their `CLOGLOG_API_KEY` in `.claude/settings.json` (if not already set)
-2. Run `git commit` to save the configuration
-3. Start the cloglog backend if not running
+2. **Set up the GitHub bot** if not yet configured (see Step 6 output)
+3. Run `git commit` to save the configuration
+4. Start the cloglog backend if not running
+
+**If the GitHub bot is not configured**, warn prominently:
+> **WARNING: GitHub bot is not configured.** Without it, agent PRs and pushes will use your personal GitHub identity. Follow the setup instructions above before launching agents.

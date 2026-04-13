@@ -151,11 +151,16 @@ async def report_artifact(
 
 @router.post("/agents/{worktree_id}/request-shutdown", status_code=200)
 async def request_shutdown(worktree_id: UUID, service: ServiceDep) -> dict[str, bool]:
-    """Request a worktree agent to shut down gracefully."""
+    """Request a worktree agent to shut down gracefully.
+
+    Writes a shutdown message to the agent's inbox file for instant
+    Monitor-based delivery (sub-second latency), replacing the old
+    heartbeat polling approach.
+    """
     worktree = await service._repo.get_worktree(worktree_id)
     if worktree is None:
         raise HTTPException(status_code=404, detail="Worktree not found")
-    await service._repo.request_shutdown(worktree_id)
+    await service.request_shutdown(worktree_id)
     return {"shutdown_requested": True}
 
 

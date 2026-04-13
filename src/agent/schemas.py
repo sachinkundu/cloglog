@@ -32,7 +32,6 @@ class RegisterResponse(BaseModel):
 class HeartbeatResponse(BaseModel):
     status: str
     last_heartbeat: datetime
-    shutdown_requested: bool = False
 
 
 # --- Task lifecycle ---

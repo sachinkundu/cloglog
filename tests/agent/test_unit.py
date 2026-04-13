@@ -931,3 +931,76 @@ class TestRemoveOfflineAgents:
 
         count = await service.remove_offline_agents(project.id)
         assert count == 0
+
+
+class TestRequestShutdown:
+    async def test_request_shutdown_writes_inbox_file(self, db_session: AsyncSession) -> None:
+        """request_shutdown writes a JSON shutdown message to the inbox file."""
+        import json
+        from pathlib import Path
+
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+        service = AgentService(repo, BoardRepository(db_session))
+
+        reg = await service.register(project.id, "/repo/wt-shutdown", "wt-shutdown")
+        wt_id = reg["worktree_id"]
+
+        await service.request_shutdown(wt_id)
+
+        inbox_path = Path(f"/tmp/cloglog-inbox-{wt_id}")
+        assert inbox_path.exists()
+
+        content = inbox_path.read_text().strip()
+        message = json.loads(content)
+        assert message["type"] == "shutdown"
+        assert "shut down" in message["message"].lower()
+
+        # Cleanup
+        inbox_path.unlink()
+
+    async def test_request_shutdown_sets_db_flag(self, db_session: AsyncSession) -> None:
+        """request_shutdown also sets the shutdown_requested DB flag as fallback."""
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+        service = AgentService(repo, BoardRepository(db_session))
+
+        reg = await service.register(project.id, "/repo/wt-shutdown2", "wt-shutdown2")
+        wt_id = reg["worktree_id"]
+
+        await service.request_shutdown(wt_id)
+
+        worktree = await repo.get_worktree(wt_id)
+        assert worktree is not None
+        assert worktree.shutdown_requested is True
+
+        # Cleanup inbox file
+        from pathlib import Path
+
+        Path(f"/tmp/cloglog-inbox-{wt_id}").unlink(missing_ok=True)
+
+    async def test_request_shutdown_rejects_unknown_worktree(
+        self, db_session: AsyncSession
+    ) -> None:
+        """request_shutdown raises ValueError for unknown worktree."""
+        await _create_project(db_session)
+        repo = AgentRepository(db_session)
+        service = AgentService(repo, BoardRepository(db_session))
+
+        with pytest.raises(ValueError, match="not found"):
+            await service.request_shutdown(uuid.uuid4())
+
+    async def test_heartbeat_no_longer_returns_shutdown_flag(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Heartbeat response no longer includes shutdown_requested."""
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+        service = AgentService(repo, BoardRepository(db_session))
+
+        reg = await service.register(project.id, "/repo/wt-hb-shutdown", "wt-hb-shutdown")
+        wt_id = reg["worktree_id"]
+
+        result = await service.heartbeat(wt_id)
+        assert "shutdown_requested" not in result
+        assert result["status"] == "ok"

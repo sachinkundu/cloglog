@@ -35,6 +35,26 @@ Every operation below requires `BOT_TOKEN`. Always chain commands in a single sh
 
 ### Push + Create PR
 
+#### Pre-PR File Audit (mandatory)
+
+Before staging and committing, review every changed file to ensure it belongs in this PR. Do NOT blindly `git add .` or `git add -A`.
+
+1. Run `git diff --name-only` (unstaged) and `git diff --name-only --cached` (staged) to see all changed files.
+2. For each file, ask: **"Did I intentionally modify this file as part of this task?"**
+3. Files that are **not related to the task** — e.g., skills, configs, migrations, or code in other bounded contexts that you didn't touch — must be excluded. These are likely dirty state inherited from the worktree creation.
+4. Only `git add` the files that are genuinely part of your work. Use explicit file paths, never `git add .` or `git add -A`.
+5. If you find unrelated changes that are already committed on this branch (inherited from a dirty worktree), you must `git checkout main -- <file>` to revert those files before creating the PR.
+
+**Red flags** — files that almost certainly don't belong:
+- Plugin skills (`plugins/*/skills/*/SKILL.md`) unless your task is about skills
+- CLAUDE.md or memory files unless your task is about project config
+- Files in a different DDD bounded context than your task's scope
+- Lock files, `.env` files, or generated files you didn't intentionally regenerate
+
+If in doubt about a file, leave it out. A missing file is easy to add in a follow-up commit; an unrelated file in a PR creates noise and confusion.
+
+#### Push and Create
+
 ```bash
 BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
@@ -52,7 +72,15 @@ EOF
 
 Note: `git push` requires `remote set-url` because the `gh` CLI doesn't support push. All other GitHub operations use `GH_TOKEN="$BOT_TOKEN" gh ...`.
 
-After creating the PR, **immediately update the board** — call `mcp__cloglog__update_task_status` to move the active task to `review` with the PR URL.
+After creating the PR, do these two things in order — both are mandatory, never skip either:
+
+1. **Update the board** — call `mcp__cloglog__update_task_status` to move the active task to `review` with the PR URL.
+2. **Start the polling loop** — set up the loop so you catch review comments and merge:
+```
+/loop 5m Check PR #<NUM> for review comments, CI status, and merge state using the github-bot skill. If new comments: move task to in_progress, address feedback, push fix, move back to review. If merged: call report_artifact (for spec/plan tasks), then start next task.
+```
+
+These two steps are the **last thing you do** after creating a PR. Do not proceed to other work — the loop handles what comes next.
 
 ### Check PR Status
 
@@ -133,4 +161,6 @@ Diagnose from the logs, push a fix commit — CI re-triggers automatically on pu
 2. **Get a fresh token per batch** — tokens last ~1 hour but always get a fresh one at the start of a GitHub operation sequence.
 3. **Check both comment types** — GitHub has inline review comments (`pulls/<N>/comments`) and issue-style comments (`issues/<N>/comments`). Always check both.
 4. **Board update is atomic with PR creation** — creating a PR without updating the board is incomplete.
-5. **Use dynamic repo detection** — never hardcode the repository name. Always use `$REPO` derived from `gh repo view` or `git remote`.
+5. **Polling loop is atomic with PR creation** — creating a PR without starting `/loop` means you'll never see review comments or detect merge. Board update + loop setup are both mandatory after every PR.
+6. **Use dynamic repo detection** — never hardcode the repository name. Always use `$REPO` derived from `gh repo view` or `git remote`.
+7. **Never `git add .` or `git add -A`** — always stage files explicitly by path. Review every changed file against the task scope before staging. Unrelated files in a PR are a review burden and a sign of sloppy worktree hygiene.

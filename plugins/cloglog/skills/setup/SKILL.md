@@ -1,0 +1,81 @@
+---
+name: setup
+description: Register main agent with the board and start inbox monitor. Run this at the start of every session. Also handles inbox queries — "which monitor are you watching", "what monitor is running", "what inbox do you have", "what are the current messages in inbox", "show inbox", "read inbox".
+user-invocable: true
+---
+
+# Main Agent Setup & Inbox Operations
+
+This skill handles two things:
+1. **Session setup** — register and start the inbox monitor (run at session start)
+2. **Inbox queries** — answer questions about the monitor and inbox contents (run anytime)
+
+## Detecting intent
+
+- If the user is starting a session or explicitly says `/cloglog setup` → run **Setup Steps** below.
+- If the user asks about what monitor is running, which inbox you're watching, or monitor status → run **Monitor Status** below.
+- If the user asks to see inbox contents, read messages, or show what's in the inbox → run **Read Inbox** below.
+
+---
+
+## Setup Steps
+
+Execute these in order. Do not respond to the user until all steps are complete.
+
+### 1. Register with the board
+
+```
+mcp__cloglog__register_agent(worktree_path: "<current working directory>")
+```
+
+Save the returned `worktree_id` — you'll need it for agent operations.
+
+### 2. Start inbox monitor
+
+The inbox file is at `<current working directory>/.cloglog/inbox`. Start a persistent monitor:
+
+```
+Monitor(
+  command: "tail -f <current working directory>/.cloglog/inbox",
+  description: "Main agent inbox — messages from worktree agents",
+  persistent: true
+)
+```
+
+### 3. Confirm
+
+Tell the user:
+- Registered as worktree `<worktree_id>`
+- Monitoring inbox at `<path>/.cloglog/inbox`
+- Ready to supervise worktree agents
+
+---
+
+## Monitor Status
+
+When the user asks "which monitor are you watching", "what monitor is running", "what inbox do you have", or similar:
+
+1. Use `TaskList` to find running Monitor tasks.
+2. Report for each monitor:
+   - Description
+   - Command being run
+   - Task ID
+   - Whether it's persistent
+   - Status (running/stopped)
+3. If no monitors are running, say so and offer to start one with the setup steps above.
+
+---
+
+## Read Inbox
+
+When the user asks "what are the current messages in inbox", "show inbox", "read inbox", or similar:
+
+1. Use the `Read` tool to read `<current working directory>/.cloglog/inbox`.
+2. If the file is empty or doesn't exist, tell the user the inbox is empty — no messages received.
+3. If there are messages, display them formatted clearly with timestamps if present.
+
+---
+
+## Context
+
+You are the supervisor. Worktree agents write to your inbox when they need help (MCP failures, environment issues, questions). When you receive an inbox notification, diagnose the problem and respond by writing to the agent's inbox or sending a message via MCP.

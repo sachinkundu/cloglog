@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     heartbeat_timeout_seconds: int = 180  # 3 minutes
     dashboard_secret: str = "cloglog-dashboard-dev"
     mcp_service_key: str = "cloglog-mcp-dev"
+    github_webhook_secret: str = ""
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

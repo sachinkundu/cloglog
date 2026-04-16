@@ -1,0 +1,32 @@
+{
+  "action": "completed",
+  "check_run": {
+    "id": 98765432,
+    "name": "quality",
+    "status": "completed",
+    "conclusion": "failure",
+    "output": {
+      "title": "Quality gate failed",
+      "summary": "2 lint errors, 1 type error"
+    },
+    "pull_requests": [
+      {
+        "number": 42,
+        "head": {
+          "ref": "wt-webhook-infra",
+          "sha": "def456ghi789"
+        },
+        "base": {
+          "ref": "main",
+          "sha": "789ghi012jkl"
+        }
+      }
+    ]
+  },
+  "repository": {
+    "full_name": "sachinkundu/cloglog"
+  },
+  "sender": {
+    "login": "github-actions[bot]"
+  }
+}

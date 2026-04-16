@@ -1,0 +1,25 @@
+{
+  "action": "closed",
+  "number": 43,
+  "pull_request": {
+    "number": 43,
+    "html_url": "https://github.com/sachinkundu/cloglog/pull/43",
+    "state": "closed",
+    "title": "feat: abandoned feature branch",
+    "merged": false,
+    "head": {
+      "ref": "wt-abandoned-feature",
+      "sha": "aaa111bbb222"
+    },
+    "base": {
+      "ref": "main",
+      "sha": "789ghi012jkl"
+    }
+  },
+  "repository": {
+    "full_name": "sachinkundu/cloglog"
+  },
+  "sender": {
+    "login": "sachinkundu"
+  }
+}

@@ -19,6 +19,11 @@ from starlette.responses import Response
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from src.gateway.notification_listener import run_notification_listener
+    from src.gateway.webhook_consumers import AgentNotifierConsumer
+    from src.gateway.webhook_dispatcher import webhook_dispatcher
+
+    # Register webhook consumers
+    webhook_dispatcher.register(AgentNotifierConsumer())
 
     task = asyncio.create_task(run_notification_listener())
     yield

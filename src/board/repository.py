@@ -467,6 +467,30 @@ class BoardRepository:
         )
         return result.scalars().first()
 
+    # --- PR Lookup ---
+
+    async def find_task_by_pr_url(self, pr_url: str) -> Task | None:
+        """Find a task by its PR URL. Returns the most recently updated match."""
+        stmt = (
+            select(Task)
+            .where(Task.pr_url == pr_url)
+            .where(Task.status.in_(["in_progress", "review"]))
+            .order_by(Task.updated_at.desc())
+            .limit(1)
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def find_project_by_repo(self, repo_full_name: str) -> Project | None:
+        """Find a project by GitHub repo full name.
+
+        Project.repo_url stores the full URL (e.g. 'https://github.com/sachinkundu/cloglog').
+        This method matches against the trailing repo_full_name (e.g. 'sachinkundu/cloglog').
+        """
+        stmt = select(Project).where(Project.repo_url.endswith(repo_full_name)).limit(1)
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
     # --- Search ---
 
     # Status groups for GitHub-style is: qualifiers

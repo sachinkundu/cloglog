@@ -15,7 +15,14 @@ GIT_DIR=$(cd "$CWD" && cd "$GIT_DIR" && pwd)
 GIT_COMMON=$(cd "$CWD" && cd "$GIT_COMMON" && pwd)
 
 # If git-dir == git-common-dir, this is the main repo, not a worktree
-[[ "$GIT_DIR" != "$GIT_COMMON" ]] || exit 0
+if [[ "$GIT_DIR" == "$GIT_COMMON" ]]; then
+  # Main agent: clear the inbox on exit so next session starts clean
+  INBOX="${CWD}/.cloglog/inbox"
+  if [[ -f "$INBOX" ]]; then
+    > "$INBOX"
+  fi
+  exit 0
+fi
 
 WORKTREE_NAME=$(basename "$CWD")
 ARTIFACTS_DIR="${CWD}/shutdown-artifacts"

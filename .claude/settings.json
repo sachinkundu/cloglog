@@ -1,2 +1,16 @@
 {
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/sachin/code/cloglog/plugins/cloglog/hooks/session-bootstrap.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
 }

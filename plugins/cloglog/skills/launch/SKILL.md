@@ -68,18 +68,31 @@ Priority: <priority>
 - Task ID: `<uuid>`
 - Feature ID: `<uuid>` (if applicable)
 
+## Inbox
+Monitor your inbox for messages from the main agent:
+```
+Monitor(
+  command: "tail -f <WORKTREE_PATH>/.cloglog/inbox",
+  description: "Messages from main agent",
+  persistent: true
+)
+```
+When you receive a message, read it and act on the instruction. The main agent may send rebasing requests, priority changes, or other guidance.
+
 ## Workflow
 1. Read the project CLAUDE.md for project-specific instructions
-2. Register: call `mcp__cloglog__register_agent` with this worktree path
-3. Start task: call `mcp__cloglog__start_task` with the task ID
-4. Run existing tests first to establish a green baseline
-5. Implement the feature or fix
-6. Run the project quality gate
-7. Create PR using the github-bot skill
-8. Move task to review with PR URL via `mcp__cloglog__update_task_status`
-9. Poll for comments and merge using the github-bot skill
-10. After merge: call `mcp__cloglog__get_my_tasks` — if more tasks remain, start the next one
-11. When all tasks complete: call `mcp__cloglog__unregister_agent` and exit
+2. Load MCP tools: call `ToolSearch(query: "select:mcp__cloglog__register_agent,mcp__cloglog__start_task,mcp__cloglog__update_task_status,mcp__cloglog__get_my_tasks,mcp__cloglog__unregister_agent,mcp__cloglog__add_task_note")` — MCP tools are deferred and MUST be loaded via ToolSearch before calling them. If ToolSearch returns no matches, MCP is unavailable — stop and notify the main agent.
+3. Start inbox monitor (see Inbox section above)
+4. Register: call `mcp__cloglog__register_agent` with this worktree path
+5. Start task: call `mcp__cloglog__start_task` with the task ID
+6. Run existing tests first to establish a green baseline
+7. Implement the feature or fix
+8. Run the project quality gate
+9. Create PR using the github-bot skill
+10. Move task to review with PR URL via `mcp__cloglog__update_task_status`
+11. Poll for comments and merge using the github-bot skill
+12. After merge: call `mcp__cloglog__get_my_tasks` — if more tasks remain, start the next one
+13. When all tasks complete: call `mcp__cloglog__unregister_agent` and exit
 
 ## Pipeline (Features Only)
 If this is a feature with spec/plan/impl tasks:
@@ -102,8 +115,11 @@ For each task/feature, launch sequentially (not in parallel):
 ```bash
 WORKTREE_NAME="wt-<descriptive-name>"
 WORKTREE_PATH="$(git rev-parse --show-toplevel)/.claude/worktrees/${WORKTREE_NAME}"
-git worktree add -b "${WORKTREE_NAME}" "${WORKTREE_PATH}" HEAD
+git fetch origin main
+git worktree add -b "${WORKTREE_NAME}" "${WORKTREE_PATH}" origin/main
 ```
+
+**IMPORTANT:** Always branch from `origin/main`, never `HEAD`. Local main may have unpushed commits that would leak into the worktree's PR diff as unrelated changes.
 
 ### 4b. Register agent on the board
 
@@ -122,13 +138,29 @@ fi
 
 Copy the assembled prompt to `${WORKTREE_PATH}/AGENT_PROMPT.md`.
 
-### 4e. Create zellij tab and launch agent
+### 4e. Create zellij tab and launch agent (no-focus-steal pattern)
+
+**IMPORTANT:** Do NOT use `--cwd` on `zellij action new-tab` — it does not reliably set the shell's working directory. Instead, use `cd` in the command itself. The agent's Claude Code session MUST start from the worktree directory so it picks up `.mcp.json` and resolves the correct project root.
 
 ```bash
-zellij action new-tab --name "${WORKTREE_NAME}" --cwd "${WORKTREE_PATH}"
-zellij action write-chars "claude --dangerously-skip-permissions 'Read ${WORKTREE_PATH}/AGENT_PROMPT.md and begin.'"
+# 1. Remember current tab
+CURRENT_TAB=$(zellij action query-tab-names 2>&1 | head -1)
+
+# 2. Create the tab (briefly steals focus)
+zellij action new-tab --name "${WORKTREE_NAME}"
+
+# 3. Grab the pane ID while on the new tab
+sleep 0.5
+PANE_ID=$(zellij action list-clients 2>&1 | awk 'NR==2{print $2}')
+
+# 4. Switch back immediately
+zellij action go-to-tab-name "${CURRENT_TAB}"
+
+# 5. Send command remotely — cd first, then claude
 sleep 0.3
-zellij action write 13
+zellij action write-chars --pane-id "${PANE_ID}" "cd ${WORKTREE_PATH} && claude --dangerously-skip-permissions 'Read ${WORKTREE_PATH}/AGENT_PROMPT.md and begin.'"
+sleep 0.3
+zellij action write --pane-id "${PANE_ID}" 13
 ```
 
 ### 4f. One agent at a time

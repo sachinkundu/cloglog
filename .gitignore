@@ -12,6 +12,7 @@ dist/
 htmlcov/
 .env
 CONTRACT.yaml
+.cloglog/inbox
 
 # Playwright E2E
 tests/e2e/playwright/node_modules/

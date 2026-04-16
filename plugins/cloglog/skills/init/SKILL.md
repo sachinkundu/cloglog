@@ -48,10 +48,24 @@ Call `mcp__cloglog__get_board` to check if the project already exists. If not, t
 
 ## Step 3: Configure MCP Server
 
-Check if `.claude/settings.json` exists in the project. If the cloglog MCP server is not configured, add it:
+Check if `.claude/settings.json` exists in the project. If the cloglog MCP server is not configured, add it. Also inject the `SessionStart` hook for main agent bootstrapping (register + inbox monitor).
 
 ```json
 {
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<absolute-path-to-project>/plugins/cloglog/hooks/session-bootstrap.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
   "mcpServers": {
     "cloglog": {
       "command": "node",
@@ -65,7 +79,9 @@ Check if `.claude/settings.json` exists in the project. If the cloglog MCP serve
 }
 ```
 
-If the file already has a cloglog entry, update it rather than duplicating.
+**Important:** The `SessionStart` hook must use an absolute path to the bootstrap script — `${CLAUDE_PLUGIN_ROOT}` does not resolve for `SessionStart` hooks in plugin settings.json (only project-level settings work). This is why init injects it into the project settings.
+
+If the file already has a cloglog MCP entry or SessionStart hook, update rather than duplicating.
 
 ## Step 4: Create `.cloglog/` Configuration Directory
 
@@ -251,10 +267,18 @@ fi
 
 Record in the summary: `GitHub bot: needs repo access`.
 
-## Step 7: Add `.cloglog/` to Git
+## Step 7: Gitignore and Add to Git
+
+Add `.cloglog/inbox` to `.gitignore` (the inbox file is runtime state, not source):
 
 ```bash
-git add .cloglog/
+echo '.cloglog/inbox' >> .gitignore
+```
+
+Then stage the config files:
+
+```bash
+git add .cloglog/ .gitignore
 ```
 
 If CLAUDE.md was modified, add that too. If `scripts/gh-app-token.py` was created, add that too. Do not commit automatically — let the user decide when to commit.
@@ -270,6 +294,7 @@ Present what was configured:
 | Tech stack | Python/Node/Rust/Mixed |
 | Config location | `.cloglog/config.yaml` |
 | MCP configured | yes/no (+ instructions if manual setup needed) |
+| SessionStart hook | injected into `.claude/settings.json` |
 | CLAUDE.md | updated/created |
 | GitHub bot | configured/needs setup |
 

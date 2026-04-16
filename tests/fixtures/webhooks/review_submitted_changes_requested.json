@@ -1,0 +1,29 @@
+{
+  "action": "submitted",
+  "review": {
+    "id": 12345679,
+    "state": "changes_requested",
+    "body": "Please fix the HMAC validation — it should use constant-time comparison.",
+    "user": {
+      "login": "sachinkundu"
+    }
+  },
+  "pull_request": {
+    "number": 42,
+    "html_url": "https://github.com/sachinkundu/cloglog/pull/42",
+    "head": {
+      "ref": "wt-webhook-infra",
+      "sha": "def456ghi789"
+    },
+    "base": {
+      "ref": "main",
+      "sha": "789ghi012jkl"
+    }
+  },
+  "repository": {
+    "full_name": "sachinkundu/cloglog"
+  },
+  "sender": {
+    "login": "sachinkundu"
+  }
+}

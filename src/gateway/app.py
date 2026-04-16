@@ -56,7 +56,8 @@ def create_app() -> FastAPI:
             path = request.url.path
 
             # Only gate /api/v1/ routes; health checks etc. pass through
-            if not path.startswith("/api/v1/"):
+            # Webhook endpoint uses HMAC auth, not Bearer tokens
+            if not path.startswith("/api/v1/") or path == "/api/v1/webhooks/github":
                 return await call_next(request)
 
             auth = request.headers.get("Authorization")
@@ -135,7 +136,9 @@ def create_app() -> FastAPI:
     app.include_router(agent_router, prefix="/api/v1")
 
     from src.document.routes import router as document_router
+    from src.gateway.webhook import router as webhook_router
 
     app.include_router(document_router, prefix="/api/v1")
+    app.include_router(webhook_router, prefix="/api/v1")
 
     return app

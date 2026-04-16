@@ -1,0 +1,26 @@
+{
+  "action": "closed",
+  "number": 42,
+  "pull_request": {
+    "number": 42,
+    "html_url": "https://github.com/sachinkundu/cloglog/pull/42",
+    "state": "closed",
+    "title": "feat: add webhook ingestion infrastructure",
+    "merged": true,
+    "merge_commit_sha": "abc123merge456",
+    "head": {
+      "ref": "wt-webhook-infra",
+      "sha": "def456ghi789"
+    },
+    "base": {
+      "ref": "main",
+      "sha": "789ghi012jkl"
+    }
+  },
+  "repository": {
+    "full_name": "sachinkundu/cloglog"
+  },
+  "sender": {
+    "login": "sachinkundu"
+  }
+}

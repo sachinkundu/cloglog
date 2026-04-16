@@ -120,6 +120,20 @@ class TestParseWebhookEvent:
         assert event is not None
         assert event.type == WebhookEventType.REVIEW_SUBMITTED
 
+    def test_review_comment_created(self) -> None:
+        payload = _load_fixture("review_comment_created.json")
+        event = parse_webhook_event("pull_request_review_comment", "delivery-rc-1", payload)
+        assert event is not None
+        assert event.type == WebhookEventType.REVIEW_COMMENT
+        assert event.pr_number == 42
+        assert event.sender == "sachinkundu"
+
+    def test_review_comment_edited_returns_none(self) -> None:
+        payload = _load_fixture("review_comment_created.json")
+        payload["action"] = "edited"
+        event = parse_webhook_event("pull_request_review_comment", "delivery-rc-2", payload)
+        assert event is None
+
     def test_check_run_completed(self) -> None:
         payload = _load_fixture("check_run_completed_failure.json")
         event = parse_webhook_event("check_run", "delivery-7", payload)

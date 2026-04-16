@@ -95,6 +95,17 @@ class AgentRepository:
         )
         await self._session.commit()
 
+    async def get_worktree_by_branch(self, project_id: UUID, branch_name: str) -> Worktree | None:
+        """Find an online worktree by its branch name within a project."""
+        result = await self._session.execute(
+            select(Worktree).where(
+                Worktree.project_id == project_id,
+                Worktree.branch_name == branch_name,
+                Worktree.status == "online",
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def get_offline_worktrees(self, project_id: UUID) -> list[Worktree]:
         result = await self._session.execute(
             select(Worktree).where(

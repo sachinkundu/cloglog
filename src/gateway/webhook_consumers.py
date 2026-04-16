@@ -41,24 +41,27 @@ class AgentNotifierConsumer:
 
         factory = self._session_factory or async_session_factory
         async with factory() as session:
-            # Resolve which agent owns this PR
-            worktree_id = await self._resolve_agent(event, session)
+            # Resolve which agent owns this PR — returns (worktree_id, worktree_path)
+            result = await self._resolve_agent(event, session)
 
             # For PR_MERGED, update the task's pr_merged flag regardless of agent status
             if event.type == WebhookEventType.PR_MERGED:
                 await self._mark_pr_merged(event.pr_url, session)
 
-            if worktree_id is None:
+            if result is None:
                 logger.debug("No agent found for PR %s", event.pr_url)
                 return
+
+            worktree_id, worktree_path = result
 
             # Build message based on event type
             message = self._build_message(event)
             if message is None:
                 return
 
-            # Append to agent inbox (not write_text — multiple events can arrive quickly)
-            inbox_path = Path(f"/tmp/cloglog-inbox-{worktree_id}")
+            # Inbox is at <worktree_path>/.cloglog/inbox (matches agent launch config)
+            inbox_path = Path(worktree_path) / ".cloglog" / "inbox"
+            inbox_path.parent.mkdir(parents=True, exist_ok=True)
             with inbox_path.open("a") as f:
                 f.write(json.dumps(message) + "\n")
             logger.info(
@@ -68,31 +71,36 @@ class AgentNotifierConsumer:
                 event.pr_number,
             )
 
-    async def _resolve_agent(self, event: WebhookEvent, session: AsyncSession) -> UUID | None:
-        """Resolve PR event to owning worktree ID.
+    async def _resolve_agent(
+        self, event: WebhookEvent, session: AsyncSession
+    ) -> tuple[UUID, str] | None:
+        """Resolve PR event to owning worktree.
 
-        Primary: match Task.pr_url.
+        Primary: match Task.pr_url → worktree_id → Worktree.worktree_path.
         Fallback: match Worktree.branch_name (for PRs opened before agent sets pr_url).
+
+        Returns (worktree_id, worktree_path) or None.
         """
+        from src.agent.repository import AgentRepository
         from src.board.repository import BoardRepository
 
         repo = BoardRepository(session)
+        agent_repo = AgentRepository(session)
 
         # Primary: match by pr_url
         task = await repo.find_task_by_pr_url(event.pr_url)
         if task is not None and task.worktree_id is not None:
-            return task.worktree_id
+            worktree = await agent_repo.get_worktree(task.worktree_id)
+            if worktree is not None:
+                return (worktree.id, worktree.worktree_path)
 
         # Fallback: match by branch name
-        from src.agent.repository import AgentRepository
-
-        agent_repo = AgentRepository(session)
         project = await repo.find_project_by_repo(event.repo_full_name)
         if project is None:
             return None
         worktree = await agent_repo.get_worktree_by_branch(project.id, event.head_branch)
         if worktree is not None:
-            return worktree.id
+            return (worktree.id, worktree.worktree_path)
 
         return None
 

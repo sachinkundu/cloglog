@@ -12,7 +12,6 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,6 +58,7 @@ async def _seed_project_and_task(
     branch_name: str = BRANCH,
     task_status: str = "review",
     worktree_status: str = "online",
+    worktree_path: str | None = None,
 ) -> tuple[Project, Task, Worktree]:
     """Create a project, epic, feature, task, and worktree for testing."""
     if pr_url is None:
@@ -90,7 +90,7 @@ async def _seed_project_and_task(
 
     worktree = Worktree(
         project_id=project.id,
-        worktree_path=f"/tmp/wt-test-{uuid.uuid4().hex[:6]}",
+        worktree_path=worktree_path or f"/tmp/wt-test-{uuid.uuid4().hex[:6]}",
         branch_name=branch_name,
         status=worktree_status,
     )
@@ -134,8 +134,11 @@ class TestResolveAgent:
         consumer = AgentNotifierConsumer()
         event = _make_event(pr_url=task.pr_url)  # type: ignore[arg-type]
 
-        resolved = await consumer._resolve_agent(event, db_session)
-        assert resolved == worktree.id
+        result = await consumer._resolve_agent(event, db_session)
+        assert result is not None
+        wt_id, wt_path = result
+        assert wt_id == worktree.id
+        assert wt_path == worktree.worktree_path
 
     @pytest.mark.asyncio
     async def test_resolve_by_branch_fallback(self, db_session: AsyncSession) -> None:
@@ -144,7 +147,6 @@ class TestResolveAgent:
         suffix = uuid.uuid4().hex[:6]
         repo_full_name = f"sachinkundu/cloglog-{suffix}"
 
-        # Create project with unique repo URL
         project = Project(
             name=f"test-project-{suffix}",
             description="Test",
@@ -170,7 +172,6 @@ class TestResolveAgent:
         db_session.add(worktree)
         await db_session.flush()
 
-        # Task with no pr_url match possible
         task = Task(
             feature_id=feature.id,
             title="T",
@@ -182,26 +183,24 @@ class TestResolveAgent:
         db_session.add(task)
         await db_session.commit()
 
-        event = _make_event(
-            pr_url=_unique_pr_url(),  # Won't match any task
-            head_branch=branch,
-        )
-        # Override repo_full_name to match our unique project
         event = WebhookEvent(
-            type=event.type,
-            delivery_id=event.delivery_id,
+            type=WebhookEventType.PR_MERGED,
+            delivery_id="d-fallback",
             repo_full_name=repo_full_name,
-            pr_number=event.pr_number,
-            pr_url=event.pr_url,
+            pr_number=42,
+            pr_url=_unique_pr_url(),
             head_branch=branch,
-            base_branch=event.base_branch,
-            sender=event.sender,
-            raw=event.raw,
+            base_branch="main",
+            sender="sachinkundu",
+            raw={},
         )
         consumer = AgentNotifierConsumer()
 
-        resolved = await consumer._resolve_agent(event, db_session)
-        assert resolved == worktree.id
+        result = await consumer._resolve_agent(event, db_session)
+        assert result is not None
+        wt_id, wt_path = result
+        assert wt_id == worktree.id
+        assert wt_path == worktree.worktree_path
 
     @pytest.mark.asyncio
     async def test_resolve_no_match(self, db_session: AsyncSession) -> None:
@@ -212,8 +211,8 @@ class TestResolveAgent:
         )
         consumer = AgentNotifierConsumer()
 
-        resolved = await consumer._resolve_agent(event, db_session)
-        assert resolved is None
+        result = await consumer._resolve_agent(event, db_session)
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_resolve_offline_worktree_not_matched_by_branch(
@@ -233,8 +232,8 @@ class TestResolveAgent:
         )
         consumer = AgentNotifierConsumer()
 
-        resolved = await consumer._resolve_agent(event, db_session)
-        assert resolved is None
+        result = await consumer._resolve_agent(event, db_session)
+        assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -354,22 +353,21 @@ class TestBuildMessage:
 class TestInboxWrite:
     @pytest.mark.asyncio
     async def test_inbox_file_appended(self, db_session: AsyncSession, tmp_path: Path) -> None:
-        """Verify the consumer appends a JSON line to the inbox file."""
-        _project, task, worktree = await _seed_project_and_task(db_session)
+        """Verify the consumer appends a JSON line to <worktree_path>/.cloglog/inbox."""
+        wt_path = str(tmp_path / "wt-inbox-test")
+        Path(wt_path).mkdir()
+        _project, task, worktree = await _seed_project_and_task(db_session, worktree_path=wt_path)
 
-        inbox_path = tmp_path / f"cloglog-inbox-{worktree.id}"
         consumer = AgentNotifierConsumer(session_factory=_make_session_factory(db_session))
         event = _make_event(
             event_type=WebhookEventType.PR_MERGED,
             pr_url=task.pr_url,  # type: ignore[arg-type]
         )
 
-        with patch(
-            "src.gateway.webhook_consumers.Path",
-            side_effect=lambda p: inbox_path if str(worktree.id) in str(p) else Path(p),
-        ):
-            await consumer.handle(event)
+        await consumer.handle(event)
 
+        inbox_path = Path(wt_path) / ".cloglog" / "inbox"
+        assert inbox_path.exists()
         lines = inbox_path.read_text().strip().split("\n")
         assert len(lines) == 1
         msg = json.loads(lines[0])
@@ -381,29 +379,27 @@ class TestInboxWrite:
         self, db_session: AsyncSession, tmp_path: Path
     ) -> None:
         """Multiple events should each append a new line, not overwrite."""
-        _project, task, worktree = await _seed_project_and_task(db_session)
-        inbox_path = tmp_path / f"cloglog-inbox-{worktree.id}"
+        wt_path = str(tmp_path / "wt-multi-test")
+        Path(wt_path).mkdir()
+        _project, task, worktree = await _seed_project_and_task(db_session, worktree_path=wt_path)
 
         consumer = AgentNotifierConsumer(session_factory=_make_session_factory(db_session))
 
-        with patch(
-            "src.gateway.webhook_consumers.Path",
-            side_effect=lambda p: inbox_path if str(worktree.id) in str(p) else Path(p),
-        ):
-            event1 = _make_event(
-                event_type=WebhookEventType.PR_MERGED,
-                pr_url=task.pr_url,  # type: ignore[arg-type]
-                delivery_id="d-1",
-            )
-            await consumer.handle(event1)
+        event1 = _make_event(
+            event_type=WebhookEventType.PR_MERGED,
+            pr_url=task.pr_url,  # type: ignore[arg-type]
+            delivery_id="d-1",
+        )
+        await consumer.handle(event1)
 
-            event2 = _make_event(
-                event_type=WebhookEventType.PR_CLOSED,
-                pr_url=task.pr_url,  # type: ignore[arg-type]
-                delivery_id="d-2",
-            )
-            await consumer.handle(event2)
+        event2 = _make_event(
+            event_type=WebhookEventType.PR_CLOSED,
+            pr_url=task.pr_url,  # type: ignore[arg-type]
+            delivery_id="d-2",
+        )
+        await consumer.handle(event2)
 
+        inbox_path = Path(wt_path) / ".cloglog" / "inbox"
         lines = inbox_path.read_text().strip().split("\n")
         assert len(lines) == 2
         assert json.loads(lines[0])["type"] == "pr_merged"
@@ -419,21 +415,18 @@ class TestPrMergedDbUpdate:
     @pytest.mark.asyncio
     async def test_pr_merged_sets_flag(self, db_session: AsyncSession, tmp_path: Path) -> None:
         """PR_MERGED event should set Task.pr_merged = True in the database."""
-        _project, task, worktree = await _seed_project_and_task(db_session)
+        wt_path = str(tmp_path / "wt-merge-test")
+        Path(wt_path).mkdir()
+        _project, task, worktree = await _seed_project_and_task(db_session, worktree_path=wt_path)
         assert task.pr_merged is False
 
-        inbox_path = tmp_path / f"cloglog-inbox-{worktree.id}"
         consumer = AgentNotifierConsumer(session_factory=_make_session_factory(db_session))
         event = _make_event(
             event_type=WebhookEventType.PR_MERGED,
             pr_url=task.pr_url,  # type: ignore[arg-type]
         )
 
-        with patch(
-            "src.gateway.webhook_consumers.Path",
-            side_effect=lambda p: inbox_path if str(worktree.id) in str(p) else Path(p),
-        ):
-            await consumer.handle(event)
+        await consumer.handle(event)
 
         await db_session.refresh(task)
         assert task.pr_merged is True
@@ -443,21 +436,18 @@ class TestPrMergedDbUpdate:
         self, db_session: AsyncSession, tmp_path: Path
     ) -> None:
         """PR_CLOSED (without merge) should NOT set Task.pr_merged."""
-        _project, task, worktree = await _seed_project_and_task(db_session)
+        wt_path = str(tmp_path / "wt-close-test")
+        Path(wt_path).mkdir()
+        _project, task, worktree = await _seed_project_and_task(db_session, worktree_path=wt_path)
         assert task.pr_merged is False
 
-        inbox_path = tmp_path / f"cloglog-inbox-{worktree.id}"
         consumer = AgentNotifierConsumer(session_factory=_make_session_factory(db_session))
         event = _make_event(
             event_type=WebhookEventType.PR_CLOSED,
             pr_url=task.pr_url,  # type: ignore[arg-type]
         )
 
-        with patch(
-            "src.gateway.webhook_consumers.Path",
-            side_effect=lambda p: inbox_path if str(worktree.id) in str(p) else Path(p),
-        ):
-            await consumer.handle(event)
+        await consumer.handle(event)
 
         await db_session.refresh(task)
         assert task.pr_merged is False

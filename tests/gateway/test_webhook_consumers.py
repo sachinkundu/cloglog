@@ -331,6 +331,27 @@ class TestBuildMessage:
         msg = consumer._build_message(event)
         assert msg is None
 
+    def test_review_comment_message(self) -> None:
+        consumer = AgentNotifierConsumer()
+        event = _make_event(
+            event_type=WebhookEventType.REVIEW_COMMENT,
+            raw={
+                "comment": {
+                    "body": "This needs a None check",
+                    "path": "src/gateway/webhook_consumers.py",
+                    "line": 42,
+                },
+            },
+        )
+        msg = consumer._build_message(event)
+        assert msg is not None
+        assert msg["type"] == "review_comment"
+        assert msg["reviewer"] == "sachinkundu"
+        assert msg["path"] == "src/gateway/webhook_consumers.py"
+        assert msg["line"] == 42
+        assert "This needs a None check" in msg["body"]
+        assert "webhook_consumers.py:42" in msg["message"]
+
     def test_handles_only_relevant_events(self) -> None:
         consumer = AgentNotifierConsumer()
         # PR_OPENED and PR_SYNCHRONIZE should not be handled
@@ -340,6 +361,7 @@ class TestBuildMessage:
         assert consumer.handles(_make_event(event_type=WebhookEventType.PR_MERGED)) is True
         assert consumer.handles(_make_event(event_type=WebhookEventType.PR_CLOSED)) is True
         assert consumer.handles(_make_event(event_type=WebhookEventType.REVIEW_SUBMITTED)) is True
+        assert consumer.handles(_make_event(event_type=WebhookEventType.REVIEW_COMMENT)) is True
         assert (
             consumer.handles(_make_event(event_type=WebhookEventType.CHECK_RUN_COMPLETED)) is True
         )

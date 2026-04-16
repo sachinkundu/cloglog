@@ -1,0 +1,30 @@
+{
+  "action": "created",
+  "comment": {
+    "id": 11111111,
+    "body": "This function should handle the edge case where pr_url is None.",
+    "path": "src/gateway/webhook_consumers.py",
+    "line": 42,
+    "user": {
+      "login": "sachinkundu"
+    }
+  },
+  "pull_request": {
+    "number": 42,
+    "html_url": "https://github.com/sachinkundu/cloglog/pull/42",
+    "head": {
+      "ref": "wt-webhook-infra",
+      "sha": "def456ghi789"
+    },
+    "base": {
+      "ref": "main",
+      "sha": "789ghi012jkl"
+    }
+  },
+  "repository": {
+    "full_name": "sachinkundu/cloglog"
+  },
+  "sender": {
+    "login": "sachinkundu"
+  }
+}

@@ -86,6 +86,26 @@ def parse_webhook_event(
             raw=payload,
         )
 
+    if event_type == "pull_request_review_comment":
+        action = payload.get("action", "")
+        if action != "created":
+            return None  # Only notify on new comments, not edits/deletes
+        pr = payload.get("pull_request")
+        if pr is None:
+            return None
+
+        return WebhookEvent(
+            type=WebhookEventType.REVIEW_COMMENT,
+            delivery_id=delivery_id,
+            repo_full_name=payload["repository"]["full_name"],
+            pr_number=pr["number"],
+            pr_url=pr["html_url"],
+            head_branch=pr["head"]["ref"],
+            base_branch=pr["base"]["ref"],
+            sender=payload["sender"]["login"],
+            raw=payload,
+        )
+
     if event_type == "check_run":
         prs = payload.get("check_run", {}).get("pull_requests", [])
         if not prs:

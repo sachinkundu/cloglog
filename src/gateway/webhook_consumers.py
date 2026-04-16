@@ -27,6 +27,7 @@ class AgentNotifierConsumer:
         WebhookEventType.PR_MERGED,
         WebhookEventType.PR_CLOSED,
         WebhookEventType.REVIEW_SUBMITTED,
+        WebhookEventType.REVIEW_COMMENT,
         WebhookEventType.CHECK_RUN_COMPLETED,
     }
 
@@ -152,6 +153,25 @@ class AgentNotifierConsumer:
                         if state == "changes_requested"
                         else ""
                     )
+                ),
+            }
+        if event.type == WebhookEventType.REVIEW_COMMENT:
+            comment = event.raw.get("comment", {})
+            body = (comment.get("body") or "")[:500]
+            path = comment.get("path", "")
+            line = comment.get("line") or comment.get("original_line", "")
+            return {
+                "type": "review_comment",
+                "pr_url": event.pr_url,
+                "pr_number": event.pr_number,
+                "reviewer": event.sender,
+                "path": path,
+                "line": line,
+                "body": body,
+                "message": (
+                    f"Inline comment on PR #{event.pr_number} by {event.sender}"
+                    + (f" at {path}:{line}" if path else "")
+                    + f": {body}"
                 ),
             }
         if event.type == WebhookEventType.CHECK_RUN_COMPLETED:

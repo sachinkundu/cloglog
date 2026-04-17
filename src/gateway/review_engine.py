@@ -1,11 +1,11 @@
-"""F-36 PR review engine — launches a local Codex CLI agent for every new PR revision.
+"""F-36 PR review engine — Codex CLI driven code review, webhook to GitHub review.
 
 The consumer subscribes to ``pr_opened`` and ``pr_synchronize`` webhook events,
 fetches the PR diff via ``gh pr diff`` (authenticated with the GitHub App bot
 token), filters lockfiles and sensitive paths, writes a prompt to a temp dir,
-launches the configured review agent as a subprocess, and parses a JSON
-``ReviewResult`` from a known output path. Review posting to GitHub is handled
-in T-193 — this module stops at producing a parsed ``ReviewResult``.
+launches the configured review agent as a subprocess, parses a JSON
+``ReviewResult`` from a known output path, and posts the review back to GitHub
+via ``POST /repos/{owner}/{repo}/pulls/{pr_number}/reviews``.
 
 Design constraints from ``docs/contracts/webhook-pipeline-spec.md`` (F-36):
 - Skip self-authored PRs (``cloglog-agent[bot]``) to avoid feedback loops.
@@ -13,6 +13,11 @@ Design constraints from ``docs/contracts/webhook-pipeline-spec.md`` (F-36):
 - Rolling-hour rate limit (default 10 reviews/hour) to bound external load.
 - Hard cap of 200K characters on the filtered diff — larger PRs skip review.
 - 5-minute subprocess timeout; a killed agent simply skips this revision.
+- Findings whose ``(file, line)`` pair isn't in the filtered diff are moved
+  from inline comments to the review summary body, so a single out-of-diff
+  finding never causes GitHub to reject the whole review with a 422.
+- The review POST retries once after ``REVIEW_POST_RETRY_DELAY_SECONDS`` on
+  HTTP failure; a second failure drops the review with a warning.
 """
 
 from __future__ import annotations
@@ -27,8 +32,9 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
+import httpx
 from pydantic import BaseModel, field_validator
 
 from src.gateway.webhook_dispatcher import WebhookEvent, WebhookEventType
@@ -40,6 +46,18 @@ BOT_USERNAME: Final = "cloglog-agent[bot]"
 MAX_DIFF_CHARS: Final = 200_000
 REVIEW_TIMEOUT_SECONDS: Final = 300.0
 RATE_LIMIT_WINDOW_SECONDS: Final = 3600.0
+REVIEW_POST_RETRY_DELAY_SECONDS: Final = 5.0
+REVIEW_REQUEST_TIMEOUT_SECONDS: Final = 30.0
+# Maximum number of bot reviews per PR. The cycle is at most:
+#   (1) author opens PR → bot reviews → claude-coding-agent pushes a fix,
+#   (2) bot reviews the fix → claude-coding-agent pushes another fix → human decides.
+# A single round (one bot review, one coder fix, then human approves) is
+# also fine when the first review is trivially addressable. What the cap
+# prevents is a third bot review on top of two prior ones — by that point
+# the human reviewer has enough context to act.
+MAX_REVIEWS_PER_PR: Final = 2
+
+_HUNK_HEADER_RE: Final = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 _ALLOWED_SEVERITIES: Final = frozenset({"critical", "high", "medium", "low", "info"})
 _ALLOWED_VERDICTS: Final = frozenset({"approve", "request_changes", "comment"})
@@ -65,6 +83,13 @@ _DIFF_SKIP_PATTERNS: Final = tuple(
 
 REVIEW_PROMPT_TEMPLATE: Final = """\
 Review this pull request diff for the cloglog project.
+
+You are an advisory reviewer. The final APPROVE decision belongs to a
+human reviewer — your output is always posted to GitHub as a COMMENT,
+never as APPROVE or REQUEST_CHANGES, regardless of the ``verdict`` you
+pick. The ``verdict`` field is used only to classify severity in the
+review body. Keep this in mind when writing findings: be informative and
+specific; do not frame the review as a blocking gate.
 
 The project follows DDD with these bounded contexts:
 - Board (src/board/) — Projects, Epics, Features, Tasks
@@ -122,7 +147,7 @@ class ReviewFinding(BaseModel):
 
 
 class ReviewResult(BaseModel):
-    """Output of one review pass — posted verbatim to GitHub in T-193."""
+    """Output of one review pass — the shape the agent writes to its output file."""
 
     verdict: str
     summary: str
@@ -209,6 +234,59 @@ def is_review_agent_available() -> bool:
     return shutil.which(settings.review_agent_cmd) is not None
 
 
+def extract_diff_new_lines(diff: str) -> dict[str, set[int]]:
+    """Map each changed file to the set of new-side line numbers visible in its hunks.
+
+    GitHub's review-comment API will only accept an inline comment whose
+    ``(path, line, side=RIGHT)`` combination appears inside the PR diff.
+    Lines not in this map cannot be inlined — they must be appended to the
+    review summary body instead.
+
+    Context lines AND added lines are both commentable on the ``RIGHT`` side.
+    Removed lines are on the ``LEFT`` side and we don't support commenting on
+    them (findings come from the reviewer looking at the new revision).
+    """
+    result: dict[str, set[int]] = {}
+    current_file: str | None = None
+    current_new_line = 0
+    in_hunk = False
+
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            current_file = _extract_target_path(line)
+            in_hunk = False
+            continue
+        if line.startswith("@@"):
+            match = _HUNK_HEADER_RE.match(line)
+            if match and current_file is not None:
+                current_new_line = int(match.group(1))
+                in_hunk = True
+            else:
+                in_hunk = False
+            continue
+        if not in_hunk or current_file is None:
+            continue
+
+        if line.startswith("+++") or line.startswith("---"):
+            # Diff preamble markers — not hunk content
+            continue
+        if line.startswith("+"):
+            result.setdefault(current_file, set()).add(current_new_line)
+            current_new_line += 1
+        elif line.startswith("-"):
+            # Removal — doesn't consume a new-side line number
+            continue
+        elif line.startswith("\\"):
+            # "\ No newline at end of file" — skip
+            continue
+        else:
+            # Context line (starts with " " or empty) — commentable
+            result.setdefault(current_file, set()).add(current_new_line)
+            current_new_line += 1
+
+    return result
+
+
 def parse_review_output(raw: str) -> ReviewResult | None:
     """Parse the agent's JSON output; return None on any decode/validation error."""
     try:
@@ -217,6 +295,160 @@ def parse_review_output(raw: str) -> ReviewResult | None:
     except (json.JSONDecodeError, ValueError) as err:
         logger.warning("Review agent output unparseable: %s", err)
         return None
+
+
+def _partition_findings(
+    result: ReviewResult, valid_lines: dict[str, set[int]]
+) -> tuple[list[dict[str, Any]], list[ReviewFinding]]:
+    """Split findings into inline-postable comments and orphans for the body."""
+    inline: list[dict[str, Any]] = []
+    orphans: list[ReviewFinding] = []
+    for finding in result.findings:
+        allowed = valid_lines.get(finding.file, set())
+        if finding.line in allowed:
+            inline.append(
+                {
+                    "path": finding.file,
+                    "line": finding.line,
+                    "side": "RIGHT",
+                    "body": f"**[{finding.severity.upper()}]** {finding.body}",
+                }
+            )
+        else:
+            orphans.append(finding)
+    return inline, orphans
+
+
+def _format_review_body(result: ReviewResult, orphans: list[ReviewFinding]) -> str:
+    """Assemble the top-level review body with the summary and any orphan findings.
+
+    The human reviewer is the only one who can APPROVE — this review is always
+    posted as a ``COMMENT`` event. The agent's internal verdict
+    (``approve``/``request_changes``/``comment``) surfaces here as advisory text
+    so the human can see the bot's severity read without the bot blocking or
+    approving the PR itself.
+    """
+    advisory = {
+        "approve": "no blocking issues",
+        "request_changes": "changes suggested",
+        "comment": "notes only",
+    }.get(result.verdict, result.verdict)
+    lines = [
+        "## Automated Review (Codex)",
+        "",
+        f"_Advisory verdict: **{advisory}** — human reviewer approves._",
+        "",
+        result.summary,
+    ]
+    if orphans:
+        lines += ["", "### Findings not attached to a diff line", ""]
+        for f in orphans:
+            lines.append(f"- **[{f.severity.upper()}]** `{f.file}:{f.line}` — {f.body}")
+    return "\n".join(lines)
+
+
+async def count_bot_reviews(
+    repo_full_name: str,
+    pr_number: int,
+    token: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> int:
+    """Return how many reviews the bot has already posted on this PR.
+
+    Uses ``GET /repos/{owner}/{repo}/pulls/{pr_number}/reviews`` and counts
+    entries whose ``user.login`` matches ``BOT_USERNAME``. A network failure
+    surfaces as a ``RuntimeError`` — the caller decides whether to proceed
+    (for safety the consumer currently skips the review on uncertainty).
+    """
+    url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}/reviews"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    close_when_done = client is None
+    http = client or httpx.AsyncClient()
+    try:
+        resp = await http.get(url, headers=headers, timeout=REVIEW_REQUEST_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        reviews = resp.json()
+    finally:
+        if close_when_done:
+            await http.aclose()
+    return sum(1 for r in reviews if (r.get("user") or {}).get("login") == BOT_USERNAME)
+
+
+async def post_review(
+    repo_full_name: str,
+    pr_number: int,
+    result: ReviewResult,
+    diff: str,
+    token: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> bool:
+    """Post a GitHub PR review. Returns ``True`` on success, ``False`` on drop.
+
+    Findings whose ``(file, line)`` pair isn't in the filtered diff are moved
+    from inline comments to the summary body so GitHub never rejects the
+    whole review because of one stray line number. On an HTTP failure the
+    request is retried once after a short delay (per the spec); if the
+    retry also fails the review is dropped with a warning.
+    """
+    valid_lines = extract_diff_new_lines(diff)
+    inline, orphans = _partition_findings(result, valid_lines)
+    # The bot never approves or requests changes — only the human reviewer
+    # gates merge state. The agent's verdict is recorded in the body instead.
+    payload = {
+        "event": "COMMENT",
+        "body": _format_review_body(result, orphans),
+        "comments": inline,
+    }
+    url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}/reviews"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    async def _attempt(c: httpx.AsyncClient) -> httpx.Response:
+        return await c.post(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=REVIEW_REQUEST_TIMEOUT_SECONDS,
+        )
+
+    close_when_done = client is None
+    http = client or httpx.AsyncClient()
+    try:
+        try:
+            resp = await _attempt(http)
+            resp.raise_for_status()
+            return True
+        except (httpx.HTTPError, httpx.HTTPStatusError) as first_err:
+            logger.warning(
+                "post_review failed for PR #%d (attempt 1): %s — retrying in %.0fs",
+                pr_number,
+                first_err,
+                REVIEW_POST_RETRY_DELAY_SECONDS,
+            )
+            await asyncio.sleep(REVIEW_POST_RETRY_DELAY_SECONDS)
+            try:
+                resp = await _attempt(http)
+                resp.raise_for_status()
+                return True
+            except (httpx.HTTPError, httpx.HTTPStatusError) as second_err:
+                logger.error(
+                    "post_review failed for PR #%d after retry: %s — dropping review",
+                    pr_number,
+                    second_err,
+                )
+                return False
+    finally:
+        if close_when_done:
+            await http.aclose()
 
 
 class ReviewEngineConsumer:
@@ -254,7 +486,21 @@ class ReviewEngineConsumer:
                 )
 
     async def _review_pr(self, event: WebhookEvent) -> None:
-        diff = await self._fetch_pr_diff(event.repo_full_name, event.pr_number)
+        from src.gateway.github_token import get_github_app_token
+
+        token = await get_github_app_token()
+
+        prior = await count_bot_reviews(event.repo_full_name, event.pr_number, token)
+        if prior >= MAX_REVIEWS_PER_PR:
+            logger.info(
+                "PR #%d already has %d bot reviews (cap=%d) — skipping",
+                event.pr_number,
+                prior,
+                MAX_REVIEWS_PER_PR,
+            )
+            return
+
+        diff = await self._fetch_pr_diff(event.repo_full_name, event.pr_number, token)
         filtered = filter_diff(diff)
         if not filtered.strip():
             logger.info("PR #%d has no reviewable files after filtering", event.pr_number)
@@ -272,19 +518,17 @@ class ReviewEngineConsumer:
         if result is None:
             return
 
-        # T-193 wires GitHub review posting here; for now we log so the consumer is observable.
+        posted = await post_review(event.repo_full_name, event.pr_number, result, filtered, token)
         logger.info(
-            "Review ready for PR #%d: verdict=%s findings=%d",
+            "Review %s for PR #%d: verdict=%s findings=%d",
+            "posted" if posted else "dropped",
             event.pr_number,
             result.verdict,
             len(result.findings),
         )
 
-    async def _fetch_pr_diff(self, repo_full_name: str, pr_number: int) -> str:
+    async def _fetch_pr_diff(self, repo_full_name: str, pr_number: int, token: str) -> str:
         """Fetch the PR diff via ``gh pr diff`` using the GitHub App bot token."""
-        from src.gateway.github_token import get_github_app_token
-
-        token = await get_github_app_token()
         env = os.environ.copy()
         env["GH_TOKEN"] = token
         proc = await _spawn(

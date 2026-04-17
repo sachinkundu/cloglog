@@ -42,7 +42,10 @@ from src.shared.config import settings
 
 logger = logging.getLogger(__name__)
 
-BOT_USERNAME: Final = "cloglog-agent[bot]"
+# Both bot identities — skip review if the PR author is either bot
+_CLAUDE_BOT: Final = "sakundu-claude-assistant[bot]"
+_CODEX_BOT: Final = "cloglog-codex-reviewer[bot]"
+_BOT_USERNAMES: Final = frozenset({_CLAUDE_BOT, _CODEX_BOT})
 MAX_DIFF_CHARS: Final = 200_000
 REVIEW_TIMEOUT_SECONDS: Final = 300.0
 RATE_LIMIT_WINDOW_SECONDS: Final = 3600.0
@@ -292,25 +295,14 @@ def _partition_findings(
 
 
 def _format_review_body(result: ReviewResult, orphans: list[ReviewFinding]) -> str:
-    """Assemble the top-level review body with the summary and any orphan findings.
-
-    The human reviewer is the only one who can APPROVE — this review is always
-    posted as a ``COMMENT`` event. The agent's internal verdict
-    (``approve``/``request_changes``/``comment``) surfaces here as advisory text
-    so the human can see the bot's severity read without the bot blocking or
-    approving the PR itself.
-    """
-    advisory = {
-        "approve": "no blocking issues",
-        "request_changes": "changes suggested",
-        "comment": "notes only",
-    }.get(result.verdict, result.verdict)
+    """Assemble the top-level review body with the summary and any orphan findings."""
+    verdict_icon = {
+        "approve": "pass",
+        "request_changes": "warning",
+        "comment": "info",
+    }.get(result.verdict, "info")
     lines = [
-        "## Automated Review (Codex)",
-        "",
-        f"_Advisory verdict: **{advisory}** — human reviewer approves._",
-        "",
-        result.summary,
+        f":{verdict_icon}: {result.summary}",
     ]
     if orphans:
         lines += ["", "### Findings not attached to a diff line", ""]
@@ -329,7 +321,7 @@ async def count_bot_reviews(
     """Return how many reviews the bot has already posted on this PR.
 
     Uses ``GET /repos/{owner}/{repo}/pulls/{pr_number}/reviews`` and counts
-    entries whose ``user.login`` matches ``BOT_USERNAME``. A network failure
+    entries whose ``user.login`` matches a known bot username. A network failure
     surfaces as a ``RuntimeError`` — the caller decides whether to proceed
     (for safety the consumer currently skips the review on uncertainty).
     """
@@ -348,7 +340,7 @@ async def count_bot_reviews(
     finally:
         if close_when_done:
             await http.aclose()
-    return sum(1 for r in reviews if (r.get("user") or {}).get("login") == BOT_USERNAME)
+    return sum(1 for r in reviews if (r.get("user") or {}).get("login") == _CODEX_BOT)
 
 
 async def post_review(
@@ -434,7 +426,9 @@ class ReviewEngineConsumer:
         self._lock = asyncio.Lock()
 
     def handles(self, event: WebhookEvent) -> bool:
-        if event.sender == BOT_USERNAME:
+        # Only skip if the Codex reviewer bot itself triggered the event
+        # (prevents review-of-review loops). Claude bot PRs SHOULD be reviewed.
+        if event.sender == _CODEX_BOT:
             return False
         return event.type in self._handled
 
@@ -458,11 +452,14 @@ class ReviewEngineConsumer:
                 )
 
     async def _review_pr(self, event: WebhookEvent) -> None:
-        from src.gateway.github_token import get_github_app_token
+        from src.gateway.github_token import get_codex_reviewer_token, get_github_app_token
 
-        token = await get_github_app_token()
+        # Claude bot token for reading diffs (has contents:read)
+        claude_token = await get_github_app_token()
+        # Codex reviewer bot token for posting reviews (separate identity)
+        review_token = await get_codex_reviewer_token()
 
-        prior = await count_bot_reviews(event.repo_full_name, event.pr_number, token)
+        prior = await count_bot_reviews(event.repo_full_name, event.pr_number, review_token)
         if prior >= MAX_REVIEWS_PER_PR:
             logger.info(
                 "PR #%d already has %d bot reviews (cap=%d) — skipping",
@@ -472,7 +469,7 @@ class ReviewEngineConsumer:
             )
             return
 
-        diff = await self._fetch_pr_diff(event.repo_full_name, event.pr_number, token)
+        diff = await self._fetch_pr_diff(event.repo_full_name, event.pr_number, claude_token)
         filtered = filter_diff(diff)
         if not filtered.strip():
             logger.info("PR #%d has no reviewable files after filtering", event.pr_number)
@@ -490,7 +487,9 @@ class ReviewEngineConsumer:
         if result is None:
             return
 
-        posted = await post_review(event.repo_full_name, event.pr_number, result, filtered, token)
+        posted = await post_review(
+            event.repo_full_name, event.pr_number, result, filtered, review_token
+        )
         logger.info(
             "Review %s for PR #%d: verdict=%s findings=%d",
             "posted" if posted else "dropped",
@@ -557,7 +556,7 @@ class ReviewEngineConsumer:
             # Pass prompt via stdin using "-" sentinel
             args.append("-")
 
-            proc = await asyncio.create_subprocess_exec(
+            proc = await _create_subprocess(
                 *args,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
@@ -648,15 +647,28 @@ class ReviewEngineConsumer:
         return parse_review_output(json.dumps(data))
 
 
+async def _create_subprocess(
+    *argv: str,
+    stdin: int | None = None,
+    stdout: int | None = None,
+    stderr: int | None = None,
+    cwd: str | None = None,
+) -> asyncio.subprocess.Process:
+    """Wrapper around ``asyncio.create_subprocess_exec`` for testability.
+
+    Used by ``_run_review_agent`` — patch this in tests to avoid real subprocesses.
+    """
+    return await asyncio.create_subprocess_exec(
+        *argv, stdin=stdin, stdout=stdout, stderr=stderr, cwd=cwd
+    )
+
+
 async def _spawn(
     *argv: str,
     env: dict[str, str] | None = None,
     cwd: str | None = None,
 ) -> asyncio.subprocess.Process:
-    """Thin wrapper around ``asyncio.create_subprocess_exec`` for testability.
-
-    All arguments go through argv — there is no shell, so no injection vector.
-    """
+    """Thin wrapper for ``gh`` CLI calls — patch this in tests."""
     return await asyncio.create_subprocess_exec(
         *argv,
         env=env,

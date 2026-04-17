@@ -24,7 +24,8 @@ import respx
 from pydantic import ValidationError
 
 from src.gateway.review_engine import (
-    BOT_USERNAME,
+    _CLAUDE_BOT,
+    _CODEX_BOT,
     MAX_DIFF_CHARS,
     MAX_REVIEWS_PER_PR,
     RATE_LIMIT_WINDOW_SECONDS,
@@ -289,11 +290,17 @@ class TestHandles:
         consumer = ReviewEngineConsumer()
         assert consumer.handles(_event(WebhookEventType.REVIEW_SUBMITTED)) is False
 
-    def test_self_review_guard_blocks_bot_sender(self) -> None:
-        """PR_OPENED by the bot itself must be skipped to avoid feedback loops."""
+    def test_self_review_guard_blocks_codex_bot(self) -> None:
+        """PR events from the Codex reviewer bot must be skipped to avoid loops."""
         consumer = ReviewEngineConsumer()
-        event = _event(WebhookEventType.PR_OPENED, sender=BOT_USERNAME)
+        event = _event(WebhookEventType.PR_OPENED, sender=_CODEX_BOT)
         assert consumer.handles(event) is False
+
+    def test_claude_bot_prs_are_reviewed(self) -> None:
+        """PRs created by the Claude bot SHOULD be reviewed by Codex."""
+        consumer = ReviewEngineConsumer()
+        event = _event(WebhookEventType.PR_OPENED, sender=_CLAUDE_BOT)
+        assert consumer.handles(event) is True
 
 
 # ---------------------------------------------------------------------------
@@ -416,11 +423,15 @@ class TestHandleOrchestration:
         with (
             patch("src.gateway.review_engine._spawn", side_effect=fake_spawn),
             patch(
-                "asyncio.create_subprocess_exec",
+                "src.gateway.review_engine._create_subprocess",
                 side_effect=_fake_create,
             ),
             patch(
                 "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
                 new=AsyncMock(return_value="ghs_test"),
             ),
             patch(
@@ -463,6 +474,10 @@ class TestHandleOrchestration:
                 "src.gateway.github_token.get_github_app_token",
                 new=AsyncMock(return_value="ghs_test"),
             ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
         ):
             await consumer.handle(_event())
 
@@ -493,6 +508,10 @@ class TestHandleOrchestration:
                 "src.gateway.github_token.get_github_app_token",
                 new=AsyncMock(return_value="ghs_test"),
             ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
         ):
             await consumer.handle(_event())
 
@@ -514,10 +533,14 @@ class TestHandleOrchestration:
 
         with (
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
-            patch("asyncio.create_subprocess_exec", side_effect=_fake_create),
+            patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
             patch("src.gateway.review_engine.REVIEW_TIMEOUT_SECONDS", 0.01),
             patch(
                 "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
                 new=AsyncMock(return_value="ghs_test"),
             ),
         ):
@@ -539,6 +562,10 @@ class TestHandleOrchestration:
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
             patch(
                 "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
                 new=AsyncMock(return_value="ghs_test"),
             ),
         ):
@@ -563,9 +590,13 @@ class TestHandleOrchestration:
 
         with (
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
-            patch("asyncio.create_subprocess_exec", side_effect=_fake_create),
+            patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
             patch(
                 "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
                 new=AsyncMock(return_value="ghs_test"),
             ),
         ):
@@ -582,6 +613,10 @@ class TestHandleOrchestration:
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
             patch(
                 "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
                 new=AsyncMock(return_value="ghs_test"),
             ),
         ):
@@ -616,9 +651,13 @@ class TestHandleOrchestration:
 
         with (
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
-            patch("asyncio.create_subprocess_exec", side_effect=_fake_create),
+            patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
             patch(
                 "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
                 new=AsyncMock(return_value="ghs_test"),
             ),
             patch(
@@ -775,19 +814,7 @@ class TestFormatReviewBody:
         result = ReviewResult(verdict="approve", summary="LGTM", findings=[])
         body = _format_review_body(result, [])
         assert "LGTM" in body
-        assert "Automated Review (Codex)" in body
         assert "Findings not attached" not in body
-
-    def test_advisory_verdict_appears_in_body(self) -> None:
-        """The advisory verdict must be visible to humans since the event is always COMMENT."""
-        result_a = ReviewResult(verdict="approve", summary="s", findings=[])
-        result_r = ReviewResult(verdict="request_changes", summary="s", findings=[])
-        result_c = ReviewResult(verdict="comment", summary="s", findings=[])
-        assert "no blocking issues" in _format_review_body(result_a, [])
-        assert "changes suggested" in _format_review_body(result_r, [])
-        assert "notes only" in _format_review_body(result_c, [])
-        # The word "human" must appear so reviewers understand approval is theirs
-        assert "human reviewer" in _format_review_body(result_a, [])
 
     def test_includes_orphans_section(self) -> None:
         result = ReviewResult(verdict="comment", summary="see below", findings=[])
@@ -844,7 +871,6 @@ class TestPostReview:
         # (human is the only one allowed to approve / request changes).
         assert payload["event"] == "COMMENT"
         assert "has issues" in payload["body"]
-        assert "changes suggested" in payload["body"]  # advisory surface
         assert len(payload["comments"]) == 1
         assert payload["comments"][0]["path"] == "src/x.py"
         assert payload["comments"][0]["line"] == 1
@@ -984,9 +1010,13 @@ class TestFullFlowIntegration:
         url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
         with (
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
-            patch("asyncio.create_subprocess_exec", side_effect=_fake_create),
+            patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
             patch(
                 "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
                 new=AsyncMock(return_value="ghs_test"),
             ),
             respx.mock() as mock,
@@ -1009,17 +1039,19 @@ class TestFullFlowIntegration:
 
 class TestCountBotReviews:
     @pytest.mark.asyncio
-    async def test_counts_only_bot_reviews(self) -> None:
+    async def test_counts_only_codex_bot_reviews(self) -> None:
         url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
         reviews_json = [
-            {"user": {"login": BOT_USERNAME}, "state": "COMMENTED"},
+            {"user": {"login": _CODEX_BOT}, "state": "COMMENTED"},
             {"user": {"login": "sachinkundu"}, "state": "COMMENTED"},
-            {"user": {"login": BOT_USERNAME}, "state": "COMMENTED"},
+            {"user": {"login": _CODEX_BOT}, "state": "COMMENTED"},
+            {"user": {"login": _CLAUDE_BOT}, "state": "COMMENTED"},
             {"user": {"login": "someone-else"}, "state": "APPROVED"},
         ]
         with respx.mock() as mock:
             mock.get(url).mock(return_value=httpx.Response(200, json=reviews_json))
             n = await count_bot_reviews("sachinkundu/cloglog", 42, "t")
+        # Only counts Codex bot reviews, not Claude bot
         assert n == 2
 
     @pytest.mark.asyncio
@@ -1041,7 +1073,7 @@ class TestCountBotReviews:
                     json=[
                         {"state": "DISMISSED"},  # no user
                         {"user": None, "state": "DISMISSED"},
-                        {"user": {"login": BOT_USERNAME}, "state": "COMMENTED"},
+                        {"user": {"login": _CODEX_BOT}, "state": "COMMENTED"},
                     ],
                 )
             )
@@ -1062,6 +1094,10 @@ class TestTwoCycleCap:
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
             patch(
                 "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
                 new=AsyncMock(return_value="ghs_test"),
             ),
             patch(
@@ -1096,9 +1132,13 @@ class TestTwoCycleCap:
 
         with (
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
-            patch("asyncio.create_subprocess_exec", side_effect=_fake_create),
+            patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
             patch(
                 "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
                 new=AsyncMock(return_value="ghs_test"),
             ),
             patch(

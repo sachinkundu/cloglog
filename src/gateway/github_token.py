@@ -15,17 +15,30 @@ from typing import Final
 import httpx
 import jwt
 
-APP_ID: Final = "3235173"
-INSTALLATION_ID: Final = "120404294"
-PEM_PATH: Final = Path.home() / ".agent-vm" / "credentials" / "github-app.pem"
-
 _CACHE_TTL_SECONDS: Final = 3000.0  # 50 minutes; GitHub tokens expire at 60
-_TOKEN_URL: Final = f"https://api.github.com/app/installations/{INSTALLATION_ID}/access_tokens"
-_TOKEN_PERMISSIONS: Final = {
+
+# ---------------------------------------------------------------------------
+# Claude bot (code push, PR creation)
+# ---------------------------------------------------------------------------
+_CLAUDE_APP_ID: Final = "3235173"
+_CLAUDE_INSTALLATION_ID: Final = "120404294"
+_CLAUDE_PEM: Final = Path.home() / ".agent-vm" / "credentials" / "github-app.pem"
+_CLAUDE_PERMISSIONS: Final = {
     "contents": "write",
     "pull_requests": "write",
     "issues": "write",
     "workflows": "write",
+}
+
+# ---------------------------------------------------------------------------
+# Codex reviewer bot (posts reviews only)
+# ---------------------------------------------------------------------------
+_CODEX_APP_ID: Final = "3408174"
+_CODEX_INSTALLATION_ID: Final = "124664077"
+_CODEX_PEM: Final = Path.home() / ".agent-vm" / "credentials" / "codex-reviewer.pem"
+_CODEX_PERMISSIONS: Final = {
+    "contents": "read",
+    "pull_requests": "write",
 }
 
 
@@ -35,42 +48,74 @@ class _TokenCache:
     fetched_at: float = 0.0
 
 
-_cache = _TokenCache()
+_claude_cache = _TokenCache()
+_codex_cache = _TokenCache()
 
 
-def _build_jwt() -> str:
+def _build_jwt(app_id: str, pem_path: Path) -> str:
     """Sign the short-lived JWT used to request installation tokens."""
-    private_key = PEM_PATH.read_bytes()
+    private_key = pem_path.read_bytes()
     now = int(time.time())
-    payload = {"iat": now - 60, "exp": now + 600, "iss": APP_ID}
+    payload = {"iat": now - 60, "exp": now + 600, "iss": app_id}
     return jwt.encode(payload, private_key, algorithm="RS256")
 
 
-async def get_github_app_token() -> str:
-    """Return a cached GitHub App installation token, refreshing if expired."""
+async def _get_token(
+    app_id: str,
+    installation_id: str,
+    pem_path: Path,
+    permissions: dict[str, str],
+    cache: _TokenCache,
+) -> str:
+    """Return a cached installation token, refreshing if expired."""
     now = time.monotonic()
-    if _cache.token is not None and (now - _cache.fetched_at) < _CACHE_TTL_SECONDS:
-        return _cache.token
+    if cache.token is not None and (now - cache.fetched_at) < _CACHE_TTL_SECONDS:
+        return cache.token
 
-    encoded = _build_jwt()
+    encoded = _build_jwt(app_id, pem_path)
+    url = f"https://api.github.com/app/installations/{installation_id}/access_tokens"
     async with httpx.AsyncClient() as client:
         resp = await client.post(
-            _TOKEN_URL,
+            url,
             headers={
                 "Authorization": f"Bearer {encoded}",
                 "Accept": "application/vnd.github+json",
             },
-            json={"permissions": _TOKEN_PERMISSIONS},
+            json={"permissions": permissions},
         )
         resp.raise_for_status()
         token: str = resp.json()["token"]
 
-    _cache.token = token
-    _cache.fetched_at = now
+    cache.token = token
+    cache.fetched_at = now
     return token
 
 
+async def get_github_app_token() -> str:
+    """Claude bot token — for pushing code and creating PRs."""
+    return await _get_token(
+        _CLAUDE_APP_ID,
+        _CLAUDE_INSTALLATION_ID,
+        _CLAUDE_PEM,
+        _CLAUDE_PERMISSIONS,
+        _claude_cache,
+    )
+
+
+async def get_codex_reviewer_token() -> str:
+    """Codex reviewer bot token — for posting PR reviews."""
+    return await _get_token(
+        _CODEX_APP_ID,
+        _CODEX_INSTALLATION_ID,
+        _CODEX_PEM,
+        _CODEX_PERMISSIONS,
+        _codex_cache,
+    )
+
+
 def reset_token_cache() -> None:
-    """Clear the cached token. Primarily for tests."""
-    _cache.token = None
-    _cache.fetched_at = 0.0
+    """Clear all cached tokens. Primarily for tests."""
+    _claude_cache.token = None
+    _claude_cache.fetched_at = 0.0
+    _codex_cache.token = None
+    _codex_cache.fetched_at = 0.0

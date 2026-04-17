@@ -15,10 +15,14 @@ import respx
 
 from src.gateway import github_token
 from src.gateway.github_token import (
-    _TOKEN_URL,
+    _CLAUDE_APP_ID,
+    _CLAUDE_INSTALLATION_ID,
+    _CLAUDE_PERMISSIONS,
     get_github_app_token,
     reset_token_cache,
 )
+
+_TOKEN_URL = f"https://api.github.com/app/installations/{_CLAUDE_INSTALLATION_ID}/access_tokens"
 
 
 @pytest.fixture(autouse=True)
@@ -77,7 +81,8 @@ async def test_refreshes_after_ttl_expires(fake_jwt) -> None:  # type: ignore[no
         assert await get_github_app_token() == "ghs_original"
 
         # Simulate TTL elapsing by rewinding the cache timestamp
-        github_token._cache.fetched_at = time.monotonic() - github_token._CACHE_TTL_SECONDS - 1
+        expired = time.monotonic() - github_token._CACHE_TTL_SECONDS - 1
+        github_token._claude_cache.fetched_at = expired
 
         assert await get_github_app_token() == "ghs_refreshed"
 
@@ -110,7 +115,7 @@ async def test_http_error_is_raised_and_cache_not_poisoned(fake_jwt) -> None:  #
             await get_github_app_token()
 
     # Cache stays empty so the next call will try again
-    assert github_token._cache.token is None
+    assert github_token._claude_cache.token is None
 
 
 @pytest.mark.asyncio
@@ -130,14 +135,7 @@ async def test_token_request_uses_bearer_jwt_and_permissions(fake_jwt) -> None: 
     import json as _json
 
     body = _json.loads(req.content)
-    assert body == {
-        "permissions": {
-            "contents": "write",
-            "pull_requests": "write",
-            "issues": "write",
-            "workflows": "write",
-        }
-    }
+    assert body == {"permissions": _CLAUDE_PERMISSIONS}
 
 
 def test_build_jwt_uses_pem_and_app_id(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -159,11 +157,11 @@ def test_build_jwt_uses_pem_and_app_id(tmp_path) -> None:  # type: ignore[no-unt
     pem_path = tmp_path / "github-app.pem"
     pem_path.write_bytes(pem_bytes)
 
-    with patch.object(github_token, "PEM_PATH", pem_path):
-        encoded = github_token._build_jwt()
+    with patch.object(github_token, "_CLAUDE_PEM", pem_path):
+        encoded = github_token._build_jwt(_CLAUDE_APP_ID, pem_path)
 
     import jwt as _jwt
 
     decoded = _jwt.decode(encoded, public_pem, algorithms=["RS256"])
-    assert decoded["iss"] == github_token.APP_ID
+    assert decoded["iss"] == _CLAUDE_APP_ID
     assert decoded["exp"] > decoded["iat"]

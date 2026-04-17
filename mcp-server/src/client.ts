@@ -48,6 +48,10 @@ export class CloglogClient {
     const isAgentRoute = path.startsWith('/api/v1/agents/')
     const isRegisterRoute = path === '/api/v1/agents/register'
     const isUnregisterByPath = path === '/api/v1/agents/unregister-by-path'
+    // Supervisor routes target a different worktree than the caller — the
+    // caller's agent token (which is bound to its own worktree) would fail
+    // the target-worktree check. Use the MCP service key instead.
+    const isSupervisorRoute = isAgentRoute && path.endsWith('/assign-task')
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -56,6 +60,10 @@ export class CloglogClient {
     if (isRegisterRoute || isUnregisterByPath) {
       // Registration/unregister-by-path uses project API key
       headers['Authorization'] = `Bearer ${this.apiKey}`
+    } else if (isSupervisorRoute) {
+      // Supervisor actions target another worktree — use MCP service key
+      headers['Authorization'] = `Bearer ${this.serviceKey}`
+      headers['X-MCP-Request'] = 'true'
     } else if (isAgentRoute && this.agentToken) {
       // Agent-scoped routes use per-agent token (no X-MCP-Request)
       headers['Authorization'] = `Bearer ${this.agentToken}`

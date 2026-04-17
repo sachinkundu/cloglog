@@ -687,6 +687,143 @@ class TestAssignTaskAPI:
         )
         assert resp.status_code == 404
 
+    async def test_assign_task_with_project_api_key(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Project API key authorizes supervisor assignment to its own worktrees."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+        task_id = await _create_task_via_db(db_session, project["id"])
+
+        reg = await client.post(
+            "/api/v1/agents/register",
+            json={"worktree_path": "/repo/wt-super-proj", "branch_name": "wt-super-proj"},
+            headers=h,
+        )
+        wt_id = reg.json()["worktree_id"]
+
+        # Assign using project API key — no X-MCP-Request and no agent token
+        resp = await client.patch(
+            f"/api/v1/agents/{wt_id}/assign-task",
+            json={"task_id": task_id},
+            headers={"Authorization": f"Bearer {project['api_key']}", "X-Dashboard-Key": ""},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "assigned"
+
+    async def test_assign_task_with_mcp_service_key(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """MCP service key authorizes supervisor assignment to any worktree."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+        task_id = await _create_task_via_db(db_session, project["id"])
+
+        reg = await client.post(
+            "/api/v1/agents/register",
+            json={"worktree_path": "/repo/wt-super-mcp", "branch_name": "wt-super-mcp"},
+            headers=h,
+        )
+        wt_id = reg.json()["worktree_id"]
+
+        resp = await client.patch(
+            f"/api/v1/agents/{wt_id}/assign-task",
+            json={"task_id": task_id},
+            headers={
+                "Authorization": "Bearer cloglog-mcp-dev",
+                "X-MCP-Request": "true",
+                "X-Dashboard-Key": "",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "assigned"
+
+    async def test_assign_task_wrong_project_api_key_forbidden(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """A project's API key cannot assign tasks to another project's worktree."""
+        proj_a = await _create_project_via_api(client)
+        proj_b = await _create_project_via_api(client)
+        task_id = await _create_task_via_db(db_session, proj_a["id"])
+
+        reg = await client.post(
+            "/api/v1/agents/register",
+            json={"worktree_path": "/repo/wt-proj-a", "branch_name": "wt-proj-a"},
+            headers=_auth(proj_a["api_key"]),
+        )
+        wt_id = reg.json()["worktree_id"]
+
+        # Use project B's key to try to assign to project A's worktree
+        resp = await client.patch(
+            f"/api/v1/agents/{wt_id}/assign-task",
+            json={"task_id": task_id},
+            headers={"Authorization": f"Bearer {proj_b['api_key']}", "X-Dashboard-Key": ""},
+        )
+        assert resp.status_code == 403
+
+    async def test_assign_task_invalid_mcp_key_rejected(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """X-MCP-Request with a wrong service key is rejected."""
+        project = await _create_project_via_api(client)
+        reg = await client.post(
+            "/api/v1/agents/register",
+            json={"worktree_path": "/repo/wt-bad-mcp", "branch_name": "wt-bad-mcp"},
+            headers=_auth(project["api_key"]),
+        )
+        wt_id = reg.json()["worktree_id"]
+
+        resp = await client.patch(
+            f"/api/v1/agents/{wt_id}/assign-task",
+            json={"task_id": str(uuid.uuid4())},
+            headers={
+                "Authorization": "Bearer wrong-mcp-key",
+                "X-MCP-Request": "true",
+                "X-Dashboard-Key": "",
+            },
+        )
+        assert resp.status_code == 401
+
+    async def test_assign_task_other_agent_token_rejected(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Agent A's token cannot be used to assign tasks to agent B's worktree."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+        task_id = await _create_task_via_db(db_session, project["id"])
+
+        reg_a = await client.post(
+            "/api/v1/agents/register",
+            json={"worktree_path": "/repo/wt-agent-a", "branch_name": "wt-agent-a"},
+            headers=h,
+        )
+        agent_a_token = reg_a.json()["agent_token"]
+
+        reg_b = await client.post(
+            "/api/v1/agents/register",
+            json={"worktree_path": "/repo/wt-agent-b", "branch_name": "wt-agent-b"},
+            headers=h,
+        )
+        wt_b = reg_b.json()["worktree_id"]
+
+        # Agent A tries to assign task to Agent B using its own token
+        resp = await client.patch(
+            f"/api/v1/agents/{wt_b}/assign-task",
+            json={"task_id": task_id},
+            headers=_agent_auth(agent_a_token),
+        )
+        assert resp.status_code == 401
+
+    async def test_assign_task_no_auth_rejected(self, client: AsyncClient) -> None:
+        """Request with no credentials is rejected by the middleware."""
+        fake_id = uuid.uuid4()
+        resp = await client.patch(
+            f"/api/v1/agents/{fake_id}/assign-task",
+            json={"task_id": str(uuid.uuid4())},
+            headers={"X-Dashboard-Key": ""},
+        )
+        assert resp.status_code == 401
+
 
 class TestWorktreeListAPI:
     async def test_list_worktrees(self, client: AsyncClient) -> None:

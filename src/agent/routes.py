@@ -27,7 +27,7 @@ from src.agent.schemas import (
 )
 from src.agent.services import AgentService
 from src.board.repository import BoardRepository
-from src.gateway.auth import CurrentAgent, CurrentProject
+from src.gateway.auth import CurrentAgent, CurrentProject, SupervisorAuth
 from src.shared.database import get_session
 from src.shared.events import Event, EventType, event_bus
 
@@ -69,9 +69,13 @@ async def get_tasks(worktree_id: UUID, service: ServiceDep, agent: CurrentAgent)
 
 @router.patch("/agents/{worktree_id}/assign-task", status_code=200)
 async def assign_task(
-    worktree_id: UUID, body: AssignTaskRequest, service: ServiceDep, agent: CurrentAgent
+    worktree_id: UUID, body: AssignTaskRequest, service: ServiceDep, target: SupervisorAuth
 ) -> dict[str, object]:
-    """Assign a task to a worktree without changing its status."""
+    """Assign a task to a worktree without changing its status.
+
+    Supervisor action: accepts MCP service key, the target project's API key,
+    or the target agent's own token.
+    """
     try:
         return await service.assign_task(worktree_id, body.task_id)
     except ValueError as e:

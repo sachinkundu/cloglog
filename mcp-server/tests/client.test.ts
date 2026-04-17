@@ -76,4 +76,58 @@ describe('CloglogClient', () => {
       ).rejects.toThrow('cloglog API error: 401')
     })
   })
+
+  describe('assign-task routing', () => {
+    let client: CloglogClient
+
+    beforeEach(() => {
+      client = new CloglogClient({
+        baseUrl: 'http://localhost:8000',
+        apiKey: 'test-key',
+        serviceKey: 'test-service-key',
+      })
+      client.setAgentToken('caller-agent-token')
+    })
+
+    afterEach(() => {
+      vi.restoreAllMocks()
+    })
+
+    it('uses MCP service key (not agent token) for assign-task', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ status: 'assigned' }), { status: 200 }),
+      )
+
+      await client.request('PATCH', '/api/v1/agents/target-wt/assign-task', {
+        task_id: 't1',
+      })
+
+      expect(fetch).toHaveBeenCalledWith(
+        'http://localhost:8000/api/v1/agents/target-wt/assign-task',
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: 'Bearer test-service-key',
+            'X-MCP-Request': 'true',
+          }),
+        }),
+      )
+    })
+
+    it('still uses agent token for self-scoped agent routes', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ status: 'ok' }), { status: 200 }),
+      )
+
+      await client.request('POST', '/api/v1/agents/caller-wt/heartbeat')
+
+      expect(fetch).toHaveBeenCalledWith(
+        'http://localhost:8000/api/v1/agents/caller-wt/heartbeat',
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: 'Bearer caller-agent-token',
+          }),
+        }),
+      )
+    })
+  })
 })

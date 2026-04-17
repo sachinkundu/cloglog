@@ -81,52 +81,14 @@ _DIFF_SKIP_PATTERNS: Final = tuple(
     )
 )
 
-REVIEW_PROMPT_TEMPLATE: Final = """\
-Review this pull request diff for the cloglog project.
+_REVIEW_PROMPT_PATH: Final = Path(".github/codex/prompts/review.md")
+_REVIEW_SCHEMA_PATH: Final = Path(".github/codex/review-schema.json")
 
-You are an advisory reviewer. The final APPROVE decision belongs to a
-human reviewer — your output is always posted to GitHub as a COMMENT,
-never as APPROVE or REQUEST_CHANGES, regardless of the ``verdict`` you
-pick. The ``verdict`` field is used only to classify severity in the
-review body. Keep this in mind when writing findings: be informative and
-specific; do not frame the review as a blocking gate.
-
-The project follows DDD with these bounded contexts:
-- Board (src/board/) — Projects, Epics, Features, Tasks
-- Agent (src/agent/) — Worktrees, Sessions
-- Document (src/document/) — Append-only storage
-- Gateway (src/gateway/) — API composition, auth, SSE
-Each context must not import from another context's internals.
-
-Read CLAUDE.md and docs/ddd-context-map.md for full project rules.
-
-REVIEW CRITERIA (in priority order):
-1. Correctness bugs — logic errors, off-by-one, null handling, race conditions
-2. DDD boundary violations — imports crossing bounded context boundaries
-3. Security issues — SQL injection, auth bypass, secret leakage, SSRF
-4. Testing gaps — new code paths without test coverage
-5. API contract violations — response shapes not matching OpenAPI spec
-6. Linting issues likely to fail CI — type errors, missing ``from None``
-7. Style and clarity — only flag if genuinely confusing, not bikeshedding
-
-Write your review as JSON to {output_path} matching this schema:
-{{
-  "verdict": "approve" | "request_changes" | "comment",
-  "summary": "1-2 sentence overall assessment",
-  "findings": [
-    {{
-      "file": "src/board/routes.py",
-      "line": 42,
-      "severity": "critical" | "high" | "medium" | "low" | "info",
-      "body": "Description of the issue and suggested fix"
-    }}
-  ]
-}}
-
-If the diff is clean, use verdict "approve" with an empty findings list.
-
-DIFF:
-{diff_content}
+# Fallback prompt when the project doesn't have .github/codex/prompts/review.md
+_FALLBACK_PROMPT: Final = """\
+Review this code change. Focus on correctness, security, and maintainability bugs.
+Only flag issues introduced by this diff, not pre-existing problems.
+If the patch is correct, say so.
 """
 
 
@@ -225,8 +187,18 @@ def filter_diff(diff: str) -> str:
     return body if body else preamble
 
 
-def build_review_prompt(diff: str, output_path: Path) -> str:
-    return REVIEW_PROMPT_TEMPLATE.format(diff_content=diff, output_path=output_path)
+def _load_project_prompt(project_root: Path) -> str:
+    """Load the review prompt from the project, or use fallback."""
+    prompt_file = project_root / _REVIEW_PROMPT_PATH
+    if prompt_file.exists():
+        return prompt_file.read_text()
+    return _FALLBACK_PROMPT
+
+
+def _get_schema_path(project_root: Path) -> Path | None:
+    """Return the review schema path if it exists in the project."""
+    schema_file = project_root / _REVIEW_SCHEMA_PATH
+    return schema_file if schema_file.exists() else None
 
 
 def is_review_agent_available() -> bool:
@@ -548,23 +520,51 @@ class ReviewEngineConsumer:
         return stdout.decode(errors="replace")
 
     async def _run_review_agent(self, diff: str, pr_number: int) -> ReviewResult | None:
-        """Launch the review agent CLI and parse its JSON output."""
+        """Launch ``codex exec`` with the project prompt and diff via stdin.
+
+        Uses ``--output-schema`` for structured JSON output when the project
+        has a schema file, otherwise falls back to parsing free-form JSON
+        from the output file.
+        """
+        project_root = Path.cwd()
+        prompt = _load_project_prompt(project_root)
+        schema_path = _get_schema_path(project_root)
+
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             output_path = tmp / "review.json"
-            prompt_path = tmp / "prompt.md"
-            prompt_path.write_text(build_review_prompt(diff, output_path))
 
-            proc = await _spawn(
+            # Build the full prompt: instructions + diff
+            full_prompt = f"{prompt}\n\nDIFF:\n{diff}"
+
+            args = [
                 settings.review_agent_cmd,
-                "--prompt",
-                str(prompt_path),
-                "--approval-mode",
-                "full-auto",
-                cwd=str(Path.cwd()),
+                "exec",
+                "--full-auto",
+                "--sandbox", "read-only",
+                "--ephemeral",
+                "--color", "never",
+                "-o", str(output_path),
+                "-C", str(project_root),
+            ]
+            if schema_path is not None:
+                args += ["--output-schema", str(schema_path)]
+
+            # Pass prompt via stdin using "-" sentinel
+            args.append("-")
+
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(project_root),
             )
             try:
-                await asyncio.wait_for(proc.wait(), timeout=REVIEW_TIMEOUT_SECONDS)
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(input=full_prompt.encode()),
+                    timeout=REVIEW_TIMEOUT_SECONDS,
+                )
             except TimeoutError:
                 proc.kill()
                 with contextlib.suppress(ProcessLookupError):
@@ -572,15 +572,73 @@ class ReviewEngineConsumer:
                 logger.warning("Review agent timed out for PR #%d", pr_number)
                 return None
 
-            if not output_path.exists():
+            if proc.returncode != 0:
                 logger.warning(
-                    "Review agent produced no output for PR #%d (exit=%s)",
-                    pr_number,
+                    "Review agent exited %d for PR #%d: %s",
                     proc.returncode,
+                    pr_number,
+                    stderr.decode(errors="replace")[:500],
                 )
+
+            # Try output file first (written by -o flag)
+            if output_path.exists():
+                raw = output_path.read_text()
+                result = self._parse_output(raw, pr_number)
+                if result is not None:
+                    return result
+
+            # Fallback: try parsing stdout
+            if stdout:
+                result = self._parse_output(stdout.decode(errors="replace"), pr_number)
+                if result is not None:
+                    return result
+
+            logger.warning("Review agent produced no parseable output for PR #%d", pr_number)
+            return None
+
+    def _parse_output(self, raw: str, pr_number: int) -> ReviewResult | None:
+        """Try to parse review output, handling both schema formats.
+
+        The Codex --output-schema format uses different field names than our
+        internal ReviewResult. This method normalizes both.
+        """
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            # Maybe there's JSON embedded in other output — try to extract it
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            if start >= 0 and end > start:
+                try:
+                    data = json.loads(raw[start:end])
+                except json.JSONDecodeError:
+                    return None
+            else:
                 return None
 
-            return parse_review_output(output_path.read_text())
+        # Normalize from Codex schema format to our ReviewResult format
+        if "overall_correctness" in data and "verdict" not in data:
+            # Codex schema format — convert
+            verdict = "approve" if data.get("overall_correctness") == "patch is correct" else "request_changes"
+            findings = []
+            for f in data.get("findings", []):
+                loc = f.get("code_location", {})
+                line_range = loc.get("line_range", {})
+                priority = f.get("priority", 0)
+                severity = {3: "critical", 2: "high", 1: "medium", 0: "info"}.get(priority, "info")
+                findings.append({
+                    "file": loc.get("absolute_file_path", "unknown"),
+                    "line": line_range.get("start", 1),
+                    "severity": severity,
+                    "body": f.get("body", f.get("title", "")),
+                })
+            data = {
+                "verdict": verdict,
+                "summary": data.get("overall_explanation", ""),
+                "findings": findings,
+            }
+
+        return parse_review_output(json.dumps(data))
 
 
 async def _spawn(

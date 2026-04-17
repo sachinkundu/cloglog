@@ -18,12 +18,28 @@ from starlette.responses import Response
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    import logging
+
     from src.gateway.notification_listener import run_notification_listener
+    from src.gateway.review_engine import ReviewEngineConsumer, is_review_agent_available
     from src.gateway.webhook_consumers import AgentNotifierConsumer
     from src.gateway.webhook_dispatcher import webhook_dispatcher
+    from src.shared.config import settings
+
+    logger = logging.getLogger(__name__)
 
     # Register webhook consumers
     webhook_dispatcher.register(AgentNotifierConsumer())
+
+    if settings.review_enabled:
+        if is_review_agent_available():
+            webhook_dispatcher.register(ReviewEngineConsumer())
+            logger.info("ReviewEngineConsumer registered (agent=%s)", settings.review_agent_cmd)
+        else:
+            logger.warning(
+                "Review agent %r not on PATH — ReviewEngineConsumer disabled",
+                settings.review_agent_cmd,
+            )
 
     task = asyncio.create_task(run_notification_listener())
     yield

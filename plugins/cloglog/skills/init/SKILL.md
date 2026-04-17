@@ -271,15 +271,43 @@ Record in the summary: `GitHub bot: needs repo access`.
 
 The cloglog plugin includes templates for automated PR review using OpenAI Codex CLI. Set up the review infrastructure:
 
-### 7a. Copy review schema and prompt
+### 7a. Copy review schema and generate project-specific review prompt
 
 ```bash
 PLUGIN_ROOT="<path to plugins/cloglog>"
 mkdir -p .github/codex/prompts
 
 cp "${PLUGIN_ROOT}/templates/codex-review-schema.json" .github/codex/review-schema.json
-cp "${PLUGIN_ROOT}/templates/codex-review-prompt.md" .github/codex/prompts/review.md
 ```
+
+**Generate the review prompt — do NOT just copy the template.** The template at `${PLUGIN_ROOT}/templates/codex-review-prompt.md` contains the generic structure. Read it, then generate `.github/codex/prompts/review.md` by adding project-specific verification steps based on the detected tech stack:
+
+**Python/FastAPI** (detected by `pyproject.toml` + FastAPI in deps):
+- Add: "Read the Pydantic request/response schema. Check if `model_dump(exclude_unset=True)` silently drops fields."
+- Add: "Check route registration in the app factory — is the new router included?"
+- Add: "If a migration is added, verify the Alembic revision chain."
+- Add: "Check `tests/conftest.py` — are new models imported for table creation?"
+
+**Node.js/TypeScript** (detected by `package.json` + `tsconfig.json`):
+- Add: "Check `package.json` — are new dependencies added with appropriate version ranges?"
+- Add: "If the diff adds types, verify they're exported from the barrel file (index.ts)."
+- Add: "Check for any `as any` type casts that bypass type safety."
+
+**React frontend** (detected by React in deps):
+- Add: "Read the component being modified. Are props properly typed?"
+- Add: "If API types are used, verify they're imported from the generated types file, not hand-written."
+- Add: "Check for missing cleanup in useEffect hooks."
+
+**Rust** (detected by `Cargo.toml`):
+- Add: "Check if new `unwrap()` calls exist — should they use `?` or `.expect()` instead?"
+- Add: "Verify new public API items have documentation."
+
+**DDD/bounded contexts** (detected by AGENTS.md mentioning contexts or `docs/ddd-context-map.md` existing):
+- Add: "Read the context map. Verify no imports cross bounded context boundaries."
+
+**Mixed stacks**: combine the relevant sections.
+
+The generated prompt should keep the generic structure (read full file, trace imports, verify tests, cite evidence, don't report surface bugs) and ADD the tech-stack-specific verification steps.
 
 ### 7b. Add review guidelines to AGENTS.md
 

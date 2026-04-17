@@ -267,7 +267,58 @@ fi
 
 Record in the summary: `GitHub bot: needs repo access`.
 
-## Step 7: Gitignore and Add to Git
+## Step 7: Set Up Automated PR Review (Codex)
+
+The cloglog plugin includes templates for automated PR review using OpenAI Codex CLI. Set up the review infrastructure:
+
+### 7a. Copy review schema and prompt
+
+```bash
+PLUGIN_ROOT="<path to plugins/cloglog>"
+mkdir -p .github/codex/prompts
+
+cp "${PLUGIN_ROOT}/templates/codex-review-schema.json" .github/codex/review-schema.json
+cp "${PLUGIN_ROOT}/templates/codex-review-prompt.md" .github/codex/prompts/review.md
+```
+
+### 7b. Add review guidelines to AGENTS.md
+
+Check if the project has an `AGENTS.md` (or `CLAUDE.md`). If it has a `## Review guidelines` section already, skip this. Otherwise, append the review guidelines fragment:
+
+```bash
+GUIDELINES="${PLUGIN_ROOT}/templates/review-guidelines-fragment.md"
+TARGET="AGENTS.md"
+if [[ ! -f "$TARGET" ]]; then
+  TARGET="CLAUDE.md"
+fi
+if [[ -f "$TARGET" ]] && ! grep -q "## Review guidelines" "$TARGET"; then
+  echo "" >> "$TARGET"
+  cat "$GUIDELINES" >> "$TARGET"
+fi
+```
+
+The `## Review guidelines` section is specifically recognized by Codex CLI during reviews. Projects should customize these rules for their own architecture.
+
+### 7c. AGENTS.md / CLAUDE.md symlink
+
+If the project has `CLAUDE.md` but no `AGENTS.md`, create a symlink so both Claude Code and Codex read the same file:
+
+```bash
+if [[ -f "CLAUDE.md" ]] && [[ ! -f "AGENTS.md" ]] && [[ ! -L "CLAUDE.md" ]]; then
+  mv CLAUDE.md AGENTS.md
+  ln -s AGENTS.md CLAUDE.md
+fi
+```
+
+If `AGENTS.md` exists but `CLAUDE.md` doesn't, create the reverse symlink:
+
+```bash
+if [[ -f "AGENTS.md" ]] && [[ ! -f "CLAUDE.md" ]]; then
+  ln -s AGENTS.md CLAUDE.md
+fi
+```
+
+## Step 8: Gitignore and Add to Git
 
 Add `.cloglog/inbox` to `.gitignore` (the inbox file is runtime state, not source):
 
@@ -278,12 +329,12 @@ echo '.cloglog/inbox' >> .gitignore
 Then stage the config files:
 
 ```bash
-git add .cloglog/ .gitignore
+git add .cloglog/ .github/codex/ .gitignore
 ```
 
-If CLAUDE.md was modified, add that too. If `scripts/gh-app-token.py` was created, add that too. Do not commit automatically — let the user decide when to commit.
+If CLAUDE.md/AGENTS.md was modified, add that too. If `scripts/gh-app-token.py` was created, add that too. Do not commit automatically — let the user decide when to commit.
 
-## Step 8: Summary
+## Step 9: Summary
 
 Present what was configured:
 

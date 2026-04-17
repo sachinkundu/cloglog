@@ -34,7 +34,6 @@ from src.gateway.review_engine import (
     ReviewResult,
     _format_review_body,
     _partition_findings,
-    build_review_prompt,
     count_bot_reviews,
     extract_diff_new_lines,
     filter_diff,
@@ -231,18 +230,6 @@ class TestFilterDiff:
 
 
 # ---------------------------------------------------------------------------
-# build_review_prompt
-# ---------------------------------------------------------------------------
-
-
-def test_build_review_prompt_substitutes_diff_and_output() -> None:
-    prompt = build_review_prompt("DIFF_CONTENT", Path("/tmp/out.json"))
-    assert "DIFF_CONTENT" in prompt
-    assert "/tmp/out.json" in prompt
-    assert "Review this pull request diff" in prompt
-
-
-# ---------------------------------------------------------------------------
 # is_review_agent_available
 # ---------------------------------------------------------------------------
 
@@ -336,7 +323,9 @@ class _FakeProcess:
         self.kill_calls += 1
         self._hang = False
 
-    async def communicate(self) -> tuple[bytes, bytes]:
+    async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:  # noqa: A002
+        if self._hang:
+            await asyncio.sleep(3600)
         return self._stdout, self._stderr
 
     async def wait(self) -> int:
@@ -395,7 +384,6 @@ class TestHandleOrchestration:
             # The agent needs to *write the JSON file* before it exits. We capture
             # the prompt path from the second spawn call so we can locate the
             # output file the agent promised to write.
-            agent_proc = _FakeProcess(returncode=0)
             calls: list[tuple[str, ...]] = []
             output_path_holder: dict[str, Path] = {}
 
@@ -403,25 +391,34 @@ class TestHandleOrchestration:
                 calls.append(argv)
                 if argv[0] == "gh":
                     return diff_proc
-                # Agent invocation: find --prompt path, read it to extract output_path
-                prompt_idx = argv.index("--prompt") + 1
-                prompt_file = Path(argv[prompt_idx])
-                prompt_text = prompt_file.read_text()
-                # Extract the output path from the templated prompt
-                for token in prompt_text.split():
-                    if token.endswith("review.json"):
-                        output_path = Path(token)
-                        output_path.write_text(sample_review_json)
-                        output_path_holder["path"] = output_path
-                        break
-                return agent_proc
+                pytest.fail("_spawn should only be called for gh, not for codex")
 
             return _fake_spawn, calls, output_path_holder
 
         fake_spawn, calls, paths = fake_spawn_factory(sample_diff.encode())
 
+        # The codex invocation uses create_subprocess_exec directly.
+        # We mock it to write the review JSON to the -o output path.
+        async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
+            argv = args
+            # Find the -o flag to get the output path
+            for i, arg in enumerate(argv):
+                if arg == "-o" and i + 1 < len(argv):
+                    output_path = Path(argv[i + 1])
+                    output_path.write_text(sample_review_json)
+                    paths["path"] = output_path
+                    break
+            proc = _FakeProcess(stdout=b"")
+            # Simulate communicate() returning immediately
+            proc._stdin_data = kwargs.get("stdin")
+            return proc
+
         with (
             patch("src.gateway.review_engine._spawn", side_effect=fake_spawn),
+            patch(
+                "asyncio.create_subprocess_exec",
+                side_effect=_fake_create,
+            ),
             patch(
                 "src.gateway.github_token.get_github_app_token",
                 new=AsyncMock(return_value="ghs_test"),
@@ -433,10 +430,9 @@ class TestHandleOrchestration:
         ):
             await consumer.handle(_event())
 
-        # Two spawns: gh pr diff + the review agent
-        assert len(calls) == 2
+        # One _spawn call for gh pr diff, codex uses create_subprocess_exec
+        assert len(calls) == 1
         assert calls[0][:3] == ("gh", "pr", "diff")
-        assert calls[1][0] == "codex"
         assert "path" in paths  # the agent wrote its review file
         posted.assert_awaited_once()
         assert posted.call_args.args[0] == "sachinkundu/cloglog"
@@ -511,10 +507,14 @@ class TestHandleOrchestration:
         async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
             if argv[0] == "gh":
                 return diff_proc
+            pytest.fail("_spawn should only be called for gh")
+
+        async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
             return agent_proc
 
         with (
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            patch("asyncio.create_subprocess_exec", side_effect=_fake_create),
             patch("src.gateway.review_engine.REVIEW_TIMEOUT_SECONDS", 0.01),
             patch(
                 "src.gateway.github_token.get_github_app_token",
@@ -552,17 +552,18 @@ class TestHandleOrchestration:
         async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
             if argv[0] == "gh":
                 return _FakeProcess(stdout=sample_diff.encode())
-            # Locate the prompt path and write garbage to the promised review.json
-            prompt_idx = argv.index("--prompt") + 1
-            prompt_text = Path(argv[prompt_idx]).read_text()
-            for tok in prompt_text.split():
-                if tok.endswith("review.json"):
-                    Path(tok).write_text("NOT JSON")
+            pytest.fail("_spawn should only be called for gh")
+
+        async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
+            for i, arg in enumerate(args):
+                if arg == "-o" and i + 1 < len(args):
+                    Path(args[i + 1]).write_text("NOT JSON")
                     break
             return _FakeProcess(returncode=0)
 
         with (
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            patch("asyncio.create_subprocess_exec", side_effect=_fake_create),
             patch(
                 "src.gateway.github_token.get_github_app_token",
                 new=AsyncMock(return_value="ghs_test"),
@@ -602,12 +603,12 @@ class TestHandleOrchestration:
                 await asyncio.sleep(0.05)
                 active -= 1
                 return _FakeProcess(stdout=sample_diff.encode())
-            # Write an empty-approve review.json so the consumer succeeds cleanly
-            prompt_idx = argv.index("--prompt") + 1
-            prompt_text = Path(argv[prompt_idx]).read_text()
-            for tok in prompt_text.split():
-                if tok.endswith("review.json"):
-                    Path(tok).write_text(
+            pytest.fail("_spawn should only be called for gh")
+
+        async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
+            for i, arg in enumerate(args):
+                if arg == "-o" and i + 1 < len(args):
+                    Path(args[i + 1]).write_text(
                         json.dumps({"verdict": "approve", "summary": "ok", "findings": []})
                     )
                     break
@@ -615,6 +616,7 @@ class TestHandleOrchestration:
 
         with (
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            patch("asyncio.create_subprocess_exec", side_effect=_fake_create),
             patch(
                 "src.gateway.github_token.get_github_app_token",
                 new=AsyncMock(return_value="ghs_test"),
@@ -969,17 +971,20 @@ class TestFullFlowIntegration:
         async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
             if argv[0] == "gh":
                 return _FakeProcess(stdout=pr_diff.encode())
-            prompt_idx = argv.index("--prompt") + 1
-            prompt_text = Path(argv[prompt_idx]).read_text()
-            for tok in prompt_text.split():
-                if tok.endswith("review.json"):
-                    Path(tok).write_text(review_json)
+            pytest.fail("_spawn should only be called for gh")
+
+        async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
+            # Find -o flag to get output path and write review JSON there
+            for i, arg in enumerate(args):
+                if arg == "-o" and i + 1 < len(args):
+                    Path(args[i + 1]).write_text(review_json)
                     break
             return _FakeProcess(returncode=0)
 
         url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
         with (
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            patch("asyncio.create_subprocess_exec", side_effect=_fake_create),
             patch(
                 "src.gateway.github_token.get_github_app_token",
                 new=AsyncMock(return_value="ghs_test"),
@@ -1075,10 +1080,15 @@ class TestTwoCycleCap:
             launched.append(argv)
             if argv[0] == "gh":
                 return _FakeProcess(stdout=sample_diff.encode())
-            prompt_idx = argv.index("--prompt") + 1
-            for tok in Path(argv[prompt_idx]).read_text().split():
-                if tok.endswith("review.json"):
-                    Path(tok).write_text(
+            pytest.fail("_spawn should only be called for gh")
+
+        codex_launched = []
+
+        async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
+            codex_launched.append(args)
+            for i, arg in enumerate(args):
+                if arg == "-o" and i + 1 < len(args):
+                    Path(args[i + 1]).write_text(
                         json.dumps({"verdict": "approve", "summary": "", "findings": []})
                     )
                     break
@@ -1086,6 +1096,7 @@ class TestTwoCycleCap:
 
         with (
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            patch("asyncio.create_subprocess_exec", side_effect=_fake_create),
             patch(
                 "src.gateway.github_token.get_github_app_token",
                 new=AsyncMock(return_value="ghs_test"),
@@ -1101,5 +1112,6 @@ class TestTwoCycleCap:
         ):
             await consumer.handle(_event())
 
-        # One under the cap → full flow runs: gh + agent
-        assert len(launched) == 2
+        # gh pr diff via _spawn, codex via create_subprocess_exec
+        assert len(launched) == 1
+        assert len(codex_launched) == 1

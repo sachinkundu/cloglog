@@ -266,6 +266,11 @@ dev = [
     { name = "sqlalchemy", extra = ["mypy"] },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "respx" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.14.0" },
@@ -294,6 +299,9 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32.0" },
 ]
 provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "respx", specifier = ">=0.22.0" }]
 
 [[package]]
 name = "colorama"

@@ -48,11 +48,13 @@ REVIEW_TIMEOUT_SECONDS: Final = 300.0
 RATE_LIMIT_WINDOW_SECONDS: Final = 3600.0
 REVIEW_POST_RETRY_DELAY_SECONDS: Final = 5.0
 REVIEW_REQUEST_TIMEOUT_SECONDS: Final = 30.0
-# Maximum number of bot reviews per PR. The cycle is:
+# Maximum number of bot reviews per PR. The cycle is at most:
 #   (1) author opens PR → bot reviews → claude-coding-agent pushes a fix,
-#   (2) bot reviews the fix → human decides.
-# A third bot review would just be noise — the human reviewer has enough
-# to act on by then.
+#   (2) bot reviews the fix → claude-coding-agent pushes another fix → human decides.
+# A single round (one bot review, one coder fix, then human approves) is
+# also fine when the first review is trivially addressable. What the cap
+# prevents is a third bot review on top of two prior ones — by that point
+# the human reviewer has enough context to act.
 MAX_REVIEWS_PER_PR: Final = 2
 
 _HUNK_HEADER_RE: Final = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")

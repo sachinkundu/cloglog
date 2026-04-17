@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     dashboard_secret: str = "cloglog-dashboard-dev"
     mcp_service_key: str = "cloglog-mcp-dev"
     github_webhook_secret: str = ""
+    review_agent_cmd: str = "codex"
+    review_max_per_hour: int = 10
+    review_enabled: bool = True
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

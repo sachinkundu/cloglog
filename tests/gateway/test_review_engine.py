@@ -26,6 +26,7 @@ from pydantic import ValidationError
 from src.gateway.review_engine import (
     BOT_USERNAME,
     MAX_DIFF_CHARS,
+    MAX_REVIEWS_PER_PR,
     RATE_LIMIT_WINDOW_SECONDS,
     RateLimiter,
     ReviewEngineConsumer,
@@ -34,6 +35,7 @@ from src.gateway.review_engine import (
     _format_review_body,
     _partition_findings,
     build_review_prompt,
+    count_bot_reviews,
     extract_diff_new_lines,
     filter_diff,
     is_review_agent_available,
@@ -360,6 +362,15 @@ def sample_review_json() -> str:
 
 
 class TestHandleOrchestration:
+    @pytest.fixture(autouse=True)
+    def _stub_count_bot_reviews(self) -> Any:
+        """Default: no prior bot reviews on this PR. Tests can re-patch locally."""
+        with patch(
+            "src.gateway.review_engine.count_bot_reviews",
+            new=AsyncMock(return_value=0),
+        ) as m:
+            yield m
+
     @pytest.mark.asyncio
     async def test_rate_limit_short_circuits(self, caplog: Any) -> None:
         consumer = ReviewEngineConsumer(max_per_hour=0)
@@ -765,6 +776,17 @@ class TestFormatReviewBody:
         assert "Automated Review (Codex)" in body
         assert "Findings not attached" not in body
 
+    def test_advisory_verdict_appears_in_body(self) -> None:
+        """The advisory verdict must be visible to humans since the event is always COMMENT."""
+        result_a = ReviewResult(verdict="approve", summary="s", findings=[])
+        result_r = ReviewResult(verdict="request_changes", summary="s", findings=[])
+        result_c = ReviewResult(verdict="comment", summary="s", findings=[])
+        assert "no blocking issues" in _format_review_body(result_a, [])
+        assert "changes suggested" in _format_review_body(result_r, [])
+        assert "notes only" in _format_review_body(result_c, [])
+        # The word "human" must appear so reviewers understand approval is theirs
+        assert "human reviewer" in _format_review_body(result_a, [])
+
     def test_includes_orphans_section(self) -> None:
         result = ReviewResult(verdict="comment", summary="see below", findings=[])
         orphans = [
@@ -816,8 +838,11 @@ class TestPostReview:
         assert req.headers["Accept"] == "application/vnd.github+json"
         assert req.headers["X-GitHub-Api-Version"] == "2022-11-28"
         payload = json.loads(req.content)
-        assert payload["event"] == "REQUEST_CHANGES"
+        # Even for verdict="request_changes", the event is always COMMENT
+        # (human is the only one allowed to approve / request changes).
+        assert payload["event"] == "COMMENT"
         assert "has issues" in payload["body"]
+        assert "changes suggested" in payload["body"]  # advisory surface
         assert len(payload["comments"]) == 1
         assert payload["comments"][0]["path"] == "src/x.py"
         assert payload["comments"][0]["line"] == 1
@@ -883,19 +908,16 @@ class TestPostReview:
         assert route.call_count == 2  # original + one retry
 
     @pytest.mark.asyncio
-    async def test_verdict_maps_to_github_event(self) -> None:
+    async def test_verdict_never_becomes_approve_or_request_changes(self) -> None:
+        """Every verdict lands as COMMENT — only humans flip merge state."""
         url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
-        for verdict, gh_event in (
-            ("approve", "APPROVE"),
-            ("request_changes", "REQUEST_CHANGES"),
-            ("comment", "COMMENT"),
-        ):
+        for verdict in ("approve", "request_changes", "comment"):
             result = ReviewResult(verdict=verdict, summary="x", findings=[])
             with respx.mock() as mock:
                 route = mock.post(url).mock(return_value=httpx.Response(200, json={"id": 1}))
                 await post_review("sachinkundu/cloglog", 42, result, _SAMPLE_DIFF_WITH_LINE, "t")
                 payload = json.loads(route.calls.last.request.content)
-                assert payload["event"] == gh_event
+                assert payload["event"] == "COMMENT"
 
 
 # ---------------------------------------------------------------------------
@@ -904,6 +926,14 @@ class TestPostReview:
 
 
 class TestFullFlowIntegration:
+    @pytest.fixture(autouse=True)
+    def _stub_count_bot_reviews(self) -> Any:
+        with patch(
+            "src.gateway.review_engine.count_bot_reviews",
+            new=AsyncMock(return_value=0),
+        ) as m:
+            yield m
+
     @pytest.mark.asyncio
     async def test_webhook_to_posted_review(self) -> None:
         """Walk a PR_OPENED event through the consumer and out to the reviews API.
@@ -965,3 +995,111 @@ class TestFullFlowIntegration:
         assert len(payload["comments"]) == 1
         assert payload["comments"][0]["path"] == "src/x.py"
         assert payload["comments"][0]["line"] == 1
+
+
+# ---------------------------------------------------------------------------
+# count_bot_reviews + 2-cycle cap (T-193 follow-up)
+# ---------------------------------------------------------------------------
+
+
+class TestCountBotReviews:
+    @pytest.mark.asyncio
+    async def test_counts_only_bot_reviews(self) -> None:
+        url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
+        reviews_json = [
+            {"user": {"login": BOT_USERNAME}, "state": "COMMENTED"},
+            {"user": {"login": "sachinkundu"}, "state": "COMMENTED"},
+            {"user": {"login": BOT_USERNAME}, "state": "COMMENTED"},
+            {"user": {"login": "someone-else"}, "state": "APPROVED"},
+        ]
+        with respx.mock() as mock:
+            mock.get(url).mock(return_value=httpx.Response(200, json=reviews_json))
+            n = await count_bot_reviews("sachinkundu/cloglog", 42, "t")
+        assert n == 2
+
+    @pytest.mark.asyncio
+    async def test_returns_zero_when_no_reviews(self) -> None:
+        url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
+        with respx.mock() as mock:
+            mock.get(url).mock(return_value=httpx.Response(200, json=[]))
+            n = await count_bot_reviews("sachinkundu/cloglog", 42, "t")
+        assert n == 0
+
+    @pytest.mark.asyncio
+    async def test_tolerates_missing_user_key(self) -> None:
+        """GitHub occasionally omits ``user`` on dismissed reviews; don't explode."""
+        url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
+        with respx.mock() as mock:
+            mock.get(url).mock(
+                return_value=httpx.Response(
+                    200,
+                    json=[
+                        {"state": "DISMISSED"},  # no user
+                        {"user": None, "state": "DISMISSED"},
+                        {"user": {"login": BOT_USERNAME}, "state": "COMMENTED"},
+                    ],
+                )
+            )
+            n = await count_bot_reviews("sachinkundu/cloglog", 42, "t")
+        assert n == 1
+
+
+class TestTwoCycleCap:
+    @pytest.mark.asyncio
+    async def test_skips_agent_when_bot_already_reviewed_max(self, sample_diff: str) -> None:
+        """Having MAX_REVIEWS_PER_PR or more prior bot reviews short-circuits."""
+        consumer = ReviewEngineConsumer(max_per_hour=10)
+
+        async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
+            pytest.fail("No subprocess should launch when the cap is already reached")
+
+        with (
+            patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.review_engine.count_bot_reviews",
+                new=AsyncMock(return_value=MAX_REVIEWS_PER_PR),
+            ),
+        ):
+            await consumer.handle(_event())
+
+    @pytest.mark.asyncio
+    async def test_proceeds_when_under_cap(self, sample_diff: str) -> None:
+        consumer = ReviewEngineConsumer(max_per_hour=10)
+        launched: list[tuple[str, ...]] = []
+
+        async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
+            launched.append(argv)
+            if argv[0] == "gh":
+                return _FakeProcess(stdout=sample_diff.encode())
+            prompt_idx = argv.index("--prompt") + 1
+            for tok in Path(argv[prompt_idx]).read_text().split():
+                if tok.endswith("review.json"):
+                    Path(tok).write_text(
+                        json.dumps({"verdict": "approve", "summary": "", "findings": []})
+                    )
+                    break
+            return _FakeProcess(returncode=0)
+
+        with (
+            patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.review_engine.count_bot_reviews",
+                new=AsyncMock(return_value=MAX_REVIEWS_PER_PR - 1),
+            ),
+            patch(
+                "src.gateway.review_engine.post_review",
+                new=AsyncMock(return_value=True),
+            ),
+        ):
+            await consumer.handle(_event())
+
+        # One under the cap → full flow runs: gh + agent
+        assert len(launched) == 2

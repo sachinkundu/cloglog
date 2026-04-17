@@ -48,12 +48,12 @@ REVIEW_TIMEOUT_SECONDS: Final = 300.0
 RATE_LIMIT_WINDOW_SECONDS: Final = 3600.0
 REVIEW_POST_RETRY_DELAY_SECONDS: Final = 5.0
 REVIEW_REQUEST_TIMEOUT_SECONDS: Final = 30.0
-
-_VERDICT_TO_GH_EVENT: Final = {
-    "approve": "APPROVE",
-    "request_changes": "REQUEST_CHANGES",
-    "comment": "COMMENT",
-}
+# Maximum number of bot reviews per PR. The cycle is:
+#   (1) author opens PR → bot reviews → claude-coding-agent pushes a fix,
+#   (2) bot reviews the fix → human decides.
+# A third bot review would just be noise — the human reviewer has enough
+# to act on by then.
+MAX_REVIEWS_PER_PR: Final = 2
 
 _HUNK_HEADER_RE: Final = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
@@ -81,6 +81,13 @@ _DIFF_SKIP_PATTERNS: Final = tuple(
 
 REVIEW_PROMPT_TEMPLATE: Final = """\
 Review this pull request diff for the cloglog project.
+
+You are an advisory reviewer. The final APPROVE decision belongs to a
+human reviewer — your output is always posted to GitHub as a COMMENT,
+never as APPROVE or REQUEST_CHANGES, regardless of the ``verdict`` you
+pick. The ``verdict`` field is used only to classify severity in the
+review body. Keep this in mind when writing findings: be informative and
+specific; do not frame the review as a blocking gate.
 
 The project follows DDD with these bounded contexts:
 - Board (src/board/) — Projects, Epics, Features, Tasks
@@ -311,13 +318,63 @@ def _partition_findings(
 
 
 def _format_review_body(result: ReviewResult, orphans: list[ReviewFinding]) -> str:
-    """Assemble the top-level review body with the summary and any orphan findings."""
-    lines = ["## Automated Review (Codex)", "", result.summary]
+    """Assemble the top-level review body with the summary and any orphan findings.
+
+    The human reviewer is the only one who can APPROVE — this review is always
+    posted as a ``COMMENT`` event. The agent's internal verdict
+    (``approve``/``request_changes``/``comment``) surfaces here as advisory text
+    so the human can see the bot's severity read without the bot blocking or
+    approving the PR itself.
+    """
+    advisory = {
+        "approve": "no blocking issues",
+        "request_changes": "changes suggested",
+        "comment": "notes only",
+    }.get(result.verdict, result.verdict)
+    lines = [
+        "## Automated Review (Codex)",
+        "",
+        f"_Advisory verdict: **{advisory}** — human reviewer approves._",
+        "",
+        result.summary,
+    ]
     if orphans:
         lines += ["", "### Findings not attached to a diff line", ""]
         for f in orphans:
             lines.append(f"- **[{f.severity.upper()}]** `{f.file}:{f.line}` — {f.body}")
     return "\n".join(lines)
+
+
+async def count_bot_reviews(
+    repo_full_name: str,
+    pr_number: int,
+    token: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> int:
+    """Return how many reviews the bot has already posted on this PR.
+
+    Uses ``GET /repos/{owner}/{repo}/pulls/{pr_number}/reviews`` and counts
+    entries whose ``user.login`` matches ``BOT_USERNAME``. A network failure
+    surfaces as a ``RuntimeError`` — the caller decides whether to proceed
+    (for safety the consumer currently skips the review on uncertainty).
+    """
+    url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}/reviews"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    close_when_done = client is None
+    http = client or httpx.AsyncClient()
+    try:
+        resp = await http.get(url, headers=headers, timeout=REVIEW_REQUEST_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        reviews = resp.json()
+    finally:
+        if close_when_done:
+            await http.aclose()
+    return sum(1 for r in reviews if (r.get("user") or {}).get("login") == BOT_USERNAME)
 
 
 async def post_review(
@@ -339,8 +396,10 @@ async def post_review(
     """
     valid_lines = extract_diff_new_lines(diff)
     inline, orphans = _partition_findings(result, valid_lines)
+    # The bot never approves or requests changes — only the human reviewer
+    # gates merge state. The agent's verdict is recorded in the body instead.
     payload = {
-        "event": _VERDICT_TO_GH_EVENT.get(result.verdict, "COMMENT"),
+        "event": "COMMENT",
         "body": _format_review_body(result, orphans),
         "comments": inline,
     }
@@ -428,6 +487,17 @@ class ReviewEngineConsumer:
         from src.gateway.github_token import get_github_app_token
 
         token = await get_github_app_token()
+
+        prior = await count_bot_reviews(event.repo_full_name, event.pr_number, token)
+        if prior >= MAX_REVIEWS_PER_PR:
+            logger.info(
+                "PR #%d already has %d bot reviews (cap=%d) — skipping",
+                event.pr_number,
+                prior,
+                MAX_REVIEWS_PER_PR,
+            )
+            return
+
         diff = await self._fetch_pr_diff(event.repo_full_name, event.pr_number, token)
         filtered = filter_diff(diff)
         if not filtered.strip():

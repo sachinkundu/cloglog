@@ -541,11 +541,15 @@ class ReviewEngineConsumer:
                 settings.review_agent_cmd,
                 "exec",
                 "--full-auto",
-                "--sandbox", "read-only",
+                "--sandbox",
+                "read-only",
                 "--ephemeral",
-                "--color", "never",
-                "-o", str(output_path),
-                "-C", str(project_root),
+                "--color",
+                "never",
+                "-o",
+                str(output_path),
+                "-C",
+                str(project_root),
             ]
             if schema_path is not None:
                 args += ["--output-schema", str(schema_path)]
@@ -627,12 +631,14 @@ class ReviewEngineConsumer:
                 line_range = loc.get("line_range", {})
                 priority = f.get("priority", 0)
                 severity = {3: "critical", 2: "high", 1: "medium", 0: "info"}.get(priority, "info")
-                findings.append({
-                    "file": loc.get("absolute_file_path", "unknown"),
-                    "line": line_range.get("start", 1),
-                    "severity": severity,
-                    "body": f.get("body", f.get("title", "")),
-                })
+                findings.append(
+                    {
+                        "file": loc.get("absolute_file_path", "unknown"),
+                        "line": line_range.get("start", 1),
+                        "severity": severity,
+                        "body": f.get("body", f.get("title", "")),
+                    }
+                )
             data = {
                 "verdict": verdict,
                 "summary": data.get("overall_explanation", ""),

@@ -619,7 +619,8 @@ class ReviewEngineConsumer:
         # Normalize from Codex schema format to our ReviewResult format
         if "overall_correctness" in data and "verdict" not in data:
             # Codex schema format — convert
-            verdict = "approve" if data.get("overall_correctness") == "patch is correct" else "request_changes"
+            is_correct = data.get("overall_correctness") == "patch is correct"
+            verdict = "approve" if is_correct else "request_changes"
             findings = []
             for f in data.get("findings", []):
                 loc = f.get("code_location", {})

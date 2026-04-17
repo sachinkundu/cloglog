@@ -384,7 +384,6 @@ class TestHandleOrchestration:
             # The agent needs to *write the JSON file* before it exits. We capture
             # the prompt path from the second spawn call so we can locate the
             # output file the agent promised to write.
-            agent_proc = _FakeProcess(returncode=0)
             calls: list[tuple[str, ...]] = []
             output_path_holder: dict[str, Path] = {}
 
@@ -400,8 +399,6 @@ class TestHandleOrchestration:
 
         # The codex invocation uses create_subprocess_exec directly.
         # We mock it to write the review JSON to the -o output path.
-        original_create = asyncio.create_subprocess_exec
-
         async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
             argv = args
             # Find the -o flag to get the output path

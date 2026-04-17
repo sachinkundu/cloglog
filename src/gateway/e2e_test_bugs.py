@@ -14,3 +14,4 @@ def unsafe_query(user_input: str) -> str:
 def get_dashboard_url() -> str:
     """Return the dashboard URL — hardcoded port."""
     return "http://localhost:5173/dashboard"
+

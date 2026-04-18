@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid as _uuid
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -12,6 +13,8 @@ from src.board.models import Task
 from src.board.repository import BoardRepository
 from src.shared.config import settings
 from src.shared.events import Event, EventType, event_bus
+
+logger = logging.getLogger(__name__)
 
 
 class AgentService:
@@ -395,6 +398,22 @@ class AgentService:
                 },
             )
         )
+
+    async def mark_pr_merged(self, pr_url: str) -> dict[str, object]:
+        """Set pr_merged=True on the task matching this PR URL.
+
+        Called by agents when the polling loop detects a merge, as a fallback
+        when the GitHub webhook hasn't fired (or isn't configured).
+        """
+        task = await self._board_repo.find_task_by_pr_url(pr_url)
+        if task is None:
+            raise ValueError(
+                f"No active task found with pr_url={pr_url!r}. "
+                "The task may already be done, or pr_url was never set."
+            )
+        await self._board_repo.update_task(task.id, pr_merged=True)
+        logger.info("Marked task %s pr_merged=True via polling (pr_url=%s)", task.id, pr_url)
+        return {"task_id": str(task.id), "pr_merged": True}
 
     # --- Artifact Reporting ---
 

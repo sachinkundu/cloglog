@@ -454,6 +454,178 @@ class TestTransitionGuardsAPI:
         assert "cannot mark tasks as done" in resp.json()["detail"].lower()
 
 
+class TestMarkPrMergedAPI:
+    """Tests for the mark-pr-merged endpoint (polling loop fallback path)."""
+
+    async def _setup(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> tuple[str, str, str, str]:
+        """Create project, agent, task in review. Returns (wt_id, task_id, pr_url, agent_token)."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+        task_id = await _create_task_via_db(db_session, project["id"])
+
+        reg = await client.post(
+            "/api/v1/agents/register",
+            json={
+                "worktree_path": f"/repo/wt-mpm-{uuid.uuid4().hex[:6]}",
+                "branch_name": "wt-mpm",
+            },
+            headers=h,
+        )
+        wt_id = reg.json()["worktree_id"]
+        agent_token = reg.json()["agent_token"]
+        ah = _agent_auth(agent_token)
+
+        await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": task_id},
+            headers=ah,
+        )
+        pr_url = f"https://github.com/test/repo/pull/{uuid.uuid4().hex[:4]}"
+        await client.patch(
+            f"/api/v1/agents/{wt_id}/task-status",
+            json={"task_id": task_id, "status": "review", "pr_url": pr_url},
+            headers=ah,
+        )
+        return wt_id, task_id, pr_url, agent_token
+
+    async def test_mark_pr_merged_sets_flag(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Polling loop fallback: mark_pr_merged sets pr_merged=True on the matching task."""
+        wt_id, task_id, pr_url, agent_token = await self._setup(client, db_session)
+        ah = _agent_auth(agent_token)
+
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/mark-pr-merged",
+            json={"pr_url": pr_url},
+            headers=ah,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["pr_merged"] is True
+        assert data["task_id"] == task_id
+
+    async def test_mark_pr_merged_unblocks_start_task(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """After mark_pr_merged, start_task on the next task succeeds (guard unblocked)."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+        pid = uuid.UUID(project["id"])
+
+        epic = Epic(project_id=pid, title="E", position=0)
+        db_session.add(epic)
+        await db_session.commit()
+        await db_session.refresh(epic)
+
+        feature = Feature(epic_id=epic.id, title="F", position=0)
+        db_session.add(feature)
+        await db_session.commit()
+        await db_session.refresh(feature)
+
+        task1 = Task(feature_id=feature.id, title="T1", position=0, status="assigned")
+        task2 = Task(feature_id=feature.id, title="T2", position=1, status="assigned")
+        db_session.add_all([task1, task2])
+        await db_session.commit()
+        await db_session.refresh(task1)
+        await db_session.refresh(task2)
+
+        reg = await client.post(
+            "/api/v1/agents/register",
+            json={
+                "worktree_path": f"/repo/wt-unblock-{uuid.uuid4().hex[:6]}",
+                "branch_name": "wt-unblock",
+            },
+            headers=h,
+        )
+        wt_id = reg.json()["worktree_id"]
+        agent_token = reg.json()["agent_token"]
+        ah = _agent_auth(agent_token)
+
+        # Assign and start task 1
+        await client.patch(
+            f"/api/v1/agents/{wt_id}/assign-task",
+            json={"task_id": str(task1.id)},
+            headers=h,
+        )
+        await client.patch(
+            f"/api/v1/agents/{wt_id}/assign-task",
+            json={"task_id": str(task2.id)},
+            headers=h,
+        )
+        await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": str(task1.id)},
+            headers=ah,
+        )
+        pr_url = f"https://github.com/test/repo/pull/{uuid.uuid4().hex[:4]}"
+        await client.patch(
+            f"/api/v1/agents/{wt_id}/task-status",
+            json={"task_id": str(task1.id), "status": "review", "pr_url": pr_url},
+            headers=ah,
+        )
+
+        # Task 2 is blocked because task 1 is in review
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": str(task2.id)},
+            headers=ah,
+        )
+        assert resp.status_code == 409
+
+        # Mark PR merged via polling loop fallback
+        await client.post(
+            f"/api/v1/agents/{wt_id}/mark-pr-merged",
+            json={"pr_url": pr_url},
+            headers=ah,
+        )
+
+        # Now start_task should succeed
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": str(task2.id)},
+            headers=ah,
+        )
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+
+    async def test_mark_pr_merged_unknown_url_returns_404(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """mark_pr_merged with an unknown pr_url returns 404."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+        reg = await client.post(
+            "/api/v1/agents/register",
+            json={
+                "worktree_path": f"/repo/wt-mpm404-{uuid.uuid4().hex[:6]}",
+                "branch_name": "wt-mpm404",
+            },
+            headers=h,
+        )
+        wt_id = reg.json()["worktree_id"]
+        agent_token = reg.json()["agent_token"]
+
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/mark-pr-merged",
+            json={"pr_url": "https://github.com/nobody/nothing/pull/999"},
+            headers=_agent_auth(agent_token),
+        )
+        assert resp.status_code == 404
+
+    async def test_mark_pr_merged_requires_auth(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """mark_pr_merged without auth is rejected."""
+        wt_id, _task_id, pr_url, _agent_token = await self._setup(client, db_session)
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/mark-pr-merged",
+            json={"pr_url": pr_url},
+        )
+        assert resp.status_code == 401
+
+
 class TestPipelineOrderingAPI:
     """Integration tests for pipeline ordering guards (spec → plan → impl)."""
 

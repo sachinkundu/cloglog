@@ -31,7 +31,7 @@ You are an autonomous worktree agent. You work independently through the full fe
 - Add test reports with delta, strategy, and thinking — not just pass counts
 - **CRITICAL: After creating a PR and moving to review, you MUST set up a polling loop.** Without it, you will never know when the PR is merged or has comments. Use:
   ```
-  /loop 5m Check PR #<NUM> for review comments, CI status, and merge state using the github-bot skill. If new comments: move task to in_progress, address feedback, push fix, move back to review. If merged: call report_artifact (for spec/plan tasks), then call get_my_tasks and start the next task.
+  /loop 5m Check PR #<NUM> for review comments, CI status, and merge state using the github-bot skill. If new comments: move task to in_progress, address feedback, push fix, move back to review. If merged: call mark_pr_merged with the PR URL, then call report_artifact (for spec/plan tasks), then call get_my_tasks and start the next task.
   ```
   This is **not optional**. If you skip this, you will sit idle forever while the PR gets reviewed and merged.
 
@@ -48,7 +48,7 @@ Your work follows a strict pipeline. Call `mcp__cloglog__get_my_tasks` to get yo
 5. Call `mcp__cloglog__update_task_status` to move the task to `review` with the PR URL
 6. **Immediately** set up the polling loop — this is how you detect merge and comments:
    ```
-   /loop 5m Check PR #<NUM> for review comments, CI status, and merge state using the github-bot skill. If new comments: move task to in_progress, address feedback, push fix, move back to review. If merged: call report_artifact with the spec file path, then call get_my_tasks and start the next task.
+   /loop 5m Check PR #<NUM> for review comments, CI status, and merge state using the github-bot skill. If new comments: move task to in_progress, address feedback, push fix, move back to review. If merged: call mark_pr_merged with the PR URL, then call report_artifact with the spec file path, then call get_my_tasks and start the next task.
    ```
 7. When merged, call `mcp__cloglog__report_artifact` with the path to the spec file
 
@@ -70,7 +70,7 @@ Your work follows a strict pipeline. Call `mcp__cloglog__get_my_tasks` to get yo
 5. Call `mcp__cloglog__update_task_status` to move the task to `review` with the PR URL
 6. **Immediately** set up the polling loop:
    ```
-   /loop 5m Check PR #<NUM> for review comments, CI status, and merge state using the github-bot skill. If new comments: move task to in_progress, address feedback, push fix, move back to review. If merged: call get_my_tasks and start the next task.
+   /loop 5m Check PR #<NUM> for review comments, CI status, and merge state using the github-bot skill. If new comments: move task to in_progress, address feedback, push fix, move back to review. If merged: call mark_pr_merged with the PR URL, then call get_my_tasks and start the next task.
    ```
 
 ### Between Tasks

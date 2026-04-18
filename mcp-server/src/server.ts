@@ -158,7 +158,7 @@ export function createServer(client: CloglogClient): McpServer {
       let text = `Task ${task_id} moved to ${status}.`
       if (status === 'review' && pr_url) {
         const prNum = pr_url.match(/\/pull\/(\d+)/)?.[1] ?? '???'
-        text += `\n\nCRITICAL — You MUST set up a PR polling loop NOW. Without it you will never know when the PR is merged or has review comments. Run:\n\n/loop 5m Check PR #${prNum} for review comments, CI status, and merge state using the github-bot skill. If new comments: move task to in_progress, address feedback, push fix, move back to review. If merged: call report_artifact (for spec/plan tasks), then call get_my_tasks and start the next task.`
+        text += `\n\nCRITICAL — You MUST set up a PR polling loop NOW. Without it you will never know when the PR is merged or has review comments. Run:\n\n/loop 5m Check PR #${prNum} for review comments, CI status, and merge state using the github-bot skill. If new comments: move task to in_progress, address feedback, push fix, move back to review. If merged: call mark_pr_merged with the PR URL, then call report_artifact (for spec/plan tasks), then call get_my_tasks and start the next task.`
       }
       return { content: [{ type: 'text' as const, text }] }
     })
@@ -219,6 +219,20 @@ export function createServer(client: CloglogClient): McpServer {
       requireRegistered()
       await handlers.report_artifact({ worktree_id, task_id, artifact_path })
       return { content: [{ type: 'text' as const, text: `Artifact reported for task ${task_id}: ${artifact_path}` }] }
+    }
+  )
+
+  server.tool(
+    'mark_pr_merged',
+    'Mark the task matching this PR URL as pr_merged=True. Call this when the polling loop detects a GitHub PR was merged, as a fallback when the GitHub webhook has not fired. This allows start_task to proceed for the next task.',
+    {
+      worktree_id: z.string().describe('UUID of the worktree'),
+      pr_url: z.string().describe('GitHub PR URL (e.g. https://github.com/owner/repo/pull/42)'),
+    },
+    async ({ worktree_id, pr_url }) => {
+      requireRegistered()
+      const result = await handlers.mark_pr_merged({ worktree_id, pr_url })
+      return { content: [{ type: 'text' as const, text: `PR marked as merged: ${JSON.stringify(result)}` }] }
     }
   )
 

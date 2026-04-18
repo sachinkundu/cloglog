@@ -112,20 +112,19 @@ run-backend: ## Start the FastAPI backend
 prod: ## Start prod server (gunicorn, port 8001, foreground — run in a zellij pane)
 	@echo "Starting cloglog prod server on :8001..."
 	@cd ../cloglog-prod && \
-	  uv run gunicorn src.gateway.app:create_app \
+	  uv run gunicorn src.gateway.asgi:app \
 	    --worker-class uvicorn.workers.UvicornWorker \
 	    --workers 2 \
 	    --bind 0.0.0.0:8001 \
 	    --pid /tmp/cloglog-prod.pid \
 	    --error-logfile /tmp/cloglog-prod.log \
 	    --access-logfile /tmp/cloglog-prod-access.log \
-	    --log-level info \
-	    --factory
+	    --log-level info
 
 prod-bg: ## Start prod server in background
 	@echo "Starting cloglog prod server on :8001 (background)..."
 	@cd ../cloglog-prod && \
-	  uv run gunicorn src.gateway.app:create_app \
+	  uv run gunicorn src.gateway.asgi:app \
 	    --worker-class uvicorn.workers.UvicornWorker \
 	    --workers 2 \
 	    --bind 0.0.0.0:8001 \
@@ -133,7 +132,6 @@ prod-bg: ## Start prod server in background
 	    --error-logfile /tmp/cloglog-prod.log \
 	    --access-logfile /tmp/cloglog-prod-access.log \
 	    --log-level info \
-	    --factory \
 	    --daemon
 	@echo "  Prod server started. PID: $$(cat /tmp/cloglog-prod.pid)"
 

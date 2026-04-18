@@ -115,7 +115,7 @@ prod: ## Start prod server (gunicorn + vite preview, foreground — run in a zel
 	@echo "  Frontend: http://localhost:4173"
 	@echo "  Tunnel:   https://cloglog.voxdez.com"
 	@echo "  Building frontend..."
-	@cd ../cloglog-prod/frontend && npm ci --silent && VITE_API_URL=http://localhost:8001/api/v1 npm run build 2>&1 | tail -2
+	@cd ../cloglog-prod/frontend && npm ci --silent && VITE_API_URL=http://localhost:8001/api/v1 npx vite build 2>&1 | tail -2
 	@echo "  Frontend: built"
 	@trap 'kill 0; rm -f /tmp/cloglog-prod-frontend.pid' EXIT INT TERM; \
 		(cd ../cloglog-prod && uv run gunicorn src.gateway.asgi:app \
@@ -134,7 +134,7 @@ prod-bg: ## Start prod server in background
 	@echo "  Backend:  http://localhost:8001"
 	@echo "  Frontend: http://localhost:4173"
 	@echo "  Tunnel:   https://cloglog.voxdez.com"
-	@cd ../cloglog-prod/frontend && npm ci --silent && VITE_API_URL=http://localhost:8001/api/v1 npm run build 2>&1 | tail -2
+	@cd ../cloglog-prod/frontend && npm ci --silent && VITE_API_URL=http://localhost:8001/api/v1 npx vite build 2>&1 | tail -2
 	@cd ../cloglog-prod && uv run gunicorn src.gateway.asgi:app \
 	    --worker-class uvicorn.workers.UvicornWorker \
 	    --workers 2 \
@@ -152,10 +152,11 @@ promote: ## Deploy latest origin/main to prod with zero-downtime worker rotation
 	@git -C ../cloglog-prod pull origin main
 	@cd ../cloglog-prod && uv sync
 	@cd ../cloglog-prod/frontend && npm ci --silent
-	@cd ../cloglog-prod/frontend && VITE_API_URL=http://localhost:8001/api/v1 npm run build 2>&1 | tail -2
+	@cd ../cloglog-prod/frontend && VITE_API_URL=http://localhost:8001/api/v1 npx vite build 2>&1 | tail -2
 	@cd ../cloglog-prod && uv run alembic upgrade head
-	@kill -HUP $$(cat /tmp/cloglog-prod.pid)
-	@kill $$(cat /tmp/cloglog-prod-frontend.pid) 2>/dev/null || true
+	@pkill -HUP -f "gunicorn src.gateway.asgi" 2>/dev/null || echo "  Warning: gunicorn not running — start with make prod"
+	@pkill -f "vite preview.*4173" 2>/dev/null || true
+	@rm -f /tmp/cloglog-prod-frontend.pid
 	@cd ../cloglog-prod/frontend && npm run preview -- --port 4173 & echo $$! > /tmp/cloglog-prod-frontend.pid
 	@echo "  Done — backend rotating workers, frontend rebuilt and restarted."
 

@@ -157,6 +157,16 @@ The demo reviewer agent evaluates:
 
 Human has final say on all reviewer agent decisions.
 
+## Enforcement — How the Skill Gets Run
+
+Two layers ensure agents actually invoke the demo skill before creating a PR:
+
+**1. Agent prompt (behavioral):** The launch skill template includes an explicit step in every agent's workflow: "Before creating a PR, invoke the demo skill." Same pattern as how agents are told to invoke github-bot before pushing. This makes it a named checkpoint in the agent's mental model, not an afterthought.
+
+**2. Quality gate (technical):** `make quality` includes a `demo-check` step that verifies `docs/demos/<task>/demo.md` exists and `showboat verify` passes. The pre-commit hook already runs `make quality`, so a missing or broken demo blocks the commit. Agents cannot create a PR without passing this gate.
+
+The behavioral layer (prompt) ensures agents *think* demo-first. The technical layer (quality gate) ensures they cannot skip it even if they try.
+
 ## What This Skill Does NOT Cover
 
 - Automated visual regression (screenshot diffing across PRs)

@@ -220,9 +220,7 @@ class AgentService:
         active = [
             t
             for t in existing_tasks
-            if t.id != task_id
-            and t.status in ("in_progress", "review")
-            and not (t.status == "review" and t.pr_merged)
+            if t.id != task_id and t.status in ("in_progress", "review") and not t.pr_merged
         ]
         if active:
             titles = ", ".join(f"T-{t.number} '{t.title}' ({t.status})" for t in active)
@@ -399,16 +397,22 @@ class AgentService:
             )
         )
 
-    async def mark_pr_merged(self, pr_url: str) -> dict[str, object]:
+    async def mark_pr_merged(self, worktree_id: UUID, pr_url: str) -> dict[str, object]:
         """Set pr_merged=True on the task matching this PR URL.
 
         Called by agents when the polling loop detects a merge, as a fallback
         when the GitHub webhook hasn't fired (or isn't configured).
+
+        Scoped to the caller's project to prevent cross-project manipulation.
         """
-        task = await self._board_repo.find_task_by_pr_url(pr_url)
+        worktree = await self._repo.get_worktree(worktree_id)
+        if worktree is None:
+            raise ValueError(f"Worktree {worktree_id} not found")
+
+        task = await self._board_repo.find_task_by_pr_url_for_project(pr_url, worktree.project_id)
         if task is None:
             raise ValueError(
-                f"No active task found with pr_url={pr_url!r}. "
+                f"No active task found with pr_url={pr_url!r} in this project. "
                 "The task may already be done, or pr_url was never set."
             )
         await self._board_repo.update_task(task.id, pr_merged=True)

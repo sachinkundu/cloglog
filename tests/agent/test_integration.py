@@ -625,6 +625,150 @@ class TestMarkPrMergedAPI:
         )
         assert resp.status_code == 401
 
+    async def test_mark_pr_merged_cross_project_blocked(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Agent in project A cannot mark tasks in project B as pr_merged."""
+        # Project B: owns a task in review with a specific pr_url
+        proj_b = await _create_project_via_api(client)
+        task_b_id = await _create_task_via_db(db_session, proj_b["id"])
+
+        reg_b = await client.post(
+            "/api/v1/agents/register",
+            json={
+                "worktree_path": f"/repo/wt-projb-{uuid.uuid4().hex[:6]}",
+                "branch_name": "wt-projb",
+            },
+            headers=_auth(proj_b["api_key"]),
+        )
+        wt_b = reg_b.json()["worktree_id"]
+        tok_b = reg_b.json()["agent_token"]
+        ah_b = _agent_auth(tok_b)
+
+        await client.post(
+            f"/api/v1/agents/{wt_b}/start-task",
+            json={"task_id": task_b_id},
+            headers=ah_b,
+        )
+        pr_url_b = f"https://github.com/test/repo/pull/{uuid.uuid4().hex[:4]}"
+        await client.patch(
+            f"/api/v1/agents/{wt_b}/task-status",
+            json={"task_id": task_b_id, "status": "review", "pr_url": pr_url_b},
+            headers=ah_b,
+        )
+
+        # Project A: a different agent tries to mark project B's pr_url as merged
+        proj_a = await _create_project_via_api(client)
+        reg_a = await client.post(
+            "/api/v1/agents/register",
+            json={
+                "worktree_path": f"/repo/wt-proja-{uuid.uuid4().hex[:6]}",
+                "branch_name": "wt-proja",
+            },
+            headers=_auth(proj_a["api_key"]),
+        )
+        wt_a = reg_a.json()["worktree_id"]
+        tok_a = reg_a.json()["agent_token"]
+
+        resp = await client.post(
+            f"/api/v1/agents/{wt_a}/mark-pr-merged",
+            json={"pr_url": pr_url_b},  # project B's PR URL
+            headers=_agent_auth(tok_a),
+        )
+        # Must return 404 — scoped to project A which has no task with pr_url_b
+        assert resp.status_code == 404
+
+        # Verify project B's task was NOT marked merged via the DB
+        await db_session.refresh(await db_session.get(Task, uuid.UUID(task_b_id)))
+        task_b_db = await db_session.get(Task, uuid.UUID(task_b_id))
+        assert task_b_db is not None
+        assert task_b_db.pr_merged is False
+
+    async def test_mark_pr_merged_unblocks_in_progress_task(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """If a task is moved back to in_progress to address comments, then mark_pr_merged
+        is called (merge race), start_task on the next task should still succeed."""
+        project = await _create_project_via_api(client)
+        h = _auth(project["api_key"])
+        pid = uuid.UUID(project["id"])
+
+        epic = Epic(project_id=pid, title="E", position=0)
+        db_session.add(epic)
+        await db_session.commit()
+        await db_session.refresh(epic)
+
+        feature = Feature(epic_id=epic.id, title="F", position=0)
+        db_session.add(feature)
+        await db_session.commit()
+        await db_session.refresh(feature)
+
+        task1 = Task(feature_id=feature.id, title="T1", position=0, status="assigned")
+        task2 = Task(feature_id=feature.id, title="T2", position=1, status="assigned")
+        db_session.add_all([task1, task2])
+        await db_session.commit()
+        await db_session.refresh(task1)
+        await db_session.refresh(task2)
+
+        reg = await client.post(
+            "/api/v1/agents/register",
+            json={
+                "worktree_path": f"/repo/wt-inprog-{uuid.uuid4().hex[:6]}",
+                "branch_name": "wt-inprog",
+            },
+            headers=h,
+        )
+        wt_id = reg.json()["worktree_id"]
+        agent_token = reg.json()["agent_token"]
+        ah = _agent_auth(agent_token)
+
+        # Assign both tasks
+        await client.patch(
+            f"/api/v1/agents/{wt_id}/assign-task",
+            json={"task_id": str(task1.id)},
+            headers=h,
+        )
+        await client.patch(
+            f"/api/v1/agents/{wt_id}/assign-task",
+            json={"task_id": str(task2.id)},
+            headers=h,
+        )
+
+        # Start task1, move to review, then back to in_progress (addressing comments)
+        await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": str(task1.id)},
+            headers=ah,
+        )
+        pr_url = f"https://github.com/test/repo/pull/{uuid.uuid4().hex[:4]}"
+        await client.patch(
+            f"/api/v1/agents/{wt_id}/task-status",
+            json={"task_id": str(task1.id), "status": "review", "pr_url": pr_url},
+            headers=ah,
+        )
+        # Agent moves back to in_progress to address review comment
+        await client.patch(
+            f"/api/v1/agents/{wt_id}/task-status",
+            json={"task_id": str(task1.id), "status": "in_progress"},
+            headers=ah,
+        )
+
+        # PR merges while task is still in in_progress (merge race)
+        merge_resp = await client.post(
+            f"/api/v1/agents/{wt_id}/mark-pr-merged",
+            json={"pr_url": pr_url},
+            headers=ah,
+        )
+        assert merge_resp.status_code == 200
+
+        # start_task for task2 must succeed — pr_merged=True unblocks regardless of status
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": str(task2.id)},
+            headers=ah,
+        )
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+
 
 class TestPipelineOrderingAPI:
     """Integration tests for pipeline ordering guards (spec → plan → impl)."""

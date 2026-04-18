@@ -153,7 +153,7 @@ async def mark_pr_merged(
     as a fallback when the GitHub webhook hasn't fired.
     """
     try:
-        return await service.mark_pr_merged(body.pr_url)
+        return await service.mark_pr_merged(worktree_id, body.pr_url)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from None
 

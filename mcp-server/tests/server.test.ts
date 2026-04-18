@@ -161,8 +161,11 @@ describe('guard error handling', () => {
     expect(text).toContain('webhook')
     expect(text).toContain('inbox')
     expect(text).toContain('review_submitted')
+    expect(text).toContain('review_comment')
+    expect(text).toContain('issue_comment')
     expect(text).toContain('ci_failed')
     expect(text).toContain('pr_merged')
+    expect(text).toContain('event does NOT include task_id')
     // The old /loop instruction is gone — webhooks replace polling
     expect(text).not.toContain('/loop 5m')
     expect(text).toContain('Do NOT start a /loop')

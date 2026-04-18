@@ -121,20 +121,26 @@ GH_TOKEN="$BOT_TOKEN" gh api repos/${REPO}/pulls/<PR_NUM>/reviews \
 
 After moving a task to review, PR state changes arrive as webhook-driven events in your worktree inbox (`.cloglog/inbox`). Do NOT start a `/loop` — the backend's webhook dispatcher appends one JSON line per event, and your `Monitor` reads them in real time.
 
-Each event looks like:
+Each event looks like (shapes below match `_build_message` in `src/gateway/webhook_consumers.py`):
 
 ```json
 {"type":"review_submitted","pr_url":"...","pr_number":123,"review_state":"changes_requested","reviewer":"sachinkundu","body":"First 500 chars…","message":"Review on PR #123: changes_requested by sachinkundu. ..."}
+{"type":"review_comment","pr_url":"...","pr_number":123,"reviewer":"sachinkundu","path":"src/foo.py","line":42,"body":"First 500 chars…","message":"Inline comment on PR #123 by sachinkundu at src/foo.py:42: ..."}
+{"type":"issue_comment","pr_url":"...","pr_number":123,"commenter":"sachinkundu","body":"First 500 chars…","message":"Comment on PR #123 by sachinkundu: ..."}
 {"type":"ci_failed","pr_url":"...","pr_number":123,"check_name":"quality","conclusion":"failure","message":"CI check 'quality' failure on PR #123. ..."}
-{"type":"pr_merged","pr_url":"...","pr_number":123,"task_id":"<uuid>","message":"PR #123 has been MERGED. ..."}
+{"type":"pr_merged","pr_url":"...","pr_number":123,"message":"PR #123 has been MERGED. ..."}
 {"type":"pr_closed","pr_url":"...","pr_number":123,"message":"PR #123 was closed without merging."}
 ```
+
+Note: `pr_merged` does **not** carry a `task_id` — use the active task_id from your own session state when calling `mark_pr_merged`.
 
 How to respond to each event type:
 
 - **`review_submitted`** — move the task back to `in_progress` via `mcp__cloglog__update_task_status`, read the review body from the event (and fetch the full comments with *Check PR Status* below if needed), address the feedback, push a fix, move back to `review`.
-- **`ci_failed`** — follow [CI Failure Recovery](#ci-failure-recovery) to read the failed logs and push a fix. CI re-runs automatically on push; a subsequent `check_run` webhook will report the new result.
-- **`pr_merged`** — call `mcp__cloglog__mark_pr_merged`, then `mcp__cloglog__report_artifact` for spec/plan tasks, then `mcp__cloglog__get_my_tasks` and `start_task` on the next task. If no tasks remain, `unregister_agent` and exit cleanly.
+- **`review_comment`** — a reviewer posted a standalone inline diff comment without opening a review. The event carries `path`, `line`, and the comment body. Treat it the same as `review_submitted`: move back to `in_progress`, address the feedback at `path:line`, push a fix, move back to `review`.
+- **`issue_comment`** — a reviewer posted an issue-style PR comment. These are often clarifying questions or approvals without a formal review. Read the body; if it requires a code change, follow the same in_progress → fix → review flow. If it is informational (e.g., "LGTM, just waiting on CI"), reply via the *Reply to Review Comments* section and stay in `review`.
+- **`ci_failed`** — follow [CI Failure Recovery](#ci-failure-recovery) to read the failed logs and push a fix. CI re-runs automatically on push; a subsequent `check_run` webhook will report the new result. Note: the consumer only filters out `conclusion=success`, so `conclusion=null` (still pending) may surface here — check `gh pr checks <PR_NUM>` before assuming the run terminated.
+- **`pr_merged`** — call `mcp__cloglog__mark_pr_merged` with your active task_id, then `mcp__cloglog__report_artifact` for spec/plan tasks, then `mcp__cloglog__get_my_tasks` and `start_task` on the next task. If no tasks remain, `unregister_agent` and exit cleanly.
 - **`pr_closed`** — the PR was closed without merging. Move the task back to `in_progress` (or note the closure), ask the main agent for direction if unclear.
 
 If the inbox monitor is not running, events pile up silently in the file and nothing will react to them. Restart it with `Monitor(command="tail -f .cloglog/inbox", persistent=true)` as soon as you notice.

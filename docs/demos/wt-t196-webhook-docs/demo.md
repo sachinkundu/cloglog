@@ -1,7 +1,7 @@
 # Agents moving a task to review are now told to watch their inbox for webhook events, not to start a 5-minute polling loop.
 
-*2026-04-18T17:36:24Z by Showboat 0.6.1*
-<!-- showboat-id: 8b97dec6-fbbc-4078-807f-3b9dbd9072a5 -->
+*2026-04-18T17:44:45Z by Showboat 0.6.1*
+<!-- showboat-id: a2156f48-e420-4679-a8e2-2ebb3d29e183 -->
 
 ## 1. New MCP tool response text
 
@@ -24,11 +24,13 @@ Task demo-task-id moved to review.
 
 CRITICAL — PR #99 is now tracked via GitHub webhooks. Do NOT start a /loop polling cycle. Keep your inbox monitor running; events arrive as JSON lines appended to your inbox file:
 
-- {"type":"review_submitted",...}  → reviewer posted feedback. Move task back to in_progress, address the feedback, push a fix, move back to review.
-- {"type":"ci_failed",...}         → a CI check failed. Use the github-bot skill to read the failed logs and push a fix.
-- {"type":"pr_merged","pr_number":99,...}  → PR merged. Call mark_pr_merged with the task_id, then call report_artifact (for spec/plan tasks), then call get_my_tasks and start the next task.
+- {"type":"review_submitted",...}  → reviewer submitted a review. Move task back to in_progress, address the feedback, push a fix, move back to review.
+- {"type":"review_comment",...}    → reviewer posted a standalone inline diff comment (path+line in payload). Same flow as review_submitted.
+- {"type":"issue_comment",...}     → reviewer posted an issue-style PR comment. Read the body; if it requires code changes, apply the same in_progress → fix → review flow. Otherwise reply and stay in review.
+- {"type":"ci_failed",...}         → a CI check terminated with non-success. Use the github-bot skill to read the failed logs and push a fix. (Note: conclusion=null means still pending — verify with gh pr checks.)
+- {"type":"pr_merged","pr_number":99,...}  → PR merged. Call mark_pr_merged with your active task_id (the event does NOT include task_id), then call report_artifact (for spec/plan tasks), then call get_my_tasks and start the next task.
 
-Webhook delivery is sub-second — no polling needed. Continue with other work or wait for the next inbox event.
+See the github-bot skill's "PR Event Inbox" section for payload details. Webhook delivery is sub-second — no polling needed. Continue with other work or wait for the next inbox event.
 ```
 
 ## 2. The old `/loop 5m` instruction is gone
@@ -61,7 +63,7 @@ echo 'test suite mentions of /loop 5m (should appear only in a NOT-contain asser
 
 ```output
 test suite mentions of /loop 5m (should appear only in a NOT-contain assertion):
-167:    expect(text).not.toContain('/loop 5m')
+170:    expect(text).not.toContain('/loop 5m')
 ```
 
 ## 3. Rewritten `github-bot` skill
@@ -97,20 +99,26 @@ awk '/^### PR Event Inbox/,/\*\*Offline fallback:\*\*/' plugins/cloglog/skills/g
 
 After moving a task to review, PR state changes arrive as webhook-driven events in your worktree inbox (`.cloglog/inbox`). Do NOT start a `/loop` — the backend's webhook dispatcher appends one JSON line per event, and your `Monitor` reads them in real time.
 
-Each event looks like:
+Each event looks like (shapes below match `_build_message` in `src/gateway/webhook_consumers.py`):
 
 ```json
 {"type":"review_submitted","pr_url":"...","pr_number":123,"review_state":"changes_requested","reviewer":"sachinkundu","body":"First 500 chars…","message":"Review on PR #123: changes_requested by sachinkundu. ..."}
+{"type":"review_comment","pr_url":"...","pr_number":123,"reviewer":"sachinkundu","path":"src/foo.py","line":42,"body":"First 500 chars…","message":"Inline comment on PR #123 by sachinkundu at src/foo.py:42: ..."}
+{"type":"issue_comment","pr_url":"...","pr_number":123,"commenter":"sachinkundu","body":"First 500 chars…","message":"Comment on PR #123 by sachinkundu: ..."}
 {"type":"ci_failed","pr_url":"...","pr_number":123,"check_name":"quality","conclusion":"failure","message":"CI check 'quality' failure on PR #123. ..."}
-{"type":"pr_merged","pr_url":"...","pr_number":123,"task_id":"<uuid>","message":"PR #123 has been MERGED. ..."}
+{"type":"pr_merged","pr_url":"...","pr_number":123,"message":"PR #123 has been MERGED. ..."}
 {"type":"pr_closed","pr_url":"...","pr_number":123,"message":"PR #123 was closed without merging."}
 ```
+
+Note: `pr_merged` does **not** carry a `task_id` — use the active task_id from your own session state when calling `mark_pr_merged`.
 
 How to respond to each event type:
 
 - **`review_submitted`** — move the task back to `in_progress` via `mcp__cloglog__update_task_status`, read the review body from the event (and fetch the full comments with *Check PR Status* below if needed), address the feedback, push a fix, move back to `review`.
-- **`ci_failed`** — follow [CI Failure Recovery](#ci-failure-recovery) to read the failed logs and push a fix. CI re-runs automatically on push; a subsequent `check_run` webhook will report the new result.
-- **`pr_merged`** — call `mcp__cloglog__mark_pr_merged`, then `mcp__cloglog__report_artifact` for spec/plan tasks, then `mcp__cloglog__get_my_tasks` and `start_task` on the next task. If no tasks remain, `unregister_agent` and exit cleanly.
+- **`review_comment`** — a reviewer posted a standalone inline diff comment without opening a review. The event carries `path`, `line`, and the comment body. Treat it the same as `review_submitted`: move back to `in_progress`, address the feedback at `path:line`, push a fix, move back to `review`.
+- **`issue_comment`** — a reviewer posted an issue-style PR comment. These are often clarifying questions or approvals without a formal review. Read the body; if it requires a code change, follow the same in_progress → fix → review flow. If it is informational (e.g., "LGTM, just waiting on CI"), reply via the *Reply to Review Comments* section and stay in `review`.
+- **`ci_failed`** — follow [CI Failure Recovery](#ci-failure-recovery) to read the failed logs and push a fix. CI re-runs automatically on push; a subsequent `check_run` webhook will report the new result. Note: the consumer only filters out `conclusion=success`, so `conclusion=null` (still pending) may surface here — check `gh pr checks <PR_NUM>` before assuming the run terminated.
+- **`pr_merged`** — call `mcp__cloglog__mark_pr_merged` with your active task_id, then `mcp__cloglog__report_artifact` for spec/plan tasks, then `mcp__cloglog__get_my_tasks` and `start_task` on the next task. If no tasks remain, `unregister_agent` and exit cleanly.
 - **`pr_closed`** — the PR was closed without merging. Move the task back to `in_progress` (or note the closure), ask the main agent for direction if unclear.
 
 If the inbox monitor is not running, events pile up silently in the file and nothing will react to them. Restart it with `Monitor(command="tail -f .cloglog/inbox", persistent=true)` as soon as you notice.
@@ -123,7 +131,7 @@ grep -n 'Inbox monitor is atomic' plugins/cloglog/skills/github-bot/SKILL.md
 ```
 
 ```output
-186:5. **Inbox monitor is atomic with PR creation** — creating a PR without an active `Monitor` on your worktree `.cloglog/inbox` means you'll never see review comments, CI failures, or merge notifications. Webhook events arrive there directly — no `/loop` needed. Board update + inbox monitor are both mandatory after every PR.
+192:5. **Inbox monitor is atomic with PR creation** — creating a PR without an active `Monitor` on your worktree `.cloglog/inbox` means you'll never see review comments, CI failures, or merge notifications. Webhook events arrive there directly — no `/loop` needed. Board update + inbox monitor are both mandatory after every PR.
 ```
 
 ## 4. Unit tests cover the new behavior

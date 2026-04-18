@@ -110,7 +110,9 @@ run-backend: ## Start the FastAPI backend
 		--reload-exclude '*.pyc'
 
 prod: ## Start prod server (gunicorn, port 8001, foreground — run in a zellij pane)
-	@echo "Starting cloglog prod server on :8001..."
+	@echo "Starting cloglog prod server..."
+	@echo "  Backend:  http://localhost:8001"
+	@echo "  Tunnel:   https://cloglog.voxdez.com"
 	@cd ../cloglog-prod && \
 	  uv run gunicorn src.gateway.asgi:app \
 	    --worker-class uvicorn.workers.UvicornWorker \

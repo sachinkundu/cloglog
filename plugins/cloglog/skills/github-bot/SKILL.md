@@ -145,7 +145,10 @@ How to respond to each event type:
 
 If the inbox monitor is not running, events pile up silently in the file and nothing will react to them. Restart it with `Monitor(command="tail -f .cloglog/inbox", persistent=true)` as soon as you notice.
 
-**Offline fallback:** Webhooks are dropped for offline agents. If you re-register after a crash, call *Check PR Status* below to reconcile state before resuming.
+**Crash recovery:** Events are **still appended to your inbox file even if the agent is not running**, as long as the task row already has a `pr_url` — `AgentNotifierConsumer._resolve_agent` looks up the worktree by task.pr_url without filtering on online/offline status (`src/gateway/webhook_consumers.py` + `AgentRepository.get_worktree`). After a crash:
+
+1. Re-register and start the inbox `Monitor` on `.cloglog/inbox`. `tail -f` replays the full file, so any events that arrived while you were down will be delivered as notifications.
+2. Also run *Check PR Status* below once — the branch-name fallback path excludes offline worktrees, so events that fired before your task had a `pr_url` set (e.g., the first CI run after `git push` but before `update_task_status`) may have been dropped.
 
 ### Reply to Review Comments
 

@@ -1,7 +1,7 @@
 # Agents moving a task to review are now told to watch their inbox for webhook events, not to start a 5-minute polling loop.
 
-*2026-04-18T17:44:45Z by Showboat 0.6.1*
-<!-- showboat-id: a2156f48-e420-4679-a8e2-2ebb3d29e183 -->
+*2026-04-18T17:53:22Z by Showboat 0.6.1*
+<!-- showboat-id: 50dfee15-493b-463f-9441-41ff9f6cc92a -->
 
 ## 1. New MCP tool response text
 
@@ -123,7 +123,56 @@ How to respond to each event type:
 
 If the inbox monitor is not running, events pile up silently in the file and nothing will react to them. Restart it with `Monitor(command="tail -f .cloglog/inbox", persistent=true)` as soon as you notice.
 
-**Offline fallback:** Webhooks are dropped for offline agents. If you re-register after a crash, call *Check PR Status* below to reconcile state before resuming.
+**Crash recovery:** Events are **still appended to your inbox file even if the agent is not running**, as long as the task row already has a `pr_url` — `AgentNotifierConsumer._resolve_agent` looks up the worktree by task.pr_url without filtering on online/offline status (`src/gateway/webhook_consumers.py` + `AgentRepository.get_worktree`). After a crash:
+
+1. Re-register and start the inbox `Monitor` on `.cloglog/inbox`. `tail -f` replays the full file, so any events that arrived while you were down will be delivered as notifications.
+2. Also run *Check PR Status* below once — the branch-name fallback path excludes offline worktrees, so events that fired before your task had a `pr_url` set (e.g., the first CI run after `git push` but before `update_task_status`) may have been dropped.
+
+### Reply to Review Comments
+
+Always reply to comments you address. Do NOT resolve threads — that's the reviewer's decision.
+
+**Important:** The `/pulls/comments/{id}/replies` endpoint only works for standalone diff comments ("Add single comment"). Review comments created via "Start a Review" return 404 on that endpoint. Use an issue-style comment instead to address all review feedback:
+
+```bash
+BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
+
+# Post a summary reply addressing review comments (works for all comment types)
+GH_TOKEN="$BOT_TOKEN" gh api repos/${REPO}/issues/<PR_NUM>/comments \
+  -f body="Addressed review feedback in commit abc123:
+1. **Comment about X** — Fixed by doing Y
+2. **Comment about Z** — Changed to W"
+
+# Reply to a standalone diff comment (only works for non-review comments)
+GH_TOKEN="$BOT_TOKEN" gh api repos/${REPO}/pulls/comments/<COMMENT_ID>/replies \
+  -f body="Fixed — changed X to Y in file.py:42"
+```
+
+### CI Failure Recovery
+
+```bash
+BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
+
+# Find the failed run
+RUN_ID=$(GH_TOKEN="$BOT_TOKEN" gh run list --branch <BRANCH> --workflow ci.yml -L 1 \
+  --json databaseId -q '.[0].databaseId')
+
+# Read the logs
+GH_TOKEN="$BOT_TOKEN" gh run view $RUN_ID --log-failed
+```
+
+Diagnose from the logs, push a fix commit — CI re-triggers automatically on push.
+
+## Rules
+
+1. **Every `gh` command needs `GH_TOKEN="$BOT_TOKEN"`** — `git remote set-url` only covers git operations. The `gh` CLI uses `GH_TOKEN` independently. Without it, commands fall back to the user's personal auth and comments appear as the user.
+2. **Get a fresh token per batch** — tokens last ~1 hour but always get a fresh one at the start of a GitHub operation sequence.
+3. **Check both comment types** — GitHub has inline review comments (`pulls/<N>/comments`) and issue-style comments (`issues/<N>/comments`). Always check both.
+4. **Board update is atomic with PR creation** — creating a PR without updating the board is incomplete.
+5. **Inbox monitor is atomic with PR creation** — creating a PR without an active `Monitor` on your worktree `.cloglog/inbox` means you'll never see review comments, CI failures, or merge notifications. Webhook events arrive there directly — no `/loop` needed. Board update + inbox monitor are both mandatory after every PR.
+6. **Use dynamic repo detection** — never hardcode the repository name. Always use `$REPO` derived from `gh repo view` or `git remote`.
+7. **Never `git add .` or `git add -A`** — always stage files explicitly by path. Review every changed file against the task scope before staging. Unrelated files in a PR are a review burden and a sign of sloppy worktree hygiene.
 ````
 
 ```bash
@@ -131,7 +180,7 @@ grep -n 'Inbox monitor is atomic' plugins/cloglog/skills/github-bot/SKILL.md
 ```
 
 ```output
-192:5. **Inbox monitor is atomic with PR creation** — creating a PR without an active `Monitor` on your worktree `.cloglog/inbox` means you'll never see review comments, CI failures, or merge notifications. Webhook events arrive there directly — no `/loop` needed. Board update + inbox monitor are both mandatory after every PR.
+195:5. **Inbox monitor is atomic with PR creation** — creating a PR without an active `Monitor` on your worktree `.cloglog/inbox` means you'll never see review comments, CI failures, or merge notifications. Webhook events arrive there directly — no `/loop` needed. Board update + inbox monitor are both mandatory after every PR.
 ```
 
 ## 4. Unit tests cover the new behavior

@@ -1,4 +1,4 @@
-.PHONY: help install test test-board test-agent test-document test-gateway test-e2e test-e2e-browser test-e2e-browser-ui test-e2e-browser-headed test-e2e-browser-report lint typecheck coverage contract-check demo demo-check quality run-backend prod prod-bg promote prod-logs prod-stop
+.PHONY: help install test test-board test-agent test-document test-gateway test-e2e test-e2e-browser test-e2e-browser-ui test-e2e-browser-headed test-e2e-browser-report lint typecheck coverage contract-check demo demo-check quality run-backend prod prod-bg promote prod-logs prod-stop db-up db-down db-migrate db-revision db-refresh-from-prod
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -186,3 +186,10 @@ db-migrate: ## Run Alembic migrations
 
 db-revision: ## Create a new Alembic migration (usage: make db-revision msg="description")
 	uv run alembic revision --autogenerate -m "$(msg)"
+
+db-refresh-from-prod: ## Snapshot prod DB (cloglog) into dev DB (cloglog_dev)
+	@echo "Refreshing cloglog_dev from cloglog..."
+	@PGPASSWORD=cloglog_dev psql -h 127.0.0.1 -U cloglog -d postgres -c "DROP DATABASE IF EXISTS cloglog_dev;" >/dev/null
+	@PGPASSWORD=cloglog_dev psql -h 127.0.0.1 -U cloglog -d postgres -c "CREATE DATABASE cloglog_dev OWNER cloglog;" >/dev/null
+	@PGPASSWORD=cloglog_dev pg_dump -h 127.0.0.1 -U cloglog -d cloglog --no-owner --no-privileges 2>/dev/null | PGPASSWORD=cloglog_dev psql -h 127.0.0.1 -U cloglog -d cloglog_dev -q >/dev/null
+	@echo "  cloglog_dev: seeded from cloglog ✓"

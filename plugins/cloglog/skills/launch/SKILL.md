@@ -138,29 +138,25 @@ fi
 
 Copy the assembled prompt to `${WORKTREE_PATH}/AGENT_PROMPT.md`.
 
-### 4e. Create zellij tab and launch agent (no-focus-steal pattern)
-
-**IMPORTANT:** Do NOT use `--cwd` on `zellij action new-tab` — it does not reliably set the shell's working directory. Instead, use `cd` in the command itself. The agent's Claude Code session MUST start from the worktree directory so it picks up `.mcp.json` and resolves the correct project root.
+### 4e. Create zellij tab and launch agent
 
 ```bash
-# 1. Remember current tab
-CURRENT_TAB=$(zellij action query-tab-names 2>&1 | head -1)
+# Capture current tab's stable numeric ID before switching away
+CURRENT_TAB_ID=$(zellij action current-tab-info 2>&1 | awk '/^id:/ {print $2}')
 
-# 2. Create the tab (briefly steals focus)
-zellij action new-tab --name "${WORKTREE_NAME}"
+# Write a launcher script — unquoted EOF expands ${WORKTREE_PATH} at write time, baking the absolute path in
+cat > "${WORKTREE_PATH}/.cloglog/launch.sh" << EOF
+#!/bin/bash
+cd "${WORKTREE_PATH}"
+exec claude --dangerously-skip-permissions 'Read ${WORKTREE_PATH}/AGENT_PROMPT.md and begin.'
+EOF
+chmod +x "${WORKTREE_PATH}/.cloglog/launch.sh"
 
-# 3. Grab the pane ID while on the new tab
-sleep 0.5
-PANE_ID=$(zellij action list-clients 2>&1 | awk 'NR==2{print $2}')
+# new-tab -- <command> starts the command in the tab's initial pane — no write-chars, no list-clients, no pane-id needed
+zellij action new-tab --name "${WORKTREE_NAME}" -- bash "${WORKTREE_PATH}/.cloglog/launch.sh"
 
-# 4. Switch back immediately
-zellij action go-to-tab-name "${CURRENT_TAB}"
-
-# 5. Send command remotely — cd first, then claude
-sleep 0.3
-zellij action write-chars --pane-id "${PANE_ID}" "cd ${WORKTREE_PATH} && claude --dangerously-skip-permissions 'Read ${WORKTREE_PATH}/AGENT_PROMPT.md and begin.'"
-sleep 0.3
-zellij action write --pane-id "${PANE_ID}" 13
+# Return focus immediately using stable numeric ID (not affected by tab renames or reordering)
+zellij action go-to-tab-by-id "${CURRENT_TAB_ID}"
 ```
 
 ### 4f. One agent at a time

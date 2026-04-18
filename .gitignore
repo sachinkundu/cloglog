@@ -14,6 +14,7 @@ htmlcov/
 CONTRACT.yaml
 .cloglog/inbox
 .cloglog/db-schema.sql
+.cloglog/launch.sh
 .claude/agent-usage.log
 test-results/
 

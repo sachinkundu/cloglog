@@ -45,7 +45,7 @@
 
 - **Commit or stash all pending changes before creating worktrees.** Worktrees inherit uncommitted changes from the working tree — agents will see those diffs and mistakenly treat them as their own work.
 - **Task lifecycle:** Move tasks through `in_progress → review` using the `update_task_status` MCP tool. Before moving to review, add a structured test report via `add_task_note` covering: (1) pre-existing tests, (2) modified tests, (3) new tests, (4) testing strategy, (5) results with clear delta. This demonstrates testing judgment, not just a pass count.
-- **PR polling and CI recovery:** Use the `github-bot` skill — it has the exact commands and polling loop. When merged: call `mark_pr_merged` with the PR URL, then for spec/plan tasks call `report_artifact`, then start the next task immediately.
+- **PR polling and CI recovery:** Use the `github-bot` skill — it has the exact commands and polling loop. When merged: call `mark_pr_merged` with the task_id, then for spec/plan tasks call `report_artifact`, then start the next task immediately.
 - **Report artifacts after PR merge (enforced by state machine):** When a spec or plan PR merges, call `report_artifact` MCP tool with the repo-relative path to the document file. The pipeline guard blocks downstream tasks until the predecessor's artifact is attached. Only spec and plan tasks produce artifacts; impl and standalone tasks do not.
 
 ### Agent Shutdown

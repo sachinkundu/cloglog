@@ -494,12 +494,12 @@ class TestMarkPrMergedAPI:
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
         """Polling loop fallback: mark_pr_merged sets pr_merged=True on the matching task."""
-        wt_id, task_id, pr_url, agent_token = await self._setup(client, db_session)
+        wt_id, task_id, _pr_url, agent_token = await self._setup(client, db_session)
         ah = _agent_auth(agent_token)
 
         resp = await client.post(
             f"/api/v1/agents/{wt_id}/mark-pr-merged",
-            json={"pr_url": pr_url},
+            json={"task_id": task_id},
             headers=ah,
         )
         assert resp.status_code == 200
@@ -578,7 +578,7 @@ class TestMarkPrMergedAPI:
         # Mark PR merged via polling loop fallback
         await client.post(
             f"/api/v1/agents/{wt_id}/mark-pr-merged",
-            json={"pr_url": pr_url},
+            json={"task_id": str(task1.id)},
             headers=ah,
         )
 
@@ -590,10 +590,10 @@ class TestMarkPrMergedAPI:
         )
         assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
 
-    async def test_mark_pr_merged_unknown_url_returns_404(
+    async def test_mark_pr_merged_unknown_task_id_returns_404(
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
-        """mark_pr_merged with an unknown pr_url returns 404."""
+        """mark_pr_merged with an unknown task_id returns 404."""
         project = await _create_project_via_api(client)
         h = _auth(project["api_key"])
         reg = await client.post(
@@ -609,7 +609,7 @@ class TestMarkPrMergedAPI:
 
         resp = await client.post(
             f"/api/v1/agents/{wt_id}/mark-pr-merged",
-            json={"pr_url": "https://github.com/nobody/nothing/pull/999"},
+            json={"task_id": str(uuid.uuid4())},  # nonexistent task
             headers=_agent_auth(agent_token),
         )
         assert resp.status_code == 404
@@ -618,10 +618,10 @@ class TestMarkPrMergedAPI:
         self, client: AsyncClient, db_session: AsyncSession
     ) -> None:
         """mark_pr_merged without auth is rejected."""
-        wt_id, _task_id, pr_url, _agent_token = await self._setup(client, db_session)
+        wt_id, task_id, _pr_url, _agent_token = await self._setup(client, db_session)
         resp = await client.post(
             f"/api/v1/agents/{wt_id}/mark-pr-merged",
-            json={"pr_url": pr_url},
+            json={"task_id": task_id},
         )
         assert resp.status_code == 401
 
@@ -657,7 +657,7 @@ class TestMarkPrMergedAPI:
             headers=ah_b,
         )
 
-        # Project A: a different agent tries to mark project B's pr_url as merged
+        # Project A: a different agent tries to mark project B's task as merged
         proj_a = await _create_project_via_api(client)
         reg_a = await client.post(
             "/api/v1/agents/register",
@@ -672,10 +672,10 @@ class TestMarkPrMergedAPI:
 
         resp = await client.post(
             f"/api/v1/agents/{wt_a}/mark-pr-merged",
-            json={"pr_url": pr_url_b},  # project B's PR URL
+            json={"task_id": task_b_id},  # project B's task ID
             headers=_agent_auth(tok_a),
         )
-        # Must return 404 — scoped to project A which has no task with pr_url_b
+        # Must return 404 — ownership check fails (task_b belongs to project B, not A)
         assert resp.status_code == 404
 
         # Verify project B's task was NOT marked merged via the DB
@@ -756,7 +756,7 @@ class TestMarkPrMergedAPI:
         # PR merges while task is still in in_progress (merge race)
         merge_resp = await client.post(
             f"/api/v1/agents/{wt_id}/mark-pr-merged",
-            json={"pr_url": pr_url},
+            json={"task_id": str(task1.id)},
             headers=ah,
         )
         assert merge_resp.status_code == 200

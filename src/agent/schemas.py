@@ -84,7 +84,7 @@ class AddTaskNoteRequest(BaseModel):
 
 
 class MarkPrMergedRequest(BaseModel):
-    pr_url: str
+    task_id: UUID
 
 
 class ReportArtifactRequest(BaseModel):

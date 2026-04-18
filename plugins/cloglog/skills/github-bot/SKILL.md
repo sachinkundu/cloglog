@@ -77,7 +77,7 @@ After creating the PR, do these two things in order — both are mandatory, neve
 1. **Update the board** — call `mcp__cloglog__update_task_status` to move the active task to `review` with the PR URL.
 2. **Start the polling loop** — set up the loop so you catch review comments and merge:
 ```
-/loop 5m Check PR #<NUM> for review comments, CI status, and merge state using the github-bot skill. If new comments: move task to in_progress, address feedback, push fix, move back to review. If merged: call mark_pr_merged with the PR URL, then call report_artifact (for spec/plan tasks), then start next task.
+/loop 5m Check PR #<NUM> for review comments, CI status, and merge state using the github-bot skill. If new comments: move task to in_progress, address feedback, push fix, move back to review. If merged: call mark_pr_merged with the task_id, then call report_artifact (for spec/plan tasks), then start next task.
 ```
 
 These two steps are the **last thing you do** after creating a PR. Do not proceed to other work — the loop handles what comes next.
@@ -114,7 +114,7 @@ GH_TOKEN="$BOT_TOKEN" gh api repos/${REPO}/pulls/<PR_NUM>/reviews \
 After moving a task to review, set up a polling loop to watch for comments and merge:
 
 ```
-/loop 5m Check PR #<NUM> for review comments, CI status, and merge state using the github-bot skill. If new comments: move task to in_progress, address feedback, push fix, move back to review. If merged: call mark_pr_merged with the PR URL, then call report_artifact (for spec/plan tasks), then start next task.
+/loop 5m Check PR #<NUM> for review comments, CI status, and merge state using the github-bot skill. If new comments: move task to in_progress, address feedback, push fix, move back to review. If merged: call mark_pr_merged with the task_id, then call report_artifact (for spec/plan tasks), then start next task.
 ```
 
 The loop runs every 5 minutes. When polling detects new review comments, move the task back to `in_progress` before addressing feedback. After pushing fixes, move it back to `review`.

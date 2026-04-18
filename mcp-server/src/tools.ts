@@ -21,7 +21,7 @@ export interface ToolHandlers {
   assign_task(args: { worktree_id: string; task_id: string }): Promise<unknown>
   unregister_agent(args: { worktree_id: string }): Promise<unknown>
   report_artifact(args: { worktree_id: string; task_id: string; artifact_path: string }): Promise<unknown>
-  mark_pr_merged(args: { worktree_id: string; pr_url: string }): Promise<unknown>
+  mark_pr_merged(args: { worktree_id: string; task_id: string }): Promise<unknown>
 
   // New tools for API parity
   get_project(args: Record<string, never>): Promise<unknown>
@@ -107,8 +107,8 @@ export function createToolHandlers(client: CloglogClient): ToolHandlers {
       })
     },
 
-    async mark_pr_merged({ worktree_id, pr_url }) {
-      return client.request('POST', `/api/v1/agents/${worktree_id}/mark-pr-merged`, { pr_url })
+    async mark_pr_merged({ worktree_id, task_id }) {
+      return client.request('POST', `/api/v1/agents/${worktree_id}/mark-pr-merged`, { task_id })
     },
 
     // New tools for API parity

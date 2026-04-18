@@ -84,16 +84,15 @@ Note: `git push` requires `remote set-url` because the `gh` CLI doesn't support 
 After creating the PR, do these two things in order — both are mandatory, never skip either:
 
 1. **Update the board** — call `mcp__cloglog__update_task_status` to move the active task to `review` with the PR URL.
-2. **Start the polling loop** — set up the loop so you catch review comments and merge:
-```
-/loop 5m Check PR #<NUM> for review comments, CI status, and merge state using the github-bot skill. If new comments: move task to in_progress, address feedback, push fix, move back to review. If merged: call mark_pr_merged with the task_id, then call report_artifact (for spec/plan tasks), then start next task.
-```
+2. **Confirm your inbox monitor is running** — the webhook pipeline will append PR events to your worktree inbox file (`.cloglog/inbox`). Do NOT start a `/loop` polling cycle; GitHub webhooks deliver review/merge/CI events sub-second. If your `Monitor` on the inbox is no longer live, restart it before walking away from the PR.
 
-These two steps are the **last thing you do** after creating a PR. Do not proceed to other work — the loop handles what comes next.
+These two steps are the **last thing you do** after creating a PR. Do not proceed to other work until the inbox monitor is confirmed running — without it you will miss review comments, CI failures, and merge notifications.
+
+See [PR Event Inbox](#pr-event-inbox) below for how to respond to each event type.
 
 ### Check PR Status
 
-Use this when polling for PR review feedback. Check all five sources — merge state, CI, inline comments, issue comments, and review state:
+Use this on demand — after receiving a `review_submitted` inbox event to pull the full comment threads, or after re-registering to reconcile state missed while offline. This is NOT a polling replacement for the webhook inbox; it is a drill-down for details the event message truncates. Check all five sources — merge state, CI, inline comments, issue comments, and review state:
 
 ```bash
 BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
@@ -118,15 +117,29 @@ GH_TOKEN="$BOT_TOKEN" gh api repos/${REPO}/pulls/<PR_NUM>/reviews \
   --jq '.[] | "\(.state) | \(.body[:120])"'
 ```
 
-### PR Polling Loop
+### PR Event Inbox
 
-After moving a task to review, set up a polling loop to watch for comments and merge:
+After moving a task to review, PR state changes arrive as webhook-driven events in your worktree inbox (`.cloglog/inbox`). Do NOT start a `/loop` — the backend's webhook dispatcher appends one JSON line per event, and your `Monitor` reads them in real time.
 
+Each event looks like:
+
+```json
+{"type":"review_submitted","pr_url":"...","pr_number":123,"review_state":"changes_requested","reviewer":"sachinkundu","body":"First 500 chars…","message":"Review on PR #123: changes_requested by sachinkundu. ..."}
+{"type":"ci_failed","pr_url":"...","pr_number":123,"check_name":"quality","conclusion":"failure","message":"CI check 'quality' failure on PR #123. ..."}
+{"type":"pr_merged","pr_url":"...","pr_number":123,"task_id":"<uuid>","message":"PR #123 has been MERGED. ..."}
+{"type":"pr_closed","pr_url":"...","pr_number":123,"message":"PR #123 was closed without merging."}
 ```
-/loop 5m Check PR #<NUM> for review comments, CI status, and merge state using the github-bot skill. If new comments: move task to in_progress, address feedback, push fix, move back to review. If merged: call mark_pr_merged with the task_id, then call report_artifact (for spec/plan tasks), then start next task.
-```
 
-The loop runs every 5 minutes. When polling detects new review comments, move the task back to `in_progress` before addressing feedback. After pushing fixes, move it back to `review`.
+How to respond to each event type:
+
+- **`review_submitted`** — move the task back to `in_progress` via `mcp__cloglog__update_task_status`, read the review body from the event (and fetch the full comments with *Check PR Status* below if needed), address the feedback, push a fix, move back to `review`.
+- **`ci_failed`** — follow [CI Failure Recovery](#ci-failure-recovery) to read the failed logs and push a fix. CI re-runs automatically on push; a subsequent `check_run` webhook will report the new result.
+- **`pr_merged`** — call `mcp__cloglog__mark_pr_merged`, then `mcp__cloglog__report_artifact` for spec/plan tasks, then `mcp__cloglog__get_my_tasks` and `start_task` on the next task. If no tasks remain, `unregister_agent` and exit cleanly.
+- **`pr_closed`** — the PR was closed without merging. Move the task back to `in_progress` (or note the closure), ask the main agent for direction if unclear.
+
+If the inbox monitor is not running, events pile up silently in the file and nothing will react to them. Restart it with `Monitor(command="tail -f .cloglog/inbox", persistent=true)` as soon as you notice.
+
+**Offline fallback:** Webhooks are dropped for offline agents. If you re-register after a crash, call *Check PR Status* below to reconcile state before resuming.
 
 ### Reply to Review Comments
 
@@ -170,6 +183,6 @@ Diagnose from the logs, push a fix commit — CI re-triggers automatically on pu
 2. **Get a fresh token per batch** — tokens last ~1 hour but always get a fresh one at the start of a GitHub operation sequence.
 3. **Check both comment types** — GitHub has inline review comments (`pulls/<N>/comments`) and issue-style comments (`issues/<N>/comments`). Always check both.
 4. **Board update is atomic with PR creation** — creating a PR without updating the board is incomplete.
-5. **Polling loop is atomic with PR creation** — creating a PR without starting `/loop` means you'll never see review comments or detect merge. Board update + loop setup are both mandatory after every PR.
+5. **Inbox monitor is atomic with PR creation** — creating a PR without an active `Monitor` on your worktree `.cloglog/inbox` means you'll never see review comments, CI failures, or merge notifications. Webhook events arrive there directly — no `/loop` needed. Board update + inbox monitor are both mandatory after every PR.
 6. **Use dynamic repo detection** — never hardcode the repository name. Always use `$REPO` derived from `gh repo view` or `git remote`.
 7. **Never `git add .` or `git add -A`** — always stage files explicitly by path. Review every changed file against the task scope before staging. Unrelated files in a PR are a review burden and a sign of sloppy worktree hygiene.

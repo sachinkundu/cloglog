@@ -158,7 +158,7 @@ export function createServer(client: CloglogClient): McpServer {
       let text = `Task ${task_id} moved to ${status}.`
       if (status === 'review' && pr_url) {
         const prNum = pr_url.match(/\/pull\/(\d+)/)?.[1] ?? '???'
-        text += `\n\nCRITICAL — You MUST set up a PR polling loop NOW. Without it you will never know when the PR is merged or has review comments. Run:\n\n/loop 5m Check PR #${prNum} for review comments, CI status, and merge state using the github-bot skill. If new comments: move task to in_progress, address feedback, push fix, move back to review. If merged: call mark_pr_merged with the task_id, then call report_artifact (for spec/plan tasks), then call get_my_tasks and start the next task.`
+        text += `\n\nCRITICAL — PR #${prNum} is now tracked via GitHub webhooks. Do NOT start a /loop polling cycle. Keep your inbox monitor running; events arrive as JSON lines appended to your inbox file:\n\n- {"type":"review_submitted",...}  → reviewer posted feedback. Move task back to in_progress, address the feedback, push a fix, move back to review.\n- {"type":"ci_failed",...}         → a CI check failed. Use the github-bot skill to read the failed logs and push a fix.\n- {"type":"pr_merged","pr_number":${prNum},...}  → PR merged. Call mark_pr_merged with the task_id, then call report_artifact (for spec/plan tasks), then call get_my_tasks and start the next task.\n\nWebhook delivery is sub-second — no polling needed. Continue with other work or wait for the next inbox event.`
       }
       return { content: [{ type: 'text' as const, text }] }
     })
@@ -224,7 +224,7 @@ export function createServer(client: CloglogClient): McpServer {
 
   server.tool(
     'mark_pr_merged',
-    'Set pr_merged=True on a task. Call this when the polling loop detects a GitHub PR was merged, as a fallback when the GitHub webhook has not fired. This allows start_task to proceed for the next task.',
+    'Set pr_merged=True on a task. Call this after receiving a pr_merged inbox event (idempotent — the webhook consumer also flips this flag), or as a fallback when the webhook does not fire. This allows start_task to proceed for the next task.',
     {
       worktree_id: z.string().describe('UUID of the worktree'),
       task_id: z.string().describe('UUID of the task whose PR was merged'),

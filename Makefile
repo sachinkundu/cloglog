@@ -109,24 +109,33 @@ run-backend: ## Start the FastAPI backend
 		--reload-exclude '__pycache__' \
 		--reload-exclude '*.pyc'
 
-prod: ## Start prod server (gunicorn, port 8001, foreground — run in a zellij pane)
+prod: ## Start prod server (gunicorn + vite preview, foreground — run in a zellij pane)
 	@echo "Starting cloglog prod server..."
 	@echo "  Backend:  http://localhost:8001"
+	@echo "  Frontend: http://localhost:4173"
 	@echo "  Tunnel:   https://cloglog.voxdez.com"
-	@cd ../cloglog-prod && \
-	  uv run gunicorn src.gateway.asgi:app \
-	    --worker-class uvicorn.workers.UvicornWorker \
-	    --workers 2 \
-	    --bind 0.0.0.0:8001 \
-	    --pid /tmp/cloglog-prod.pid \
-	    --error-logfile /tmp/cloglog-prod.log \
-	    --access-logfile /tmp/cloglog-prod-access.log \
-	    --log-level info
+	@echo "  Building frontend..."
+	@cd ../cloglog-prod/frontend && npm ci --silent && VITE_API_URL=http://localhost:8001/api/v1 npm run build 2>&1 | tail -2
+	@echo "  Frontend: built"
+	@trap 'kill 0; rm -f /tmp/cloglog-prod-frontend.pid' EXIT INT TERM; \
+		(cd ../cloglog-prod && uv run gunicorn src.gateway.asgi:app \
+		    --worker-class uvicorn.workers.UvicornWorker \
+		    --workers 2 \
+		    --bind 0.0.0.0:8001 \
+		    --pid /tmp/cloglog-prod.pid \
+		    --error-logfile /tmp/cloglog-prod.log \
+		    --access-logfile /tmp/cloglog-prod-access.log \
+		    --log-level info) & \
+		(cd ../cloglog-prod/frontend && npm run preview -- --port 4173 & echo $$! > /tmp/cloglog-prod-frontend.pid) & \
+		wait
 
 prod-bg: ## Start prod server in background
-	@echo "Starting cloglog prod server on :8001 (background)..."
-	@cd ../cloglog-prod && \
-	  uv run gunicorn src.gateway.asgi:app \
+	@echo "Starting cloglog prod server (background)..."
+	@echo "  Backend:  http://localhost:8001"
+	@echo "  Frontend: http://localhost:4173"
+	@echo "  Tunnel:   https://cloglog.voxdez.com"
+	@cd ../cloglog-prod/frontend && npm ci --silent && VITE_API_URL=http://localhost:8001/api/v1 npm run build 2>&1 | tail -2
+	@cd ../cloglog-prod && uv run gunicorn src.gateway.asgi:app \
 	    --worker-class uvicorn.workers.UvicornWorker \
 	    --workers 2 \
 	    --bind 0.0.0.0:8001 \
@@ -135,21 +144,27 @@ prod-bg: ## Start prod server in background
 	    --access-logfile /tmp/cloglog-prod-access.log \
 	    --log-level info \
 	    --daemon
-	@echo "  Prod server started. PID: $$(cat /tmp/cloglog-prod.pid)"
+	@cd ../cloglog-prod/frontend && npm run preview -- --port 4173 & echo $$! > /tmp/cloglog-prod-frontend.pid
+	@echo "  Backend PID: $$(cat /tmp/cloglog-prod.pid)  Frontend PID: $$(cat /tmp/cloglog-prod-frontend.pid)"
 
 promote: ## Deploy latest origin/main to prod with zero-downtime worker rotation
 	@echo "Promoting origin/main to prod..."
 	@git -C ../cloglog-prod pull origin main
 	@cd ../cloglog-prod && uv sync
+	@cd ../cloglog-prod/frontend && npm ci --silent
+	@cd ../cloglog-prod/frontend && VITE_API_URL=http://localhost:8001/api/v1 npm run build 2>&1 | tail -2
 	@cd ../cloglog-prod && uv run alembic upgrade head
 	@kill -HUP $$(cat /tmp/cloglog-prod.pid)
-	@echo "  Done — new workers loading from origin/main."
+	@kill $$(cat /tmp/cloglog-prod-frontend.pid) 2>/dev/null || true
+	@cd ../cloglog-prod/frontend && npm run preview -- --port 4173 & echo $$! > /tmp/cloglog-prod-frontend.pid
+	@echo "  Done — backend rotating workers, frontend rebuilt and restarted."
 
 prod-logs: ## Tail prod server logs
 	@tail -f /tmp/cloglog-prod.log /tmp/cloglog-prod-access.log
 
 prod-stop: ## Stop the prod server
-	@kill $$(cat /tmp/cloglog-prod.pid) && rm -f /tmp/cloglog-prod.pid && echo "Prod server stopped."
+	@kill $$(cat /tmp/cloglog-prod.pid) 2>/dev/null && rm -f /tmp/cloglog-prod.pid && echo "  Backend: stopped." || true
+	@kill $$(cat /tmp/cloglog-prod-frontend.pid) 2>/dev/null && rm -f /tmp/cloglog-prod-frontend.pid && echo "  Frontend: stopped." || true
 
 # ── Database ──────────────────────────────────
 

@@ -359,6 +359,71 @@ class TestBuildMessage:
         msg = consumer._build_message(event)
         assert msg is None
 
+    def test_check_run_null_conclusion_returns_none(self) -> None:
+        """GitHub fires check_run with null conclusion before the check terminates.
+
+        The consumer must not treat a pending check as a failure — the former
+        behavior caused false ci_failed notifications on every queued check.
+        """
+        consumer = AgentNotifierConsumer()
+        event = _make_event(
+            event_type=WebhookEventType.CHECK_RUN_COMPLETED,
+            raw={
+                "check_run": {
+                    "name": "quality",
+                    "conclusion": None,
+                },
+            },
+        )
+        msg = consumer._build_message(event)
+        assert msg is None
+
+    def test_check_run_missing_conclusion_returns_none(self) -> None:
+        """A check_run payload without a conclusion key must be treated as pending."""
+        consumer = AgentNotifierConsumer()
+        event = _make_event(
+            event_type=WebhookEventType.CHECK_RUN_COMPLETED,
+            raw={"check_run": {"name": "quality"}},
+        )
+        msg = consumer._build_message(event)
+        assert msg is None
+
+    def test_check_run_neutral_returns_none(self) -> None:
+        """neutral is a terminal non-failure conclusion — do not notify."""
+        consumer = AgentNotifierConsumer()
+        event = _make_event(
+            event_type=WebhookEventType.CHECK_RUN_COMPLETED,
+            raw={"check_run": {"name": "quality", "conclusion": "neutral"}},
+        )
+        msg = consumer._build_message(event)
+        assert msg is None
+
+    def test_check_run_skipped_returns_none(self) -> None:
+        """skipped is a terminal non-failure conclusion — do not notify."""
+        consumer = AgentNotifierConsumer()
+        event = _make_event(
+            event_type=WebhookEventType.CHECK_RUN_COMPLETED,
+            raw={"check_run": {"name": "quality", "conclusion": "skipped"}},
+        )
+        msg = consumer._build_message(event)
+        assert msg is None
+
+    @pytest.mark.parametrize(
+        "conclusion",
+        ["failure", "cancelled", "timed_out", "action_required", "stale"],
+    )
+    def test_check_run_non_success_terminal_emits_ci_failed(self, conclusion: str) -> None:
+        """All non-success terminal conclusions should emit ci_failed."""
+        consumer = AgentNotifierConsumer()
+        event = _make_event(
+            event_type=WebhookEventType.CHECK_RUN_COMPLETED,
+            raw={"check_run": {"name": "quality", "conclusion": conclusion}},
+        )
+        msg = consumer._build_message(event)
+        assert msg is not None
+        assert msg["type"] == "ci_failed"
+        assert msg["conclusion"] == conclusion
+
     def test_review_comment_message(self) -> None:
         consumer = AgentNotifierConsumer()
         event = _make_event(
@@ -424,6 +489,52 @@ class TestInboxWrite:
         msg = json.loads(lines[0])
         assert msg["type"] == "pr_merged"
         assert msg["pr_number"] == 42
+
+    @pytest.mark.asyncio
+    async def test_check_run_null_conclusion_writes_nothing(
+        self, db_session: AsyncSession, tmp_path: Path
+    ) -> None:
+        """End-to-end: a pending check_run event must not touch the inbox file."""
+        wt_path = str(tmp_path / "wt-null-conclusion")
+        Path(wt_path).mkdir()
+        _project, task, _worktree = await _seed_project_and_task(db_session, worktree_path=wt_path)
+
+        consumer = AgentNotifierConsumer(session_factory=_make_session_factory(db_session))
+        event = _make_event(
+            event_type=WebhookEventType.CHECK_RUN_COMPLETED,
+            pr_url=task.pr_url,  # type: ignore[arg-type]
+            raw={"check_run": {"name": "quality", "conclusion": None}},
+        )
+
+        await consumer.handle(event)
+
+        inbox_path = Path(wt_path) / ".cloglog" / "inbox"
+        assert not inbox_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_check_run_failure_writes_inbox(
+        self, db_session: AsyncSession, tmp_path: Path
+    ) -> None:
+        """End-to-end: a failure check_run event must append a ci_failed line."""
+        wt_path = str(tmp_path / "wt-ci-failure")
+        Path(wt_path).mkdir()
+        _project, task, _worktree = await _seed_project_and_task(db_session, worktree_path=wt_path)
+
+        consumer = AgentNotifierConsumer(session_factory=_make_session_factory(db_session))
+        event = _make_event(
+            event_type=WebhookEventType.CHECK_RUN_COMPLETED,
+            pr_url=task.pr_url,  # type: ignore[arg-type]
+            raw={"check_run": {"name": "quality", "conclusion": "failure"}},
+        )
+
+        await consumer.handle(event)
+
+        inbox_path = Path(wt_path) / ".cloglog" / "inbox"
+        assert inbox_path.exists()
+        msg = json.loads(inbox_path.read_text().strip())
+        assert msg["type"] == "ci_failed"
+        assert msg["conclusion"] == "failure"
+        assert msg["check_name"] == "quality"
 
     @pytest.mark.asyncio
     async def test_multiple_events_append_not_overwrite(

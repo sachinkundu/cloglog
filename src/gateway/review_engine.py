@@ -541,7 +541,7 @@ class ReviewEngineConsumer:
                 "exec",
                 "--full-auto",
                 "--sandbox",
-                "read-only",
+                "danger-full-access",
                 "--ephemeral",
                 "--color",
                 "never",

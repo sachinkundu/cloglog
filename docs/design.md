@@ -23,7 +23,7 @@ graph TB
     end
 
     Dashboard -- "SSE (real-time updates)" --> Backend
-    Dashboard -- "X-Dashboard-Key" --> Backend
+    Dashboard -- "Bearer project-api-key" --> Backend
     MCP -- "Bearer + X-MCP-Request" --> Backend
 
     subgraph Backend["cloglog Backend (FastAPI)"]
@@ -115,7 +115,13 @@ src/
  |   +-- auth.py
  |   +-- sse.py
  |   +-- cli.py
+ |   +-- routes.py
  |   +-- notification_listener.py
+ |   +-- review_engine.py        # F-36: automated PR code review
+ |   +-- webhook.py              # GitHub webhook ingress
+ |   +-- webhook_dispatcher.py
+ |   +-- webhook_consumers.py
+ |   +-- github_token.py         # GitHub App token management
  |
  +-- shared/         # Shared kernel
      +-- database.py    # AsyncSession factory, Base class
@@ -135,7 +141,7 @@ class TaskAssignmentService(Protocol):
     async def get_tasks_for_worktree(self, worktree_id: UUID) -> list[dict]: ...
 
 class TaskStatusService(Protocol):
-    async def start_task(self, task_id: UUID, worktree_id: UUID) -> dict: ...
+    async def start_task(self, task_id: UUID, worktree_id: UUID) -> None: ...
     async def complete_task(self, task_id: UUID) -> dict | None: ...
     async def update_task_status(self, task_id: UUID, status: str) -> None: ...
 
@@ -146,7 +152,7 @@ class WorktreeService(Protocol):
 
 # src/document/interfaces.py — Document exposes to Gateway
 class DocumentService(Protocol):
-    async def get_documents_for_entity(self, type: str, id: UUID) -> list[dict]: ...
+    async def get_documents_for_entity(self, attached_to_type: str, attached_to_id: UUID) -> list[dict]: ...
     async def get_document(self, document_id: UUID) -> dict | None: ...
 ```
 
@@ -216,10 +222,10 @@ Feature and epic statuses are **computed**, not set directly:
 
 ```python
 # Feature status = f(task statuses)
-if all tasks done        -> "done"
-elif any task in review  -> "review"
-elif any task in_progress -> "in_progress"
-else                     -> "planned"
+if all tasks done                              -> "done"
+elif any task in review                        -> "review"
+elif any task in ("in_progress", "prioritized") -> "in_progress"
+else                                           -> "planned"
 
 # Epic status = f(feature statuses)
 # Same logic, one level up
@@ -258,13 +264,13 @@ sequenceDiagram
     M->>B: POST /agents/register
     B->>B: Upsert worktree, create session
     B-->>D: SSE: WORKTREE_ONLINE
-    B-->>M: {worktree_id, session_id, current_task}
+    B-->>M: {worktree_id, session_id, project_id, agent_token, current_task}
     M-->>A: Registration confirmed
 
     Note over A,M: Work Loop
     loop Every 60 seconds
         M->>B: POST /agents/{id}/heartbeat
-        B-->>M: {shutdown_requested, pending_messages}
+        B-->>M: {status, last_heartbeat}
     end
 
     A->>M: start_task(task_id)
@@ -308,10 +314,9 @@ session = await repo.create_session(worktree.id)
 
 ### Heartbeat
 
-The MCP server sends a heartbeat every 60 seconds. The heartbeat response carries two critical signals:
+The MCP server sends a heartbeat every 60 seconds. The heartbeat response carries one critical signal:
 
 1. **`shutdown_requested`** — the human (or main agent) wants this agent to stop
-2. **`pending_messages`** — messages from other agents, piggybacked on the polling
 
 If an agent's heartbeat goes silent for **180 seconds** (configurable), the backend marks the session as `timed_out` and the worktree as `offline`. A background scheduler checks for timeouts every 60 seconds.
 
@@ -367,19 +372,20 @@ graph TD
     B["cloglog Backend<br/>Middleware checks:<br/>Has Bearer + X-MCP-Request?<br/>→ Full access"]
 ```
 
-The **three-credential model** ensures separation of concerns:
+The **four-credential model** ensures separation of concerns:
 
 | Credential | Who | Access |
 |---|---|---|
-| `Authorization: Bearer <key>` | Agent directly | Only `/agents/*` routes |
-| `Bearer <key>` + `X-MCP-Request: true` | MCP server (on behalf of agent) | All routes |
-| `X-Dashboard-Key: <secret>` | Human dashboard/CLI | Non-agent routes |
+| `Bearer <project-api-key>` | Agent registration, project-scoped routes | `/agents/register`, board routes |
+| `Bearer <agent-token>` | Per-agent token issued at registration | `/agents/{id}/*` routes for that worktree |
+| `Bearer <mcp-service-key>` + `X-MCP-Request: true` | MCP server (on behalf of any agent) | All routes |
+| `Bearer <mcp-service-key>` + `X-MCP-Request: true` (SupervisorAuth) | Main agent acting on a target worktree | Supervisor actions (assign-task, etc.) |
 
-Agents can only call `/agents/*` directly (register, heartbeat). For everything else (board, tasks, documents), they must go through MCP. This means the MCP server is the **single point of agent access control**.
+Agents receive a per-agent token (`agent_token`) from the registration response. The MCP server stores this token and uses it for heartbeat calls. For board operations (tasks, documents), the MCP server uses its own service key. This means the MCP server is the **single point of agent access control** for board state.
 
 ### MCP Tool Reference
 
-The MCP server exposes 20 tools organized by function:
+The MCP server exposes 28 tools organized by function:
 
 **Agent Lifecycle**
 | Tool | Description |
@@ -392,78 +398,44 @@ The MCP server exposes 20 tools organized by function:
 |---|---|
 | `get_my_tasks` | List tasks assigned to this worktree |
 | `start_task` | Move task to in_progress (with pipeline guards) |
+| `assign_task` | Assign a task to a target worktree by ID |
 | `complete_task` | BLOCKED — agents cannot mark done |
 | `update_task_status` | Move task between columns |
 | `add_task_note` | Append status note to a task |
+| `report_artifact` | Record artifact path for spec/plan tasks after PR merge |
 
 **Board Operations**
 | Tool | Description |
 |---|---|
+| `get_project` | Get current project info |
 | `get_board` | Kanban view — tasks by status column |
 | `get_backlog` | Hierarchical tree — epics > features > tasks |
-| `get_active_tasks` | Compact list of non-done tasks |
+| `get_active_tasks` | Compact list of non-done, non-archived tasks |
 | `create_epic` | Create a new epic |
+| `list_epics` | List all epics |
+| `update_epic` | Edit epic title, description, bounded_context, or status |
+| `delete_epic` | Delete an epic and all its children |
 | `create_feature` | Create a feature under an epic |
+| `list_features` | List features in an epic |
+| `update_feature` | Edit feature title, description, or status |
+| `delete_feature` | Delete a feature and all its tasks |
 | `create_task` | Create a task under a feature |
 | `create_tasks` | Bulk import epics/features/tasks |
-| `list_epics` | List all epics |
-| `list_features` | List features in an epic |
 | `update_task` | Edit task title/description/priority |
 | `delete_task` | Remove a task |
 
-**Documents & Messaging**
+**Documents & Dependencies**
 | Tool | Description |
 |---|---|
 | `attach_document` | Read local file, attach to entity on board |
-| `send_agent_message` | Send message to another agent via heartbeat |
+| `add_dependency` | Add a dependency between two features |
+| `remove_dependency` | Remove a dependency between two features |
 
 ---
 
-## Cross-Session Messaging
+## Cross-Agent Communication
 
-How does the main agent tell a worktree agent to rebase? How does one agent ask another about a shared interface?
-
-cloglog uses **heartbeat-piggybacked messaging**. No WebSockets, no separate channels — messages ride on the existing polling mechanism.
-
-```mermaid
-sequenceDiagram
-    participant Main as Main Agent
-    participant M1 as Main's MCP Server
-    participant B as Backend
-    participant M2 as Worktree's MCP Server
-    participant W as Worktree Agent
-
-    Main->>M1: send_agent_message(worktree_id, msg)
-    M1->>B: POST /agents/{worktree_id}/message
-    Note over B: Queue AgentMessage<br/>(delivered=false)
-    B-->>M1: 202 Accepted
-    M1-->>Main: Message queued
-
-    Note over M2: 60 seconds later... (heartbeat timer)
-
-    M2->>B: POST /agents/{id}/heartbeat
-    B->>B: Drain pending messages<br/>Mark delivered=true
-    B-->>M2: {pending_messages: ["[main-agent] please rebase"]}
-    Note over M2: Messages stored until<br/>next tool call
-
-    W->>M2: Any MCP tool call
-    M2-->>W: Tool result + piggybacked messages
-```
-
-### Message Delivery Guarantees
-
-- **At-most-once delivery**: Messages are drained on read and marked delivered. If the agent crashes before processing, the message is lost.
-- **FIFO ordering**: Messages delivered in creation order.
-- **Up to 60s latency**: Messages wait for the next heartbeat cycle.
-- **Sender tagging**: Each message includes sender identity (`main-agent`, `system`, worktree ID).
-
-Messages appear in the agent's tool response with a prefix:
-
-```
-📨 MESSAGES:
-- [main-agent] please rebase on main before pushing
-- [wt-frontend] I updated the API types, pull latest
-```
+The main agent communicates with worktree agents through a file-based inbox. Each worktree has an inbox file at `.cloglog/inbox` that the main agent appends messages to. Agents monitor this file via the `Monitor` tool (tail -f). This replaced an earlier heartbeat-piggybacked database approach (the `agent_messages` table was dropped in migration `f1a2b3c4d5e6`).
 
 ---
 
@@ -509,7 +481,7 @@ The dashboard subscribes to a Server-Sent Events stream:
 GET /api/v1/projects/{project_id}/stream
 ```
 
-The backend publishes 18 event types through an in-memory EventBus:
+The backend publishes 21 event types through an in-memory EventBus:
 
 ```python
 class EventBus:
@@ -534,7 +506,7 @@ graph LR
     D --> E["Task card moves<br/>between columns"]
 ```
 
-The frontend `useSSE` hook handles 14 event types with targeted state updates:
+The frontend `useSSE` hook handles 16 event types with targeted state updates:
 
 | Event | Dashboard Action |
 |---|---|
@@ -542,9 +514,13 @@ The frontend `useSSE` hook handles 14 event types with targeted state updates:
 | `worktree_online` / `worktree_offline` | Update agent status indicator |
 | `document_attached` | Refresh detail panel |
 | `notification_created` | Show notification bell |
-| `epic/feature/task_created` | Refresh backlog tree |
-| `dependency_added/removed` | Refresh dependency graph |
+| `epic_created` / `epic_deleted` | Refresh backlog tree |
+| `feature_created` / `feature_deleted` | Refresh backlog tree |
+| `task_created` / `task_deleted` | Refresh backlog tree |
+| `task_note_added` | Refresh task detail |
+| `dependency_added` / `dependency_removed` | Refresh dependency graph |
 | `bulk_import` | Full board refresh |
+| `bulk_agents_removed` | Refresh agent list |
 
 ### Drag-and-Drop
 
@@ -600,19 +576,15 @@ Each agent works in complete isolation: its own git branch, its own ports, its o
 ### Worktree Setup
 
 ```bash
-./scripts/create-worktree.sh <name> <context>
+WORKTREE_PATH=.claude/worktrees/wt-<name> scripts/worktree-infra.sh up
 ```
 
 This script:
 
-1. Creates a git worktree at `.claude/worktrees/wt-<name>`
-2. Checks out a new branch `wt-<name>`
-3. Assigns **deterministic ports** by hashing the worktree name
-4. Creates an **isolated PostgreSQL database** named `cloglog_wt_<name>`
-5. Runs Alembic migrations on the new database
-6. Writes a `.env` file with the worktree's port and database URL
-7. Generates a worktree-specific `CLAUDE.md` with directory restrictions
-8. Installs dependencies (Python via `uv`, Node via `npm`)
+1. Assigns **deterministic ports** by hashing the worktree name
+2. Creates an **isolated PostgreSQL database** named `cloglog_wt_<name>`
+3. Runs Alembic migrations on the new database
+4. Writes a `.env` file with the worktree's port and database URL
 
 ### Port Allocation
 
@@ -632,13 +604,12 @@ No port conflicts between worktrees. No hardcoded ports. Every worktree gets its
 
 ```mermaid
 graph LR
-    subgraph Setup["create-worktree.sh"]
+    subgraph Setup["worktree-infra.sh up"]
         S1[Create DB] --> S2[Run migrations]
         S3[Assign ports] --> S4[Write .env]
-        S5[Install deps] --> S6[Generate CLAUDE.md]
     end
 
-    subgraph Teardown["manage-worktrees.sh remove"]
+    subgraph Teardown["worktree-infra.sh down"]
         T1[Kill processes]
         T2[Drop database]
         T3[Remove .env]
@@ -657,30 +628,36 @@ All agent pushes and PR creation use a **GitHub App bot identity**, never the us
 
 cloglog uses **Claude Code hooks** — shell scripts that run before tool calls — to enforce rules that agents can't bypass.
 
+Hooks live in `plugins/cloglog/hooks/` — part of the cloglog plugin that ships with this repo.
+
 ### Active Hooks
 
 | Hook | Trigger | What it enforces |
 |---|---|---|
 | `protect-worktree-writes.sh` | Any file Edit/Write | Agent can only modify files in its assigned context |
-| `quality-gate-before-commit.sh` | `git commit`, `git push`, `gh pr create` | Must pass `make quality` (lint + typecheck + test + coverage + contract) |
-| `prefer-mcp-over-api.sh` | `curl`/`wget` to localhost API | Blocks direct API calls, enforces MCP tool use |
+| `quality-gate.sh` | `git commit`, `git push`, `gh pr create` | Must pass `make quality` (lint + typecheck + test + coverage + contract) |
+| `prefer-mcp.sh` | `curl`/`wget` to localhost API | Blocks direct API calls, enforces MCP tool use |
 | `enforce-task-transitions.sh` | MCP task status updates | Prevents skipping review (must go through review before done) |
 | `agent-shutdown.sh` | Session end (SIGTERM) | Generates work logs, calls unregister-by-path |
+| `block-sensitive-files.sh` | File Edit/Write | Blocks writes to `.env`, credentials, secrets |
+| `require-task-for-pr.sh` | `gh pr create` | Requires an active board task before a PR can be opened |
+| `remind-pr-update.sh` | After PR creation | Injects reminder to update task status to review |
+| `session-bootstrap.sh` | Session start | Loads agent context, checks for inbox messages |
+| `worktree-create.sh` | Worktree creation | Runs `scripts/worktree-infra.sh up` for the new worktree |
+| `worktree-remove.sh` | Worktree deletion | Runs `scripts/worktree-infra.sh down` for cleanup |
 
 ### Worktree Write Protection
 
-The protect-worktree-writes hook maps worktree names to allowed directories:
+The protect-worktree-writes hook reads allowed directories from `.cloglog/config.yaml` under `worktree_scopes`:
 
-```bash
-# protect-worktree-writes.sh (simplified)
-case "$BRANCH" in
-  wt-board*)    ALLOWED="src/board/ tests/board/ src/alembic/" ;;
-  wt-agent*)    ALLOWED="src/agent/ tests/agent/ src/alembic/" ;;
-  wt-frontend*) ALLOWED="frontend/" ;;
-  wt-mcp*)      ALLOWED="mcp-server/" ;;
-  wt-e2e*)      ALLOWED="tests/e2e/" ;;
-esac
-# Block writes to any path not in ALLOWED
+```yaml
+# .cloglog/config.yaml (simplified)
+worktree_scopes:
+  board: [src/board/, tests/board/, src/alembic/]
+  agent: [src/agent/, tests/agent/, src/alembic/]
+  frontend: [frontend/]
+  mcp: [mcp-server/]
+  e2e: [tests/e2e/]
 ```
 
 This means an agent working on the Board context literally cannot write to Agent context files. The hook intercepts the tool call and returns an error before the write happens.

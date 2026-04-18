@@ -1,4 +1,4 @@
-.PHONY: help install test test-board test-agent test-document test-gateway test-e2e test-e2e-browser test-e2e-browser-ui test-e2e-browser-headed test-e2e-browser-report lint typecheck coverage contract-check demo demo-check quality run-backend
+.PHONY: help install test test-board test-agent test-document test-gateway test-e2e test-e2e-browser test-e2e-browser-ui test-e2e-browser-headed test-e2e-browser-report lint typecheck coverage contract-check demo demo-check quality run-backend prod prod-bg promote prod-logs prod-stop
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -96,12 +96,60 @@ dev: ## Start everything (db + migrate + backend + frontend)
 	@fuser -k 5173/tcp 2>/dev/null && echo "  Killed old frontend on :5173" || true
 	@echo "  Starting backend + frontend..."
 	@trap 'kill 0; fuser -k 8000/tcp 2>/dev/null; fuser -k 5173/tcp 2>/dev/null' EXIT INT TERM; \
-		uv run uvicorn src.gateway.app:create_app --factory --host 0.0.0.0 --port 8000 --reload --reload-exclude '.claude/worktrees' & \
+		uv run uvicorn src.gateway.app:create_app --factory --host 0.0.0.0 --port 8000 --reload \
+			--reload-exclude '.claude/worktrees' \
+			--reload-exclude '__pycache__' \
+			--reload-exclude '*.pyc' & \
 		(cd frontend && npm run dev) & \
 		wait
 
 run-backend: ## Start the FastAPI backend
-	uv run uvicorn src.gateway.app:create_app --factory --host 0.0.0.0 --port 8000 --reload --reload-exclude '.claude/worktrees'
+	uv run uvicorn src.gateway.app:create_app --factory --host 0.0.0.0 --port 8000 --reload \
+		--reload-exclude '.claude/worktrees' \
+		--reload-exclude '__pycache__' \
+		--reload-exclude '*.pyc'
+
+prod: ## Start prod server (gunicorn, port 8001, foreground — run in a zellij pane)
+	@echo "Starting cloglog prod server on :8001..."
+	@cd ../cloglog-prod && \
+	  uv run gunicorn src.gateway.app:create_app \
+	    --worker-class uvicorn.workers.UvicornWorker \
+	    --workers 2 \
+	    --bind 0.0.0.0:8001 \
+	    --pid /tmp/cloglog-prod.pid \
+	    --error-logfile /tmp/cloglog-prod.log \
+	    --access-logfile /tmp/cloglog-prod-access.log \
+	    --log-level info \
+	    --factory
+
+prod-bg: ## Start prod server in background
+	@echo "Starting cloglog prod server on :8001 (background)..."
+	@cd ../cloglog-prod && \
+	  uv run gunicorn src.gateway.app:create_app \
+	    --worker-class uvicorn.workers.UvicornWorker \
+	    --workers 2 \
+	    --bind 0.0.0.0:8001 \
+	    --pid /tmp/cloglog-prod.pid \
+	    --error-logfile /tmp/cloglog-prod.log \
+	    --access-logfile /tmp/cloglog-prod-access.log \
+	    --log-level info \
+	    --factory \
+	    --daemon
+	@echo "  Prod server started. PID: $$(cat /tmp/cloglog-prod.pid)"
+
+promote: ## Deploy latest origin/main to prod with zero-downtime worker rotation
+	@echo "Promoting origin/main to prod..."
+	@git -C ../cloglog-prod pull origin main
+	@cd ../cloglog-prod && uv sync
+	@cd ../cloglog-prod && uv run alembic upgrade head
+	@kill -HUP $$(cat /tmp/cloglog-prod.pid)
+	@echo "  Done — new workers loading from origin/main."
+
+prod-logs: ## Tail prod server logs
+	@tail -f /tmp/cloglog-prod.log /tmp/cloglog-prod-access.log
+
+prod-stop: ## Stop the prod server
+	@kill $$(cat /tmp/cloglog-prod.pid) && rm -f /tmp/cloglog-prod.pid && echo "Prod server stopped."
 
 # ── Database ──────────────────────────────────
 

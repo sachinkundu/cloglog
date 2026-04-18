@@ -144,9 +144,8 @@ Copy the assembled prompt to `${WORKTREE_PATH}/AGENT_PROMPT.md`.
 # Capture current tab's stable numeric ID before switching away
 CURRENT_TAB_ID=$(zellij action current-tab-info 2>&1 | awk '/^id:/ {print $2}')
 
-# Write a launcher script — avoids shell-quoting issues with inline commands
-# Single-quoted 'EOF' keeps ${WORKTREE_PATH} as a literal variable; expands when launch.sh runs
-cat > "${WORKTREE_PATH}/.cloglog/launch.sh" << 'EOF'
+# Write a launcher script — unquoted EOF expands ${WORKTREE_PATH} at write time, baking the absolute path in
+cat > "${WORKTREE_PATH}/.cloglog/launch.sh" << EOF
 #!/bin/bash
 cd "${WORKTREE_PATH}"
 exec claude --dangerously-skip-permissions 'Read ${WORKTREE_PATH}/AGENT_PROMPT.md and begin.'

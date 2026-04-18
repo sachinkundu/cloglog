@@ -120,7 +120,8 @@ prod: ## Start prod server (gunicorn + vite preview, foreground — run in a zel
 	@echo "  Building frontend..."
 	@cd ../cloglog-prod/frontend && npm ci --silent && VITE_API_URL=http://localhost:8001/api/v1 npx vite build 2>&1 | tail -2
 	@echo "  Frontend: built"
-	@trap 'kill 0; rm -f /tmp/cloglog-prod-frontend.pid' EXIT INT TERM; \
+	@fuser -k 4173/tcp 2>/dev/null || true
+	@trap 'kill 0; fuser -k 4173/tcp 2>/dev/null; rm -f /tmp/cloglog-prod-frontend.pid' EXIT INT TERM; \
 		(cd ../cloglog-prod && uv run gunicorn src.gateway.asgi:app \
 		    --worker-class uvicorn.workers.UvicornWorker \
 		    --workers 2 \
@@ -147,6 +148,7 @@ prod-bg: ## Start prod server in background
 	    --access-logfile /tmp/cloglog-prod-access.log \
 	    --log-level info \
 	    --daemon
+	@fuser -k 4173/tcp 2>/dev/null || true
 	@cd ../cloglog-prod/frontend && npm run preview -- --port 4173 & echo $$! > /tmp/cloglog-prod-frontend.pid
 	@echo "  Backend PID: $$(cat /tmp/cloglog-prod.pid)  Frontend PID: $$(cat /tmp/cloglog-prod-frontend.pid)"
 
@@ -158,7 +160,7 @@ promote: ## Deploy latest origin/main to prod with zero-downtime worker rotation
 	@cd ../cloglog-prod/frontend && VITE_API_URL=http://localhost:8001/api/v1 npx vite build 2>&1 | tail -2
 	@cd ../cloglog-prod && uv run alembic upgrade head
 	@if [ -f /tmp/cloglog-prod.pid ]; then kill -HUP $$(cat /tmp/cloglog-prod.pid) && echo "  Backend: rotated workers."; else echo "  Warning: gunicorn not running — start with make prod"; fi
-	@if [ -f /tmp/cloglog-prod-frontend.pid ]; then kill $$(cat /tmp/cloglog-prod-frontend.pid) 2>/dev/null || true; fi
+	@fuser -k 4173/tcp 2>/dev/null || true
 	@rm -f /tmp/cloglog-prod-frontend.pid
 	@cd ../cloglog-prod/frontend && npm run preview -- --port 4173 & echo $$! > /tmp/cloglog-prod-frontend.pid
 	@echo "  Done — frontend rebuilt and restarted on :4173."
@@ -169,6 +171,7 @@ prod-logs: ## Tail prod server logs
 prod-stop: ## Stop the prod server
 	@kill $$(cat /tmp/cloglog-prod.pid) 2>/dev/null && rm -f /tmp/cloglog-prod.pid && echo "  Backend: stopped." || true
 	@kill $$(cat /tmp/cloglog-prod-frontend.pid) 2>/dev/null && rm -f /tmp/cloglog-prod-frontend.pid && echo "  Frontend: stopped." || true
+	@fuser -k 4173/tcp 2>/dev/null && echo "  Frontend: killed by port." || true
 
 # ── Database ──────────────────────────────────
 

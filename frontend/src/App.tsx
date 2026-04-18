@@ -118,7 +118,7 @@ export default function App() {
         </div>
       )}
 
-      {selectedProjectId && boardLoading && (
+      {selectedProjectId && boardLoading && !board && (
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           flex: 1, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: '14px',
@@ -127,7 +127,7 @@ export default function App() {
         </div>
       )}
 
-      {board && !boardLoading && !isDependenciesView && (
+      {board && !isDependenciesView && (
         <Board
           board={board}
           backlog={backlog}

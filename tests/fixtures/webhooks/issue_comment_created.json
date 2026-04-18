@@ -1,0 +1,28 @@
+{
+  "action": "created",
+  "issue": {
+    "number": 42,
+    "html_url": "https://github.com/sachinkundu/cloglog/pull/42",
+    "title": "Add webhook support",
+    "pull_request": {
+      "url": "https://api.github.com/repos/sachinkundu/cloglog/pulls/42",
+      "html_url": "https://github.com/sachinkundu/cloglog/pull/42",
+      "diff_url": "https://github.com/sachinkundu/cloglog/pull/42.diff",
+      "patch_url": "https://github.com/sachinkundu/cloglog/pull/42.patch"
+    }
+  },
+  "comment": {
+    "id": 22222222,
+    "body": "Looks good overall, just one question about the error handling.",
+    "html_url": "https://github.com/sachinkundu/cloglog/pull/42#issuecomment-22222222",
+    "user": {
+      "login": "sachinkundu"
+    }
+  },
+  "repository": {
+    "full_name": "sachinkundu/cloglog"
+  },
+  "sender": {
+    "login": "sachinkundu"
+  }
+}

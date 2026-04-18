@@ -23,6 +23,7 @@ class WebhookEventType(StrEnum):
     PR_MERGED = "pr_merged"
     REVIEW_SUBMITTED = "review_submitted"
     REVIEW_COMMENT = "review_comment"
+    ISSUE_COMMENT = "issue_comment"
     CHECK_RUN_COMPLETED = "check_run_completed"
 
 

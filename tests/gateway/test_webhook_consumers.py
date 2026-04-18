@@ -300,6 +300,34 @@ class TestBuildMessage:
         assert msg["body"] == ""
         assert "No comment body" in msg["message"]
 
+    def test_issue_comment_message(self) -> None:
+        consumer = AgentNotifierConsumer()
+        event = _make_event(
+            event_type=WebhookEventType.ISSUE_COMMENT,
+            raw={
+                "comment": {
+                    "body": "Looks good to me, just fix the typo.",
+                },
+            },
+        )
+        msg = consumer._build_message(event)
+        assert msg is not None
+        assert msg["type"] == "issue_comment"
+        assert msg["pr_number"] == 42
+        assert msg["commenter"] == "sachinkundu"
+        assert "Looks good to me" in msg["body"]
+        assert "sachinkundu" in msg["message"]
+
+    def test_issue_comment_no_body(self) -> None:
+        consumer = AgentNotifierConsumer()
+        event = _make_event(
+            event_type=WebhookEventType.ISSUE_COMMENT,
+            raw={"comment": {"body": None}},
+        )
+        msg = consumer._build_message(event)
+        assert msg is not None
+        assert msg["body"] == ""
+
     def test_check_run_failure(self) -> None:
         consumer = AgentNotifierConsumer()
         event = _make_event(
@@ -362,6 +390,7 @@ class TestBuildMessage:
         assert consumer.handles(_make_event(event_type=WebhookEventType.PR_CLOSED)) is True
         assert consumer.handles(_make_event(event_type=WebhookEventType.REVIEW_SUBMITTED)) is True
         assert consumer.handles(_make_event(event_type=WebhookEventType.REVIEW_COMMENT)) is True
+        assert consumer.handles(_make_event(event_type=WebhookEventType.ISSUE_COMMENT)) is True
         assert (
             consumer.handles(_make_event(event_type=WebhookEventType.CHECK_RUN_COMPLETED)) is True
         )

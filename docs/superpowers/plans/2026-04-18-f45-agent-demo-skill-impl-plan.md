@@ -92,14 +92,30 @@ Structure:
 7. **Step 6 — PR body** — PR section ordering with template (Demo first, then Tests, then Changes).
 8. **Rodney rules sidebar** — Always `waitstable`, show state transitions, screenshots go into Showboat.
 
-**Demo directory convention:** `docs/demos/<branch-name>/demo.md`. Branch name is the demo dir identifier (matches `check-demo.sh` lookup logic).
+**Demo directory convention:** `docs/demos/<branch-name>/demo.md`. Branch name is the demo dir identifier (matches `check-demo.sh` lookup logic, and will match `run-demo.sh` after the Task 0 fix).
+
+**Required environment setup in all demo commands:**
+
+Every demo command sequence in the skill MUST begin with:
+
+```bash
+source scripts/worktree-ports.sh   # sets $BACKEND_PORT, $FRONTEND_PORT, $DATABASE_URL
+```
+
+The skill must NOT instruct agents to start the backend/frontend directly — that is `make demo`'s job. The skill's role is to: (1) tell agents to run `make demo` to start infrastructure, (2) provide the Showboat/Rodney command sequences that run inside the demo-script.sh that `make demo` calls. Agents write a `docs/demos/<branch>/demo-script.sh` that is then executed by `make demo` — the commands in the skill are what goes INTO that script, not standalone invocations.
+
+The skill must make this flow explicit:
+1. `make demo` starts backend (and frontend if needed), then calls `docs/demos/<branch>/demo-script.sh`
+2. The demo-script.sh contains the Showboat/Rodney commands that use `$BACKEND_PORT` and `$FRONTEND_PORT`
+3. `uvx showboat verify docs/demos/<branch>/demo.md` is run after `make demo` succeeds
 
 **Acceptance criteria:**
 - Skill exists at `plugins/cloglog/skills/demo/SKILL.md`
 - Frontmatter: `name: demo`, `description: Proof-of-work demo with Showboat and Rodney — invoked before every PR`, `user-invocable: false`
-- Every command in the skill is copy-paste runnable (no pseudocode)
+- All port references use `$BACKEND_PORT` / `$FRONTEND_PORT` (never hardcoded)
+- Commands explain the two-file structure: `demo-script.sh` (executed by `make demo`) + `demo.md` (the Showboat output)
 - Exemption template is word-for-word pasteable into a PR body
-- PR body section ordering matches spec exactly
+- PR body section ordering matches spec exactly: `## Demo`, `## Tests`, `## Changes`
 
 **Scope:** Medium (primary deliverable — ~100-150 lines)
 
@@ -228,42 +244,44 @@ Add a demo step between quality gate and PR creation:
 
 ### Task 5 — Create demo reviewer agent definition
 
-**File:** `plugins/cloglog/agents/demo-reviewer.md` *(create)*
+**File:** `.claude/agents/demo-reviewer.md` *(create)*
 
 **What to create:**
 
-A subagent definition for the demo reviewer. It is invoked by the main agent (or a CI hook) on any PR that has a demo document.
+A project-level subagent definition for the demo reviewer. Project subagents live in `.claude/agents/` (alongside `test-writer.md`, `migration-validator.md`, `ddd-architect.md`, `ddd-reviewer.md`). Do NOT place this in `plugins/cloglog/agents/` — that directory is for plugin-level agent templates (like `worktree-agent.md`), not project subagents.
+
+A subagent definition for the demo reviewer. It is invoked by the main agent on any PR that has a demo document.
 
 Behavior:
-1. Runs `uvx showboat verify docs/demos/<branch>/demo.md`
-2. Reads the demo document and checks:
-   - Does the opening sentence describe the feature from the stakeholder's view (not "I added X" but "users can now Y")?
-   - Does the demo show a user action and outcome (not just test output or log lines)?
-   - If an exemption was declared, is the reason in the valid-reasons list?
-3. Posts a structured comment to the PR with:
-   - `verify` result (pass/fail with output)
+1. Checks out the PR branch (`gh pr checkout <PR_NUM>`)
+2. Reads `docs/demos/<branch>/demo.md`
+3. Evaluates three dimensions:
+   - **Verify:** runs `uvx showboat verify docs/demos/<branch>/demo.md` — pass/fail with output
+   - **Stakeholder framing:** does the opening sentence describe the feature from the stakeholder's view (not "I added X" but "users can now Y")?
+   - **Demo substance:** does the demo show a user action and outcome (not just test output, log lines, or migration output)?
+   - If an exemption was declared: is the reason in the valid-reasons list?
+4. Posts a structured comment to the PR via bot identity (must use `GH_TOKEN` from `scripts/gh-app-token.py`) with:
+   - `verify` result (pass/fail)
    - Stakeholder framing: acceptable / needs revision
-   - Exemption: valid / invalid / N/A
+   - Demo substance: acceptable / needs revision
    - Overall: approved / needs revision
 
-Format the agent as a `.md` file following the same frontmatter pattern as `test-writer.md` and `migration-validator.md`.
+Format the agent following the same frontmatter pattern as `.claude/agents/test-writer.md` and `.claude/agents/migration-validator.md`.
 
 Frontmatter:
 ```yaml
 ---
 name: demo-reviewer
-description: Reviews proof-of-work demo documents — runs showboat verify, checks stakeholder framing, validates exemption declarations
+description: Reviews proof-of-work demo documents — runs showboat verify, checks stakeholder framing, validates demo substance
 ---
 ```
 
 The agent does NOT have merge authority — it comments, the human decides.
 
-**Note:** The spec calls this a "concept" and says human has final say. The agent definition codifies the evaluation criteria so agents can self-review before submitting.
-
 **Acceptance criteria:**
-- `plugins/cloglog/agents/demo-reviewer.md` exists
-- Frontmatter has correct name and description
-- Agent instructions cover: showboat verify, stakeholder framing check, exemption validation, PR comment format
+- `.claude/agents/demo-reviewer.md` exists (not in `plugins/cloglog/agents/`)
+- Frontmatter matches the project subagent pattern from existing `.claude/agents/` files
+- Agent instructions cover: PR checkout, showboat verify, stakeholder framing check, demo substance check, exemption validation, PR comment via bot identity
 - Agent correctly identifies the three evaluation dimensions from the spec
 
 **Scope:** Medium (~60-80 lines)
@@ -334,7 +352,7 @@ Task 4 (launch/SKILL.md)     — after Task 1
 Task 6 (github-bot template) — after Task 1 (propagates the canonical format)
 ```
 
-Since all tasks are in `plugins/cloglog/`, `scripts/`, and `Makefile`, they are in the same worktree scope. No cross-context coordination needed.
+Tasks touch `plugins/cloglog/` (skills, worktree-agent), `scripts/` (run-demo.sh), `Makefile`, and `.claude/agents/` (demo-reviewer). All are in the same worktree scope. No cross-context coordination needed.
 
 **Recommended order for a single-agent implementation:**
 1. Task 0 (run-demo.sh fix) — fix the broken demo workflow first
@@ -379,7 +397,9 @@ The plugin uses filesystem discovery — no manifest registration needed. Skills
 
 All changed files are in the worktree-agent's allowed scope:
 - `plugins/cloglog/skills/` ✓
-- `plugins/cloglog/agents/` ✓
+- `plugins/cloglog/agents/worktree-agent.md` ✓ (plugin-level agent template)
+- `.claude/agents/demo-reviewer.md` ✓ (project-level subagent, alongside test-writer.md etc.)
+- `scripts/run-demo.sh` ✓
 - `Makefile` — verify this is in scope for the impl worktree before touching it
 
 ---

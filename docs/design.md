@@ -23,7 +23,7 @@ graph TB
     end
 
     Dashboard -- "SSE (real-time updates)" --> Backend
-    Dashboard -- "Bearer project-api-key" --> Backend
+    Dashboard -- "X-Dashboard-Key" --> Backend
     MCP -- "Bearer + X-MCP-Request" --> Backend
 
     subgraph Backend["cloglog Backend (FastAPI)"]
@@ -372,16 +372,15 @@ graph TD
     B["cloglog Backend<br/>Middleware checks:<br/>Has Bearer + X-MCP-Request?<br/>→ Full access"]
 ```
 
-The **four-credential model** ensures separation of concerns:
+The **`ApiAccessControlMiddleware`** enforces routing before any auth dependency runs:
 
-| Credential | Who | Access |
+| Credential | Who | Allowed routes |
 |---|---|---|
-| `Bearer <project-api-key>` | Agent registration, project-scoped routes | `/agents/register`, board routes |
-| `Bearer <agent-token>` | Per-agent token issued at registration | `/agents/{id}/*` routes for that worktree |
-| `Bearer <mcp-service-key>` + `X-MCP-Request: true` | MCP server (on behalf of any agent) | All routes |
-| `Bearer <mcp-service-key>` + `X-MCP-Request: true` (SupervisorAuth) | Main agent acting on a target worktree | Supervisor actions (assign-task, etc.) |
+| `Bearer <key>` + `X-MCP-Request: true` | MCP server (on behalf of any agent) | All routes |
+| `Bearer <agent-token>` or `Bearer <project-api-key>` | Agent directly | Only `/api/v1/agents/*` routes |
+| `X-Dashboard-Key: <secret>` (or `?dashboard_key=` for SSE/EventSource) | Human dashboard/CLI | All non-agent routes |
 
-Agents receive a per-agent token (`agent_token`) from the registration response. The MCP server stores this token and uses it for heartbeat calls. For board operations (tasks, documents), the MCP server uses its own service key. This means the MCP server is the **single point of agent access control** for board state.
+Agents receive a per-agent token (`agent_token`) from the registration response. The MCP server stores this token and uses it for heartbeat calls. For board operations (tasks, documents), the MCP server uses its own service key with `X-MCP-Request: true`. A dashboard client implemented without `X-Dashboard-Key` would receive `403 Agents can only access /api/v1/agents/* routes`.
 
 ### MCP Tool Reference
 
@@ -435,7 +434,10 @@ The MCP server exposes 28 tools organized by function:
 
 ## Cross-Agent Communication
 
-The main agent communicates with worktree agents through a file-based inbox. Each worktree has an inbox file at `.cloglog/inbox` that the main agent appends messages to. Agents monitor this file via the `Monitor` tool (tail -f). This replaced an earlier heartbeat-piggybacked database approach (the `agent_messages` table was dropped in migration `f1a2b3c4d5e6`).
+The database-based agent message queue (the `agent_messages` table) was dropped in migration `f1a2b3c4d5e6`. Two file-based channels replaced it:
+
+1. **Webhook notifications** (merge, review, CI events): The webhook pipeline appends events to `<worktree_path>/.cloglog/inbox`. Agents tail this file via the `Monitor` tool.
+2. **Shutdown requests**: `AgentService.request_shutdown()` writes a shutdown message to `/tmp/cloglog-inbox-{worktree_id}` for instant Monitor delivery, and also sets the `shutdown_requested` flag in the database (checked on next heartbeat).
 
 ---
 
@@ -579,12 +581,14 @@ Each agent works in complete isolation: its own git branch, its own ports, its o
 WORKTREE_PATH=.claude/worktrees/wt-<name> scripts/worktree-infra.sh up
 ```
 
-This script:
+This script (invoked by `.cloglog/on-worktree-create.sh` in project-specific setup):
 
 1. Assigns **deterministic ports** by hashing the worktree name
 2. Creates an **isolated PostgreSQL database** named `cloglog_wt_<name>`
 3. Runs Alembic migrations on the new database
 4. Writes a `.env` file with the worktree's port and database URL
+
+The `worktree-create.sh` plugin hook handles agent *registration* only; it delegates infrastructure setup to the project-specific `on-worktree-create.sh` script.
 
 ### Port Allocation
 
@@ -640,11 +644,11 @@ Hooks live in `plugins/cloglog/hooks/` — part of the cloglog plugin that ships
 | `enforce-task-transitions.sh` | MCP task status updates | Prevents skipping review (must go through review before done) |
 | `agent-shutdown.sh` | Session end (SIGTERM) | Generates work logs, calls unregister-by-path |
 | `block-sensitive-files.sh` | File Edit/Write | Blocks writes to `.env`, credentials, secrets |
-| `require-task-for-pr.sh` | `gh pr create` | Requires an active board task before a PR can be opened |
+| `require-task-for-pr.sh` | `gh pr create` | Advisory: reminds agent to have an active board task (exits 0, does not block) |
 | `remind-pr-update.sh` | After PR creation | Injects reminder to update task status to review |
 | `session-bootstrap.sh` | Session start | Loads agent context, checks for inbox messages |
-| `worktree-create.sh` | Worktree creation | Runs `scripts/worktree-infra.sh up` for the new worktree |
-| `worktree-remove.sh` | Worktree deletion | Runs `scripts/worktree-infra.sh down` for cleanup |
+| `worktree-create.sh` | Worktree creation | Registers agent on the board, runs `on-worktree-create.sh` if present |
+| `worktree-remove.sh` | Worktree deletion | Cleans up agent registration |
 
 ### Worktree Write Protection
 

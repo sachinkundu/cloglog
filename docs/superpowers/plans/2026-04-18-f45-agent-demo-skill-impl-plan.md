@@ -16,9 +16,9 @@ Supporting pieces: the skill itself, a demo reviewer agent, and a worktree-agent
 
 ### Current State
 
-The following already exist and do NOT need to be rewritten:
-- `scripts/check-demo.sh` — full demo-check logic (branch detection, docs-only bypass, showboat verify)
-- `scripts/run-demo.sh` — demo orchestration (infra, server start, demo-script.sh runner)
+The following already exist:
+- `scripts/check-demo.sh` — full demo-check logic (branch detection, docs-only bypass, showboat verify). No changes needed.
+- `scripts/run-demo.sh` — demo orchestration (infra, server start, demo-script.sh runner). **Needs one fix** (see Task 0).
 - `make demo` and `make demo-check` targets
 - Extensive `docs/demos/` examples covering backend, frontend, and MCP demo patterns
 
@@ -27,11 +27,50 @@ What does NOT exist yet (the gap):
 - `demo-check` is not called by `make quality`
 - `worktree-agent.md` has no demo skill invocation step
 - `launch/SKILL.md` AGENT_PROMPT template has no demo skill step
+- `github-bot/SKILL.md` PR template has no `## Demo` section
 - No demo reviewer agent definition
 
 ---
 
 ## Implementation Tasks
+
+### Task 0 — Fix `run-demo.sh` branch detection
+
+**File:** `scripts/run-demo.sh` *(modify)*
+
+**What to change:**
+
+`run-demo.sh` currently detects the demo feature only from `f[0-9]*-*` branch names. On any other branch (e.g., `wt-f45-agent-demo-impl`), it exits with `Cannot detect feature` — even if `docs/demos/wt-f45-agent-demo-impl/demo.md` exists. This makes `make demo` unusable from worktree branches, which are the standard agent branch naming pattern.
+
+Fix: after the `f[0-9]*-*` case fails to match, fall back to the full branch name:
+
+```bash
+if [[ -z "$FEATURE" ]]; then
+  BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+  case "$BRANCH" in
+    f[0-9]*-*)
+      FEATURE=$(echo "$BRANCH" | grep -oP '^f\d+' || echo "")
+      ;;
+    *)
+      # Fall back to the full branch name — check-demo.sh already uses this convention
+      FEATURE="$BRANCH"
+      ;;
+  esac
+fi
+```
+
+This makes the feature detection consistent with `check-demo.sh`, which already uses the full branch name (normalized) as the lookup key.
+
+**Acceptance criteria:**
+- `make demo` succeeds on a branch named `wt-f45-agent-demo-impl` when `docs/demos/wt-f45-agent-demo-impl/demo.md` exists
+- `make demo` still works on `f[0-9]*-*` branches (existing behavior preserved)
+- `DEMO_FEATURE` env var override still takes precedence (existing behavior preserved)
+
+**Scope:** Small (~5 lines changed)
+
+**Dependency:** None (fix this before Task 1 documents the demo directory convention, so the convention actually works end-to-end)
+
+---
 
 ### Task 1 — Create the demo skill
 
@@ -128,10 +167,10 @@ Replace this with a two-step sequence:
    decision tree: what to demo, how to capture it, and the PR body format.
    Do not skip this step even if you believe the change is minor.
 
-4. Create a PR using the github-bot skill with:
-   - **Demo** — first section (link to demo.md + re-verify command + screenshots)
-   - **Summary** — what and why
-   - **Test Report** — delta, strategy, thinking
+4. Create a PR using the github-bot skill with sections in this order:
+   - **## Demo** — stakeholder sentence + link to demo.md + re-verify command + screenshots
+   - **## Tests** — what tests were added, delta from baseline, strategy reasoning
+   - **## Changes** — what changed and why
 ```
 
 Also update the **PR Workflow** section at the bottom:
@@ -140,7 +179,7 @@ Current:
 > Every PR must include: Summary, Demo, Test Report
 
 Change to:
-> Every PR must include: Demo (first), Summary, Test Report
+> Every impl PR must use this section order: `## Demo`, `## Tests`, `## Changes`
 >
 > The demo is produced by invoking the demo skill before creating the PR.
 > Do not write the PR body until the demo is produced and verified.
@@ -231,26 +270,80 @@ The agent does NOT have merge authority — it comments, the human decides.
 
 **Dependency:** None (independent of other tasks)
 
+### Task 6 — Update `github-bot/SKILL.md` PR template
+
+**File:** `plugins/cloglog/skills/github-bot/SKILL.md` *(modify)*
+
+**What to change:**
+
+The canonical `gh pr create` example in the `github-bot` skill currently shows:
+
+```bash
+GH_TOKEN="$BOT_TOKEN" gh pr create --title "feat: ..." --body "$(cat <<'EOF'
+## Summary
+...
+
+## Test plan
+...
+EOF
+)"
+```
+
+This template is what agents copy-paste when creating PRs. It must be updated to reflect the F-45 PR body format (`## Demo` first, then `## Tests`, then `## Changes`):
+
+```bash
+GH_TOKEN="$BOT_TOKEN" gh pr create --title "feat: ..." --body "$(cat <<'EOF'
+## Demo
+
+<One-sentence feature description from the stakeholder's view>
+
+Demo document: [`docs/demos/<branch>/demo.md`](docs/demos/<branch>/demo.md)
+Re-verify: `uvx showboat verify docs/demos/<branch>/demo.md`
+
+## Tests
+
+...
+
+## Changes
+
+...
+EOF
+)"
+```
+
+**Acceptance criteria:**
+- The `gh pr create` example in `github-bot/SKILL.md` shows `## Demo` as the first section
+- The template includes the stakeholder-sentence placeholder and the re-verify command
+- The old `## Summary` / `## Test plan` sections are replaced by `## Demo` / `## Tests` / `## Changes`
+
+**Scope:** Small (~15 lines changed)
+
+**Dependency:** Task 1 (the demo skill defines the PR body format; this propagates it to the tool agents actually use)
+
 ---
 
 ## Task Execution Order
 
 ```
-Task 5 (demo-reviewer agent) — independent, can run first or in parallel
-Task 1 (demo skill)          — primary deliverable
-Task 2 (quality gate)        — after Task 1 (logical dependency)
+Task 0 (run-demo.sh fix)     — first, unblocks end-to-end demo workflow
+Task 5 (demo-reviewer agent) — independent, can run in parallel with Task 0
+Task 1 (demo skill)          — primary deliverable, after Task 0
+Task 2 (quality gate)        — after Task 1
 Task 3 (worktree-agent.md)   — after Task 1
 Task 4 (launch/SKILL.md)     — after Task 1
+Task 6 (github-bot template) — after Task 1 (propagates the canonical format)
 ```
 
-Since all tasks are in `plugins/cloglog/` and `Makefile`, they are in the same worktree scope. No cross-context coordination needed.
+Since all tasks are in `plugins/cloglog/`, `scripts/`, and `Makefile`, they are in the same worktree scope. No cross-context coordination needed.
 
 **Recommended order for a single-agent implementation:**
-1. Task 1 (demo skill) — establishes the canonical reference for all other tasks
-2. Task 2 (Makefile) — immediate enforcement
-3. Task 3 (worktree-agent.md) — behavioral enforcement
-4. Task 4 (launch/SKILL.md) — template propagation
-5. Task 5 (demo-reviewer agent) — independent, do last
+1. Task 0 (run-demo.sh fix) — fix the broken demo workflow first
+2. Task 1 (demo skill) — establishes the canonical reference for all other tasks
+3. Task 2 (Makefile) — immediate technical enforcement
+4. Task 3 (worktree-agent.md) — behavioral enforcement
+5. Task 4 (launch/SKILL.md) — template propagation
+6. Task 6 (github-bot template) — propagate canonical PR format to the tool agents actually use
+7. Task 5 (demo-reviewer agent) — independent, do last
 
 ---
 
@@ -258,7 +351,7 @@ Since all tasks are in `plugins/cloglog/` and `Makefile`, they are in the same w
 
 ### What NOT to rewrite
 
-`scripts/check-demo.sh` and `scripts/run-demo.sh` are already production-quality. Do not touch them. The demo skill commands should match what these scripts expect (same directory conventions, same `uvx showboat` invocations).
+`scripts/check-demo.sh` is already production-quality — do not touch it. `scripts/run-demo.sh` needs the single branch-detection fix in Task 0, but nothing else. The demo skill commands should match what these scripts expect (same directory conventions, same `uvx showboat` invocations).
 
 ### Demo directory naming convention
 

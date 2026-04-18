@@ -85,6 +85,7 @@ quality: ## Run full quality gate (lint + typecheck + test + coverage)
 # ── Run ───────────────────────────────────────
 
 dev: ## Start everything (db + migrate + backend + frontend)
+	@scripts/preflight.sh
 	@echo "Starting cloglog dev environment..."
 	@docker compose up -d 2>/dev/null || true
 	@echo "  Postgres: up"

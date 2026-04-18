@@ -80,6 +80,9 @@ quality: ## Run full quality gate (lint + typecheck + test + coverage)
 	@echo "  Contract:"
 	@$(MAKE) --no-print-directory contract-check && echo "    compliant          ✓" || (echo "    FAILED ✗" && exit 1)
 	@echo ""
+	@echo "  Demo:"
+	@$(MAKE) --no-print-directory demo-check && echo "    verified           ✓" || (echo "    FAILED ✗" && exit 1)
+	@echo ""
 	@echo "── Quality gate: PASSED ────────────────"
 
 # ── Run ───────────────────────────────────────

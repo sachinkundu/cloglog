@@ -62,11 +62,16 @@ Your work follows a strict pipeline. Call `mcp__cloglog__get_my_tasks` to get yo
 
 1. Implement using subagent-driven development
 2. If the project's CLAUDE.md specifies additional subagents for implementation (test writers, code reviewers, validators), follow those instructions
-3. Run the project's quality gate before committing
-4. Create a PR with:
-   - **Summary** — 1-3 bullets on what and why
-   - **Demo** — proof the feature works (curl responses, screenshots, state transitions). This goes immediately after the summary.
-   - **Test Report** — what tests were added, delta from baseline, strategy reasoning
+3. Before creating a PR — invoke the demo skill
+   Invoke `Skill({skill: "cloglog:demo"})` to produce the proof-of-work demo.
+   This is a named checkpoint, not optional. The skill walks you through the
+   decision tree: what to demo, how to capture it, and the PR body format.
+   Do not skip this step even if you believe the change is minor.
+
+4. Create a PR using the github-bot skill with sections in this order:
+   - **## Demo** — stakeholder sentence + link to demo.md + re-verify command + screenshots
+   - **## Tests** — what tests were added, delta from baseline, strategy reasoning
+   - **## Changes** — what changed and why
 5. Call `mcp__cloglog__update_task_status` to move the task to `review` with the PR URL
 6. **Immediately** set up the polling loop:
    ```
@@ -140,10 +145,10 @@ Agents communicate via inbox files, not the backend API.
 
 For ALL GitHub operations (push, PR creation, PR comments, status checks), use the `github-bot` skill. Never use `git push`, `gh pr`, or `gh api` without the bot token.
 
-Every PR must include:
-1. **Summary** — what and why
-2. **Demo** — proof the feature works, immediately after the summary
-3. **Test Report** — delta, strategy, and thinking
+Every impl PR must use this section order: `## Demo`, `## Tests`, `## Changes`
+
+The demo is produced by invoking the demo skill before creating the PR.
+Do not write the PR body until the demo is produced and verified.
 
 ## Shutdown
 

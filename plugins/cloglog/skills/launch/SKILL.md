@@ -88,10 +88,12 @@ When you receive a message, read it and act on the instruction. The main agent m
 6. Run existing tests first to establish a green baseline
 7. Implement the feature or fix
 8. Run the project quality gate
-9. Create PR using the github-bot skill
-10. Move task to review with PR URL via `mcp__cloglog__update_task_status`
-11. Poll for comments and merge using the github-bot skill
-12. After merge: call `mcp__cloglog__get_my_tasks` — if more tasks remain, start the next one
+9. Produce proof-of-work demo — invoke the demo skill (`cloglog:demo`) to
+   capture the feature working and generate `docs/demos/<branch>/demo.md`
+10. Create PR using the github-bot skill with the demo document at the top
+11. Move task to review with PR URL via `mcp__cloglog__update_task_status`
+12. Poll for comments and merge using the github-bot skill
+13. After merge: call `mcp__cloglog__get_my_tasks` — if more tasks remain, start the next one
 13. When all tasks complete: call `mcp__cloglog__unregister_agent` and exit
 
 ## Pipeline (Features Only)

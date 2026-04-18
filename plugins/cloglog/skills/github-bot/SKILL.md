@@ -61,10 +61,19 @@ REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git re
 git remote set-url origin "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git"
 git push -u origin HEAD
 GH_TOKEN="$BOT_TOKEN" gh pr create --title "feat: ..." --body "$(cat <<'EOF'
-## Summary
+## Demo
+
+<One-sentence feature description from the stakeholder's view>
+
+Demo document: [`docs/demos/<branch>/demo.md`](docs/demos/<branch>/demo.md)
+Re-verify: `uvx showboat verify docs/demos/<branch>/demo.md`
+
+## Tests
+
 ...
 
-## Test plan
+## Changes
+
 ...
 EOF
 )"

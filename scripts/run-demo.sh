@@ -22,6 +22,10 @@ if [[ -z "$FEATURE" ]]; then
     f[0-9]*-*)
       FEATURE=$(echo "$BRANCH" | grep -oP '^f\d+' || echo "")
       ;;
+    *)
+      # Fall back to the full branch name — check-demo.sh already uses this convention
+      FEATURE="$BRANCH"
+      ;;
   esac
 fi
 

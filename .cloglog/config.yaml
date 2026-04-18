@@ -1,6 +1,7 @@
 project: cloglog
 project_id: 4d9e825a-c911-4110-bcd5-9072d1887813
-backend_url: http://localhost:8000
+backend_url: http://localhost:8001
+prod_worktree_path: ../cloglog-prod
 quality_command: make quality
 
 worktree_scopes:

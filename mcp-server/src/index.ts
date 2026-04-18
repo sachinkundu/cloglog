@@ -9,7 +9,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CloglogClient } from './client.js'
 import { createServer } from './server.js'
 
-const CLOGLOG_URL = process.env.CLOGLOG_URL ?? 'http://localhost:8000'
+const CLOGLOG_URL = process.env.CLOGLOG_URL ?? 'http://localhost:8001'
 const CLOGLOG_API_KEY = process.env.CLOGLOG_API_KEY ?? ''
 const MCP_SERVICE_KEY = process.env.MCP_SERVICE_KEY ?? 'cloglog-mcp-dev'
 

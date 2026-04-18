@@ -15,6 +15,7 @@ from src.agent.schemas import (
     CompleteTaskRequest,
     CompleteTaskResponse,
     HeartbeatResponse,
+    MarkPrMergedRequest,
     RegisterRequest,
     RegisterResponse,
     ReportArtifactRequest,
@@ -140,6 +141,21 @@ async def add_task_note(
         "note": note.note,
         "created_at": note.created_at,
     }
+
+
+@router.post("/agents/{worktree_id}/mark-pr-merged", status_code=200)
+async def mark_pr_merged(
+    worktree_id: UUID, body: MarkPrMergedRequest, service: ServiceDep, agent: CurrentAgent
+) -> dict[str, object]:
+    """Mark the task matching this PR URL as pr_merged=True.
+
+    Called by agents when the polling loop detects a GitHub PR was merged,
+    as a fallback when the GitHub webhook hasn't fired.
+    """
+    try:
+        return await service.mark_pr_merged(worktree_id, body.task_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from None
 
 
 @router.post("/agents/{worktree_id}/report-artifact", status_code=200)

@@ -706,6 +706,39 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agents/{worktree_id}/mark-pr-merged:
+    post:
+      summary: Mark Pr Merged
+      operationId: mark_pr_merged_api_v1_agents__worktree_id__mark_pr_merged_post
+      parameters:
+      - name: worktree_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Worktree Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MarkPrMergedRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                title: Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+
   /api/v1/agents/{worktree_id}/unregister:
     post:
       summary: Unregister Agent
@@ -946,6 +979,17 @@ components:
       - total_tasks
       - done_count
       title: BoardResponse
+    MarkPrMergedRequest:
+      properties:
+        task_id:
+          type: string
+          format: uuid
+          title: Task Id
+      type: object
+      required:
+      - task_id
+      title: MarkPrMergedRequest
+
     CompleteTaskRequest:
       properties:
         task_id:

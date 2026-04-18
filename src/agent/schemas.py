@@ -83,6 +83,10 @@ class AddTaskNoteRequest(BaseModel):
     note: str
 
 
+class MarkPrMergedRequest(BaseModel):
+    task_id: UUID
+
+
 class ReportArtifactRequest(BaseModel):
     task_id: UUID
     artifact_path: str

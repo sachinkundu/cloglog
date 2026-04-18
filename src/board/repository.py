@@ -481,6 +481,25 @@ class BoardRepository:
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def find_task_by_pr_url_for_project(self, pr_url: str, project_id: UUID) -> Task | None:
+        """Find a task by PR URL scoped to a specific project.
+
+        Prevents cross-project pr_merged manipulation: an agent in project A
+        cannot affect tasks in project B.
+        """
+        stmt = (
+            select(Task)
+            .join(Feature, Task.feature_id == Feature.id)
+            .join(Epic, Feature.epic_id == Epic.id)
+            .where(Task.pr_url == pr_url)
+            .where(Task.status.in_(["in_progress", "review"]))
+            .where(Epic.project_id == project_id)
+            .order_by(Task.updated_at.desc())
+            .limit(1)
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def find_project_by_repo(self, repo_full_name: str) -> Project | None:
         """Find a project by GitHub repo full name.
 

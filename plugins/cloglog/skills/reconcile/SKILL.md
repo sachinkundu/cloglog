@@ -69,7 +69,7 @@ Always fix issues automatically — no separate "fix" step. For each issue found
 - **Stale local branches**: `git branch -d <branch>`
 - **Stale remote branches**: use bot token — `git push origin --delete <branch>`
 - **Orphaned PRs**: close with bot token — `GH_TOKEN="$BOT_TOKEN" gh pr close <num> --comment "Closed by reconciliation: branch no longer exists"`
-- **Merged PR + task in review**: flag for user — agents cannot mark tasks done
+- **Merged PR + task in review**: call `mcp__cloglog__mark_pr_merged` with the `task_id` to flip `pr_merged=True` (unblocks `start_task` guard); then flag for user — only the user can move the task to done
 - **Stale agents**: call `mcp__cloglog__unregister_agent` for own registration; flag others for manual cleanup
 - **Pull merged changes**: always run `git pull origin main` at the end to ensure local main is current
 

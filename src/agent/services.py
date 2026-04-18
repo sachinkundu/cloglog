@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid as _uuid
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -12,6 +13,8 @@ from src.board.models import Task
 from src.board.repository import BoardRepository
 from src.shared.config import settings
 from src.shared.events import Event, EventType, event_bus
+
+logger = logging.getLogger(__name__)
 
 
 class AgentService:
@@ -217,9 +220,7 @@ class AgentService:
         active = [
             t
             for t in existing_tasks
-            if t.id != task_id
-            and t.status in ("in_progress", "review")
-            and not (t.status == "review" and t.pr_merged)
+            if t.id != task_id and t.status in ("in_progress", "review") and not t.pr_merged
         ]
         if active:
             titles = ", ".join(f"T-{t.number} '{t.title}' ({t.status})" for t in active)
@@ -395,6 +396,36 @@ class AgentService:
                 },
             )
         )
+
+    async def mark_pr_merged(self, worktree_id: UUID, task_id: UUID) -> dict[str, object]:
+        """Set pr_merged=True on the specified task.
+
+        Called by agents when the polling loop detects a merge, as a fallback
+        when the GitHub webhook hasn't fired (or isn't configured). Accepts
+        task_id directly to avoid any pr_url uniqueness ambiguity.
+
+        Verifies the task belongs to the caller's project to prevent
+        cross-project manipulation.
+        """
+        worktree = await self._repo.get_worktree(worktree_id)
+        if worktree is None:
+            raise ValueError(f"Worktree {worktree_id} not found")
+
+        task = await self._board_repo.get_task(task_id)
+        if task is None:
+            raise ValueError(f"Task {task_id} not found")
+
+        # Verify ownership — task must belong to the caller's project
+        feature = await self._board_repo.get_feature(task.feature_id)
+        if feature is None:
+            raise ValueError(f"Feature not found for task {task_id}")
+        epic = await self._board_repo.get_epic(feature.epic_id)
+        if epic is None or epic.project_id != worktree.project_id:
+            raise ValueError(f"Task {task_id} does not belong to this agent's project")
+
+        await self._board_repo.update_task(task_id, pr_merged=True)
+        logger.info("Marked task %s pr_merged=True via polling", task_id)
+        return {"task_id": str(task_id), "pr_merged": True}
 
     # --- Artifact Reporting ---
 

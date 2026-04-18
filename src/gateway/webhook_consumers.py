@@ -28,6 +28,7 @@ class AgentNotifierConsumer:
         WebhookEventType.PR_CLOSED,
         WebhookEventType.REVIEW_SUBMITTED,
         WebhookEventType.REVIEW_COMMENT,
+        WebhookEventType.ISSUE_COMMENT,
         WebhookEventType.CHECK_RUN_COMPLETED,
     }
 
@@ -173,6 +174,17 @@ class AgentNotifierConsumer:
                     + (f" at {path}:{line}" if path else "")
                     + f": {body}"
                 ),
+            }
+        if event.type == WebhookEventType.ISSUE_COMMENT:
+            comment = event.raw.get("comment", {})
+            body = (comment.get("body") or "")[:500]
+            return {
+                "type": "issue_comment",
+                "pr_url": event.pr_url,
+                "pr_number": event.pr_number,
+                "commenter": event.sender,
+                "body": body,
+                "message": (f"Comment on PR #{event.pr_number} by {event.sender}: {body}"),
             }
         if event.type == WebhookEventType.CHECK_RUN_COMPLETED:
             check = event.raw.get("check_run", {})

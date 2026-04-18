@@ -106,6 +106,26 @@ def parse_webhook_event(
             raw=payload,
         )
 
+    if event_type == "issue_comment":
+        action = payload.get("action", "")
+        if action != "created":
+            return None
+        issue = payload.get("issue")
+        if issue is None or "pull_request" not in issue:
+            return None  # Plain issue comment, not a PR comment
+
+        return WebhookEvent(
+            type=WebhookEventType.ISSUE_COMMENT,
+            delivery_id=delivery_id,
+            repo_full_name=payload["repository"]["full_name"],
+            pr_number=issue["number"],
+            pr_url=issue["pull_request"]["html_url"],
+            head_branch="",
+            base_branch="",
+            sender=payload["sender"]["login"],
+            raw=payload,
+        )
+
     if event_type == "check_run":
         prs = payload.get("check_run", {}).get("pull_requests", [])
         if not prs:

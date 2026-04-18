@@ -143,6 +143,40 @@ class TestParseWebhookEvent:
         assert event.sender == "github-actions[bot]"
         assert event.pr_url == "https://github.com/sachinkundu/cloglog/pull/42"
 
+    def test_issue_comment_created_on_pr(self) -> None:
+        payload = _load_fixture("issue_comment_created.json")
+        event = parse_webhook_event("issue_comment", "delivery-ic-1", payload)
+        assert event is not None
+        assert event.type == WebhookEventType.ISSUE_COMMENT
+        assert event.pr_number == 42
+        assert event.pr_url == "https://github.com/sachinkundu/cloglog/pull/42"
+        assert event.repo_full_name == "sachinkundu/cloglog"
+        assert event.sender == "sachinkundu"
+        assert event.head_branch == ""
+        assert event.base_branch == ""
+
+    def test_issue_comment_edited_returns_none(self) -> None:
+        payload = _load_fixture("issue_comment_created.json")
+        payload["action"] = "edited"
+        event = parse_webhook_event("issue_comment", "delivery-ic-2", payload)
+        assert event is None
+
+    def test_issue_comment_on_plain_issue_returns_none(self) -> None:
+        payload = _load_fixture("issue_comment_created.json")
+        del payload["issue"]["pull_request"]
+        event = parse_webhook_event("issue_comment", "delivery-ic-3", payload)
+        assert event is None
+
+    def test_issue_comment_missing_issue_returns_none(self) -> None:
+        payload = {
+            "action": "created",
+            "comment": {"body": "hi"},
+            "repository": {"full_name": "x/y"},
+            "sender": {"login": "u"},
+        }
+        event = parse_webhook_event("issue_comment", "delivery-ic-4", payload)
+        assert event is None
+
     def test_unknown_event_type_returns_none(self) -> None:
         event = parse_webhook_event("issues", "delivery-8", {"action": "opened"})
         assert event is None

@@ -18,7 +18,7 @@ Arguments: `$ARGUMENTS` — optional list of worktree names. If omitted, auto-de
 
 ## Step 1: Detect Worktrees
 
-1. Run `git worktree list` to find active worktrees (anything beyond the main worktree)
+1. Run `git worktree list --porcelain` to find active worktrees. **Filter to only worktrees whose path starts with `$(git rev-parse --show-toplevel)/.claude/worktrees/`.** Skip the main worktree and any worktree outside that directory (e.g., `../cloglog-prod` is the prod worktree — never touch it).
 2. If `$ARGUMENTS` specifies worktree names, filter to only those
 3. If no worktrees exist, tell the user there's nothing to close
 4. Determine the wave name by examining existing work logs to figure out the current numbering (e.g., if `wave-1.md` exists, this is `wave-2`)

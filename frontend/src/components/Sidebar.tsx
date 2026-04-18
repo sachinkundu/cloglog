@@ -119,7 +119,14 @@ export function Sidebar({ projects, selectedProjectId, worktrees, boardStats, ag
   return (
     <aside className={`sidebar ${collapsed ? 'sidebar-collapsed' : ''}`}>
       <div className="sidebar-header">
-        {!collapsed && <h1 className="sidebar-title">cloglog</h1>}
+        {!collapsed && (
+          <h1 className="sidebar-title">
+            cloglog
+            <span className="sidebar-env-badge">
+              {import.meta.env.MODE === 'development' ? 'Dev' : 'Prod'}
+            </span>
+          </h1>
+        )}
         <button className="sidebar-toggle" onClick={toggleCollapsed} title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
           {collapsed ? '\u25B6' : '\u25C0'}
         </button>

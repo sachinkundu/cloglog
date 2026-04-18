@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState, useEffect } from 'react'
 import { api } from './api/client'
 
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
@@ -29,6 +29,12 @@ export default function App() {
   const isDependenciesView = location.pathname.endsWith('/dependencies')
 
   const selectedProjectId = projectId ?? null
+
+  useEffect(() => {
+    const env = import.meta.env.MODE === 'development' ? 'Dev' : 'Prod'
+    document.title = `cloglog — ${env}`
+  }, [])
+
   const { projects, loading: projectsLoading } = useProjects()
   const { board, backlog, worktrees, loading: boardLoading, refetch, moveTask } = useBoard(selectedProjectId)
   const { graph: depGraph } = useDependencyGraph(selectedProjectId)

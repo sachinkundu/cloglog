@@ -19,6 +19,12 @@ from src.gateway.webhook_dispatcher import WebhookEvent, WebhookEventType
 
 logger = logging.getLogger(__name__)
 
+# GitHub check-run conclusions that indicate an actionable CI failure.
+# Conclusions not in this set — including null (pending), "success", "neutral",
+# and "skipped" — must not trigger a ci_failed notification.
+# See: https://docs.github.com/en/rest/checks/runs#get-a-check-run
+CI_FAILED_CONCLUSIONS = frozenset({"failure", "cancelled", "timed_out", "action_required", "stale"})
+
 
 class AgentNotifierConsumer:
     """Route PR events to the owning worktree agent via inbox file."""
@@ -188,10 +194,13 @@ class AgentNotifierConsumer:
             }
         if event.type == WebhookEventType.CHECK_RUN_COMPLETED:
             check = event.raw.get("check_run", {})
-            conclusion = check.get("conclusion", "")
+            conclusion = check.get("conclusion")
             name = check.get("name", "")
-            if conclusion == "success":
-                return None  # Don't notify on success — only failures matter
+            # GitHub fires check_run events before the check terminates; at that
+            # point conclusion is null. Only notify on terminal non-success
+            # conclusions we can act on — silently skip everything else.
+            if conclusion not in CI_FAILED_CONCLUSIONS:
+                return None
             return {
                 "type": "ci_failed",
                 "pr_url": event.pr_url,

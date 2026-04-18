@@ -146,7 +146,7 @@ describe('guard error handling', () => {
     expect(result.content[0].text).toContain('PR URL')
   })
 
-  it('update_task_status includes loop instruction when moving to review with pr_url', async () => {
+  it('update_task_status describes webhook inbox events (not a polling loop) when moving to review with pr_url', async () => {
     ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValueOnce({})
 
     const result = await tools.update_task_status.handler({
@@ -157,11 +157,21 @@ describe('guard error handling', () => {
     const text = result.content[0].text
     expect(text).toContain('moved to review')
     expect(text).toContain('CRITICAL')
-    expect(text).toContain('/loop 5m')
     expect(text).toContain('PR #99')
+    expect(text).toContain('webhook')
+    expect(text).toContain('inbox')
+    expect(text).toContain('review_submitted')
+    expect(text).toContain('review_comment')
+    expect(text).toContain('issue_comment')
+    expect(text).toContain('ci_failed')
+    expect(text).toContain('pr_merged')
+    expect(text).toContain('event does NOT include task_id')
+    // The old /loop instruction is gone — webhooks replace polling
+    expect(text).not.toContain('/loop 5m')
+    expect(text).toContain('Do NOT start a /loop')
   })
 
-  it('update_task_status does NOT include loop instruction for non-review status', async () => {
+  it('update_task_status does NOT include webhook guidance for non-review status', async () => {
     ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValueOnce({})
 
     const result = await tools.update_task_status.handler({
@@ -171,6 +181,8 @@ describe('guard error handling', () => {
     const text = result.content[0].text
     expect(text).toContain('moved to in_progress')
     expect(text).not.toContain('/loop')
+    expect(text).not.toContain('webhook')
+    expect(text).not.toContain('inbox')
   })
 
   it('update_task_status returns isError when agent tries done', async () => {

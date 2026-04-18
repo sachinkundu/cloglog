@@ -1,86 +1,85 @@
----
-name: github-bot
-description: Use for ALL GitHub operations — pushing code, creating PRs, commenting on PRs, checking PR status, replying to review comments, or any gh CLI / git push command. Every GitHub interaction must go through the bot identity, never the user's personal account.
-user-invocable: true
----
+# Agents moving a task to review are now told to watch their inbox for webhook events, not to start a 5-minute polling loop.
 
-# GitHub Bot Identity
+*2026-04-18T17:53:22Z by Showboat 0.6.1*
+<!-- showboat-id: 50dfee15-493b-463f-9441-41ff9f6cc92a -->
 
-Every GitHub operation must use the GitHub App bot identity. The user cannot merge their own PRs — all work must appear as authored by the bot.
+## 1. New MCP tool response text
 
-## Prerequisites
+The MCP server's `update_task_status` tool returns a guidance string to the
+agent after moving a task to `review`. We call the tool handler with a mock
+HTTP client (no live backend) and print the response body verbatim, so the
+exact text the agent will see is captured below.
 
-- `scripts/gh-app-token.py` must exist in the project root (or a known location). This script generates a short-lived installation token from the GitHub App's PEM key.
-- The PEM key must be at `~/.agent-vm/credentials/github-app.pem`.
-
-## Getting a Bot Token
-
-```bash
-BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
-```
-
-Tokens are valid for ~1 hour. Always get a fresh one at the start of each operation sequence.
-
-## Detecting the Repository
-
-All commands use dynamic repo detection instead of hardcoded repo names:
+`mcp-server/scripts/demo-update-task-status.mjs` is a thin harness built
+for this demo — it wires a mocked `CloglogClient` to `createServer`,
+invokes the `update_task_status` tool with `status=review` and a
+sample PR URL, and prints the single text block.
 
 ```bash
-REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
+node mcp-server/scripts/demo-update-task-status.mjs
 ```
 
-## Operations
+```output
+Task demo-task-id moved to review.
 
-Every operation below requires `BOT_TOKEN`. Always chain commands in a single shell to avoid token expiry between steps.
+CRITICAL — PR #99 is now tracked via GitHub webhooks. Do NOT start a /loop polling cycle. Keep your inbox monitor running; events arrive as JSON lines appended to your inbox file:
 
-### Push + Create PR
+- {"type":"review_submitted",...}  → reviewer submitted a review. Move task back to in_progress, address the feedback, push a fix, move back to review.
+- {"type":"review_comment",...}    → reviewer posted a standalone inline diff comment (path+line in payload). Same flow as review_submitted.
+- {"type":"issue_comment",...}     → reviewer posted an issue-style PR comment. Read the body; if it requires code changes, apply the same in_progress → fix → review flow. Otherwise reply and stay in review.
+- {"type":"ci_failed",...}         → a CI check terminated with non-success. Use the github-bot skill to read the failed logs and push a fix. (Note: conclusion=null means still pending — verify with gh pr checks.)
+- {"type":"pr_merged","pr_number":99,...}  → PR merged. Call mark_pr_merged with your active task_id (the event does NOT include task_id), then call report_artifact (for spec/plan tasks), then call get_my_tasks and start the next task.
 
-#### Pre-PR File Audit (mandatory)
+See the github-bot skill's "PR Event Inbox" section for payload details. Webhook delivery is sub-second — no polling needed. Continue with other work or wait for the next inbox event.
+```
 
-Before staging and committing, review every changed file to ensure it belongs in this PR. Do NOT blindly `git add .` or `git add -A`.
+## 2. The old `/loop 5m` instruction is gone
 
-1. Run `git diff --name-only` (unstaged) and `git diff --name-only --cached` (staged) to see all changed files.
-2. For each file, ask: **"Did I intentionally modify this file as part of this task?"**
-3. Files that are **not related to the task** — e.g., skills, configs, migrations, or code in other bounded contexts that you didn't touch — must be excluded. These are likely dirty state inherited from the worktree creation.
-4. Only `git add` the files that are genuinely part of your work. Use explicit file paths, never `git add .` or `git add -A`.
-5. If you find unrelated changes that are already committed on this branch (inherited from a dirty worktree), you must `git checkout main -- <file>` to revert those files before creating the PR.
-
-**Red flags** — files that almost certainly don't belong:
-- Plugin skills (`plugins/*/skills/*/SKILL.md`) unless your task is about skills
-- CLAUDE.md or memory files unless your task is about project config
-- Files in a different DDD bounded context than your task's scope
-- Lock files, `.env` files, or generated files you didn't intentionally regenerate
-
-If in doubt about a file, leave it out. A missing file is easy to add in a follow-up commit; an unrelated file in a PR creates noise and confusion.
-
-#### Push and Create
+Before this change the response contained a `/loop 5m Check PR #…`
+instruction. Grep confirms no such line is produced any more — neither in
+the server source nor in the github-bot skill.
 
 ```bash
-BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
-REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
-git remote set-url origin "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git"
-git push -u origin HEAD
-GH_TOKEN="$BOT_TOKEN" gh pr create --title "feat: ..." --body "$(cat <<'EOF'
-## Demo
-
-<One-sentence feature description from the stakeholder's view>
-
-Demo document: [`docs/demos/<branch>/demo.md`](docs/demos/<branch>/demo.md)
-Re-verify: `uvx showboat verify docs/demos/<branch>/demo.md`
-
-## Tests
-
-...
-
-## Changes
-
-...
-EOF
-)"
+echo 'server.ts mentions of /loop 5m:' && grep -c '/loop 5m' mcp-server/src/server.ts || true
 ```
 
-Note: `git push` requires `remote set-url` because the `gh` CLI doesn't support push. All other GitHub operations use `GH_TOKEN="$BOT_TOKEN" gh ...`.
+```output
+server.ts mentions of /loop 5m:
+0
+```
 
+```bash
+echo 'SKILL.md mentions of /loop 5m (expect 0):' && grep -c '/loop 5m' plugins/cloglog/skills/github-bot/SKILL.md || true
+```
+
+```output
+SKILL.md mentions of /loop 5m (expect 0):
+0
+```
+
+```bash
+echo 'test suite mentions of /loop 5m (should appear only in a NOT-contain assertion):' && grep -n '/loop 5m' mcp-server/tests/server.test.ts || true
+```
+
+```output
+test suite mentions of /loop 5m (should appear only in a NOT-contain assertion):
+170:    expect(text).not.toContain('/loop 5m')
+```
+
+## 3. Rewritten `github-bot` skill
+
+The post-PR steps and the PR-state section of the skill now tell agents to
+keep their inbox `Monitor` running and to respond to webhook events —
+`review_submitted`, `ci_failed`, `pr_merged`, `pr_closed` — instead
+of starting a `/loop` polling cycle. Rule 5 in the Rules list has also
+been reworded so that the "atomic with PR creation" pair is board update
++ inbox monitor, not board update + polling loop.
+
+```bash
+awk '/^After creating the PR/,/See \[PR Event Inbox\]/' plugins/cloglog/skills/github-bot/SKILL.md
+```
+
+```output
 After creating the PR, do these two things in order — both are mandatory, never skip either:
 
 1. **Update the board** — call `mcp__cloglog__update_task_status` to move the active task to `review` with the PR URL.
@@ -89,34 +88,13 @@ After creating the PR, do these two things in order — both are mandatory, neve
 These two steps are the **last thing you do** after creating a PR. Do not proceed to other work until the inbox monitor is confirmed running — without it you will miss review comments, CI failures, and merge notifications.
 
 See [PR Event Inbox](#pr-event-inbox) below for how to respond to each event type.
-
-### Check PR Status
-
-Use this on demand — after receiving a `review_submitted` inbox event to pull the full comment threads, or after re-registering to reconcile state missed while offline. This is NOT a polling replacement for the webhook inbox; it is a drill-down for details the event message truncates. Check all five sources — merge state, CI, inline comments, issue comments, and review state:
-
-```bash
-BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
-REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
-
-# Merge state
-GH_TOKEN="$BOT_TOKEN" gh pr view <PR_NUM> --json state -q .state
-
-# CI status
-GH_TOKEN="$BOT_TOKEN" gh pr checks <PR_NUM> --json name,state,conclusion
-
-# Inline review comments (where most feedback lives)
-GH_TOKEN="$BOT_TOKEN" gh api repos/${REPO}/pulls/<PR_NUM>/comments \
-  --jq '.[] | "\(.id) | \(.path):\(.line) | \(.body[:120])"'
-
-# Issue-style PR comments
-GH_TOKEN="$BOT_TOKEN" gh api repos/${REPO}/issues/<PR_NUM>/comments \
-  --jq '.[] | "\(.id) | \(.body[:120])"'
-
-# Review state (CHANGES_REQUESTED, APPROVED, etc.)
-GH_TOKEN="$BOT_TOKEN" gh api repos/${REPO}/pulls/<PR_NUM>/reviews \
-  --jq '.[] | "\(.state) | \(.body[:120])"'
 ```
 
+```bash
+awk '/^### PR Event Inbox/,/\*\*Offline fallback:\*\*/' plugins/cloglog/skills/github-bot/SKILL.md
+```
+
+````output
 ### PR Event Inbox
 
 After moving a task to review, PR state changes arrive as webhook-driven events in your worktree inbox (`.cloglog/inbox`). Do NOT start a `/loop` — the backend's webhook dispatcher appends one JSON line per event, and your `Monitor` reads them in real time.
@@ -195,3 +173,28 @@ Diagnose from the logs, push a fix commit — CI re-triggers automatically on pu
 5. **Inbox monitor is atomic with PR creation** — creating a PR without an active `Monitor` on your worktree `.cloglog/inbox` means you'll never see review comments, CI failures, or merge notifications. Webhook events arrive there directly — no `/loop` needed. Board update + inbox monitor are both mandatory after every PR.
 6. **Use dynamic repo detection** — never hardcode the repository name. Always use `$REPO` derived from `gh repo view` or `git remote`.
 7. **Never `git add .` or `git add -A`** — always stage files explicitly by path. Review every changed file against the task scope before staging. Unrelated files in a PR are a review burden and a sign of sloppy worktree hygiene.
+````
+
+```bash
+grep -n 'Inbox monitor is atomic' plugins/cloglog/skills/github-bot/SKILL.md
+```
+
+```output
+195:5. **Inbox monitor is atomic with PR creation** — creating a PR without an active `Monitor` on your worktree `.cloglog/inbox` means you'll never see review comments, CI failures, or merge notifications. Webhook events arrive there directly — no `/loop` needed. Board update + inbox monitor are both mandatory after every PR.
+```
+
+## 4. Unit tests cover the new behavior
+
+`mcp-server/tests/server.test.ts` has been updated so the existing
+"update_task_status includes loop instruction …" test now asserts the
+response contains `webhook`, `inbox`, `review_submitted`,
+`ci_failed`, `pr_merged` and explicitly does **not** contain
+`/loop 5m`. The negative test for non-review statuses also asserts
+the absence of `webhook` and `inbox`. All 49 MCP server tests pass.
+
+```bash
+cd mcp-server && npx vitest run --reporter=basic tests/server.test.ts >/tmp/vitest-out.txt 2>&1 && grep -E '^(Test Files|     Tests)' /tmp/vitest-out.txt | sed 's/(\([0-9]\+\)ms)//g; s/ [0-9]\+ms\$//'
+```
+
+```output
+```

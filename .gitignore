@@ -13,6 +13,9 @@ htmlcov/
 .env
 CONTRACT.yaml
 .cloglog/inbox
+.cloglog/db-schema.sql
+.claude/agent-usage.log
+test-results/
 
 # Playwright E2E
 tests/e2e/playwright/node_modules/

@@ -154,11 +154,11 @@ promote: ## Deploy latest origin/main to prod with zero-downtime worker rotation
 	@cd ../cloglog-prod/frontend && npm ci --silent
 	@cd ../cloglog-prod/frontend && VITE_API_URL=http://localhost:8001/api/v1 npx vite build 2>&1 | tail -2
 	@cd ../cloglog-prod && uv run alembic upgrade head
-	@pkill -HUP -f "gunicorn src.gateway.asgi" 2>/dev/null || echo "  Warning: gunicorn not running — start with make prod"
-	@pkill -f "vite preview.*4173" 2>/dev/null || true
+	@if [ -f /tmp/cloglog-prod.pid ]; then kill -HUP $$(cat /tmp/cloglog-prod.pid) && echo "  Backend: rotated workers."; else echo "  Warning: gunicorn not running — start with make prod"; fi
+	@if [ -f /tmp/cloglog-prod-frontend.pid ]; then kill $$(cat /tmp/cloglog-prod-frontend.pid) 2>/dev/null || true; fi
 	@rm -f /tmp/cloglog-prod-frontend.pid
 	@cd ../cloglog-prod/frontend && npm run preview -- --port 4173 & echo $$! > /tmp/cloglog-prod-frontend.pid
-	@echo "  Done — backend rotating workers, frontend rebuilt and restarted."
+	@echo "  Done — frontend rebuilt and restarted on :4173."
 
 prod-logs: ## Tail prod server logs
 	@tail -f /tmp/cloglog-prod.log /tmp/cloglog-prod-access.log

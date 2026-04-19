@@ -4,7 +4,7 @@
       "command": "node",
       "args": ["/home/sachin/code/cloglog/mcp-server/dist/index.js"],
       "env": {
-        "CLOGLOG_URL": "http://localhost:8001",
+        "CLOGLOG_URL": "http://127.0.0.1:8001",
         "CLOGLOG_API_KEY": "56293e0a5a9848f88a2b1eab3cf43a8513d5bdab3209bb540dbfa10cd39f612d"
       }
     }

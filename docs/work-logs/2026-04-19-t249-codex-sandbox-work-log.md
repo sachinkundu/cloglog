@@ -33,7 +33,7 @@ The earlier fix (cb466bb, 2026-04-18) assumed `--sandbox danger-full-access` ski
 1. Registered, started task, read `src/gateway/review_engine.py:539`.
 2. Applied the 3-line argv swap + 4-line warning comment.
 3. Wrote the regression-guard test (captured argv via `_create_subprocess` mock).
-4. Installed dev extra (`respx`) that was missing from the worktree's venv — pre-existing gap, not from this task.
+4. Ran `uv sync --extra dev` because `uv run pytest` reported `ModuleNotFoundError: No module named 'respx'`. Root cause (clarified by codex review on PR #156): pytest wasn't in the worktree's venv, so `uv run pytest` fell back to a pyenv shim whose env lacks respx — import error names respx, real cause is the missing pytest from `[project.optional-dependencies].dev`. Pre-existing gap; see learnings doc.
 5. Fast-forwarded the worktree from origin/main (3 commits behind from T-247 / wt-fix-localhost) and discarded an unrelated `.mcp.json` edit that had already landed upstream.
 6. Ran `make quality` — passed.
 7. Produced demo via `cloglog:demo`, iterating on showboat `verify` determinism (grep for `[0-9]+ passed` instead of raw pytest output, filter codex output to stable markers).

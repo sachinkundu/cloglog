@@ -225,3 +225,11 @@ This calls `scripts/check-demo.sh` which:
 `make quality` also calls `demo-check` as its last step — your commit will be blocked if the demo is missing or fails verification.
 
 **Note:** `uvx showboat verify` re-runs all captured commands. It requires the same server state as when you recorded the demo. Run verify as part of `make demo` (already built into the demo-script.sh template above), not as a standalone step after the server is down.
+
+**Determinism — `verify` is byte-exact.** Any `exec` block whose captured output includes timings (`in 50.00s`), token counts, PIDs, memory addresses, ISO timestamps, or other non-reproducible noise will fail re-verification on the next run even though the underlying assertion still holds. Reduce the captured output to a deterministic summary BEFORE the command's output lands in showboat:
+
+- `pytest ... | grep -oE "[0-9]+ passed"` → captures only `558 passed`, not the `in 101.95s` tail.
+- `codex exec ... | grep -q "^OK$" && echo OK || echo FAIL` → captures only `OK`/`FAIL`, not the session preamble and token counts.
+- Explicit `echo` of the interesting boolean (`echo "fix applied: $(grep -c "\-\-dangerously-bypass" src/gateway/review_engine.py)"`) rather than streaming a whole file.
+
+Rule of thumb: if you couldn't bet that two successive runs produce **identical bytes**, reduce it first. Raw streaming of `pytest`, `codex`, `gh`, `curl -v`, or anything with a progress bar will bite on the next `make demo-check`.

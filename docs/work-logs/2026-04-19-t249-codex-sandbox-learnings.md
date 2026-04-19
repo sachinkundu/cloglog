@@ -16,10 +16,12 @@
 - The 2026-04-18 fix (cb466bb) was a reasonable guess from the mode name but turned out wrong. Second-time-in-a-row on this host.
 - **Fix-forward hygiene:** the in-code comment added in this PR explicitly warns future passes off reinstating `--sandbox`. Any cleanup pass that doesn't read comments earns the same failure.
 
-### Worktree venv had no dev extras installed
-- `uv run pytest tests/gateway/test_review_engine.py` failed collection with `ModuleNotFoundError: No module named 'respx'`. `pyproject.toml` lists `respx>=0.22.0` under dev/test extras; the venv had only runtime deps.
-- Had to run `uv sync --extra dev` before tests would collect. Pre-existing across any freshly-created worktree that doesn't use its venv until the first `make quality`.
-- **Fix candidate:** `.cloglog/on-worktree-create.sh` should run `uv sync --extra dev` after creating the venv, so tests are runnable on a fresh worktree without an extra step.
+### Worktree venv had no pytest/ruff/mypy installed (corrected by codex review)
+- `uv run pytest tests/gateway/test_review_engine.py` failed collection with `ModuleNotFoundError: No module named 'respx'`.
+- **Initial (wrong) diagnosis in the first draft of this doc:** "respx was missing because the venv only had runtime deps." Codex review on PR #156 correctly flagged this as false. `respx>=0.22.0` is listed in `[project.dependencies]` at `pyproject.toml:22`, so a plain `uv sync` DOES install it.
+- **Actual root cause:** `pytest`, `mypy`, `ruff`, `pytest-cov` live under `[project.optional-dependencies].dev`, NOT `[project.dependencies]`. When the venv lacks `pytest`, `uv run pytest` falls back to a pyenv `pytest` shim that runs in a different python environment (pyenv's system python, not the worktree's `.venv`). THAT shim's env lacks `respx`, producing the misleading `ModuleNotFoundError: No module named 'respx'`. The import error names respx but the root cause is the missing pytest that diverted the invocation out of the venv. Same trap T-247 documented.
+- Workaround that worked: `uv sync --extra dev` installs pytest into the venv so `uv run pytest` resolves inside it. respx is then also present (from runtime deps).
+- **Fix candidate (still valid, clearer justification):** `.cloglog/on-worktree-create.sh` should run `uv sync --extra dev` after creating the venv so the full test toolchain is present and `uv run pytest` resolves inside the worktree. Tracked as T-250.
 
 ### Shutdown-artifact templates still stale
 - `shutdown-artifacts/work-log.md` and `learnings.md` arrived carrying "wt-depgraph 2026-04-05" headers — the same issue flagged in the 2026-04-19 wt-task-deps learnings. Still not fixed.

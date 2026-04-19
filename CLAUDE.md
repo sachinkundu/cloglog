@@ -105,6 +105,9 @@ These instructions are specific to cloglog's architecture and tech stack. They s
 ### Pydantic Schema Gotcha
 - **When adding a field to an API update call, verify the Pydantic schema includes it.** `model_dump(exclude_unset=True)` silently drops fields not in the schema — the API returns 200 but nothing is saved. No error, no warning. Always grep for the `XUpdate` model and confirm the field exists before assuming the API will persist it.
 
+### `get_board` Payload Size
+- **`mcp__cloglog__get_board()` without filters returns ~100KB+** (every epic, feature, task with full descriptions) which exceeds typical MCP tool-output limits. Even filtering by `epic_id` can be tens of KB. Agents that just need an index should redirect the response to a file and `Grep` for what they want — or, better, use the targeted tools (`list_epics`, `list_features`, `get_my_tasks`) when applicable. A `fields` projection is tracked as a backlog improvement.
+
 ### Debugging Persistence Bugs
 - **Check the DB before writing code.** For any "X doesn't persist on refresh" bug: (1) check DB state, (2) reproduce the action, (3) check DB again. If unchanged -> write path is broken. If changed -> read/render path is broken. One query narrows the problem instantly.
 - **Restart Vite for structural changes.** New imports, new components, JSX restructuring — restart the dev server. HMR silently fails on structural changes and the browser keeps running old JavaScript with no visible error.

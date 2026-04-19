@@ -3,7 +3,8 @@
 # Blocks are self-contained so `showboat verify` runs anywhere (no backend required).
 set -euo pipefail
 
-DEMO_FILE="docs/demos/$(git rev-parse --abbrev-ref HEAD)/demo.md"
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+DEMO_FILE="docs/demos/${BRANCH//\//-}/demo.md"
 
 uvx showboat init "$DEMO_FILE" "T-247 — committed MCP config uses 127.0.0.1 so new worktrees work without a manual patch."
 

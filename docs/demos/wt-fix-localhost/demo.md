@@ -1,7 +1,7 @@
 # T-247 — committed MCP config uses 127.0.0.1 so new worktrees work without a manual patch.
 
-*2026-04-19T11:11:50Z by Showboat 0.6.1*
-<!-- showboat-id: 3c994c36-f04f-48f6-99b5-6ee9143f3e55 -->
+*2026-04-19T11:18:26Z by Showboat 0.6.1*
+<!-- showboat-id: 2d6c5f0b-2be2-4556-9f7c-63c4732345b6 -->
 
 Root cause: the committed `.mcp.json` pointed the MCP server at `http://localhost:8001`, but our HTTP server binds IPv4 only (`0.0.0.0`, not `[::]`). On hosts where `/etc/hosts` resolves `localhost` to `::1`, Node's fetch attempts IPv6 first (Happy Eyeballs) and fails with ECONNREFUSED. Every new worktree required a manual 127.0.0.1 patch. Fix: commit `127.0.0.1` as the default in three files.
 

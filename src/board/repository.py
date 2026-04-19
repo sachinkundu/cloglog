@@ -10,7 +10,16 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from src.board.models import Epic, Feature, FeatureDependency, Notification, Project, Task, TaskNote
+from src.board.models import (
+    Epic,
+    Feature,
+    FeatureDependency,
+    Notification,
+    Project,
+    Task,
+    TaskDependency,
+    TaskNote,
+)
 
 
 class BoardRepository:
@@ -391,6 +400,41 @@ class BoardRepository:
             )
         )
         return [row[0] for row in result.all()]
+
+    # --- Task Dependencies ---
+
+    async def add_task_dependency(self, task_id: UUID, depends_on_task_id: UUID) -> None:
+        dep = TaskDependency(task_id=task_id, depends_on_task_id=depends_on_task_id)
+        self._session.add(dep)
+        await self._session.commit()
+
+    async def remove_task_dependency(self, task_id: UUID, depends_on_task_id: UUID) -> bool:
+        dep = await self._session.get(TaskDependency, (task_id, depends_on_task_id))
+        if dep is None:
+            return False
+        await self._session.delete(dep)
+        await self._session.commit()
+        return True
+
+    async def get_task_dependency_exists(self, task_id: UUID, depends_on_task_id: UUID) -> bool:
+        dep = await self._session.get(TaskDependency, (task_id, depends_on_task_id))
+        return dep is not None
+
+    async def get_task_dependencies(self, task_id: UUID) -> list[UUID]:
+        result = await self._session.execute(
+            select(TaskDependency.depends_on_task_id).where(TaskDependency.task_id == task_id)
+        )
+        return [row[0] for row in result.all()]
+
+    async def get_all_task_dependencies(self, project_id: UUID) -> list[tuple[UUID, UUID]]:
+        result = await self._session.execute(
+            select(TaskDependency.task_id, TaskDependency.depends_on_task_id)
+            .join(Task, TaskDependency.task_id == Task.id)
+            .join(Feature, Task.feature_id == Feature.id)
+            .join(Epic, Feature.epic_id == Epic.id)
+            .where(Epic.project_id == project_id)
+        )
+        return [(row[0], row[1]) for row in result.all()]
 
     # --- Task Notes ---
 

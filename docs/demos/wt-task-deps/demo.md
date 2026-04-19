@@ -1,7 +1,7 @@
 # Agents are blocked from starting a task whose parent feature has upstream feature-dependencies with incomplete tasks. The 409 response carries a structured task_blocked payload listing every blocker. The same guard fires on update_task_status transitions into in_progress, closing the direct-PATCH bypass.
 
-*2026-04-19T07:34:27Z by Showboat 0.6.1*
-<!-- showboat-id: 3430fee7-cea4-49ae-b11b-3526b7f43bdb -->
+*2026-04-19T08:03:04Z by Showboat 0.6.1*
+<!-- showboat-id: 397c80e1-64b2-4852-80ef-b055b2b6193c -->
 
 The implementation lives on two layers. Board owns the resolution rule via a new BoardBlockerQueryPort in src/board/interfaces.py; Agent owns the pipeline-predecessor rule in src/agent/interfaces.py. AgentService collects both and raises TaskBlockedError, which src/agent/routes.py translates to a 409 with code=task_blocked.
 
@@ -22,7 +22,7 @@ uv run pytest tests/agent/test_start_task_blockers.py -q 2>&1 | tail -3 | grep -
 ```
 
 ```output
-5 passed
+7 passed
 ```
 
 Proof 3: the new hybrid auth dependency CurrentMcpOrDashboard (src/gateway/auth.py) — used by the T-224 task-dep routes — closes the MCP-key-validation gap on the new write surface. It accepts either a validated MCP service key or a valid dashboard key; rejects garbage Bearer + X-MCP-Request (the existing middleware-only gap).
@@ -42,7 +42,7 @@ uv run pytest tests/agent/ tests/board/ -q 2>&1 | tail -3 | grep -oP '^\d+ passe
 ```
 
 ```output
-219 passed
+234 passed
 ```
 
 Proof 5: the MCP server surfaces structured 409s as readable text. mcp-server/src/errors.ts defines CloglogApiError with status/code/detail fields; client.ts now parses JSON error bodies instead of flattening to a formatted string; server.ts's wrapHandler renders blockers as bullets when code=task_blocked so agents see 'Feature F-N "title" — incomplete tasks: T-X' rather than a JSON blob.
@@ -52,5 +52,5 @@ cd mcp-server && npx vitest run --reporter=verbose 2>&1 | grep -cE '✓|√'
 ```
 
 ```output
-49
+52
 ```

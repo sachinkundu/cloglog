@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid as _uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, text
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.shared.database import Base
@@ -97,6 +97,22 @@ class FeatureDependency(Base):
     depends_on_id: Mapped[_uuid.UUID] = mapped_column(ForeignKey("features.id"), primary_key=True)
 
 
+class TaskDependency(Base):
+    __tablename__ = "task_dependencies"
+
+    task_id: Mapped[_uuid.UUID] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True
+    )
+    depends_on_task_id: Mapped[_uuid.UUID] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True
+    )
+
+    __table_args__ = (
+        CheckConstraint("task_id <> depends_on_task_id", name="ck_task_dep_no_self_loop"),
+        Index("ix_task_dependencies_depends_on_task_id", "depends_on_task_id"),
+    )
+
+
 class Task(Base):
     __tablename__ = "tasks"
 
@@ -129,6 +145,19 @@ class Task(Base):
     feature: Mapped[Feature] = relationship(back_populates="tasks")
     notes: Mapped[list[TaskNote]] = relationship(
         back_populates="task", cascade="all, delete-orphan", order_by="TaskNote.created_at"
+    )
+    dependencies: Mapped[list[Task]] = relationship(
+        secondary="task_dependencies",
+        primaryjoin="Task.id == task_dependencies.c.task_id",
+        secondaryjoin="Task.id == task_dependencies.c.depends_on_task_id",
+        lazy="selectin",
+    )
+    dependents: Mapped[list[Task]] = relationship(
+        secondary="task_dependencies",
+        primaryjoin="Task.id == task_dependencies.c.depends_on_task_id",
+        secondaryjoin="Task.id == task_dependencies.c.task_id",
+        lazy="selectin",
+        viewonly=True,
     )
 
 

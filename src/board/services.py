@@ -6,7 +6,7 @@ import hashlib
 import secrets
 from uuid import UUID
 
-from src.board.interfaces import BoardBlockerDTO, FeatureBlocker
+from src.board.interfaces import BoardBlockerDTO, FeatureBlocker, TaskBlocker
 from src.board.models import Feature, Project, Task
 from src.board.repository import BoardRepository
 from src.board.schemas import ImportPlan, SearchResponse, SearchResult
@@ -196,17 +196,60 @@ class BoardService:
     async def remove_dependency(self, feature_id: UUID, depends_on_id: UUID) -> bool:
         return await self._repo.remove_dependency(feature_id, depends_on_id)
 
+    # --- Task Dependencies ---
+
+    async def has_task_cycle(self, task_id: UUID, depends_on_task_id: UUID) -> bool:
+        """DFS from the candidate upstream's own deps — if we reach
+        ``task_id`` the new edge would close a cycle."""
+        visited: set[UUID] = set()
+        stack = [depends_on_task_id]
+        while stack:
+            current = stack.pop()
+            if current == task_id:
+                return True
+            if current in visited:
+                continue
+            visited.add(current)
+            stack.extend(await self._repo.get_task_dependencies(current))
+        return False
+
+    async def _task_project_id(self, task_id: UUID) -> UUID | None:
+        task = await self._repo.get_task(task_id)
+        if task is None:
+            return None
+        feature = await self._repo.get_feature(task.feature_id)
+        if feature is None:
+            return None
+        epic = await self._repo.get_epic(feature.epic_id)
+        return None if epic is None else epic.project_id
+
+    async def add_task_dependency(self, task_id: UUID, depends_on_task_id: UUID) -> None:
+        if task_id == depends_on_task_id:
+            raise ValueError("A task cannot depend on itself")
+        pid_a = await self._task_project_id(task_id)
+        pid_b = await self._task_project_id(depends_on_task_id)
+        if pid_a is None or pid_b is None:
+            raise ValueError("Task not found")
+        if pid_a != pid_b:
+            raise ValueError("Tasks must be in the same project")
+        if await self._repo.get_task_dependency_exists(task_id, depends_on_task_id):
+            raise ValueError("DUPLICATE")
+        if await self.has_task_cycle(task_id, depends_on_task_id):
+            raise ValueError("Adding this dependency would create a cycle")
+        await self._repo.add_task_dependency(task_id, depends_on_task_id)
+
+    async def remove_task_dependency(self, task_id: UUID, depends_on_task_id: UUID) -> bool:
+        return await self._repo.remove_task_dependency(task_id, depends_on_task_id)
+
     async def get_unresolved_blockers(self, task_id: UUID) -> list[BoardBlockerDTO]:
-        """Return feature (and, after T-224, task) blockers for ``task_id``.
+        """Return feature and task blockers for ``task_id`` in stable order.
 
         Emits one ``FeatureBlocker`` per upstream feature that still has
-        incomplete tasks, sorted by ``feature.number``. Resolved (``done`` or
-        ``review``+``pr_url``) upstream tasks are excluded from the
-        ``incomplete_task_numbers`` list; if a feature has none, no blocker
-        is emitted for it.
-
-        T-36 scope: feature-level only. T-224 extends this method to also
-        walk ``task_dependencies`` and emit ``TaskBlocker`` entries.
+        incomplete tasks (sorted by ``feature.number``), then one
+        ``TaskBlocker`` per unresolved direct ``blocked_by`` edge (sorted
+        by ``task.number``). Only direct edges — the transitive closure
+        is implied by the direct edges still being unresolved, so
+        including transitive would produce noisy duplicates.
         """
         task = await self._repo.get_task(task_id)
         if task is None:
@@ -217,6 +260,7 @@ class BoardService:
 
         blockers: list[BoardBlockerDTO] = []
 
+        # Feature-level (T-36 scope)
         dep_feature_ids = await self._repo.get_feature_dependencies(feature.id)
         dep_features: list[Feature] = []
         for fid in dep_feature_ids:
@@ -236,6 +280,27 @@ class BoardService:
                         incomplete_task_numbers=sorted(t.number for t in incomplete),
                     )
                 )
+
+        # Task-level (T-224 scope)
+        dep_task_ids = await self._repo.get_task_dependencies(task_id)
+        dep_task_rows: list[Task] = []
+        for tid in dep_task_ids:
+            t = await self._repo.get_task(tid)
+            if t is not None:
+                dep_task_rows.append(t)
+        for dep_task in sorted(dep_task_rows, key=lambda t: t.number):
+            if _task_resolved(dep_task):
+                continue
+            blockers.append(
+                TaskBlocker(
+                    kind="task",
+                    task_id=str(dep_task.id),
+                    task_number=dep_task.number,
+                    task_title=dep_task.title,
+                    status=dep_task.status,
+                )
+            )
+
         return blockers
 
     async def get_dependency_graph(self, project_id: UUID) -> dict[str, object]:

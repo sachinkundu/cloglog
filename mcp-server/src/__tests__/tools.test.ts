@@ -305,6 +305,35 @@ describe('Tool Handlers', () => {
     ).rejects.toThrow('404')
   })
 
+  it('add_task_dependency calls POST /tasks/{id}/dependencies', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({ status: 'created' })
+
+    const result = await handlers.add_task_dependency({ task_id: 't-1', depends_on_id: 't-2' })
+    expect(client.request).toHaveBeenCalledWith(
+      'POST', '/api/v1/tasks/t-1/dependencies',
+      { depends_on_id: 't-2' }
+    )
+    expect(result).toHaveProperty('status', 'created')
+  })
+
+  it('remove_task_dependency calls DELETE /tasks/{id}/dependencies/{depends_on_id}', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true })
+
+    await handlers.remove_task_dependency({ task_id: 't-1', depends_on_id: 't-2' })
+    expect(client.request).toHaveBeenCalledWith(
+      'DELETE', '/api/v1/tasks/t-1/dependencies/t-2'
+    )
+  })
+
+  it('add_task_dependency propagates API errors (cycle)', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('cloglog API error: 400 Adding this dependency would create a cycle')
+    )
+    await expect(
+      handlers.add_task_dependency({ task_id: 't-1', depends_on_id: 't-2' })
+    ).rejects.toThrow('cycle')
+  })
+
   it('start_task propagates API errors (guard rejections)', async () => {
     (client.request as ReturnType<typeof vi.fn>).mockRejectedValue(
       new Error('cloglog API error: 409 Cannot start task: agent already has active task(s)')

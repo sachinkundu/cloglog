@@ -123,12 +123,25 @@ DELETE /api/v1/tasks/{task_id}/dependencies/{depends_on_id}
 
 **Auth** (per `src/gateway/app.py::ApiAccessControlMiddleware`, which gates every `/api/v1/*` route):
 
-- The existing `POST /features/{id}/dependencies` / `DELETE /features/{id}/dependencies/{depends_on_id}` routes are reachable two ways: (a) **MCP proxy** — `Authorization: Bearer <mcp_service_key>` plus `X-MCP-Request` header (used by the MCP tools `add_dependency`/`remove_dependency`); (b) **dashboard** — `X-Dashboard-Key` header.
-- The new task-dep routes take exactly the same posture: MCP-or-dashboard. They live in `src/board/routes.py` next to the feature-dep routes and inherit the same middleware behaviour.
-- Bearer-only (project API key, agent token) is **not** accepted on these paths — the middleware allows Bearer-only on `/api/v1/agents/*` only. Agents never call these endpoints directly; they go through MCP.
-- No route-level dependency injection is needed (no `CurrentProject`, no `CurrentAgent`, no `CurrentMcpService`) — the existing feature-dep routes are unguarded at the handler level and rely entirely on the middleware. Match that pattern.
+- The **middleware** decides which credential shapes are allowed through to any given path:
+  - **MCP shape**: `Authorization: <anything>` + `X-MCP-Request: true` → passes the middleware for every path. The middleware does **not** validate the Bearer value here; that's the route's job via the `CurrentMcpService` dependency.
+  - **Bearer-only**: only allowed on `/api/v1/agents/*` paths (project API key or agent token).
+  - **Dashboard**: `X-Dashboard-Key` → allowed on non-agent paths.
+- **Existing gap (to be closed in this wave, Boy Scout):** `POST /features/{id}/dependencies` / `DELETE /features/{id}/dependencies/{depends_on_id}` do **not** depend on `CurrentMcpService`, so any caller sending `Authorization: Bearer garbage` + `X-MCP-Request: true` slips past the middleware and reaches the handler unauthenticated. T-224 fixes this by adding `CurrentMcpService` to those handlers as part of Boy-Scouting the touched routes.
+- **New task-dep routes** take a stricter posture than the current feature-dep routes: both handlers depend on **`CurrentMcpService`**. Callers are the MCP server (using the service key it already holds) or — if a future dashboard UI needs direct writes — extend via a new hybrid dependency in a follow-up. For now, writes go through MCP only; the dashboard's read path (`GET /api/v1/projects/{id}/dependency-graph`) is unchanged.
+- Project API keys and agent tokens are rejected (middleware returns 403 before the handler runs). Agents never call these endpoints directly; they go through MCP.
 
-**Events**: publish `EventType.TASK_DEPENDENCY_ADDED` / `TASK_DEPENDENCY_REMOVED` over the SSE bus (new enum members), so the board can repaint.
+**Events**: reuse the existing `EventType.DEPENDENCY_ADDED` / `DEPENDENCY_REMOVED` enum values (do **not** introduce `TASK_DEPENDENCY_*` new names — the frontend's `useDependencyGraph` hook and `useSSE` typed union only listen for the existing names; new names would be silently ignored, leaving the dep graph stale until manual refresh). Add a `scope: "feature" | "task"` discriminator to the event `data` payload so future UI work can distinguish:
+
+```python
+# feature dep (existing — add scope field, backwards-compat: extra field ignored by current consumer)
+data={"scope": "feature", "feature_id": ..., "depends_on_id": ...}
+
+# task dep (new)
+data={"scope": "task", "task_id": ..., "depends_on_id": ...}
+```
+
+Today's frontend refetches the whole graph on these events unconditionally, so the task-dep case works immediately without frontend changes. When the dashboard grows task-dep visualisation, it can switch on `scope`.
 
 ## MCP tools
 
@@ -238,6 +251,14 @@ Unified for all three blocker kinds. `FastAPI.HTTPException` accepts a dict `det
 - HTTP status: **409 Conflict** for any guard violation (matches current pipeline predecessor code).
 - `code: "task_blocked"` is the stable machine-readable discriminator the MCP layer and UI can switch on.
 - `blockers` is always an array even with one entry; order is the guard order above (feature → task → pipeline).
+
+**Client wiring requirements** (discovered during review):
+
+- `mcp-server/src/client.ts`'s current `request()` implementation discards the JSON body on non-2xx (`throw new Error(\`cloglog API error: ${response.status} ${text}\`)`). A structured `detail` object becomes unparseable raw text. T-224 updates `request()` to:
+  1. Read `Content-Type` and, if `application/json`, `JSON.parse(text)` into a `detail` object.
+  2. Throw a richer error (custom `CloglogApiError extends Error` with `status`, `code`, `detail` fields) so tool handlers can switch on `code === "task_blocked"` and format the `blockers` array into readable tool output.
+- `mcp-server/src/server.ts`'s `start_task` / `update_task_status` tool handlers: catch the new error type, render blockers as a human-readable list in the `isError` tool response so agents see "Cannot start T-225: blocked by T-222 (in_progress), T-36 (not done)…" instead of a JSON blob.
+- Dashboard's `frontend/src/api/client.ts` strips 4xx bodies the same way. No UI consumer exists yet for the structured error (agents are the consumer), so the frontend change is **out of scope** for this wave and moves to follow-ups. If a future UI surfaces blocked tasks, its PR also teaches `client.ts` to preserve the body.
 
 **Backwards-compat for pipeline-only cases**: T-36 hasn't shipped yet, T-224 hasn't shipped yet, and the current production 409 is a plain string. Moving to the structured payload is a one-time change that both impl tasks share. Tests today assert on `"Cannot start"` substrings in the string — they'll be updated in lock-step.
 

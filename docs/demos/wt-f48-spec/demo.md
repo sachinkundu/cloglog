@@ -1,7 +1,7 @@
 # T-222 canonical agent lifecycle protocol — single source of truth for F-48
 
-*2026-04-19T11:03:26Z by Showboat 0.6.1*
-<!-- showboat-id: 0a5ec528-fdfe-4279-840f-5272a85dedf4 -->
+*2026-04-19T12:54:47Z by Showboat 0.6.1*
+<!-- showboat-id: 75d433bf-98fb-48c4-ad45-c6bb111bad85 -->
 
 This is a spec-only PR. The deliverable is the canonical lifecycle doc at docs/design/agent-lifecycle.md. The demo verifies the doc exists and covers the six required sections plus the See-also block.
 
@@ -12,7 +12,7 @@ wc -l docs/design/agent-lifecycle.md
 ```
 
 ```output
-381 docs/design/agent-lifecycle.md
+465 docs/design/agent-lifecycle.md
 ```
 
 Proof 2 — the six required sections are present and ordered.
@@ -23,11 +23,11 @@ grep -n '^## [1-6]\.' docs/design/agent-lifecycle.md
 
 ```output
 18:## 1. Exit condition
-53:## 2. Shutdown sequence
-107:## 3. Inbox contract
-176:## 4. MCP discipline
-214:## 5. Three-tier shutdown from the main side
-286:## 6. Agent session can't self-exit and relaunch
+81:## 2. Shutdown sequence
+142:## 3. Inbox contract
+235:## 4. MCP discipline
+273:## 5. Three-tier shutdown from the main side
+345:## 6. Agent session can't self-exit and relaunch
 ```
 
 Proof 3 — Section 1 pins the authoritative exit condition.
@@ -74,12 +74,12 @@ grep -nE 'Cooperative timeout|Poll interval|heartbeat_timeout_seconds|180 s|120 
 ```
 
 ```output
-231:  - Cooperative timeout: **120 s** from `request_shutdown` to `agent_unregistered`.
-232:  - Poll interval on the worktree row: **10 s**.
-250:- **When to use.** After tier 1's 120 s timeout elapses without an
-262:  **60 s**. Sessions with `last_heartbeat` older than **180 s** (the
-263:  `heartbeat_timeout_seconds` setting in `src/shared/config.py`) are marked
-279:          server sweep closes the session after 180 s of silence (tier 3)
+290:  - Cooperative timeout: **120 s** from `request_shutdown` to `agent_unregistered`.
+291:  - Poll interval on the worktree row: **10 s**.
+309:- **When to use.** After tier 1's 120 s timeout elapses without an
+321:  **60 s**. Sessions with `last_heartbeat` older than **180 s** (the
+322:  `heartbeat_timeout_seconds` setting in `src/shared/config.py`) are marked
+338:          server sweep closes the session after 180 s of silence (tier 3)
 ```
 
 Proof 6 — the doc explicitly forbids awaiting task_status_changed, the signal whose absence caused the 2026-04-19 T-225 deadlock.
@@ -90,5 +90,5 @@ grep -n 'task_status_changed' docs/design/agent-lifecycle.md
 
 ```output
 28:| The task shows `done` on the board | `done` is administrative and user-driven. No push notification fires when a task moves `review` → `done`. `task_status_changed` is emitted on the SSE event bus (dashboard consumer only) and never reaches the worktree inbox. An agent that waits for `done` deadlocks forever. |
-163:- `task_status_changed` — including the `review` → `done` transition. This is
+222:- `task_status_changed` — including the `review` → `done` transition. This is
 ```

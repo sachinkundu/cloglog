@@ -33,22 +33,50 @@ side.** The task still needs a human to drag it to `done`, but the agent has no
 further responsibility for it. The agent does not monitor, reply to, or block
 on such tasks.
 
-### Decision algorithm on every `pr_merged` event
+### Decision algorithm
+
+The algorithm fires at each of two triggers:
+
+- **Trigger A — `pr_merged` inbox event.** Used by tasks with a PR (spec, impl,
+  standalone-with-code).
+- **Trigger B — local commit of the artifact is done.** Used by tasks with NO
+  PR (plan tasks, and any docs/research task that finishes without opening a
+  PR). The agent itself decides when to run this trigger; there is no
+  webhook.
 
 ```
-1. mark_pr_merged(task_id, worktree_id)
-2. For spec/plan tasks: report_artifact(task_id, worktree_id, artifact_path)
-3. tasks = get_my_tasks()
-4. next = first task in tasks with status == backlog
-5. if next exists:
-       start_task(next.id) and continue working
-   else:
-       run the Section 2 shutdown sequence
+on trigger A (pr_merged):
+    1. mark_pr_merged(task_id, worktree_id)
+    2. if task_type in (spec, plan):
+           report_artifact(task_id, worktree_id, artifact_path)
+
+on trigger B (no-PR task finished):
+    1. update_task_status(task_id, "review", skip_pr=True)
+    2. if task_type in (spec, plan):
+           report_artifact(task_id, worktree_id, artifact_path)
+
+continuation (both triggers):
+    3. tasks = get_my_tasks()
+    4. next = first task in tasks with status == backlog
+    5. if next exists:
+           start_task(next.id) and continue working
+       else:
+           run the Section 2 shutdown sequence
 ```
 
 Step 5 has no third branch. An empty backlog means shut down — regardless of
 how many `review` tasks still sit on the board with the agent's `worktree_id`
 attached.
+
+**Note on the plan-task path.** Trigger B assumes the agent can move to
+`review` without a PR. The backend today accepts that via `skip_pr=True` in
+`update_task_status`, and `report_artifact` only requires the task be in
+`review` (see `src/agent/services.py:516`). However, the pipeline guard's
+"predecessor resolved" check still requires `pr_url` to be set
+(`src/agent/services.py:237`), which an impl task cannot satisfy if its plan
+predecessor used `skip_pr=True`. That is a backend gap; the canonical flow
+here is the target state. See the T-NEW follow-up in the [See also](#see-also)
+block.
 
 ## 2. Shutdown sequence
 
@@ -56,13 +84,20 @@ The agent's side of shutdown runs in this order. Skip steps that do not apply
 to the exiting task type, but never reorder them.
 
 1. **`mark_pr_merged(task_id, worktree_id)`** — only if the task had a PR that
-   merged and the flip has not already been applied by the webhook consumer.
-   The call is idempotent; the agent makes it unconditionally as a fallback
-   rather than trying to detect whether the webhook already fired.
-2. **`report_artifact(task_id, worktree_id, artifact_path)`** — only for
+   merged. Skip for plan tasks and any other no-PR task. The call is
+   idempotent; for tasks that had a PR the agent makes it unconditionally as a
+   fallback, rather than trying to detect whether the webhook consumer already
+   flipped the flag.
+2. **Move to `review` if not already there.** For spec/impl tasks with a PR
+   this already happened when the PR was opened. For no-PR tasks (plan,
+   docs-only), call `update_task_status(task_id, "review", skip_pr=True)`
+   here. Required so the next step can accept the artifact.
+3. **`report_artifact(task_id, worktree_id, artifact_path)`** — only for
    `task_type = spec` or `task_type = plan`. The state-machine guard blocks
    downstream tasks until this is recorded. `impl` and standalone tasks skip.
-3. **Generate `shutdown-artifacts/`** inside the worktree:
+   Backend enforces `task.status == "review"` at this step
+   (`src/agent/services.py:516`); step 2 is what guarantees it.
+4. **Generate `shutdown-artifacts/`** inside the worktree:
    - `work-log.md` — timeline and scope of what the agent did this run.
    - `learnings.md` — patterns, gotchas, or follow-up items future agents
      should know.
@@ -70,9 +105,9 @@ to the exiting task type, but never reorder them.
      opened, outstanding questions) if useful to the main agent's close-wave
      step. Absolute paths to both files must be included in the
      `agent_unregistered` event in the next step.
-4. **Emit `agent_unregistered` to the main agent inbox**
-   (`/home/sachin/code/cloglog/.cloglog/inbox`) *before* calling
-   `unregister_agent`. Shape:
+5. **Emit `agent_unregistered` to the main agent inbox**
+   (`<project_root>/.cloglog/inbox` — see [Paths and discovery](#paths-and-discovery)
+   in Section 3) *before* calling `unregister_agent`. Shape:
 
    ```json
    {
@@ -92,19 +127,42 @@ to the exiting task type, but never reorder them.
    This event is the trigger the main agent's close-wave flow reacts to. It is
    authoritative — the backend's `WORKTREE_OFFLINE` event is a fallback, not a
    substitute. See T-243.
-5. **`unregister_agent()`** — no arguments; it authenticates with the session's
+6. **`unregister_agent()`** — no arguments; it authenticates with the session's
    `agent_token` and ends the active session server-side.
-6. **Stop.** The Claude Code process returns control; the zellij tab stays
+7. **Stop.** The Claude Code process returns control; the zellij tab stays
    open. The main agent's close-wave skill removes the tab, prunes the
    worktree, and drops the per-worktree database.
 
 The agent MUST NOT exit — explicitly or by returning — without completing
-steps 4 and 5. "Session ran out of context" is not a valid excuse: the
+steps 5 and 6. "Session ran out of context" is not a valid excuse: the
 SessionEnd hook (`plugins/cloglog/hooks/agent-shutdown.sh`) is the backstop,
 but it is best-effort and fires unreliably under `zellij action close-tab`
 (tracked as T-217). Do not design workflows that rely on the backstop.
 
 ## 3. Inbox contract
+
+### Paths and discovery
+
+Two inbox files exist and they live in different trees. Nothing hardcodes an
+absolute path; both are resolved relative to a directory the process knows at
+startup.
+
+| Inbox | Path | Resolver |
+| --- | --- | --- |
+| Worktree inbox (each worker) | `<worktree_path>/.cloglog/inbox` | `worktree_path` is the `path` column on the `worktrees` row for the session. The webhook consumer at `src/gateway/webhook_consumers.py` reads it directly from the row. Agents get the same path from `register_agent`'s return value and from `pwd` at startup (the launch skill's `launch.sh` always `cd`s into the worktree first). |
+| Main agent inbox (supervisor) | `<project_root>/.cloglog/inbox` | `<project_root>` is the directory where `cloglog:setup` was run — the top-level clone, NOT a worktree subdirectory. `plugins/cloglog/hooks/session-bootstrap.sh` creates the file at `${PROJECT_DIR}/.cloglog/inbox` when the supervisor session starts, and `plugins/cloglog/skills/setup/SKILL.md` tells the supervisor to `tail -f <cwd>/.cloglog/inbox`. An alt-checkout at (say) `/home/sachin/code/cloglog-prod` has its supervisor inbox at `/home/sachin/code/cloglog-prod/.cloglog/inbox`. |
+
+**Worktree agents must not hardcode the main inbox path.** The launch skill
+is responsible for plumbing the project root into the worktree environment —
+the target is an env var (name TBD, proposal: `CLOGLOG_PROJECT_ROOT`) exported
+by `launch.sh` before `exec claude`. Until that lands, an agent can compute
+it as `$(git rev-parse --path-format=absolute --git-common-dir)` then the
+parent directory of `.git` (for a non-worktree clone, `--show-toplevel` also
+works; for a worktree, `--git-common-dir` points at the main clone's `.git`).
+Agents MUST NOT resolve it to a literal like
+`/home/sachin/code/cloglog/.cloglog/inbox` — different checkouts use
+different roots and the hardcode corrupts them. Tracked as T-NEW in the
+[See also](#see-also) block.
 
 Every agent monitors **exactly** `<worktree_path>/.cloglog/inbox`. The path is
 always within the worktree and is always named `inbox` (no worktree-id suffix).
@@ -112,7 +170,7 @@ Canonical `Monitor` invocation:
 
 ```
 Monitor(
-  command: "tail -f /abs/worktree_path/.cloglog/inbox",
+  command: "tail -f <worktree_path>/.cloglog/inbox",
   description: "Inbox — messages from main agent and webhook events",
   persistent: true
 )
@@ -145,7 +203,8 @@ Webhook and supervisor events. The agent's required response is listed.
 ### Events the agent emits (outbound only)
 
 These are produced by the agent and written to the **main** inbox
-(`/home/sachin/code/cloglog/.cloglog/inbox`), never received by it.
+(`<project_root>/.cloglog/inbox` — see [Paths and discovery](#paths-and-discovery)),
+never received by it.
 
 | Event `type` | When |
 | --- | --- |
@@ -193,7 +252,7 @@ Required response to any MCP failure:
 1. **Halt.** Do not retry the same call in a loop; do not fall back to direct
    HTTP; do not skip the operation and continue.
 2. **Emit `mcp_unavailable` to the main inbox**
-   (`/home/sachin/code/cloglog/.cloglog/inbox`):
+   (`<project_root>/.cloglog/inbox` — see [Paths and discovery](#paths-and-discovery)):
 
    ```json
    {
@@ -354,6 +413,19 @@ separate board task under F-48 (Agent Lifecycle Hardening — Graceful Shutdown
   shutdown path and the SessionEnd hook backstop.
 - **T-244** — Post-merge mcp-server dist rebuild + `mcp_tools_updated`
   broadcast. Implements Section 6's restart-for-new-tools protocol.
+- **T-NEW-a** — Plumb `<project_root>` into worktree-agent environments.
+  `plugins/cloglog/skills/launch/SKILL.md`'s `launch.sh` must export a
+  variable (proposed name: `CLOGLOG_PROJECT_ROOT`) before `exec claude` so
+  worktree agents can locate the supervisor inbox without hardcoding. Also
+  update the existing plugin prompts/templates to reference
+  `<project_root>/.cloglog/inbox` rather than literal paths.
+- **T-NEW-b** — Relax the pipeline guard's predecessor-resolution rule at
+  `src/agent/services.py:237` so that a `review`-status spec/plan predecessor
+  is "resolved" when `artifact_path` is set, regardless of whether `pr_url`
+  is also set (i.e., allow `skip_pr=True` predecessors). Without this, the
+  Section 1 Trigger B flow for plan tasks leaves downstream impl tasks
+  blocked even after `report_artifact` records the plan file. Backend only;
+  no schema change.
 
 ### Callers to audit during T-216
 
@@ -379,3 +451,15 @@ contradict this spec while writing it:
   workflow has step 12 ("Poll for comments and merge") and two steps both
   numbered 13; the second omits `mark_pr_merged` and `report_artifact`. The
   template should reference this spec instead of restating the flow.
+- `plugins/cloglog/agents/worktree-agent.md:56–59` + `claude-md-fragment.md:32–34`
+  — plan tasks framed as "Commit the plan locally — NO PR needed. Proceed
+  immediately." The commit and no-PR part is correct; the missing piece is
+  that the agent must also call `update_task_status(..., review, skip_pr=True)`
+  followed by `report_artifact(...)` before proceeding. Without those two
+  calls, the board never records the artifact and the impl predecessor
+  check fails. See Section 1 Trigger B and T-NEW-b.
+- `plugins/cloglog/agents/worktree-agent.md:133, 139` — legacy `/tmp/...`
+  inbox paths are flagged above under T-215/T-216, but note that the
+  send-to-another-agent example (line 139) hardcodes a target worktree-id in
+  its path. The replacement must use the receiving worktree's
+  `worktree_path` (from the worktrees table) plus `/.cloglog/inbox`.

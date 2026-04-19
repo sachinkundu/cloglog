@@ -124,11 +124,15 @@ DELETE /api/v1/tasks/{task_id}/dependencies/{depends_on_id}
 **Auth** (per `src/gateway/app.py::ApiAccessControlMiddleware`, which gates every `/api/v1/*` route):
 
 - The **middleware** decides which credential shapes are allowed through to any given path:
-  - **MCP shape**: `Authorization: <anything>` + `X-MCP-Request: true` → passes the middleware for every path. The middleware does **not** validate the Bearer value here; that's the route's job via the `CurrentMcpService` dependency.
+  - **MCP shape**: `Authorization: <anything>` + `X-MCP-Request: true` → passes the middleware for every path. The middleware does **not** validate the Bearer value here; that's the route's job via a handler-level dependency.
   - **Bearer-only**: only allowed on `/api/v1/agents/*` paths (project API key or agent token).
   - **Dashboard**: `X-Dashboard-Key` → allowed on non-agent paths.
-- **Existing gap (to be closed in this wave, Boy Scout):** `POST /features/{id}/dependencies` / `DELETE /features/{id}/dependencies/{depends_on_id}` do **not** depend on `CurrentMcpService`, so any caller sending `Authorization: Bearer garbage` + `X-MCP-Request: true` slips past the middleware and reaches the handler unauthenticated. T-224 fixes this by adding `CurrentMcpService` to those handlers as part of Boy-Scouting the touched routes.
-- **New task-dep routes** take a stricter posture than the current feature-dep routes: both handlers depend on **`CurrentMcpService`**. Callers are the MCP server (using the service key it already holds) or — if a future dashboard UI needs direct writes — extend via a new hybrid dependency in a follow-up. For now, writes go through MCP only; the dashboard's read path (`GET /api/v1/projects/{id}/dependency-graph`) is unchanged.
+- **Pre-existing gap on `POST /features/{id}/dependencies` / `DELETE .../dependencies/{depends_on_id}`**: the handlers have no route-level auth dependency, so a caller sending `Authorization: Bearer garbage` + `X-MCP-Request: true` slips past the middleware's presence-check and reaches the handler unauthenticated. We **do not retrofit** this in the same PR that adds task-dep routes — existing feature-dep tests use the dashboard-key `client` fixture, and changing the auth shape on a merged route needs its own focused PR. Flagged as a follow-up.
+- **New task-dep routes** use a new hybrid dependency `CurrentMcpOrDashboard` (added to `src/gateway/auth.py` by T-36, consumed by T-224). The dep accepts either:
+  - a valid MCP service key (**properly validated** — closes the gap on the new surface), or
+  - a valid dashboard key (`X-Dashboard-Key` matching `settings.dashboard_secret` — note the field is named `_secret`, not `_key`, in `src/shared/config.py`).
+
+  This matches the middleware's implicit intent (MCP OR dashboard) but enforces the MCP service key at the handler level. New task-dep tests can keep using the shared dashboard-key client fixture (like feature-dep tests) — the hybrid dep accepts that path. The MCP server's calls continue to work since they already send `Authorization: Bearer <mcp_service_key>` + `X-MCP-Request: true`.
 - Project API keys and agent tokens are rejected (middleware returns 403 before the handler runs). Agents never call these endpoints directly; they go through MCP.
 
 **Events**: reuse the existing `EventType.DEPENDENCY_ADDED` / `DEPENDENCY_REMOVED` enum values (do **not** introduce `TASK_DEPENDENCY_*` new names — the frontend's `useDependencyGraph` hook and `useSSE` typed union only listen for the existing names; new names would be silently ignored, leaving the dep graph stale until manual refresh). Add a `scope: "feature" | "task"` discriminator to the event `data` payload so future UI work can distinguish:

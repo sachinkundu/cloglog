@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -39,8 +40,10 @@ from src.gateway.review_engine import (
     extract_diff_new_lines,
     filter_diff,
     is_review_agent_available,
+    log_review_source_root,
     parse_review_output,
     post_review,
+    resolve_review_source_root,
 )
 from src.gateway.webhook_dispatcher import WebhookEvent, WebhookEventType
 
@@ -1215,3 +1218,260 @@ class TestTwoCycleCap:
         # gh pr diff via _spawn, codex via create_subprocess_exec
         assert len(launched) == 1
         assert len(codex_launched) == 1
+
+
+# ---------------------------------------------------------------------------
+# TestReviewSourceRoot (T-255)
+# ---------------------------------------------------------------------------
+
+
+def _make_happy_path_mocks(sample_diff: str, sample_review_json: str):
+    """Return (fake_spawn, fake_create, captured_argv_list, captured_kwargs_list).
+
+    fake_spawn handles 'gh pr diff'.
+    fake_create writes the review JSON to the -o output path and captures argv/kwargs.
+    """
+    captured: list[tuple[str, ...]] = []
+    captured_kwargs: list[dict[str, Any]] = []
+
+    async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
+        if argv[0] == "gh":
+            return _FakeProcess(stdout=sample_diff.encode())
+        pytest.fail("_spawn should only be called for gh")
+
+    async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
+        captured.append(args)
+        captured_kwargs.append(kwargs)
+        for i, arg in enumerate(args):
+            if arg == "-o" and i + 1 < len(args):
+                Path(args[i + 1]).write_text(sample_review_json)
+                break
+        return _FakeProcess(returncode=0)
+
+    return _fake_spawn, _fake_create, captured, captured_kwargs
+
+
+class TestReviewSourceRoot:
+    """Tests for T-255: project_root from settings.review_source_root, not Path.cwd()."""
+
+    @pytest.fixture(autouse=True)
+    def _stub_count_bot_reviews(self) -> Any:
+        with patch(
+            "src.gateway.review_engine.count_bot_reviews",
+            new=AsyncMock(return_value=0),
+        ) as m:
+            yield m
+
+    # ------------------------------------------------------------------
+    # 1. resolve_review_source_root() unit tests (no subprocess needed)
+    # ------------------------------------------------------------------
+
+    def test_resolve_returns_setting_when_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "src.gateway.review_engine.settings.review_source_root", Path("/tmp/fake-main")
+        )
+        assert resolve_review_source_root() == Path("/tmp/fake-main")
+
+    def test_resolve_falls_back_to_cwd_when_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("src.gateway.review_engine.settings.review_source_root", None)
+        assert resolve_review_source_root() == Path.cwd()
+
+    # ------------------------------------------------------------------
+    # 2. _run_review_agent uses settings.review_source_root for -C and cwd=
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_project_root_from_setting(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        sample_diff: str,
+        sample_review_json: str,
+    ) -> None:
+        """When review_source_root is set, -C and cwd= must use that path."""
+        monkeypatch.setattr(
+            "src.gateway.review_engine.settings.review_source_root",
+            Path("/tmp/fake-main"),
+        )
+        consumer = ReviewEngineConsumer(max_per_hour=10)
+        fake_spawn, fake_create, captured, captured_kwargs = _make_happy_path_mocks(
+            sample_diff, sample_review_json
+        )
+
+        with (
+            patch("src.gateway.review_engine._spawn", side_effect=fake_spawn),
+            patch("src.gateway.review_engine._create_subprocess", side_effect=fake_create),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.review_engine.post_review",
+                new=AsyncMock(return_value=True),
+            ),
+        ):
+            await consumer.handle(_event())
+
+        assert len(captured) == 1, "codex must be invoked exactly once"
+        argv = captured[0]
+        assert "-C" in argv, "-C flag missing from codex argv"
+        c_idx = argv.index("-C")
+        assert argv[c_idx + 1] == "/tmp/fake-main", (
+            f"Expected -C /tmp/fake-main, got {argv[c_idx + 1]!r}"
+        )
+        assert captured_kwargs[0].get("cwd") == "/tmp/fake-main", (
+            f"Expected cwd='/tmp/fake-main', got {captured_kwargs[0].get('cwd')!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_project_root_falls_back_to_cwd_when_setting_none(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        sample_diff: str,
+        sample_review_json: str,
+    ) -> None:
+        """When review_source_root is None, -C and cwd= must equal Path.cwd()."""
+        monkeypatch.setattr(
+            "src.gateway.review_engine.settings.review_source_root",
+            None,
+        )
+        consumer = ReviewEngineConsumer(max_per_hour=10)
+        fake_spawn, fake_create, captured, captured_kwargs = _make_happy_path_mocks(
+            sample_diff, sample_review_json
+        )
+
+        with (
+            patch("src.gateway.review_engine._spawn", side_effect=fake_spawn),
+            patch("src.gateway.review_engine._create_subprocess", side_effect=fake_create),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.review_engine.post_review",
+                new=AsyncMock(return_value=True),
+            ),
+        ):
+            await consumer.handle(_event())
+
+        assert len(captured) == 1
+        argv = captured[0]
+        assert "-C" in argv
+        c_idx = argv.index("-C")
+        assert argv[c_idx + 1] == str(Path.cwd()), (
+            f"Expected -C {Path.cwd()!s}, got {argv[c_idx + 1]!r}"
+        )
+        assert captured_kwargs[0].get("cwd") == str(Path.cwd()), (
+            f"Expected cwd={Path.cwd()!s}, got {captured_kwargs[0].get('cwd')!r}"
+        )
+
+    # ------------------------------------------------------------------
+    # 3. Regression guard: -C is always present in argv
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_dash_c_always_in_codex_argv(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        sample_diff: str,
+        sample_review_json: str,
+    ) -> None:
+        """Regression guard — dropping -C must cause this test to fail loudly."""
+        monkeypatch.setattr(
+            "src.gateway.review_engine.settings.review_source_root",
+            None,
+        )
+        consumer = ReviewEngineConsumer(max_per_hour=10)
+        fake_spawn, fake_create, captured, _ = _make_happy_path_mocks(
+            sample_diff, sample_review_json
+        )
+
+        with (
+            patch("src.gateway.review_engine._spawn", side_effect=fake_spawn),
+            patch("src.gateway.review_engine._create_subprocess", side_effect=fake_create),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.review_engine.post_review",
+                new=AsyncMock(return_value=True),
+            ),
+        ):
+            await consumer.handle(_event())
+
+        assert len(captured) == 1
+        assert "-C" in captured[0], (
+            "-C flag not found in codex argv — a future refactor dropped it. "
+            "Restore -C <project_root> to ensure codex reads from the correct git checkout."
+        )
+
+    # ------------------------------------------------------------------
+    # 4. log_review_source_root with bogus path — must not raise
+    # ------------------------------------------------------------------
+
+    def test_log_review_source_root_bogus_path_no_exception(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A nonexistent path must not raise; an info record must still be emitted."""
+        import logging
+
+        monkeypatch.setattr(
+            "src.gateway.review_engine.settings.review_source_root",
+            Path("/nonexistent/does/not/exist"),
+        )
+        test_logger = logging.getLogger("src.gateway.review_engine")
+        with caplog.at_level("INFO", logger="src.gateway.review_engine"):
+            # Must not raise even though git will fail or the path doesn't exist
+            log_review_source_root(test_logger)
+
+        assert any("Review source root" in r.message for r in caplog.records), (
+            "Expected an info record containing 'Review source root'"
+        )
+
+    # ------------------------------------------------------------------
+    # 5. log_review_source_root on a real git directory — SHA in log
+    # ------------------------------------------------------------------
+
+    def test_log_review_source_root_real_git_dir(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """When pointed at a real git repo, the log line must contain a 40-char hex SHA."""
+        import logging
+
+        repo_root = Path.cwd()  # pytest runs from repo root, which is a git repo
+        monkeypatch.setattr(
+            "src.gateway.review_engine.settings.review_source_root",
+            repo_root,
+        )
+        test_logger = logging.getLogger("src.gateway.review_engine")
+        with caplog.at_level("INFO", logger="src.gateway.review_engine"):
+            log_review_source_root(test_logger)
+
+        info_records = [
+            r for r in caplog.records if r.levelname == "INFO" and "Review source root" in r.message
+        ]
+        assert info_records, "Expected at least one INFO record with 'Review source root'"
+        message = info_records[0].message
+        assert str(repo_root) in message, (
+            f"Expected the repo root path {repo_root!s} in the log message, got: {message!r}"
+        )
+        sha_match = re.search(r"\b[0-9a-f]{40}\b", message)
+        assert sha_match is not None, (
+            f"Expected a 40-char hex SHA in the log message, got: {message!r}"
+        )

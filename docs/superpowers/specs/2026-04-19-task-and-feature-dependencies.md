@@ -130,7 +130,7 @@ DELETE /api/v1/tasks/{task_id}/dependencies/{depends_on_id}
 - **Pre-existing gap on `POST /features/{id}/dependencies` / `DELETE .../dependencies/{depends_on_id}`**: the handlers have no route-level auth dependency, so a caller sending `Authorization: Bearer garbage` + `X-MCP-Request: true` slips past the middleware's presence-check and reaches the handler unauthenticated. We **do not retrofit** this in the same PR that adds task-dep routes — existing feature-dep tests use the dashboard-key `client` fixture, and changing the auth shape on a merged route needs its own focused PR. Flagged as a follow-up.
 - **New task-dep routes** use a new hybrid dependency `CurrentMcpOrDashboard` (added to `src/gateway/auth.py` by T-36, consumed by T-224). The dep accepts either:
   - a valid MCP service key (**properly validated** — closes the gap on the new surface), or
-  - a valid dashboard key (`X-Dashboard-Key` matching `settings.dashboard_key`).
+  - a valid dashboard key (`X-Dashboard-Key` matching `settings.dashboard_secret` — note the field is named `_secret`, not `_key`, in `src/shared/config.py`).
 
   This matches the middleware's implicit intent (MCP OR dashboard) but enforces the MCP service key at the handler level. New task-dep tests can keep using the shared dashboard-key client fixture (like feature-dep tests) — the hybrid dep accepts that path. The MCP server's calls continue to work since they already send `Authorization: Bearer <mcp_service_key>` + `X-MCP-Request: true`.
 - Project API keys and agent tokens are rejected (middleware returns 403 before the handler runs). Agents never call these endpoints directly; they go through MCP.

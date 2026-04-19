@@ -92,12 +92,18 @@ async def get_unresolved_blockers(self, task_id: UUID) -> list[BlockerDTO]:
         return []
 
     blockers: list[BlockerDTO] = []
+    # get_feature_dependencies returns list[UUID] — we must resolve to
+    # Feature rows first so we can sort by .number (stable, human-readable
+    # order). Sorting UUIDs directly would be non-deterministic w.r.t.
+    # the F-N numbering the tests assert on.
     dep_feature_ids = await self._repo.get_feature_dependencies(feature.id)
-    for dep_fid in sorted(dep_feature_ids):
-        dep_feature = await self._repo.get_feature(dep_fid)
-        if dep_feature is None:
-            continue
-        dep_tasks = await self._repo.get_tasks_for_feature(dep_fid)
+    dep_features: list[Feature] = []
+    for fid in dep_feature_ids:
+        f = await self._repo.get_feature(fid)
+        if f is not None:
+            dep_features.append(f)
+    for dep_feature in sorted(dep_features, key=lambda f: f.number):
+        dep_tasks = await self._repo.get_tasks_for_feature(dep_feature.id)
         incomplete = [t for t in dep_tasks if not _task_resolved(t)]
         if incomplete:
             blockers.append(FeatureBlocker(
@@ -444,7 +450,7 @@ async def get_mcp_or_dashboard(request: Request) -> None:
         return
 
     dash = request.headers.get("X-Dashboard-Key") or request.query_params.get("dashboard_key")
-    if dash and hmac.compare_digest(dash, settings.dashboard_key):
+    if dash and hmac.compare_digest(dash, settings.dashboard_secret):
         return
 
     raise HTTPException(status_code=401, detail="Missing or invalid credentials")
@@ -606,14 +612,16 @@ Add to `tests/board/test_task_dependencies.py`: self-loop, cross-project, cycle,
 
 - [ ] **Step 1: Append task-blocker pass**
 
-After the feature-blocker loop in `get_unresolved_blockers`:
+After the feature-blocker loop in `get_unresolved_blockers`. Same pattern as the feature-blocker loop — resolve IDs to rows first, then sort by `.number`, **not** by UUID:
 
 ```python
 dep_task_ids = await self._repo.get_task_dependencies(task_id)
-for dep_tid in sorted(dep_task_ids):
-    dep_task = await self._repo.get_task(dep_tid)
-    if dep_task is None:
-        continue
+dep_tasks: list[Task] = []
+for dep_tid in dep_task_ids:
+    t = await self._repo.get_task(dep_tid)
+    if t is not None:
+        dep_tasks.append(t)
+for dep_task in sorted(dep_tasks, key=lambda t: t.number):
     if not _task_resolved(dep_task):
         blockers.append(TaskBlocker(
             kind="task",

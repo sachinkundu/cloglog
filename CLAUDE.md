@@ -69,6 +69,7 @@ cd mcp-server && make build  # Build TypeScript
 
 - **Run frontend tests from `frontend/` directory:** `cd frontend && npx vitest run`. Running from repo root causes `document is not defined` errors.
 - **Run backend tests from repo root:** `uv run pytest` from `/home/sachin/code/cloglog`.
+- **Sync dev deps with `--extra dev`, not `--group dev`:** fresh `.venv`s created by worktree bootstrap need `uv sync --extra dev` to pull the full toolchain (`pytest`, `mypy`, `ruff`, `pytest-cov`, etc.) from `[project.optional-dependencies].dev`. `--group dev` reads `[dependency-groups].dev`, a smaller set — `make quality` will fail with confusing `ModuleNotFoundError` messages during collection because `uv run` falls back to a system pytest shim.
 
 ## Quality Gate
 

@@ -672,6 +672,66 @@ class TestHandleOrchestration:
 
         assert max_active == 1, "Sequential lock did not serialize concurrent reviews"
 
+    @pytest.mark.asyncio
+    async def test_codex_argv_uses_bypass_flag_not_sandbox(
+        self, sample_diff: str, sample_review_json: str
+    ) -> None:
+        """Regression guard: codex must be invoked with
+        --dangerously-bypass-approvals-and-sandbox and MUST NOT carry --sandbox
+        or --full-auto. Any --sandbox mode (including danger-full-access) fails
+        on this host because bwrap's unshare-net requires CAP_NET_ADMIN.
+        """
+        consumer = ReviewEngineConsumer(max_per_hour=10)
+        captured_argv: list[tuple[str, ...]] = []
+
+        async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
+            if argv[0] == "gh":
+                return _FakeProcess(stdout=sample_diff.encode())
+            pytest.fail("_spawn should only be called for gh")
+
+        async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
+            captured_argv.append(args)
+            for i, arg in enumerate(args):
+                if arg == "-o" and i + 1 < len(args):
+                    Path(args[i + 1]).write_text(sample_review_json)
+                    break
+            return _FakeProcess(returncode=0)
+
+        with (
+            patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.review_engine.post_review",
+                new=AsyncMock(return_value=True),
+            ),
+        ):
+            await consumer.handle(_event())
+
+        assert len(captured_argv) == 1, "codex must be invoked exactly once"
+        argv = captured_argv[0]
+        assert "--dangerously-bypass-approvals-and-sandbox" in argv, (
+            "Expected bypass flag in codex argv; without it bwrap's unshare-net "
+            "fails on hosts lacking CAP_NET_ADMIN."
+        )
+        assert "--sandbox" not in argv, (
+            "--sandbox must not be passed: any mode (including danger-full-access) "
+            "still invokes bwrap and fails here."
+        )
+        assert "--full-auto" not in argv, (
+            "--full-auto implies --sandbox workspace-write; incompatible with bypass."
+        )
+        assert "danger-full-access" not in argv, (
+            "danger-full-access does NOT skip bwrap; it still fails on unshare-net."
+        )
+
 
 # ---------------------------------------------------------------------------
 # extract_diff_new_lines (T-193)

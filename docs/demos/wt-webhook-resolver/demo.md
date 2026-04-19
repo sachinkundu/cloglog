@@ -1,7 +1,7 @@
 # GitHub issue_comment webhooks no longer crash the AgentNotifierConsumer, and cloglog-mcp (running inside the agent-vm) now derives branch_name at register time so the backend's resolver has the data it needs to route events.
 
-*2026-04-19T13:16:24Z by Showboat 0.6.1*
-<!-- showboat-id: 505637b7-c0f3-44bd-a2f7-c70ce907a752 -->
+*2026-04-19T13:22:46Z by Showboat 0.6.1*
+<!-- showboat-id: 8d87f358-7d4c-4ed9-86f4-b57ddcf2a50f -->
 
 Bug scenario: every issue_comment webhook arrives with an empty head_branch. Live-prod worktrees had branch_name='' (cloglog-mcp used to omit it on register), so the resolver's fallback ran WHERE branch_name='' AND status='online' and matched every live worktree at once → sqlalchemy.exc.MultipleResultsFound.
 

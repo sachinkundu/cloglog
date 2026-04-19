@@ -14,9 +14,13 @@ cd "$REPO_ROOT"
 
 set -a; source "$REPO_ROOT/.env"; set +a
 
+# Normalize slashes to hyphens so a branch like `feat/foo` writes into
+# `docs/demos/feat-foo/` — matching how scripts/check-demo.sh discovers the
+# demo directory (it runs `${FEATURE//\//-}` on the branch name too).
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-DEMO_FILE="docs/demos/$BRANCH/demo.md"
-PROBE="docs/demos/$BRANCH/probe.py"
+BRANCH_DIR="${BRANCH//\//-}"
+DEMO_FILE="docs/demos/$BRANCH_DIR/demo.md"
+PROBE="docs/demos/$BRANCH_DIR/probe.py"
 
 uvx showboat init "$DEMO_FILE" \
   "GitHub issue_comment webhooks no longer crash the AgentNotifierConsumer, and cloglog-mcp (running inside the agent-vm) now derives branch_name at register time so the backend's resolver has the data it needs to route events."

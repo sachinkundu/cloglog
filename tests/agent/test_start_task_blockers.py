@@ -7,7 +7,7 @@ import uuid
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.board.models import Epic, Feature, FeatureDependency, Task
+from src.board.models import Epic, Feature, FeatureDependency, Task, TaskDependency
 
 
 def _auth(api_key: str) -> dict[str, str]:
@@ -216,6 +216,59 @@ class TestUpdateTaskStatusGuard:
         # Legacy flat-string detail, unchanged
         assert isinstance(resp.json()["detail"], str)
         assert "PR URL" in resp.json()["detail"]
+
+
+class TestTaskLevelBlockerCrossWorktree:
+    """T-224: a task_dependencies edge on the downstream task must block
+    start_task on a different worktree until the upstream is resolved."""
+
+    async def test_task_blocker_emits_structured_409(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        project = await _create_project(client)
+        _, feature = await _make_chain(db_session, project["id"])
+        t_up = await _make_task(db_session, feature, "upstream", status="backlog")
+        t_down = await _make_task(db_session, feature, "downstream")
+        db_session.add(TaskDependency(task_id=t_down.id, depends_on_task_id=t_up.id))
+        await db_session.commit()
+
+        wt_id, token = await _register_agent(client, project["api_key"], "/tmp/wt-taskdep")
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": str(t_down.id)},
+            headers=_agent_auth(token),
+        )
+        assert resp.status_code == 409
+        detail = resp.json()["detail"]
+        assert detail["code"] == "task_blocked"
+        blockers = detail["blockers"]
+        assert len(blockers) == 1
+        assert blockers[0]["kind"] == "task"
+        assert blockers[0]["task_id"] == str(t_up.id)
+
+    async def test_task_blocker_resolves_on_review_pr_url(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        project = await _create_project(client)
+        _, feature = await _make_chain(db_session, project["id"])
+        t_up = await _make_task(
+            db_session,
+            feature,
+            "upstream",
+            status="review",
+            pr_url="https://github.com/x/y/pull/9",
+        )
+        t_down = await _make_task(db_session, feature, "downstream")
+        db_session.add(TaskDependency(task_id=t_down.id, depends_on_task_id=t_up.id))
+        await db_session.commit()
+
+        wt_id, token = await _register_agent(client, project["api_key"], "/tmp/wt-taskok")
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/start-task",
+            json={"task_id": str(t_down.id)},
+            headers=_agent_auth(token),
+        )
+        assert resp.status_code == 200
 
 
 class TestSameWorktreeActiveTaskGuardFiresFirst:

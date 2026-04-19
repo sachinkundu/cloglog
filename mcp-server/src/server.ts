@@ -518,5 +518,33 @@ export function createServer(client: CloglogClient): McpServer {
     })
   )
 
+  // ── Task dependencies (F-11) ─────────────────────────
+
+  server.tool(
+    'add_task_dependency',
+    'Add a blocked_by edge between two tasks. Task task_id is blocked until depends_on_id is done (or in review with a pr_url). Both tasks must be in the same project; self-loops and cycles are rejected.',
+    {
+      task_id: z.string().describe('UUID of the task that will be blocked'),
+      depends_on_id: z.string().describe('UUID of the task that must complete first'),
+    },
+    wrapHandler(async ({ task_id, depends_on_id }: { task_id: string; depends_on_id: string }) => {
+      await handlers.add_task_dependency({ task_id, depends_on_id })
+      return { content: [{ type: 'text' as const, text: `Task dependency added: ${task_id} blocked_by ${depends_on_id}.` }] }
+    })
+  )
+
+  server.tool(
+    'remove_task_dependency',
+    'Remove a blocked_by edge between two tasks.',
+    {
+      task_id: z.string().describe('UUID of the downstream (blocked) task'),
+      depends_on_id: z.string().describe('UUID of the upstream dependency to remove'),
+    },
+    wrapHandler(async ({ task_id, depends_on_id }: { task_id: string; depends_on_id: string }) => {
+      await handlers.remove_task_dependency({ task_id, depends_on_id })
+      return { content: [{ type: 'text' as const, text: `Task dependency removed: ${task_id} no longer blocked_by ${depends_on_id}.` }] }
+    })
+  )
+
   return server
 }

@@ -299,6 +299,87 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/tasks/{task_id}/dependencies:
+    post:
+      summary: Add Task Dependency
+      description: >-
+        Add a `blocked_by` edge between two tasks in the same project.
+        Downstream task `task_id` will be rejected from `start_task` /
+        `update_task_status(status="in_progress")` until the upstream
+        task (`depends_on_id`) is resolved (done OR review with pr_url).
+        Self-loops, cycles, and cross-project pairings return 400/409.
+      operationId: add_task_dependency_api_v1_tasks__task_id__dependencies_post
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Task Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DependencyCreate'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                title: Response Add Task Dependency
+                additionalProperties:
+                  type: string
+        '400':
+          description: Validation error — self-loop, cross-project, or cycle
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '404':
+          description: Task not found
+        '409':
+          description: Dependency already exists
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/tasks/{task_id}/dependencies/{depends_on_id}:
+    delete:
+      summary: Remove Task Dependency
+      description: Remove a `blocked_by` edge between two tasks.
+      operationId: remove_task_dependency_api_v1_tasks__task_id__dependencies__depends_on_id__delete
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Task Id
+      - name: depends_on_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Depends On Id
+      responses:
+        '204':
+          description: Removed (no content)
+        '404':
+          description: Task or dependency not found
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/projects/{project_id}/epics/reorder:
     post:
       summary: Reorder Epics
@@ -876,6 +957,20 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
+    DependencyCreate:
+      description: >-
+        Request body for adding a dependency. Used by both the feature-dep
+        routes (POST /features/{id}/dependencies) and the task-dep routes
+        (POST /tasks/{id}/dependencies).
+      properties:
+        depends_on_id:
+          type: string
+          format: uuid
+          title: Depends On Id
+      type: object
+      required:
+      - depends_on_id
+      title: DependencyCreate
     BacklogEpic:
       properties:
         epic:

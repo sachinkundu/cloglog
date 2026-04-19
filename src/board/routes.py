@@ -721,6 +721,7 @@ async def add_dependency(
             type=EventType.DEPENDENCY_ADDED,
             project_id=epic.project_id,
             data={
+                "scope": "feature",
                 "feature_id": str(feature_id),
                 "depends_on_id": str(body.depends_on_id),
             },
@@ -750,7 +751,77 @@ async def remove_dependency(
             type=EventType.DEPENDENCY_REMOVED,
             project_id=epic.project_id,
             data={
+                "scope": "feature",
                 "feature_id": str(feature_id),
+                "depends_on_id": str(depends_on_id),
+            },
+        )
+    )
+
+
+# --- Task Dependencies (F-11) ---
+
+
+@router.post("/tasks/{task_id}/dependencies", status_code=201)
+async def add_task_dependency(
+    task_id: UUID,
+    body: DependencyCreate,
+    service: ServiceDep,
+    _: CurrentMcpOrDashboard,
+) -> dict[str, str]:
+    try:
+        await service.add_task_dependency(task_id, body.depends_on_id)
+    except ValueError as e:
+        msg = str(e)
+        if "DUPLICATE" in msg:
+            raise HTTPException(status_code=409, detail="Dependency already exists") from None
+        if "not found" in msg.lower():
+            raise HTTPException(status_code=404, detail=msg) from None
+        raise HTTPException(status_code=400, detail=msg) from None
+    task = await service._repo.get_task(task_id)
+    assert task is not None
+    feature = await service._repo.get_feature(task.feature_id)
+    assert feature is not None
+    epic = await service._repo.get_epic(feature.epic_id)
+    assert epic is not None
+    await event_bus.publish(
+        Event(
+            type=EventType.DEPENDENCY_ADDED,
+            project_id=epic.project_id,
+            data={
+                "scope": "task",
+                "task_id": str(task_id),
+                "depends_on_id": str(body.depends_on_id),
+            },
+        )
+    )
+    return {"status": "created"}
+
+
+@router.delete("/tasks/{task_id}/dependencies/{depends_on_id}", status_code=204)
+async def remove_task_dependency(
+    task_id: UUID,
+    depends_on_id: UUID,
+    service: ServiceDep,
+    _: CurrentMcpOrDashboard,
+) -> None:
+    task = await service._repo.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    feature = await service._repo.get_feature(task.feature_id)
+    assert feature is not None
+    epic = await service._repo.get_epic(feature.epic_id)
+    assert epic is not None
+    removed = await service.remove_task_dependency(task_id, depends_on_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Dependency not found")
+    await event_bus.publish(
+        Event(
+            type=EventType.DEPENDENCY_REMOVED,
+            project_id=epic.project_id,
+            data={
+                "scope": "task",
+                "task_id": str(task_id),
                 "depends_on_id": str(depends_on_id),
             },
         )

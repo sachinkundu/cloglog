@@ -132,6 +132,45 @@ async def test_dependency_graph_endpoint(client: AsyncClient, project_with_featu
     assert edge["to_id"] == features[0]["id"]
 
 
+async def test_garbage_mcp_bearer_rejected_on_add(client: AsyncClient, project_with_features: dict):
+    """Regression for the pre-CurrentMcpOrDashboard auth gap: a request that
+    strips the dashboard key and sends Authorization: Bearer garbage +
+    X-MCP-Request: true must be rejected at the route, not passed through
+    the middleware because "X-MCP-Request header is present.\"
+    """
+    features = project_with_features["features"]
+    resp = await client.post(
+        f"/api/v1/features/{features[0]['id']}/dependencies",
+        json={"depends_on_id": features[1]["id"]},
+        headers={
+            "Authorization": "Bearer garbage",
+            "X-MCP-Request": "true",
+            "X-Dashboard-Key": "",
+        },
+    )
+    assert resp.status_code == 401
+
+
+async def test_garbage_mcp_bearer_rejected_on_delete(
+    client: AsyncClient, project_with_features: dict
+):
+    features = project_with_features["features"]
+    # First add the dep with the default (dashboard-key) client
+    await client.post(
+        f"/api/v1/features/{features[0]['id']}/dependencies",
+        json={"depends_on_id": features[1]["id"]},
+    )
+    resp = await client.delete(
+        f"/api/v1/features/{features[0]['id']}/dependencies/{features[1]['id']}",
+        headers={
+            "Authorization": "Bearer garbage",
+            "X-MCP-Request": "true",
+            "X-Dashboard-Key": "",
+        },
+    )
+    assert resp.status_code == 401
+
+
 async def test_diamond_no_cycle(client: AsyncClient, project_with_features: dict):
     """A diamond shape (A->B, A->C, B->C) is NOT a cycle and should succeed."""
     features = project_with_features["features"]

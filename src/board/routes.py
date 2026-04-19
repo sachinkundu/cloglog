@@ -42,6 +42,7 @@ from src.board.schemas import (
     TaskUpdate,
 )
 from src.board.services import EPIC_COLOR_PALETTE, BoardService
+from src.gateway.auth import CurrentMcpOrDashboard
 from src.shared.database import get_session
 from src.shared.events import Event, EventType, event_bus
 
@@ -698,7 +699,10 @@ async def get_dependency_graph(project_id: UUID, service: ServiceDep) -> Depende
 
 @router.post("/features/{feature_id}/dependencies", status_code=201)
 async def add_dependency(
-    feature_id: UUID, body: DependencyCreate, service: ServiceDep
+    feature_id: UUID,
+    body: DependencyCreate,
+    service: ServiceDep,
+    _: CurrentMcpOrDashboard,
 ) -> dict[str, str]:
     try:
         await service.add_dependency(feature_id, body.depends_on_id)
@@ -726,7 +730,12 @@ async def add_dependency(
 
 
 @router.delete("/features/{feature_id}/dependencies/{depends_on_id}", status_code=204)
-async def remove_dependency(feature_id: UUID, depends_on_id: UUID, service: ServiceDep) -> None:
+async def remove_dependency(
+    feature_id: UUID,
+    depends_on_id: UUID,
+    service: ServiceDep,
+    _: CurrentMcpOrDashboard,
+) -> None:
     # Resolve project_id for SSE event before deletion
     feature = await service._repo.get_feature(feature_id)
     if feature is None:

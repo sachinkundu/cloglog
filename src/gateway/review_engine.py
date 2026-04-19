@@ -209,6 +209,46 @@ def is_review_agent_available() -> bool:
     return shutil.which(settings.review_agent_cmd) is not None
 
 
+def resolve_review_source_root() -> Path:
+    """Resolve the filesystem root codex will read.
+
+    Mirrors the fallback inside ``_run_review_agent`` so the startup log
+    reports exactly what the review path will be at request time.
+    """
+    return settings.review_source_root or Path.cwd()
+
+
+def log_review_source_root(logger_: logging.Logger) -> None:
+    """Log the resolved review source root and its git HEAD SHA.
+
+    Called at backend boot when the review engine is active. A mismatch
+    between the reported SHA and ``origin/main`` is the exact fingerprint
+    of the T-255 false-negative bug — surfacing it in the startup log
+    makes future regressions obvious to whoever reads the log.
+
+    Errors from the git probe are swallowed: a bogus or missing path must
+    not block boot.
+    """
+    import subprocess  # local: keep top-level imports lean
+
+    root = resolve_review_source_root()
+    source = "settings.review_source_root" if settings.review_source_root else "Path.cwd() fallback"
+    sha = "unknown"
+    try:
+        result = subprocess.run(  # noqa: S603 -- fixed argv, root is from trusted config
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode == 0:
+            sha = result.stdout.strip() or "unknown"
+    except (OSError, subprocess.SubprocessError) as err:
+        logger_.warning("Review source root git probe failed: %s", err)
+    logger_.info("Review source root: %s @ %s (%s)", root, sha, source)
+
+
 def extract_diff_new_lines(diff: str) -> dict[str, set[int]]:
     """Map each changed file to the set of new-side line numbers visible in its hunks.
 
@@ -525,7 +565,11 @@ class ReviewEngineConsumer:
         has a schema file, otherwise falls back to parsing free-form JSON
         from the output file.
         """
-        project_root = Path.cwd()
+        # `settings.review_source_root` must point at a checkout of the PR's
+        # merge target (usually main). When unset, fall back to Path.cwd() —
+        # fine for dev, wrong in prod where the backend runs out of a prod
+        # checkout that trails main. See T-255.
+        project_root = settings.review_source_root or Path.cwd()
         prompt = _load_project_prompt(project_root)
         schema_path = _get_schema_path(project_root)
 

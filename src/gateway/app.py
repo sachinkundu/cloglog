@@ -21,7 +21,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     import logging
 
     from src.gateway.notification_listener import run_notification_listener
-    from src.gateway.review_engine import ReviewEngineConsumer, is_review_agent_available
+    from src.gateway.review_engine import (
+        ReviewEngineConsumer,
+        is_review_agent_available,
+        log_review_source_root,
+    )
     from src.gateway.webhook_consumers import AgentNotifierConsumer
     from src.gateway.webhook_dispatcher import webhook_dispatcher
     from src.shared.config import settings
@@ -35,6 +39,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         if is_review_agent_available():
             webhook_dispatcher.register(ReviewEngineConsumer())
             logger.info("ReviewEngineConsumer registered (agent=%s)", settings.review_agent_cmd)
+            log_review_source_root(logger)
         else:
             logger.warning(
                 "Review agent %r not on PATH — ReviewEngineConsumer disabled",

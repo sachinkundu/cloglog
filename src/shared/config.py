@@ -1,3 +1,6 @@
+from pathlib import Path
+
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -12,6 +15,14 @@ class Settings(BaseSettings):
     review_agent_cmd: str = "codex"
     review_max_per_hour: int = 10
     review_enabled: bool = True
+    review_source_root: Path | None = Field(
+        default=None,
+        description=(
+            "Filesystem root the review engine passes to `codex -C`. "
+            "Must point at a git checkout of the PR's merge target (usually main). "
+            "When None, falls back to Path.cwd() — OK for dev, wrong in prod."
+        ),
+    )
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

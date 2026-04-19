@@ -170,6 +170,20 @@ cd ../cloglog-prod && uv run alembic upgrade head
 make prod
 ```
 
+## Review Engine Source Root
+
+The F-36 code-review engine invokes `codex -C <path>` with a filesystem root that codex is free to read. Until T-255, that path was `Path.cwd()` — which, for the prod server, is `../cloglog-prod`. That prod checkout only advances when `make promote` runs, so any PR review that referenced code merged to `main` but not yet promoted produced a false-negative (codex could not see the file on disk).
+
+The fix is a new `REVIEW_SOURCE_ROOT` environment variable (`Settings.review_source_root`) that overrides the cwd fallback. Prod deploy **must** set it:
+
+```bash
+REVIEW_SOURCE_ROOT=/home/sachin/code/cloglog
+```
+
+i.e. the directory hosting the `main` checkout that dev continuously pulls, not the prod worktree. Without it, the reviewer falls back to `Path.cwd()` and the T-255 bug returns silently. The backend logs the resolved path and its HEAD SHA once at boot (`Review source root: <path> @ <sha> (<source>)`) so a stale checkout is visible in the logs.
+
+When F-35 (Railway deployment) lands, this variable is set in the deploy environment; the local prod-worktree concept goes away.
+
 ## Relationship to F-35 (Railway Deployment)
 
 When Railway deployment lands, `make prod` and `make promote` are replaced by Railway's deploy pipeline. The `prod_worktree_path` concept goes away. The Cloudflare tunnel is replaced by Railway's public URL. This design is explicitly temporary infrastructure — it solves the immediate problem without coupling anything to the local machine permanently.

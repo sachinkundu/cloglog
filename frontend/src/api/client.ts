@@ -97,10 +97,23 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ depends_on_id: dependsOnId }),
     }),
-  removeDependency: (featureId: string, dependsOnId: string) =>
-    fetch(`${BASE_URL}/features/${featureId}/dependencies/${dependsOnId}`, {
+  removeDependency: async (featureId: string, dependsOnId: string) => {
+    // Route-level auth now requires CurrentMcpOrDashboard — the bare
+    // fetch here was missing the dashboard key, so the middleware
+    // returned 401 silently (no ok-check, no header). Use the shared
+    // fetchJSON helper which sends X-Dashboard-Key and throws on !ok.
+    // 204 No Content → return undefined.
+    const resp = await fetch(`${BASE_URL}/features/${featureId}/dependencies/${dependsOnId}`, {
       method: 'DELETE',
-    }),
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Dashboard-Key': DASHBOARD_KEY,
+      },
+    })
+    if (!resp.ok) {
+      throw new Error(`API error: ${resp.status} ${resp.statusText}`)
+    }
+  },
 
   // Search
   search: (

@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 # Demo: T-254 — webhook resolver no longer crashes on issue_comment events
-# whose head_branch is empty, and every newly-registered worktree has its
-# branch_name populated.
+# whose head_branch is empty, and branch_name is now derived inside the
+# agent-vm by cloglog-mcp (where the worktree path actually exists) rather
+# than by the backend (which runs on the host and cannot see VM-local paths).
 #
-# Called by `make demo`. Relies on:
-#   - the worktree's isolated Postgres at $DATABASE_URL
-#   - the main `cloglog` DB for the live-state count query
+# Called by `make demo`. Relies on the worktree's isolated Postgres at
+# $DATABASE_URL.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 cd "$REPO_ROOT"
 
-# Load worktree env (DATABASE_URL etc.) without exporting stray shell state.
 set -a; source "$REPO_ROOT/.env"; set +a
 
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
@@ -20,15 +19,23 @@ DEMO_FILE="docs/demos/$BRANCH/demo.md"
 PROBE="docs/demos/$BRANCH/probe.py"
 
 uvx showboat init "$DEMO_FILE" \
-  "GitHub issue_comment webhooks no longer crash the AgentNotifierConsumer, and every registered worktree now carries a populated branch_name so the resolver's branch fallback actually works."
+  "GitHub issue_comment webhooks no longer crash the AgentNotifierConsumer, and cloglog-mcp (running inside the agent-vm) now derives branch_name at register time so the backend's resolver has the data it needs to route events."
 
 # --- Background ------------------------------------------------------------
 
 uvx showboat note "$DEMO_FILE" \
-  "Bug scenario: every issue_comment webhook arrives with an empty head_branch. \
-Live-prod worktrees had branch_name='' (MCP client never sent it), so the \
-resolver's fallback ran WHERE branch_name='' AND status='online' and matched \
-every live worktree at once → sqlalchemy.exc.MultipleResultsFound."
+  "Bug scenario: every issue_comment webhook arrives with an empty \
+head_branch. Live-prod worktrees had branch_name='' (cloglog-mcp used to \
+omit it on register), so the resolver's fallback ran WHERE branch_name='' \
+AND status='online' and matched every live worktree at once → \
+sqlalchemy.exc.MultipleResultsFound."
+
+uvx showboat note "$DEMO_FILE" \
+  "Architecture note (docs/ddd-context-map.md): cloglog runs on the host, \
+cloglog-mcp runs inside each agent-vm. Worktree paths are VM-local. \
+Branch derivation therefore belongs in the MCP server (which has filesystem \
+access), not the backend. The backend is a pass-through that stores what \
+the MCP sends."
 
 # --- Proof 1: resolver short-circuits on empty head_branch ----------------
 
@@ -50,24 +57,25 @@ upstream guard still cannot trigger the crash."
 
 uvx showboat exec "$DEMO_FILE" bash "DATABASE_URL=\"$DATABASE_URL\" uv run python $PROBE repo"
 
-# --- Proof 3: register-time derivation ------------------------------------
+# --- Proof 3: reconnect preserves populated branch_name -------------------
 
 uvx showboat note "$DEMO_FILE" \
-  "Proof 3 — branch_name populated on registration. AgentService derives the \
-branch via 'git symbolic-ref --short HEAD' at the worktree path when the \
-caller (the MCP client) does not supply one. Invoking it against this \
-worktree returns the actual branch."
+  "Proof 3 — reconnect never wipes a populated branch_name. If a transient \
+MCP-side git probe fails and the next register arrives empty, \
+upsert_worktree keeps the previously-stored name. Prevents regressions that \
+would reopen the empty-branch data trap."
 
-uvx showboat exec "$DEMO_FILE" bash "DATABASE_URL=\"$DATABASE_URL\" uv run python $PROBE derive"
+uvx showboat exec "$DEMO_FILE" bash "DATABASE_URL=\"$DATABASE_URL\" uv run python $PROBE reconnect"
 
-# --- Proof 4: live-DB backfill -------------------------------------------
+# --- Proof 4: MCP-side derivation + wire payload --------------------------
 
 uvx showboat note "$DEMO_FILE" \
-  "Proof 4 — data backfill against the live cloglog DB (main shared instance, \
-not the worktree's isolated DB). After running the Alembic migration, no \
-online worktree row carries an empty branch_name — the data trap is closed."
+  "Proof 4 — branch_name is derived inside cloglog-mcp. The TypeScript test \
+'register_agent derives branch_name via git and POSTs both to \
+/agents/register' init-s a real git repo, invokes register_agent, and \
+asserts the request body includes the resolved branch. 54 tests, all pass."
 
 uvx showboat exec "$DEMO_FILE" bash \
-  "PGPASSWORD=cloglog_dev psql -h 127.0.0.1 -U cloglog -d cloglog -tA -c \"SELECT count(*) FROM worktrees WHERE status='online' AND (branch_name IS NULL OR branch_name='')\""
+  "cd mcp-server && npx vitest run --reporter=json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(f\"tests: {d[\"numPassedTests\"]} passed / {d[\"numTotalTests\"]} total\")'"
 
 uvx showboat verify "$DEMO_FILE"

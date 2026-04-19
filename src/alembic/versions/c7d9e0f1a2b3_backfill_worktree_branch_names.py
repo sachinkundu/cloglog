@@ -1,17 +1,22 @@
-"""backfill worktree branch_name via git rev-parse
+"""backfill worktree branch_name where the path is host-visible
 
-Fixes the root data condition behind T-254: every live ``worktrees`` row had
-``branch_name=''`` because the MCP client never sent one on register, which
-caused ``get_worktree_by_branch`` to match every online row at once on empty-
-``head_branch`` webhook events (→ ``MultipleResultsFound``).
+Context for T-254: every live ``worktrees`` row had ``branch_name=''`` because
+the MCP server used to omit it on register, which caused the webhook resolver's
+branch fallback to match every online row at once on empty-``head_branch``
+events (→ ``MultipleResultsFound``). The primary fix is the MCP server now
+derives and sends ``branch_name``; this migration is an opportunistic cleanup
+for rows that existed before that rollout.
 
-For each online worktree with an empty ``branch_name``:
-    - if ``worktree_path`` exists on disk AND ``git rev-parse --abbrev-ref HEAD``
-      yields a non-detached branch, UPDATE ``branch_name``.
-    - otherwise (path missing, not a git repo, or detached HEAD), mark the row
-      ``status='offline'`` — these are ghost registrations whose worktree is no
-      longer reachable from this host. The code fixes still guard against any
-      residual empty rows, so failing to resolve here is safe.
+**Additive-only.** The backend runs on the host and cannot see worktree paths
+that live inside agent-vms (``docs/ddd-context-map.md`` — cloglog runs on the
+host, worktrees are VM-local). This migration therefore never downgrades a row
+to ``offline`` just because the host cannot stat the path — doing so would
+silently take legitimate VM-hosted worktrees offline and break their webhook
+routing until they re-register. Rows whose path is not reachable from the host
+are left untouched; they will self-heal on the next MCP ``register_agent``
+call (which carries the correct branch name), and the code-level resolver
+guards make leaving them empty safe in the meantime. Ghost-worktree cleanup is
+F-48's job (T-220/T-221), not this data migration.
 
 Revision ID: c7d9e0f1a2b3
 Revises: 8f5c0ee31bb4
@@ -39,9 +44,10 @@ logger = logging.getLogger("alembic.runtime.migration")
 def _resolve_branch(worktree_path: str) -> str:
     """Return the current branch at ``worktree_path`` or ``""`` if unresolvable.
 
-    Mirrors ``AgentService._derive_branch_name`` — kept as a migration-local
+    Mirrors ``cloglog-mcp``'s ``deriveBranchName`` — kept as a migration-local
     helper so the migration stays importable without dragging service-layer
-    dependencies.
+    dependencies. Only succeeds when the host process can see the path, which
+    is only the single-host dev topology; VM-hosted rows stay untouched.
     """
     if not worktree_path or not os.path.isdir(worktree_path):
         return ""
@@ -66,7 +72,7 @@ def upgrade() -> None:
     ).fetchall()
 
     updated = 0
-    orphaned = 0
+    skipped = 0
     for row in rows:
         worktree_id = row[0]
         worktree_path = row[1]
@@ -84,27 +90,25 @@ def upgrade() -> None:
                 branch,
             )
         else:
-            bind.execute(
-                text("UPDATE worktrees SET status = 'offline' WHERE id = :id"),
-                {"id": worktree_id},
-            )
-            orphaned += 1
+            # Path not visible to the host (e.g. VM-local) — leave the row
+            # alone. The MCP server populates branch_name on next register.
+            skipped += 1
             logger.info(
-                "[T-254 backfill] worktree=%s path=%s unresolvable → offline",
+                "[T-254 backfill] worktree=%s path=%s not host-visible, "
+                "will self-heal on next register",
                 worktree_id,
                 worktree_path,
             )
 
     logger.info(
-        "[T-254 backfill] summary: updated=%d orphaned=%d total=%d",
+        "[T-254 backfill] summary: updated=%d skipped=%d total=%d",
         updated,
-        orphaned,
+        skipped,
         len(rows),
     )
 
 
 def downgrade() -> None:
-    # Data backfill — cannot restore the prior empty strings without losing
-    # information, and leaving the resolved names in place is strictly safer
-    # than reverting to the broken state.
+    # Data-only migration — restoring the prior empty strings would re-open
+    # the MultipleResultsFound crash the fix resolves.
     pass

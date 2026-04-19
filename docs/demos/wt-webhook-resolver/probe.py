@@ -9,9 +9,10 @@ Run modes (argv[1]):
                to ``AgentNotifierConsumer._resolve_agent`` against the seeded
                DB. Prints ``OK: no agent resolved`` on the intended path; dies
                with ``FAIL: MultipleResultsFound`` on regression.
-    derive   — call ``AgentService._derive_branch_name`` on this worktree's
-               directory. Prints ``branch=<name>`` — the live proof that
-               register-time derivation returns the right value.
+    reconnect — register a worktree with an explicit branch_name, reconnect
+               with an empty branch_name, and assert the stored name is NOT
+               overwritten. Pins ``upsert_worktree``'s defensive guard that
+               protects the populated row from a transient empty value.
     repo     — call ``AgentRepository.get_worktree_by_branch`` with an empty
                string against the seeded DB. Prints ``OK: None`` on the guard
                path; dies with ``FAIL: MultipleResultsFound`` on regression.
@@ -35,6 +36,7 @@ from src.agent.models import Worktree
 from src.agent.repository import AgentRepository
 from src.agent.services import AgentService
 from src.board.models import Project
+from src.board.repository import BoardRepository
 from src.gateway.webhook_consumers import AgentNotifierConsumer
 from src.gateway.webhook_dispatcher import WebhookEvent, WebhookEventType
 
@@ -141,11 +143,33 @@ async def _repo() -> None:
         sys.exit(1)
 
 
-def _derive() -> None:
-    branch = AgentService._derive_branch_name(
-        "/home/sachin/code/cloglog/.claude/worktrees/wt-webhook-resolver"
-    )
-    print(f"branch={branch}")
+async def _reconnect() -> None:
+    """Seed a row with branch_name='wt-preserve', then re-register with
+    branch_name=''. Assert the row still carries 'wt-preserve'."""
+    engine = _engine()
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        suffix = uuid.uuid4().hex[:6]
+        project = Project(
+            name=f"t254-reconnect-{suffix}",
+            description="T-254 reconnect guard",
+            repo_url=f"https://github.com/test/reconnect-{suffix}",
+        )
+        session.add(project)
+        await session.flush()
+        service = AgentService(AgentRepository(session), BoardRepository(session))
+
+        path = f"/vm-only/t254-reconnect-{suffix}"
+        r1 = await service.register(project.id, path, "wt-preserve")
+        r2 = await service.register(project.id, path, "")
+        assert r1["worktree_id"] == r2["worktree_id"]
+        wt = await AgentRepository(session).get_worktree(r2["worktree_id"])  # type: ignore[arg-type]
+    await engine.dispose()
+    if wt is not None and wt.branch_name == "wt-preserve":
+        print("OK: reconnect preserved branch_name")
+    else:
+        print(f"FAIL: branch_name={wt.branch_name if wt else None!r} (expected 'wt-preserve')")
+        sys.exit(1)
 
 
 def main() -> None:
@@ -156,8 +180,8 @@ def main() -> None:
         asyncio.run(_resolve())
     elif mode == "repo":
         asyncio.run(_repo())
-    elif mode == "derive":
-        _derive()
+    elif mode == "reconnect":
+        asyncio.run(_reconnect())
     else:
         print(f"FAIL: unknown mode {mode!r}")
         sys.exit(2)

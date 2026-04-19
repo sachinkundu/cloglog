@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import subprocess
 import uuid as _uuid
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -59,46 +58,19 @@ class AgentService:
 
     # --- Registration ---
 
-    @staticmethod
-    def _derive_branch_name(worktree_path: str) -> str:
-        """Resolve the current branch at ``worktree_path`` via ``git symbolic-ref``.
-
-        The MCP client does not send ``branch_name`` on register, and historically
-        the Worktree row was stored with ``branch_name=''``. That broke the
-        webhook resolver's branch fallback (an equality match on '' hit every
-        online row at once → ``MultipleResultsFound``). We fill it in at
-        registration so the branch fallback can work correctly on future events.
-
-        ``git symbolic-ref --short HEAD`` is chosen over ``rev-parse
-        --abbrev-ref HEAD`` because it exits non-zero when HEAD is detached
-        (rather than returning the literal string ``"HEAD"``), giving us a
-        single ``except`` path for every unresolvable case. It also works on a
-        brand-new repo before the first commit, which ``rev-parse`` does not.
-        Returns ``""`` when the path is missing, is not a git repo, or is in
-        detached-HEAD state; the webhook resolver's empty-branch short-circuit
-        handles the empty case cleanly.
-        """
-        try:
-            branch = subprocess.check_output(
-                ["git", "-C", worktree_path, "symbolic-ref", "--short", "HEAD"],
-                text=True,
-                stderr=subprocess.DEVNULL,
-            ).strip()
-        except (subprocess.CalledProcessError, FileNotFoundError, OSError):
-            return ""
-        return branch
-
     async def register(
         self, project_id: UUID, worktree_path: str, branch_name: str
     ) -> dict[str, object]:
-        """Register or reconnect a worktree. Returns registration info."""
-        # Derive branch_name from the worktree's git state when the caller
-        # didn't supply one. The MCP client doesn't send branch_name, and
-        # every empty row compounds the resolver crash documented on
-        # _derive_branch_name.
-        if not branch_name:
-            branch_name = self._derive_branch_name(worktree_path)
+        """Register or reconnect a worktree. Returns registration info.
 
+        ``branch_name`` must be derived by the caller. The MCP server
+        (``cloglog-mcp``) runs inside the agent-vm and has filesystem access to
+        the worktree; the backend (``cloglog``) runs on the host and does
+        **not** (see ``docs/ddd-context-map.md``). So we trust whatever the
+        MCP sends and never probe the filesystem here. The webhook resolver's
+        empty-``head_branch`` short-circuit and ``get_worktree_by_branch``'s
+        empty-guard are the safety nets if a caller does send an empty value.
+        """
         worktree, is_new = await self._repo.upsert_worktree(project_id, worktree_path, branch_name)
 
         # Always generate a fresh agent token on registration.

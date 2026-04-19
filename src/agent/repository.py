@@ -30,7 +30,12 @@ class AgentRepository:
         existing = result.scalar_one_or_none()
         if existing is not None:
             existing.status = "online"
-            existing.branch_name = branch_name
+            # Only overwrite branch_name if the caller actually supplied one.
+            # A transient empty value (e.g. MCP probe failed briefly) must not
+            # wipe a previously populated name — that would re-open the
+            # empty-branch data trap the webhook resolver guards against.
+            if branch_name:
+                existing.branch_name = branch_name
             await self._session.commit()
             await self._session.refresh(existing)
             return existing, False

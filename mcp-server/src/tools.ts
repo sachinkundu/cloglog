@@ -1,4 +1,30 @@
+import { execFileSync } from 'node:child_process'
+
 import type { CloglogClient } from './client.js'
+
+/**
+ * Resolve the current branch at ``worktree_path`` via ``git symbolic-ref``.
+ *
+ * Runs inside the agent-vm (where cloglog-mcp lives — see
+ * ``docs/ddd-context-map.md``). The backend runs on the host and cannot see
+ * VM-local paths, so we derive the branch name here and pass it over the wire.
+ *
+ * Returns ``""`` when the path is missing, is not a git repo, or is in
+ * detached-HEAD state (``symbolic-ref`` exits non-zero). The backend's
+ * webhook resolver short-circuits on empty branch names, so returning ``""``
+ * is a safe fallback.
+ */
+export function deriveBranchName(worktreePath: string): string {
+  try {
+    return execFileSync(
+      'git',
+      ['-C', worktreePath, 'symbolic-ref', '--short', 'HEAD'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    ).trim()
+  } catch {
+    return ''
+  }
+}
 
 export interface ToolHandlers {
   register_agent(args: { worktree_path: string }): Promise<unknown>
@@ -48,7 +74,14 @@ export interface ToolHandlers {
 export function createToolHandlers(client: CloglogClient): ToolHandlers {
   return {
     async register_agent({ worktree_path }) {
-      return client.request('POST', '/api/v1/agents/register', { worktree_path })
+      // Derive branch_name here (inside the VM) because the backend runs on
+      // the host and cannot reach VM-local paths. The backend stores whatever
+      // we send; its resolver guards handle any residual empty values safely.
+      const branch_name = deriveBranchName(worktree_path)
+      return client.request('POST', '/api/v1/agents/register', {
+        worktree_path,
+        branch_name,
+      })
     },
 
     async get_my_tasks({ worktree_id }) {

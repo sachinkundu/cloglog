@@ -217,6 +217,95 @@ class TestAgentService:
         assert r2["current_task"] is not None
         assert r2["current_task"]["id"] == task.id  # type: ignore[index]
 
+    async def test_register_derives_branch_name_when_caller_sends_empty(
+        self,
+        db_session: AsyncSession,
+        tmp_path,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """T-254: MCP client sends no branch_name; the service must derive it
+        from the worktree's git state. Otherwise the webhook resolver's branch
+        fallback cannot find the row, and the legacy empty-branch data trap
+        returns.
+        """
+        import subprocess as _subprocess
+
+        wt_dir = tmp_path / "wt-derive"
+        wt_dir.mkdir()
+        _subprocess.run(
+            ["git", "init", "-q", "-b", "wt-derive-branch", str(wt_dir)],
+            check=True,
+        )
+
+        project = await _create_project(db_session)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        result = await service.register(project.id, str(wt_dir), "")
+
+        worktree = await AgentRepository(db_session).get_worktree(result["worktree_id"])  # type: ignore[arg-type]
+        assert worktree is not None
+        assert worktree.branch_name == "wt-derive-branch"
+
+    async def test_register_empty_branch_falls_back_to_empty_string(
+        self, db_session: AsyncSession
+    ) -> None:
+        """``_derive_branch_name`` returns "" for paths that aren't git
+        worktrees. Registration must still succeed — the resolver's empty-
+        branch short-circuit handles downstream, and raising here would break
+        every agent register on a malformed worktree."""
+        project = await _create_project(db_session)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        result = await service.register(project.id, "/nonexistent/path/not/a/repo", "")
+
+        worktree = await AgentRepository(db_session).get_worktree(result["worktree_id"])  # type: ignore[arg-type]
+        assert worktree is not None
+        assert worktree.branch_name == ""
+
+    async def test_register_respects_caller_supplied_branch_name(
+        self, db_session: AsyncSession
+    ) -> None:
+        """When the caller *does* send a branch_name (e.g. legacy test helpers
+        or integration tests that pass an explicit value), derivation must NOT
+        overwrite it."""
+        project = await _create_project(db_session)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        result = await service.register(project.id, "/tmp/whatever", "explicit-branch")
+
+        worktree = await AgentRepository(db_session).get_worktree(result["worktree_id"])  # type: ignore[arg-type]
+        assert worktree is not None
+        assert worktree.branch_name == "explicit-branch"
+
+    async def test_derive_branch_name_detached_head_returns_empty(
+        self,
+        tmp_path,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """``git symbolic-ref --short HEAD`` exits non-zero when HEAD is
+        detached — treat that as empty so the resolver short-circuit kicks in
+        instead of storing a meaningless sha."""
+        import subprocess as _subprocess
+
+        wt_dir = tmp_path / "wt-detached"
+        wt_dir.mkdir()
+        git_env = {
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+            "PATH": "/usr/bin:/bin",
+        }
+        _subprocess.run(["git", "init", "-q", "-b", "main", str(wt_dir)], check=True)
+        _subprocess.run(
+            ["git", "-C", str(wt_dir), "commit", "--allow-empty", "-m", "init"],
+            check=True,
+            env=git_env,
+        )
+        _subprocess.run(
+            ["git", "-C", str(wt_dir), "checkout", "--detach", "HEAD"],
+            check=True,
+            stdout=_subprocess.DEVNULL,
+            stderr=_subprocess.DEVNULL,
+        )
+
+        assert AgentService._derive_branch_name(str(wt_dir)) == ""
+
     async def test_heartbeat(self, db_session: AsyncSession) -> None:
         project = await _create_project(db_session)
         service = AgentService(AgentRepository(db_session), BoardRepository(db_session))

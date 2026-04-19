@@ -215,6 +215,65 @@ class TestResolveAgent:
         assert result is None
 
     @pytest.mark.asyncio
+    async def test_resolve_empty_head_branch_returns_none_with_multiple_online_worktrees(
+        self, db_session: AsyncSession
+    ) -> None:
+        """T-254 regression: ``issue_comment`` webhooks arrive with empty
+        ``head_branch``. If ``_resolve_agent`` passes that through to the branch
+        lookup while multiple online worktrees carry the historical empty
+        ``branch_name``, the query matches every one of them and crashes with
+        ``MultipleResultsFound``. The resolver must short-circuit and the
+        repository must guard the empty case — no crash, return ``None``.
+        """
+        from sqlalchemy.exc import MultipleResultsFound
+
+        suffix = uuid.uuid4().hex[:6]
+        repo_full_name = f"sachinkundu/cloglog-{suffix}"
+        project = Project(
+            name=f"empty-branch-{suffix}",
+            description="T-254 regression",
+            repo_url=f"https://github.com/{repo_full_name}",
+        )
+        db_session.add(project)
+        await db_session.flush()
+
+        # Seed THREE online worktrees with empty branch_name — mirrors the
+        # pre-fix live-DB state (every row was ``''``).
+        for i in range(3):
+            db_session.add(
+                Worktree(
+                    project_id=project.id,
+                    worktree_path=f"/tmp/wt-empty-{suffix}-{i}",
+                    branch_name="",
+                    status="online",
+                )
+            )
+        await db_session.commit()
+
+        event = WebhookEvent(
+            type=WebhookEventType.ISSUE_COMMENT,
+            delivery_id=f"d-empty-{suffix}",
+            repo_full_name=repo_full_name,
+            pr_number=42,
+            pr_url=_unique_pr_url(),
+            head_branch="",  # issue_comment webhooks arrive empty
+            base_branch="main",
+            sender="sachinkundu",
+            raw={"comment": {"body": "LGTM"}},
+        )
+        consumer = AgentNotifierConsumer()
+
+        # Must NOT raise MultipleResultsFound — that is the crash T-254 fixed.
+        try:
+            result = await consumer._resolve_agent(event, db_session)
+        except MultipleResultsFound:  # pragma: no cover - regression guard
+            pytest.fail(
+                "_resolve_agent raised MultipleResultsFound on empty head_branch — "
+                "T-254 regression: resolver must short-circuit before the branch query."
+            )
+        assert result is None
+
+    @pytest.mark.asyncio
     async def test_resolve_offline_worktree_not_matched_by_branch(
         self, db_session: AsyncSession
     ) -> None:
@@ -715,6 +774,45 @@ class TestAgentRepositoryBranchLookup:
         _project, _task, _worktree = await _seed_project_and_task(db_session)
         repo = AgentRepository(db_session)
         found = await repo.get_worktree_by_branch(_project.id, "nonexistent-branch")
+        assert found is None
+
+    @pytest.mark.asyncio
+    async def test_get_worktree_by_branch_empty_string_returns_none(
+        self, db_session: AsyncSession
+    ) -> None:
+        """T-254 regression: an equality match on ``branch_name=''`` used to fan
+        out across every legacy row whose branch was never populated and raise
+        ``MultipleResultsFound``. The defensive guard short-circuits that.
+        """
+        from sqlalchemy.exc import MultipleResultsFound
+
+        suffix = uuid.uuid4().hex[:6]
+        project = Project(
+            name=f"empty-branch-repo-{suffix}",
+            description="T-254",
+            repo_url=f"https://github.com/sachinkundu/empty-{suffix}",
+        )
+        db_session.add(project)
+        await db_session.flush()
+        for i in range(2):
+            db_session.add(
+                Worktree(
+                    project_id=project.id,
+                    worktree_path=f"/tmp/wt-empty-repo-{suffix}-{i}",
+                    branch_name="",
+                    status="online",
+                )
+            )
+        await db_session.commit()
+
+        repo = AgentRepository(db_session)
+        try:
+            found = await repo.get_worktree_by_branch(project.id, "")
+        except MultipleResultsFound:  # pragma: no cover - regression guard
+            pytest.fail(
+                "get_worktree_by_branch raised MultipleResultsFound on empty "
+                "branch_name — T-254 regression: guard must short-circuit."
+            )
         assert found is None
 
     @pytest.mark.asyncio

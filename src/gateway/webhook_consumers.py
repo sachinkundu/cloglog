@@ -102,7 +102,13 @@ class AgentNotifierConsumer:
             if worktree is not None:
                 return (worktree.id, worktree.worktree_path)
 
-        # Fallback: match by branch name
+        # Fallback: match by branch name. Issue-comment webhooks don't carry
+        # a head_branch the way PR events do, so skip the branch lookup when
+        # it's empty — otherwise an equality match on '' would fan out across
+        # every online worktree (many have legacy empty branch_name rows) and
+        # raise MultipleResultsFound.
+        if not event.head_branch:
+            return None
         project = await repo.find_project_by_repo(event.repo_full_name)
         if project is None:
             return None

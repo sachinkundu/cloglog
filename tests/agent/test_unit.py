@@ -217,6 +217,42 @@ class TestAgentService:
         assert r2["current_task"] is not None
         assert r2["current_task"]["id"] == task.id  # type: ignore[index]
 
+    async def test_register_stores_branch_name_from_caller(self, db_session: AsyncSession) -> None:
+        """The backend is a pure pass-through for ``branch_name``. The MCP
+        server derives it inside the VM (see ``docs/ddd-context-map.md``) and
+        sends it; the backend stores exactly what it received. This test pins
+        that contract so a future refactor can't silently reintroduce a
+        backend-side filesystem probe that would not work in production."""
+        project = await _create_project(db_session)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        result = await service.register(project.id, "/vm-only/path/invisible", "wt-from-mcp")
+
+        worktree = await AgentRepository(db_session).get_worktree(result["worktree_id"])  # type: ignore[arg-type]
+        assert worktree is not None
+        assert worktree.branch_name == "wt-from-mcp"
+
+    async def test_register_reconnect_preserves_branch_when_caller_sends_empty(
+        self, db_session: AsyncSession
+    ) -> None:
+        """T-254 defensive regression: if a reconnect arrives with empty
+        ``branch_name`` (e.g. MCP probe hit a transient git failure), the
+        repository must NOT wipe the previously-stored name — that would
+        reopen the empty-branch data trap."""
+        project = await _create_project(db_session)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+
+        r1 = await service.register(project.id, "/vm-only/wt-preserve", "wt-preserve")
+        worktree = await AgentRepository(db_session).get_worktree(r1["worktree_id"])  # type: ignore[arg-type]
+        assert worktree is not None
+        assert worktree.branch_name == "wt-preserve"
+
+        # Reconnect with empty branch_name — row already exists.
+        r2 = await service.register(project.id, "/vm-only/wt-preserve", "")
+        assert r2["worktree_id"] == r1["worktree_id"]
+        worktree2 = await AgentRepository(db_session).get_worktree(r2["worktree_id"])  # type: ignore[arg-type]
+        assert worktree2 is not None
+        assert worktree2.branch_name == "wt-preserve"
+
     async def test_heartbeat(self, db_session: AsyncSession) -> None:
         project = await _create_project(db_session)
         service = AgentService(AgentRepository(db_session), BoardRepository(db_session))

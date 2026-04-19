@@ -51,9 +51,12 @@ describe('register_agent tool', () => {
     const tools = (server as any)._registeredTools
     const result = await tools.register_agent.handler({ worktree_path: '/path/to/worktree' })
 
+    // T-254: register_agent derives branch_name in-VM and sends it with the
+    // path. The path here is not a real git repo, so branch_name comes back
+    // empty — which is the exact fallback the backend resolver guards handle.
     expect(client.request).toHaveBeenCalledWith(
       'POST', '/api/v1/agents/register',
-      { worktree_path: '/path/to/worktree' }
+      { worktree_path: '/path/to/worktree', branch_name: '' }
     )
     expect(result).toEqual({
       content: [

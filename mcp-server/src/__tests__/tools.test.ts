@@ -1,6 +1,11 @@
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { CloglogClient } from '../client.js'
-import { createToolHandlers, ToolHandlers } from '../tools.js'
+import { createToolHandlers, ToolHandlers, deriveBranchName } from '../tools.js'
 
 function mockClient(): CloglogClient {
   return {
@@ -17,20 +22,75 @@ describe('Tool Handlers', () => {
     handlers = createToolHandlers(client)
   })
 
-  it('register_agent calls POST /agents/register', async () => {
-    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
-      worktree_id: 'wt-123',
-      name: 'wt-auth',
+  it('register_agent derives branch_name via git and POSTs both to /agents/register', async () => {
+    // T-254: cloglog-mcp runs inside the agent-vm, so it — not the backend —
+    // has filesystem access to the worktree. Register must resolve the branch
+    // here and include it in the POST body; otherwise the backend stores an
+    // empty string and the webhook branch-fallback cannot route anything.
+    const tmp = mkdtempSync(join(tmpdir(), 'wt-register-test-'))
+    try {
+      execFileSync('git', ['init', '-q', '-b', 'wt-from-mcp', tmp])
+
+      ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
+        worktree_id: 'wt-123',
+        name: 'wt-from-mcp',
+        current_task: null,
+        resumed: false,
+      })
+
+      const result = await handlers.register_agent({ worktree_path: tmp })
+      expect(client.request).toHaveBeenCalledWith(
+        'POST', '/api/v1/agents/register',
+        { worktree_path: tmp, branch_name: 'wt-from-mcp' }
+      )
+      expect(result).toHaveProperty('worktree_id', 'wt-123')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('register_agent sends empty branch_name when the path is not a git repo', async () => {
+    // Safety net for the edge case: even if derivation fails, registration
+    // must still succeed end-to-end — the backend resolver's empty-branch
+    // short-circuit handles the empty value downstream.
+    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
+      worktree_id: 'wt-456',
+      name: 'wt-bogus',
       current_task: null,
       resumed: false,
     })
 
-    const result = await handlers.register_agent({ worktree_path: '/home/user/wt-auth' })
+    await handlers.register_agent({ worktree_path: '/nonexistent/not-a-repo' })
     expect(client.request).toHaveBeenCalledWith(
       'POST', '/api/v1/agents/register',
-      { worktree_path: '/home/user/wt-auth' }
+      { worktree_path: '/nonexistent/not-a-repo', branch_name: '' }
     )
-    expect(result).toHaveProperty('worktree_id', 'wt-123')
+  })
+
+  it('deriveBranchName returns "" on detached HEAD rather than a sha', () => {
+    // `git symbolic-ref --short HEAD` is chosen over `rev-parse --abbrev-ref
+    // HEAD` specifically because detached HEAD exits non-zero instead of
+    // returning the literal string "HEAD". Pins that contract.
+    const tmp = mkdtempSync(join(tmpdir(), 'wt-detached-test-'))
+    try {
+      const gitEnv = {
+        ...process.env,
+        GIT_AUTHOR_NAME: 't',
+        GIT_AUTHOR_EMAIL: 't@t',
+        GIT_COMMITTER_NAME: 't',
+        GIT_COMMITTER_EMAIL: 't@t',
+      }
+      execFileSync('git', ['init', '-q', '-b', 'main', tmp])
+      execFileSync('git', ['-C', tmp, 'commit', '--allow-empty', '-m', 'init'], { env: gitEnv })
+      execFileSync('git', ['-C', tmp, 'checkout', '--detach', 'HEAD'], {
+        env: gitEnv,
+        stdio: 'ignore',
+      })
+
+      expect(deriveBranchName(tmp)).toBe('')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
   })
 
   it('get_my_tasks calls GET /agents/{wt}/tasks', async () => {

@@ -30,7 +30,12 @@ class AgentRepository:
         existing = result.scalar_one_or_none()
         if existing is not None:
             existing.status = "online"
-            existing.branch_name = branch_name
+            # Only overwrite branch_name if the caller actually supplied one.
+            # A transient empty value (e.g. MCP probe failed briefly) must not
+            # wipe a previously populated name — that would re-open the
+            # empty-branch data trap the webhook resolver guards against.
+            if branch_name:
+                existing.branch_name = branch_name
             await self._session.commit()
             await self._session.refresh(existing)
             return existing, False
@@ -96,7 +101,16 @@ class AgentRepository:
         await self._session.commit()
 
     async def get_worktree_by_branch(self, project_id: UUID, branch_name: str) -> Worktree | None:
-        """Find an online worktree by its branch name within a project."""
+        """Find an online worktree by its branch name within a project.
+
+        Returns ``None`` when ``branch_name`` is empty — a historical data bug
+        left many rows with ``branch_name=''`` online at once, and a literal
+        equality match on the empty string would hit every one of them and
+        raise ``MultipleResultsFound``. The resolver short-circuits upstream
+        too; this guard protects any other caller from the same trap.
+        """
+        if not branch_name:
+            return None
         result = await self._session.execute(
             select(Worktree).where(
                 Worktree.project_id == project_id,

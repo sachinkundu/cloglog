@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.agent.exceptions import TaskBlockedError
 from src.agent.repository import AgentRepository
 from src.agent.schemas import (
     AddTaskNoteRequest,
@@ -83,12 +84,22 @@ async def assign_task(
         raise HTTPException(status_code=404, detail=str(e)) from None
 
 
+def _blocked_detail(err: TaskBlockedError) -> dict[str, object]:
+    return {
+        "code": err.code,
+        "message": str(err),
+        "blockers": err.blockers,
+    }
+
+
 @router.post("/agents/{worktree_id}/start-task", response_model=StartTaskResponse)
 async def start_task(
     worktree_id: UUID, body: StartTaskRequest, service: ServiceDep, agent: CurrentAgent
 ) -> dict[str, object]:
     try:
         return await service.start_task(worktree_id, body.task_id)
+    except TaskBlockedError as e:
+        raise HTTPException(status_code=409, detail=_blocked_detail(e)) from None
     except ValueError as e:
         status = 409 if "Cannot start" in str(e) else 404
         raise HTTPException(status_code=status, detail=str(e)) from None
@@ -112,6 +123,8 @@ async def update_task_status(
         await service.update_task_status(
             worktree_id, body.task_id, body.status, pr_url=body.pr_url, skip_pr=body.skip_pr
         )
+    except TaskBlockedError as e:
+        raise HTTPException(status_code=409, detail=_blocked_detail(e)) from None
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None
 

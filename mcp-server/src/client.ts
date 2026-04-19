@@ -3,6 +3,10 @@
  * Each MCP tool calls methods on this client.
  */
 
+import { CloglogApiError, type ErrorDetail, type StructuredDetail } from './errors.js'
+
+export { CloglogApiError } from './errors.js'
+
 export interface CloglogClientConfig {
   baseUrl: string
   apiKey: string
@@ -80,8 +84,25 @@ export class CloglogClient {
     })
 
     if (!response.ok) {
+      const contentType = response.headers.get('content-type') ?? ''
+      // Preserve structured JSON bodies so MCP tool handlers can switch
+      // on ``detail.code`` (e.g. ``task_blocked``) — flattening to a
+      // string discards the structured blocker payload F-11 depends on.
+      if (contentType.includes('application/json')) {
+        let body: unknown
+        try {
+          body = await response.json()
+        } catch {
+          throw new CloglogApiError(response.status, await response.text())
+        }
+        const detail: ErrorDetail | undefined =
+          body && typeof body === 'object' && 'detail' in body
+            ? ((body as { detail?: ErrorDetail }).detail ?? (body as StructuredDetail))
+            : (body as StructuredDetail)
+        throw new CloglogApiError(response.status, detail ?? JSON.stringify(body))
+      }
       const text = await response.text()
-      throw new Error(`cloglog API error: ${response.status} ${text}`)
+      throw new CloglogApiError(response.status, text)
     }
 
     if (response.status === 204 || response.headers.get('content-length') === '0') {

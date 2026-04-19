@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Literal, Protocol, TypedDict
 from uuid import UUID
 
 
@@ -26,3 +26,43 @@ class TaskStatusService(Protocol):
         ...
 
     async def update_task_status(self, task_id: UUID, status: str) -> None: ...
+
+
+# --- Blocker query (F-11) ---
+# Blockers are structured reasons a task cannot enter ``in_progress``. The
+# Board owns the "resolved" semantics for feature and task blockers (it
+# knows the underlying data model). Agent owns the pipeline rule.
+
+
+class FeatureBlocker(TypedDict):
+    """A feature dependency that is not yet resolved."""
+
+    kind: Literal["feature"]
+    feature_id: str
+    feature_number: int
+    feature_title: str
+    incomplete_task_numbers: list[int]
+
+
+class TaskBlocker(TypedDict):
+    """A task-level ``blocked_by`` edge that is not yet resolved."""
+
+    kind: Literal["task"]
+    task_id: str
+    task_number: int
+    task_title: str
+    status: str
+
+
+BoardBlockerDTO = FeatureBlocker | TaskBlocker
+
+
+class BoardBlockerQueryPort(Protocol):
+    """Used by Agent context to ask Board 'what's blocking this task?'.
+
+    Returns feature and task blockers in stable order (feature first, then
+    task, each sorted by .number). Agent composes this with its own
+    pipeline-blocker list before raising.
+    """
+
+    async def get_unresolved_blockers(self, task_id: UUID) -> list[BoardBlockerDTO]: ...

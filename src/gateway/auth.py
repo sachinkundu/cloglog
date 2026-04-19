@@ -111,6 +111,33 @@ async def get_mcp_service(request: Request) -> None:
 CurrentMcpService = Annotated[None, Depends(get_mcp_service)]
 
 
+async def get_mcp_or_dashboard(request: Request) -> None:
+    """Accept either a valid MCP service key OR a valid dashboard key.
+
+    Use this on board writes that the MCP server proxies today (e.g. dep
+    CRUD) but that the dashboard may also call directly. The middleware
+    already lets both credential shapes reach the handler, but it only
+    checks *presence* of the MCP header — this dependency closes that
+    gap by validating the MCP service key's value (matching what
+    ``CurrentMcpService`` does) while still allowing a valid dashboard
+    key through.
+    """
+    if request.headers.get("X-MCP-Request"):
+        token = _extract_bearer_token(request) or ""
+        if not hmac.compare_digest(token, settings.mcp_service_key):
+            raise HTTPException(status_code=401, detail="Invalid MCP service key")
+        return
+
+    dash = request.headers.get("X-Dashboard-Key") or request.query_params.get("dashboard_key")
+    if dash and hmac.compare_digest(dash, settings.dashboard_secret):
+        return
+
+    raise HTTPException(status_code=401, detail="Missing or invalid credentials")
+
+
+CurrentMcpOrDashboard = Annotated[None, Depends(get_mcp_or_dashboard)]
+
+
 async def get_supervisor_auth(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],

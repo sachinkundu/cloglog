@@ -101,6 +101,14 @@ uvx showboat exec "$DEMO_FILE" \
 uvx showboat verify "$DEMO_FILE"
 ```
 
+**`exec` quoting — it's argv, not a shell.** The single-quoted string passed to `uvx showboat exec` is treated as argv, not as a shell command. A single binary + args works (`curl -sf ...`). Anything that needs shell features — pipes, `$(...)` command substitution, redirects, `&&` — must be wrapped explicitly:
+
+```bash
+uvx showboat exec "$DEMO_FILE" bash -c 'pytest tests/gateway 2>&1 | grep -oE "[0-9]+ passed"'
+```
+
+Without the `bash -c`, showboat tries to exec a program literally named `pytest tests/gateway 2>&1 | grep -oE "[0-9]+ passed"` and fails with `no such file or directory`.
+
 Then run: `make demo`
 
 If `make demo` succeeds, your `demo.md` is ready.

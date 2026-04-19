@@ -8,7 +8,10 @@ import uuid as _uuid
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+from src.agent.exceptions import TaskBlockedError
+from src.agent.interfaces import BlockerDTO, PipelineBlocker
 from src.agent.repository import AgentRepository
+from src.board.interfaces import BoardBlockerQueryPort
 from src.board.models import Task
 from src.board.repository import BoardRepository
 from src.shared.config import settings
@@ -18,9 +21,40 @@ logger = logging.getLogger(__name__)
 
 
 class AgentService:
-    def __init__(self, repo: AgentRepository, board_repo: BoardRepository) -> None:
+    def __init__(
+        self,
+        repo: AgentRepository,
+        board_repo: BoardRepository,
+        board_blockers: BoardBlockerQueryPort | None = None,
+    ) -> None:
+        """Agent service.
+
+        ``board_blockers`` is the port Agent calls to ask Board 'what's
+        blocking this task?'. It is optional so that legacy callers (and
+        code paths that never exercise ``start_task`` / ``update_task_status``
+        with a target of ``in_progress``) don't have to supply it. When the
+        guard needs it and it is ``None``, we lazily construct a
+        ``BoardService`` over the same repository — this matches what every
+        call site would do anyway and avoids repeating the wiring at every
+        construction site.
+        """
         self._repo = repo
         self._board_repo = board_repo
+        self._board_blockers = board_blockers
+
+    def _blocker_query(self) -> BoardBlockerQueryPort:
+        """Resolve the blocker-query port, lazy-constructing if needed.
+
+        We import ``BoardService`` locally to avoid a module-level import
+        cycle (``board.services`` imports from ``board.models`` etc., and
+        Agent already imports from Board — keeping this lazy keeps import
+        order agnostic).
+        """
+        if self._board_blockers is not None:
+            return self._board_blockers
+        from src.board.services import BoardService
+
+        return BoardService(self._board_repo)
 
     # --- Registration ---
 
@@ -154,10 +188,35 @@ class AgentService:
 
     # --- Task Lifecycle ---
 
-    def _check_pipeline_predecessors(self, task: Task, feature_tasks: list[Task]) -> None:
-        """Check that predecessor task types in the pipeline are done."""
+    async def _collect_all_blockers(self, task: Task) -> list[BlockerDTO]:
+        """Ask Board for feature/task blockers and splice in pipeline ones.
+
+        Stable order: ``feature → task → pipeline``. Pipeline entries come
+        last so the "broad → narrow" progression matches the spec's guard
+        order and what the tests assert on.
+        """
+        board_blockers = await self._blocker_query().get_unresolved_blockers(task.id)
+        feature_tasks = await self._board_repo.get_tasks_for_feature(task.feature_id)
+        pipeline_blockers = self._collect_pipeline_blockers(task, feature_tasks)
+        return [*board_blockers, *pipeline_blockers]
+
+    def _collect_pipeline_blockers(
+        self, task: Task, feature_tasks: list[Task]
+    ) -> list[PipelineBlocker]:
+        """Return pipeline-predecessor blockers for ``task``.
+
+        Returns ``[]`` when the pipeline is satisfied. Does **not** raise —
+        callers (``start_task`` and ``update_task_status``) combine the
+        result with Board-provided blockers before deciding to raise.
+
+        Semantics (unchanged from the prior ``_check_pipeline_predecessors``):
+        a predecessor counts as completed when ``done`` OR (``review`` with
+        ``pr_url`` AND — for ``spec``/``plan`` predecessors — an attached
+        artifact). The artifact check is specific to pipeline blockers;
+        arbitrary task-level ``blocked_by`` edges do not require it.
+        """
         if task.task_type == "task":
-            return  # Standalone tasks have no pipeline deps
+            return []
 
         predecessor_type: str | None = None
         if task.task_type == "plan":
@@ -166,43 +225,40 @@ class AgentService:
             predecessor_type = "plan"
 
         if predecessor_type is None:
-            return
+            return []
 
         predecessors = [t for t in feature_tasks if t.task_type == predecessor_type]
         if not predecessors:
-            return  # No predecessor tasks exist — allow start
+            return []
 
-        # Accept "done" or "review with a pr_url" as completed — agents shouldn't
-        # be blocked waiting for the user to drag a card to done on the board
-        # when the PR is already merged.
-        def is_completed(t: Task) -> bool:
+        def _pipeline_resolved(t: Task) -> bool:
             if t.status == "done":
-                return True  # Human override — bypass artifact check
+                return True
             if t.status == "review" and bool(t.pr_url):
-                # For spec/plan predecessors, also require artifact attachment
                 return not (t.task_type in ("spec", "plan") and not t.artifact_path)
             return False
 
-        undone = [t for t in predecessors if not is_completed(t)]
-        if undone:
-            missing_artifact = [
-                t for t in undone if t.status == "review" and bool(t.pr_url) and not t.artifact_path
-            ]
-            if missing_artifact:
-                titles = ", ".join(f"T-{t.number}" for t in missing_artifact)
-                raise ValueError(
-                    f"Cannot start {task.task_type} task: "
-                    f"{predecessor_type} task(s) {titles} in review but "
-                    f"artifact not attached. "
-                    f"Call report_artifact first."
-                )
-            titles = ", ".join(f"T-{t.number} ({t.status})" for t in undone)
-            raise ValueError(
-                f"Cannot start {task.task_type} task: "
-                f"{predecessor_type} task(s) not done yet: "
-                f"{titles}. "
-                f"Wait for the {predecessor_type} PR to be merged."
+        blockers: list[PipelineBlocker] = []
+        for p in sorted(predecessors, key=lambda t: t.number):
+            if _pipeline_resolved(p):
+                continue
+            reason: str = (
+                "artifact_missing"
+                if (p.status == "review" and bool(p.pr_url) and not p.artifact_path)
+                else "not_done"
             )
+            blockers.append(
+                PipelineBlocker(
+                    kind="pipeline",
+                    predecessor_task_type=predecessor_type,
+                    task_id=str(p.id),
+                    task_number=p.number,
+                    task_title=p.title,
+                    status=p.status,
+                    reason=reason,  # type: ignore[typeddict-item]
+                )
+            )
+        return blockers
 
     async def start_task(self, worktree_id: UUID, task_id: UUID) -> dict[str, object]:
         """Start working on a task."""
@@ -229,9 +285,12 @@ class AgentService:
                 f"Finish or move the current task before starting a new one."
             )
 
-        # Guard: check pipeline ordering (spec before plan, plan before impl)
-        feature_tasks = await self._board_repo.get_tasks_for_feature(task.feature_id)
-        self._check_pipeline_predecessors(task, feature_tasks)
+        # Guard: collect all blockers (feature deps + pipeline ordering).
+        # Raise a single TaskBlockedError so the route layer can emit a
+        # structured 409 payload (code=task_blocked, blockers=[...]).
+        blockers = await self._collect_all_blockers(task)
+        if blockers:
+            raise TaskBlockedError(task, blockers)
 
         # Assign task to worktree and set status
         await self._board_repo.update_task(task_id, worktree_id=worktree_id, status="in_progress")
@@ -351,6 +410,13 @@ class AgentService:
         task = await self._board_repo.get_task(task_id)
         if task is None:
             raise ValueError(f"Task {task_id} not found")
+
+        # Guard: transitioning into in_progress runs the same blocker pass
+        # as start_task, so agents cannot bypass it by PATCH-ing status.
+        if status == "in_progress":
+            blockers = await self._collect_all_blockers(task)
+            if blockers:
+                raise TaskBlockedError(task, blockers)
 
         # Guard: moving to review requires pr_url unless skip_pr is set
         if status == "review" and not pr_url and not task.pr_url and not skip_pr:

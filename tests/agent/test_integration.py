@@ -867,8 +867,13 @@ class TestPipelineOrderingAPI:
             headers=ah,
         )
         assert resp.status_code == 409
-        assert "spec" in resp.json()["detail"].lower()
-        assert "not done" in resp.json()["detail"].lower()
+        detail = resp.json()["detail"]
+        assert detail["code"] == "task_blocked"
+        assert len(detail["blockers"]) == 1
+        blocker = detail["blockers"][0]
+        assert blocker["kind"] == "pipeline"
+        assert blocker["predecessor_task_type"] == "spec"
+        assert blocker["reason"] == "not_done"
 
     async def test_pipeline_ordering_plan_before_impl(
         self, client: AsyncClient, db_session: AsyncSession
@@ -894,8 +899,13 @@ class TestPipelineOrderingAPI:
             headers=ah,
         )
         assert resp.status_code == 409
-        assert "plan" in resp.json()["detail"].lower()
-        assert "not done" in resp.json()["detail"].lower()
+        detail = resp.json()["detail"]
+        assert detail["code"] == "task_blocked"
+        assert len(detail["blockers"]) == 1
+        blocker = detail["blockers"][0]
+        assert blocker["kind"] == "pipeline"
+        assert blocker["predecessor_task_type"] == "plan"
+        assert blocker["reason"] == "not_done"
 
     async def test_pipeline_ordering_allows_after_predecessor_done(
         self, client: AsyncClient, db_session: AsyncSession

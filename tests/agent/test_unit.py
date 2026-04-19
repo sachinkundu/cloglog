@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.agent.exceptions import TaskBlockedError
 from src.agent.repository import AgentRepository
 from src.agent.scheduler import run_heartbeat_checker
 from src.agent.services import AgentService
@@ -728,8 +729,12 @@ class TestAgentService:
         reg = await service.register(project.id, "/repo/wt-pipe1", "wt-pipe1")
         wt_id = reg["worktree_id"]
 
-        with pytest.raises(ValueError, match="artifact not attached"):
+        with pytest.raises(TaskBlockedError) as excinfo:
             await service.start_task(wt_id, plan_task.id)  # type: ignore[arg-type]
+        assert len(excinfo.value.blockers) == 1
+        b = excinfo.value.blockers[0]
+        assert b["kind"] == "pipeline"
+        assert b["reason"] == "artifact_missing"
 
     async def test_pipeline_allows_plan_when_spec_has_artifact(
         self, db_session: AsyncSession

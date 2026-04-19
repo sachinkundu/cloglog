@@ -6,10 +6,25 @@ import hashlib
 import secrets
 from uuid import UUID
 
-from src.board.models import Project, Task
+from src.board.interfaces import BoardBlockerDTO, FeatureBlocker
+from src.board.models import Feature, Project, Task
 from src.board.repository import BoardRepository
 from src.board.schemas import ImportPlan, SearchResponse, SearchResult
 from src.document.models import Document
+
+
+def _task_resolved(task: Task) -> bool:
+    """A task counts as resolved (for dependency purposes) when it is done,
+    or in review with a PR URL.
+
+    Note: artifact-attachment is *not* checked here — that check belongs to
+    the pipeline-predecessor rule (spec→plan→impl) which Agent owns, not to
+    arbitrary ``blocked_by`` edges. See F-11 spec §"Ubiquitous Language".
+    """
+    if task.status == "done":
+        return True
+    return task.status == "review" and bool(task.pr_url)
+
 
 EPIC_COLOR_PALETTE = [
     "#7c3aed",  # purple
@@ -180,6 +195,48 @@ class BoardService:
 
     async def remove_dependency(self, feature_id: UUID, depends_on_id: UUID) -> bool:
         return await self._repo.remove_dependency(feature_id, depends_on_id)
+
+    async def get_unresolved_blockers(self, task_id: UUID) -> list[BoardBlockerDTO]:
+        """Return feature (and, after T-224, task) blockers for ``task_id``.
+
+        Emits one ``FeatureBlocker`` per upstream feature that still has
+        incomplete tasks, sorted by ``feature.number``. Resolved (``done`` or
+        ``review``+``pr_url``) upstream tasks are excluded from the
+        ``incomplete_task_numbers`` list; if a feature has none, no blocker
+        is emitted for it.
+
+        T-36 scope: feature-level only. T-224 extends this method to also
+        walk ``task_dependencies`` and emit ``TaskBlocker`` entries.
+        """
+        task = await self._repo.get_task(task_id)
+        if task is None:
+            return []
+        feature = await self._repo.get_feature(task.feature_id)
+        if feature is None:
+            return []
+
+        blockers: list[BoardBlockerDTO] = []
+
+        dep_feature_ids = await self._repo.get_feature_dependencies(feature.id)
+        dep_features: list[Feature] = []
+        for fid in dep_feature_ids:
+            f = await self._repo.get_feature(fid)
+            if f is not None:
+                dep_features.append(f)
+        for dep_feature in sorted(dep_features, key=lambda f: f.number):
+            dep_tasks = await self._repo.get_tasks_for_feature(dep_feature.id)
+            incomplete = [t for t in dep_tasks if not _task_resolved(t)]
+            if incomplete:
+                blockers.append(
+                    FeatureBlocker(
+                        kind="feature",
+                        feature_id=str(dep_feature.id),
+                        feature_number=dep_feature.number,
+                        feature_title=dep_feature.title,
+                        incomplete_task_numbers=sorted(t.number for t in incomplete),
+                    )
+                )
+        return blockers
 
     async def get_dependency_graph(self, project_id: UUID) -> dict[str, object]:
         epics = await self._repo.get_backlog_tree(project_id)

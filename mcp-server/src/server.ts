@@ -1,8 +1,29 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { CloglogClient } from './client.js'
+import { CloglogApiError } from './errors.js'
 import { HeartbeatTimer } from './heartbeat.js'
 import { createToolHandlers } from './tools.js'
+
+/**
+ * Render a structured blocker (as emitted by the F-11 ``task_blocked``
+ * 409 payload) as a single readable line.
+ */
+function formatBlocker(b: Record<string, unknown>): string {
+  const kind = b.kind
+  if (kind === 'feature') {
+    const tasks = (b.incomplete_task_numbers as number[] | undefined) ?? []
+    const joined = tasks.map((n) => `T-${n}`).join(', ')
+    return `  • Feature F-${b.feature_number} "${b.feature_title}" — incomplete tasks: ${joined || '(none)'}`
+  }
+  if (kind === 'task') {
+    return `  • Task T-${b.task_number} "${b.task_title}" (${b.status})`
+  }
+  if (kind === 'pipeline') {
+    return `  • Pipeline: ${b.predecessor_task_type} task T-${b.task_number} "${b.task_title}" (${b.status}, reason=${b.reason})`
+  }
+  return `  • ${JSON.stringify(b)}`
+}
 
 export function createServer(client: CloglogClient): McpServer {
   const handlers = createToolHandlers(client)
@@ -42,6 +63,18 @@ export function createServer(client: CloglogClient): McpServer {
       try {
         return await fn(args)
       } catch (err: unknown) {
+        // Structured "task_blocked" 409 — render blockers as readable text
+        // so the agent can see *why* the guard rejected rather than a
+        // JSON blob or a flattened string.
+        if (err instanceof CloglogApiError && err.code === 'task_blocked') {
+          const d = err.structured ?? {}
+          const lines: string[] = []
+          lines.push(`⛔ ${d.message ?? 'Task is blocked.'}`)
+          for (const b of d.blockers ?? []) {
+            lines.push(formatBlocker(b))
+          }
+          return { content: [{ type: 'text' as const, text: lines.join('\n') }], isError: true }
+        }
         const message = err instanceof Error ? err.message : String(err)
         return { content: [{ type: 'text' as const, text: `⛔ ${message}` }], isError: true }
       }

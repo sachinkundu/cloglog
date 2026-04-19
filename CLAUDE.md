@@ -140,6 +140,7 @@ These instructions are specific to cloglog's architecture and tech stack. They s
 - **MCP server PRs:** Curl the backend endpoint AND launch a fresh Claude session in a zellij tab to call the actual MCP tool.
 - **Frontend PRs:** Use Rodney (headless Chrome via `uvx rodney`) to take screenshots.
 - Each worktree runs on isolated ports. Source `scripts/worktree-ports.sh` in demo scripts.
+- **Showboat `verify` is byte-exact.** Any `exec` block whose output includes timings (`in 50.00s`), token counts, PIDs, or other non-deterministic noise will fail re-verification. Reduce the captured output to a deterministic summary (`grep -oE "[0-9]+ passed"`, `grep -q "^OK$"`, explicit `echo` lines) BEFORE the output lands in showboat. Raw streaming of pytest/codex/etc. will bite on the next `make demo-check`.
 
 ---
 

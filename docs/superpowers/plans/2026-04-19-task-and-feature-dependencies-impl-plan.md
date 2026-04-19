@@ -144,10 +144,16 @@ uv run mypy src/board/services.py src/board/interfaces.py
 
 ### Task A2: Thread the port into `AgentService` and refactor the guard
 
-**Files:**
+**Files (all must be updated — don't skip any, a missing one is a runtime `TypeError`):**
 - Modify: `src/agent/services.py` (constructor; `_check_pipeline_predecessors`; `start_task`; `update_task_status`)
-- Modify: `src/agent/routes.py` (pass `BoardService` into `AgentService`)
-- Modify: `tests/agent/conftest.py` (update every `AgentService(...)` fixture)
+- Modify: `src/agent/routes.py:39` (the `ServiceDep` factory that backs `start_task` / `update_task_status` / etc.)
+- Modify: `src/agent/scheduler.py:27` (scheduled heartbeat/orphan sweep — constructs `AgentService` in a background task; if skipped, the scheduler crashes on the next tick)
+- Modify: `src/board/routes.py:98` (`delete_project` handler constructs `AgentService` to clean up agents)
+- Modify: `src/board/routes.py:811` (`remove_offline_agents` handler)
+- Modify: `tests/agent/test_unit.py` (~30 construction sites — all need updating)
+- Modify: `tests/agent/test_integration.py` (3 sites)
+- Modify: `tests/e2e/test_heartbeat_timeout.py` (4 sites)
+- Any new `AgentService(...)` added by PR B (none planned, but grep again before final push).
 
 - [ ] **Step 1: Grep construction sites**
 
@@ -155,7 +161,7 @@ uv run mypy src/board/services.py src/board/interfaces.py
 grep -rn "AgentService(" src/ tests/
 ```
 
-Every site gets an extra argument: `board_blockers=BoardService(board_repo)`.
+Expect the list above. Every site gets an extra positional or keyword argument. Recommendation: use a helper in `tests/agent/conftest.py` (e.g. `make_agent_service(session)`) so new callers don't have to remember — and one-shot edit all existing test sites to use the helper instead of raw `AgentService(...)`. Prod call sites can be updated inline since there are only four and each already composes `BoardRepository(session)` nearby (just add `BoardService(board_repo)` alongside).
 
 - [ ] **Step 2: Update constructor**
 
@@ -225,20 +231,36 @@ if status == "in_progress":
 
 - [ ] **Step 6: Translate in the route layer**
 
-In `src/agent/routes.py` `start_task` and `update_task_status` handlers:
+Each handler keeps its **existing** `ValueError` mapping (they differ — don't copy-paste). Only the new `TaskBlockedError` catch is added.
 
+`start_task` handler:
 ```python
 try:
-    ...
+    return await service.start_task(worktree_id, body.task_id)
 except TaskBlockedError as e:
     raise HTTPException(status_code=409, detail={
         "code": "task_blocked",
         "message": f"Cannot start task T-{e.task.number}: {len(e.blockers)} blocker(s) not resolved.",
         "blockers": e.blockers,
     }) from None
-except ValueError as e:  # existing fallback
+except ValueError as e:  # unchanged from today
     status = 409 if "Cannot start" in str(e) else 404
     raise HTTPException(status_code=status, detail=str(e)) from None
+```
+
+`update_task_status` handler — **keeps today's flat 409 for all `ValueError`** (it covers missing-`pr_url`-on-review, agent-cannot-move-to-done, etc.; `mcp-server/tests/server.test.ts` asserts these as 409-based failures). Do **not** introduce a 404 branch here.
+
+```python
+try:
+    await service.update_task_status(...)
+except TaskBlockedError as e:
+    raise HTTPException(status_code=409, detail={
+        "code": "task_blocked",
+        "message": f"Cannot start task T-{e.task.number}: {len(e.blockers)} blocker(s) not resolved.",
+        "blockers": e.blockers,
+    }) from None
+except ValueError as e:  # UNCHANGED — existing contract is 409-for-all
+    raise HTTPException(status_code=409, detail=str(e)) from None
 ```
 
 - [ ] **Step 7: Route-composition wiring**
@@ -392,35 +414,56 @@ function formatBlocker(b: Record<string, unknown>): string {
 cd mcp-server && make build && make test
 ```
 
-### Task A5: Boy Scout — add `CurrentMcpService` to feature-dep write routes
+### Task A5: Introduce `CurrentMcpOrDashboard` hybrid dependency
+
+**Why not the original "Boy Scout `CurrentMcpService` on feature-dep routes" step:** the existing feature-dep tests in `tests/board/test_dependencies.py` use the shared dashboard-key `client` fixture (no `X-MCP-Request` header). Swapping to `CurrentMcpService` would 403-reject every existing caller. A hybrid dependency that accepts either credential shape closes the MCP-key-validation gap **without** forcing dashboard-key callers to change, which is what the middleware currently implements implicitly but un-validated.
 
 **Files:**
-- Modify: `src/board/routes.py` (two handlers, `add_dependency`, `remove_dependency`)
+- Modify: `src/gateway/auth.py` (add `CurrentMcpOrDashboard`)
+- (Applied in Task B5 to the new task-dep routes.)
 
 - [ ] **Step 1: Add the dependency**
 
 ```python
-@router.post("/features/{feature_id}/dependencies", status_code=201)
-async def add_dependency(
-    feature_id: UUID,
-    body: DependencyCreate,
-    service: ServiceDep,
-    _: CurrentMcpService,  # NEW
-) -> dict[str, str]:
-    ...
+# src/gateway/auth.py
+async def get_mcp_or_dashboard(request: Request) -> None:
+    """Accept either a valid MCP service key OR a valid dashboard key.
+
+    - If X-MCP-Request is present, require Authorization: Bearer <mcp_service_key>.
+    - Else, require X-Dashboard-Key matching settings.dashboard_key.
+
+    The middleware has already done a first-pass check (MCP header presence
+    OR dashboard key presence), but does not validate the MCP service key.
+    This dependency closes that gap on routes that opt in.
+    """
+    mcp_header = request.headers.get("X-MCP-Request")
+    if mcp_header:
+        token = _extract_bearer_token(request) or ""
+        if not hmac.compare_digest(token, settings.mcp_service_key):
+            raise HTTPException(status_code=401, detail="Invalid MCP service key")
+        return
+
+    dash = request.headers.get("X-Dashboard-Key") or request.query_params.get("dashboard_key")
+    if dash and hmac.compare_digest(dash, settings.dashboard_key):
+        return
+
+    raise HTTPException(status_code=401, detail="Missing or invalid credentials")
+
+
+CurrentMcpOrDashboard = Annotated[None, Depends(get_mcp_or_dashboard)]
 ```
 
-Same for `remove_dependency`. Import `CurrentMcpService` from `src.gateway.auth`.
+- [ ] **Step 2: Unit tests for the helper**
 
-- [ ] **Step 2: Update tests**
+Add to `tests/gateway/test_auth.py`:
+- Valid MCP shape → passes.
+- MCP shape with wrong token → 401.
+- Valid dashboard key → passes.
+- No credentials → 401.
 
-Any existing test that hits these routes must include `X-MCP-Request: true` and the service key. Check `tests/board/test_dependencies.py` and update the client fixture if needed.
+- [ ] **Step 3: Do NOT retrofit existing feature-dep routes in this wave**
 
-- [ ] **Step 3: Verify**
-
-```bash
-uv run pytest tests/board/test_dependencies.py tests/gateway/test_auth.py -v
-```
+The existing MCP-only-gap on `POST/DELETE /features/{id}/dependencies` is a known-but-deferred issue. Follow-up ticket to apply `CurrentMcpOrDashboard` across all board write routes (not just deps) once the helper is merged — single-route retrofit risks inconsistent auth. Note this in the PR A description as a follow-up item.
 
 ### Task A6: Quality gate + PR
 
@@ -602,7 +645,7 @@ async def add_task_dep(
     task_id: UUID,
     body: TaskDependencyCreate,
     service: ServiceDep,
-    _: CurrentMcpService,
+    _: CurrentMcpOrDashboard,  # from PR A's Task A5
 ) -> dict[str, str]:
     try:
         await service.add_task_dependency(task_id, body.depends_on_id)
@@ -628,10 +671,12 @@ async def remove_task_dep(
     task_id: UUID,
     depends_on_id: UUID,
     service: ServiceDep,
-    _: CurrentMcpService,
+    _: CurrentMcpOrDashboard,
 ) -> None:
     # mirror the pattern from remove_dependency for features, emit scope="task"
 ```
+
+Tests use the existing shared dashboard-key `client` fixture from `tests/conftest.py` (same as feature-dep tests) — the hybrid dep accepts that path.
 
 - [ ] **Step 2: Also update feature-dep events**
 

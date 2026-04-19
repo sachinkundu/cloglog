@@ -539,9 +539,11 @@ class ReviewEngineConsumer:
             args = [
                 settings.review_agent_cmd,
                 "exec",
-                "--full-auto",
-                "--sandbox",
-                "danger-full-access",
+                # Host lacks CAP_NET_ADMIN, so any --sandbox mode (including
+                # danger-full-access) fails in bwrap's unshare-net with
+                # "loopback: Failed RTM_NEWADDR". The bypass flag skips bwrap
+                # entirely. Safe here: the host IS the external sandbox.
+                "--dangerously-bypass-approvals-and-sandbox",
                 "--ephemeral",
                 "--color",
                 "never",

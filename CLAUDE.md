@@ -140,6 +140,7 @@ These instructions are specific to cloglog's architecture and tech stack. They s
 - **MCP server PRs:** Curl the backend endpoint AND launch a fresh Claude session in a zellij tab to call the actual MCP tool.
 - **Frontend PRs:** Use Rodney (headless Chrome via `uvx rodney`) to take screenshots.
 - Each worktree runs on isolated ports. Source `scripts/worktree-ports.sh` in demo scripts.
+- **Demo determinism guidance lives in `plugins/cloglog/skills/demo/SKILL.md`** — showboat `verify` is byte-exact; reduce non-deterministic output (timings, tokens, PIDs, timestamps) before capture. See the "Determinism" note under the demo-check section of that skill.
 
 ---
 

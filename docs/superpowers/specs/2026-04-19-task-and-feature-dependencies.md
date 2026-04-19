@@ -57,7 +57,7 @@ CREATE INDEX ix_task_dependencies_depends_on_task_id
 
 Semantics: `(task_id=X, depends_on_task_id=Y)` means "X is blockedBy Y". Same orientation as `feature_dependencies`.
 
-**Migration**: new Alembic revision, `down_revision` pointing at the latest on `main` at push time (currently `f5a6b7c8d9e2`, will almost certainly rebase). `ON DELETE CASCADE` so deleting a task cleans up its edges both ways.
+**Migration**: new Alembic revision. `down_revision` must point at the **actual latest head on `main` at push time**, not at the ID recorded here. At the moment this spec was written, `python -m alembic history` in the worktree shows `f5a6b7c8d9e2_add_task_artifact_path` as head; by the time T-224 pushes, a different context may have landed a migration in front, so the impl plan explicitly calls out re-reading `alembic history` before committing. `ON DELETE CASCADE` so deleting a task cleans up its edges both ways.
 
 ### ORM
 
@@ -121,7 +121,12 @@ DELETE /api/v1/tasks/{task_id}/dependencies/{depends_on_id}
        404 → { "detail": "Dependency not found" } or "Task not found"
 ```
 
-Auth: same as the feature-dep routes — board routes are currently public dashboard-facing, agent mutation uses project-scoped auth via `CurrentProject`. Follow whichever pattern `POST /features/{id}/dependencies` uses today (public). If the pattern changes before this ships, match.
+**Auth** (per `src/gateway/app.py::ApiAccessControlMiddleware`, which gates every `/api/v1/*` route):
+
+- The existing `POST /features/{id}/dependencies` / `DELETE /features/{id}/dependencies/{depends_on_id}` routes are reachable two ways: (a) **MCP proxy** — `Authorization: Bearer <mcp_service_key>` plus `X-MCP-Request` header (used by the MCP tools `add_dependency`/`remove_dependency`); (b) **dashboard** — `X-Dashboard-Key` header.
+- The new task-dep routes take exactly the same posture: MCP-or-dashboard. They live in `src/board/routes.py` next to the feature-dep routes and inherit the same middleware behaviour.
+- Bearer-only (project API key, agent token) is **not** accepted on these paths — the middleware allows Bearer-only on `/api/v1/agents/*` only. Agents never call these endpoints directly; they go through MCP.
+- No route-level dependency injection is needed (no `CurrentProject`, no `CurrentAgent`, no `CurrentMcpService`) — the existing feature-dep routes are unguarded at the handler level and rely entirely on the middleware. Match that pattern.
 
 **Events**: publish `EventType.TASK_DEPENDENCY_ADDED` / `TASK_DEPENDENCY_REMOVED` over the SSE bus (new enum members), so the board can repaint.
 
@@ -152,6 +157,15 @@ Naming convention: the feature-level tools are called `add_dependency` / `remove
 
 - **Agent owns** the **pipeline** rule (task-type workflow: spec→plan→impl). `_check_pipeline_predecessors` stays where it is. It emits pipeline blockers that Agent splices in with the Board-provided list.
 
+### Wiring (port injection)
+
+Today `AgentService.__init__` takes `repo: AgentRepository, board_repo: BoardRepository`. The new guard needs a `BoardBlockerQueryPort` implementation — concretely `BoardService`, since it owns the resolution logic. Two constructor-shape options for the plan to choose from:
+
+1. **Additive**: add `board_blockers: BoardBlockerQueryPort` as a new constructor argument. Keep `board_repo` (still used elsewhere in `AgentService` for `get_task`, `get_tasks_for_feature`, `update_task`). Route composition in `src/agent/routes.py` instantiates `BoardService(BoardRepository(session))` once and passes it. Preferred — smallest delta, explicit dependency.
+2. **Replacement**: replace `board_repo` with a richer Board-facing port covering everything Agent needs (reads + writes for status). Bigger refactor, deferred.
+
+Plan should default to option 1. Both `src/agent/routes.py` (the route-composition site) and every `AgentService(...)` construction in tests/conftest need to pass the new port. Grep for `AgentService(` to find constructions.
+
 ### `start_task` — new behaviour
 
 Order of checks, stable, collecting all blockers:
@@ -171,6 +185,15 @@ Order of checks, stable, collecting all blockers:
 When the new status is `in_progress` (regardless of previous status), run the same blocker collection pass as `start_task` step 4. Any other target status (`review`, `backlog`, `done`) is unaffected.
 
 Rationale: Today, an agent that hit a blocker on `start_task` could theoretically work around it by calling `update_task_status(status="in_progress")` directly. Mirroring the check closes the hole.
+
+### Guard composition (same-agent vs. cross-agent chains)
+
+The single-active-task guard (step 3) and the blocker-collection pass (step 4) **compose** — they are not alternatives. That composition changes the effective "ready to start" criterion depending on whether the dependent task is picked up by the **same** worktree that shipped the blocker or a **different** one:
+
+- **Cross-worktree** (the usual case — dogfood scenario for T-225): worktree A ships T-1 (merges PR or leaves it in `review` with `pr_url`), worktree B picks up T-2 where `T-2 blocked_by T-1`. On B's `start_task(T-2)`, step 3 (single-active-task) only inspects B's own tasks, so T-1 is invisible to it. Step 4 consults Board's resolver, which accepts `done || (review && pr_url)`. Result: B can start T-2 the moment T-1 is in `review` with a PR URL — no need to wait for the user to drag T-1 to `done`.
+- **Same-worktree chain**: worktree A holds T-1 and then wants to start T-2 against the same worktree. Step 3 rejects whenever T-1 is in `in_progress` or (`review` with `pr_merged == False`). So the effective threshold for same-worktree chains is stricter than the blocker-resolver alone: **T-1 must be `done`, OR `review` with `pr_merged=True`**. This is intentional — one active task per agent is an independent invariant — but spec readers and impl/test authors must not mistake the blocker-resolver's rule for the full set of preconditions.
+
+Test expectations must reflect both shapes: the cross-agent tests assert happy-path on `review + pr_url`; the same-agent tests assert 409 from the active-task guard (not the blocker guard) on that same state. The error payload in the two cases is different: cross-agent hits the new structured `task_blocked` response; same-agent hits the pre-existing `Cannot start task: agent already has active task(s)…` string (unchanged by this spec).
 
 ## Error payload shape
 
@@ -245,14 +268,17 @@ Integration tests only, real DB (per project policy).
 Covered:
 - **Repository**: add, remove, duplicate, self-loop rejection, cycle rejection, cross-project rejection.
 - **Routes** (task-dep): happy-path POST/DELETE, 404 on unknown task, 400 on validation, 409 on duplicate.
-- **`start_task` guard** (covers both T-36 and T-224):
+- **`start_task` guard — cross-worktree** (covers both T-36 and T-224, upstream blocker lives on a different worktree):
   - Feature blocker: upstream feature with incomplete task → 409 with `kind=feature` entry.
   - Task blocker: `blocked_by` task in `backlog` → 409 with `kind=task` entry.
   - Pipeline blocker: spec in `review` without artifact → 409 with `kind=pipeline` entry + `reason=artifact_missing`.
   - Combined: all three simultaneously → 409 with three entries in stable order (feature → task → pipeline).
-  - Happy: all resolved → `in_progress` returned.
-  - Agent override: upstream feature task in `review` with `pr_url` counts as resolved.
-- **`BoardBlockerQueryPort`** (Board context): direct unit/integration tests on `get_unresolved_blockers` covering the same matrix minus the pipeline case (Agent owns that).
+  - Happy (resolved-with-PR): upstream task in `review` with `pr_url` → no blocker entry; start succeeds.
+  - Happy (resolved-done): upstream task `done` → start succeeds.
+- **`start_task` guard — same-worktree chain** (separate tests — the pre-existing active-task guard fires before the new blocker guard):
+  - T-1 in `review` with `pr_url` but `pr_merged=False` on worktree W; `start_task(T-2)` on same W → 409 with active-task message (existing, unchanged). Asserts that the blocker guard does **not** mask or replace the active-task guard.
+  - Same setup but T-1 has `pr_merged=True` → start succeeds (both guards pass).
+- **`BoardBlockerQueryPort`** (Board context): direct unit/integration tests on `get_unresolved_blockers` covering the feature+task matrix (Agent owns the pipeline case, tested separately).
 - **`update_task_status`** — same blocker coverage when target status is `in_progress`; transitions to other statuses unaffected.
 - **MCP tools**: end-to-end smoke via the test client — `add_task_dependency` round-trips through routes.
 

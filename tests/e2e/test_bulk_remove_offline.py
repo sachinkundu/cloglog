@@ -25,33 +25,15 @@ async def test_bulk_remove_deletes_offline_agents(client: AsyncClient) -> None:
     """Bulk remove deletes all offline agents and returns the count."""
     pf = await create_project_with_tasks(client, n_tasks=0)
 
-    # Register three agents
-    a1 = await register_agent(client, pf.api_key)
-    a2 = await register_agent(client, pf.api_key)
+    # Register three agents (all online)
+    await register_agent(client, pf.api_key)
+    await register_agent(client, pf.api_key)
     await register_agent(client, pf.api_key)
 
-    # Mark two offline via request-shutdown + heartbeat timeout simulation
-    # (use the dashboard shutdown endpoint to flag them, then the
-    #  remove-offline endpoint to clean up)
-    await client.post(f"/api/v1/projects/{pf.id}/worktrees/{a1.worktree_id}/request-shutdown")
-    await client.post(f"/api/v1/projects/{pf.id}/worktrees/{a2.worktree_id}/request-shutdown")
-
-    # We need to actually set them offline — request-shutdown only sets a flag.
-    # Use the heartbeat timeout path: expire their sessions in the DB.
-    # But in e2e we don't have direct DB access via fixture, so use the
-    # worktree listing to verify and set offline via the timeout service.
-    # Simpler: just call the endpoint — agents that had shutdown_requested
-    # are still "online" until their heartbeat times out.
-    # For the e2e test, we'll register fresh agents that we never heartbeat,
-    # then manually hit the timeout check.
-
-    # Actually the simplest approach: register agents, then unregister them
-    # (which deletes them). For the *offline* state, we need a different path.
-    # Let's use the direct API: set status to offline via task-status-like mechanism.
-    # The cleanest e2e path: register, let heartbeat expire, run timeout check.
-    # But that requires DB access. Since e2e conftest provides db_session, let's use it.
-
-    # For now, test with agents that are already online — expect 0 removed.
+    # With all three online, bulk-remove-offline should delete none.
+    # (Driving worktrees to offline state is covered by the companion test
+    # below, which uses the repository directly — the dashboard shutdown
+    # endpoint flips a flag and writes the inbox but does not force offline.)
     resp = await client.post(f"/api/v1/projects/{pf.id}/worktrees/remove-offline")
     assert resp.status_code == 200
     assert resp.json()["removed_count"] == 0

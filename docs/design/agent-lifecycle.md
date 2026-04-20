@@ -176,13 +176,11 @@ Monitor(
 )
 ```
 
-**Legacy note — `/tmp/cloglog-inbox-{worktree_id}` is deprecated.** The
-backend's `request_shutdown` (src/agent/services.py) still writes there as of
-2026-04-19; T-215 migrates the write path to `<worktree_path>/.cloglog/inbox`.
-Until T-215 merges, agents running on a worktree that might receive a
-cooperative shutdown should additionally tail the legacy path as a temporary
-safety net; the launch skill will remove that second monitor once T-215 ships.
-This spec describes the target state.
+**Legacy note — `/tmp/cloglog-inbox-{worktree_id}` is removed.** T-215 migrated
+the backend's `request_shutdown` write to `<worktree_path>/.cloglog/inbox` —
+the same file the webhook consumer writes to and the worktree agent tails.
+There is no longer a legacy path to also monitor; the single inbox above is
+authoritative for every inbound event, cooperative shutdown included.
 
 ### Events that can arrive (inbound)
 

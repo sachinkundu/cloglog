@@ -55,7 +55,7 @@ graph TB
 
 | Term | Definition |
 |------|-----------|
-| **Project** | A source code repository tracked by cloglog. Maps 1:1 to an agent-vm instance. Has its own API key for agent authentication. |
+| **Project** | A source code repository tracked by cloglog. Has its own API key for agent authentication. |
 | **Epic** | A large initiative within a project. Optionally maps to a DDD Bounded Context in the target project. Contains Features. |
 | **Feature** | A deliverable unit of work under an Epic. Contains Tasks. Can depend on other Features (dependency prevents premature parallel work). |
 | **Task** | The smallest unit of work, sized for a single agent session. Appears as a card on the Kanban board. Moves through columns: backlog → assigned → in_progress → review → done (or blocked). |
@@ -68,7 +68,7 @@ graph TB
 
 | Term | Definition |
 |------|-----------|
-| **Worktree** | The persistent identity of an agent. Named after and tied to a git worktree path inside a VM. Survives session restarts. If a session registers with a known worktree path, it reconnects to the existing identity. |
+| **Worktree** | The persistent identity of an agent. Named after and tied to a git worktree path on the host. Survives session restarts. If a session registers with a known worktree path, it reconnects to the existing identity. |
 | **Session** | An ephemeral record of a single Claude Code terminal run within a worktree. Has a start time and optional end time. Multiple sessions may exist for one worktree over time. |
 | **Registration** | The act of a session announcing itself to cloglog. Upserts the worktree (creating it if new, reconnecting if existing) and creates a new session record. |
 | **Heartbeat** | A periodic ping (every 60s) from an active session. Proves the agent is alive. If no heartbeat is received for 3 minutes (heartbeat timeout), the worktree is marked offline. |
@@ -82,7 +82,7 @@ graph TB
 |------|-----------|
 | **Document** | An append-only record of a design artifact — specs, plans, design docs, or other files generated during brainstorming or agent work. Stores the actual content (not a file path reference). |
 | **Attachment** | The link between a document and a Board entity (Epic, Feature, or Task). Stored as a polymorphic reference (`attached_to_type` + `attached_to_id`). |
-| **Source Path** | The original file path inside the VM where the document was generated. Stored as metadata only — the content is in the database, not retrieved from this path. |
+| **Source Path** | The original file path where the document was generated. Stored as metadata only — the content is in the database, not retrieved from this path. |
 | **Document Type** | Classification of a document: `spec` (design specification), `plan` (implementation plan), `design` (detailed design), or `other`. Determines the color of the chip on the dashboard. |
 
 ### Gateway Context
@@ -98,5 +98,5 @@ graph TB
 | Term | Definition |
 |------|-----------|
 | **Bounded Context (DDD)** | In the target project (the one agents are building), a Bounded Context maps to an Epic on the cloglog board. This is optional — not every Epic represents a Bounded Context. |
-| **agent-vm** | The sandboxing system that runs agents in Lima VMs. cloglog integrates with it via runtime scripts and credentials mounts. cloglog itself runs on the host, not inside a VM. |
-| **cloglog-mcp** | The MCP server installed inside agent-vm. Provides Claude Code tools (`register_agent`, `start_task`, `complete_task`, etc.) that translate to HTTP calls to the cloglog API on the host. |
+| **agent-vm** | The local tooling bundle for agents — credentials, runtime scripts, and helpers mounted at `~/.agent-vm/`. Not a virtual machine and not a separate filesystem; agents, the MCP server, and cloglog all run on the same host. |
+| **cloglog-mcp** | The MCP server that exposes Claude Code tools (`register_agent`, `start_task`, `complete_task`, etc.) which translate to HTTP calls to the cloglog API. Runs on the same host as the agent and the backend. |

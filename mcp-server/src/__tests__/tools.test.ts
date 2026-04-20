@@ -23,10 +23,10 @@ describe('Tool Handlers', () => {
   })
 
   it('register_agent derives branch_name via git and POSTs both to /agents/register', async () => {
-    // T-254: cloglog-mcp runs inside the agent-vm, so it — not the backend —
-    // has filesystem access to the worktree. Register must resolve the branch
-    // here and include it in the POST body; otherwise the backend stores an
-    // empty string and the webhook branch-fallback cannot route anything.
+    // T-254: cloglog-mcp is the caller sitting inside the worktree, so it
+    // resolves the branch and POSTs it. The backend is a thin CRUD layer
+    // that stores whatever it receives; if the MCP sends an empty string
+    // the webhook branch-fallback has nothing to route on.
     const tmp = mkdtempSync(join(tmpdir(), 'wt-register-test-'))
     try {
       execFileSync('git', ['init', '-q', '-b', 'wt-from-mcp', tmp])

@@ -63,13 +63,13 @@ class AgentService:
     ) -> dict[str, object]:
         """Register or reconnect a worktree. Returns registration info.
 
-        ``branch_name`` must be derived by the caller. The MCP server
-        (``cloglog-mcp``) runs inside the agent-vm and has filesystem access to
-        the worktree; the backend (``cloglog``) runs on the host and does
-        **not** (see ``docs/ddd-context-map.md``). So we trust whatever the
-        MCP sends and never probe the filesystem here. The webhook resolver's
-        empty-``head_branch`` short-circuit and ``get_worktree_by_branch``'s
-        empty-guard are the safety nets if a caller does send an empty value.
+        ``branch_name`` is supplied by the caller rather than probed from the
+        filesystem here: the caller (the MCP server or a direct API client)
+        is already in the worktree and knows the branch, and keeping the
+        backend a pure CRUD layer avoids an unnecessary ``git`` subprocess
+        on every registration. The webhook resolver's empty-``head_branch``
+        short-circuit and ``get_worktree_by_branch``'s empty-guard are the
+        safety nets if a caller sends an empty value.
         """
         worktree, is_new = await self._repo.upsert_worktree(project_id, worktree_path, branch_name)
 
@@ -121,7 +121,13 @@ class AgentService:
     # --- Shutdown ---
 
     async def request_shutdown(self, worktree_id: UUID) -> None:
-        """Request agent shutdown via inbox file for instant Monitor delivery."""
+        """Request agent shutdown via the worktree inbox.
+
+        Writes a shutdown JSON line to ``<worktree_path>/.cloglog/inbox`` —
+        the same file the webhook consumer writes to and the worktree agent
+        tails. See ``docs/design/agent-lifecycle.md`` section 3 for the
+        canonical inbox contract.
+        """
         import json
         from pathlib import Path
 
@@ -129,8 +135,12 @@ class AgentService:
         if worktree is None:
             raise ValueError(f"Worktree {worktree_id} not found")
 
-        # Write shutdown message to inbox file — Monitor picks this up instantly
-        inbox_path = Path(f"/tmp/cloglog-inbox-{worktree_id}")
+        if not worktree.worktree_path:
+            raise ValueError(
+                f"Worktree {worktree_id} has no worktree_path; cannot deliver shutdown signal"
+            )
+
+        inbox_path = Path(worktree.worktree_path) / ".cloglog" / "inbox"
         message = json.dumps(
             {
                 "type": "shutdown",
@@ -142,9 +152,14 @@ class AgentService:
                 ),
             }
         )
-        inbox_path.write_text(message + "\n")
+        try:
+            inbox_path.parent.mkdir(parents=True, exist_ok=True)
+            with inbox_path.open("a") as f:
+                f.write(message + "\n")
+        except OSError as exc:
+            raise OSError(f"Failed to write shutdown signal to {inbox_path}: {exc}") from exc
 
-        # Also set the DB flag as fallback for agents not yet using Monitor
+        # DB flag stays as a secondary signal for agents not on Monitor.
         await self._repo.request_shutdown(worktree_id)
 
     # --- Heartbeat ---

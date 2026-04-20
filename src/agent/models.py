@@ -12,7 +12,7 @@ from src.shared.database import Base
 
 
 class Worktree(Base):
-    """Persistent agent identity. Tied to a git worktree path inside a VM.
+    """Persistent agent identity tied to a git worktree path on the host.
 
     Identity is determined by project_id + worktree_path.
     If a session registers with a known worktree path, it reconnects.

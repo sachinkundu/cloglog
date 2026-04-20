@@ -127,6 +127,46 @@ export interface paths {
         patch: operations["update_task_api_v1_tasks__task_id__patch"];
         trace?: never;
     };
+    "/api/v1/tasks/{task_id}/dependencies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add Task Dependency
+         * @description Add a `blocked_by` edge between two tasks in the same project. Downstream task `task_id` will be rejected from `start_task` / `update_task_status(status="in_progress")` until the upstream task (`depends_on_id`) is resolved (done OR review with pr_url). Self-loops, cycles, and cross-project pairings return 400/409.
+         */
+        post: operations["add_task_dependency_api_v1_tasks__task_id__dependencies_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tasks/{task_id}/dependencies/{depends_on_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove Task Dependency
+         * @description Remove a `blocked_by` edge between two tasks.
+         */
+        delete: operations["remove_task_dependency_api_v1_tasks__task_id__dependencies__depends_on_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/epics/reorder": {
         parameters: {
             query?: never;
@@ -377,6 +417,23 @@ export interface paths {
         patch: operations["update_task_status_api_v1_agents__worktree_id__task_status_patch"];
         trace?: never;
     };
+    "/api/v1/agents/{worktree_id}/mark-pr-merged": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mark Pr Merged */
+        post: operations["mark_pr_merged_api_v1_agents__worktree_id__mark_pr_merged_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/{worktree_id}/unregister": {
         parameters: {
             query?: never;
@@ -450,6 +507,17 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * DependencyCreate
+         * @description Request body for adding a dependency. Used by both the feature-dep routes (POST /features/{id}/dependencies) and the task-dep routes (POST /tasks/{id}/dependencies).
+         */
+        DependencyCreate: {
+            /**
+             * Depends On Id
+             * Format: uuid
+             */
+            depends_on_id: string;
+        };
         /** BacklogEpic */
         BacklogEpic: {
             epic: components["schemas"]["EpicResponse"];
@@ -502,6 +570,14 @@ export interface components {
             total_tasks: number;
             /** Done Count */
             done_count: number;
+        };
+        /** MarkPrMergedRequest */
+        MarkPrMergedRequest: {
+            /**
+             * Task Id
+             * Format: uuid
+             */
+            task_id: string;
         };
         /** CompleteTaskRequest */
         CompleteTaskRequest: {
@@ -823,7 +899,10 @@ export interface components {
         };
         /** RegisterRequest */
         RegisterRequest: {
-            /** Worktree Path */
+            /**
+             * Worktree Path
+             * @description Absolute path to the git worktree on the calling side's filesystem. Must be non-empty — downstream code derives the inbox path (``<worktree_path>/.cloglog/inbox``) from this value.
+             */
             worktree_path: string;
             /**
              * Branch Name
@@ -899,8 +978,6 @@ export interface components {
             number: number;
             /** Archived */
             archived: boolean;
-            /** Retired */
-            retired: boolean;
             /**
              * Created At
              * Format: date-time
@@ -1005,8 +1082,6 @@ export interface components {
             number: number;
             /** Archived */
             archived: boolean;
-            /** Retired */
-            retired: boolean;
             /**
              * Created At
              * Format: date-time
@@ -1034,8 +1109,6 @@ export interface components {
             position?: number | null;
             /** Archived */
             archived?: boolean | null;
-            /** Retired */
-            retired?: boolean | null;
         };
         /** UpdateTaskStatusRequest */
         UpdateTaskStatusRequest: {
@@ -1427,6 +1500,103 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["TaskResponse"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_task_dependency_api_v1_tasks__task_id__dependencies_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DependencyCreate"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+            /** @description Validation error — self-loop, cross-project, or cycle */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Task not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Dependency already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_task_dependency_api_v1_tasks__task_id__dependencies__depends_on_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+                depends_on_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed (no content) */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Task or dependency not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -1887,6 +2057,41 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mark_pr_merged_api_v1_agents__worktree_id__mark_pr_merged_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                worktree_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MarkPrMergedRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
             };
             /** @description Validation Error */
             422: {

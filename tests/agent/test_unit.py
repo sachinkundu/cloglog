@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -218,11 +219,11 @@ class TestAgentService:
         assert r2["current_task"]["id"] == task.id  # type: ignore[index]
 
     async def test_register_stores_branch_name_from_caller(self, db_session: AsyncSession) -> None:
-        """The backend is a pure pass-through for ``branch_name``. The MCP
-        server derives it inside the VM (see ``docs/ddd-context-map.md``) and
-        sends it; the backend stores exactly what it received. This test pins
-        that contract so a future refactor can't silently reintroduce a
-        backend-side filesystem probe that would not work in production."""
+        """The backend is a pure pass-through for ``branch_name``. The caller
+        (the MCP server or a direct API client) derives it and sends it; the
+        backend stores exactly what it received. This test pins that contract
+        so a future refactor can't silently reintroduce a backend-side
+        filesystem probe on every registration."""
         project = await _create_project(db_session)
         service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
         result = await service.register(project.id, "/vm-only/path/invisible", "wt-from-mcp")
@@ -975,38 +976,92 @@ class TestRemoveOfflineAgents:
 
 
 class TestRequestShutdown:
-    async def test_request_shutdown_writes_inbox_file(self, db_session: AsyncSession) -> None:
-        """request_shutdown writes a JSON shutdown message to the inbox file."""
+    async def test_request_shutdown_writes_worktree_inbox(
+        self, db_session: AsyncSession, tmp_path: Path
+    ) -> None:
+        """request_shutdown writes the JSON shutdown line to <worktree>/.cloglog/inbox."""
         import json
-        from pathlib import Path
 
         project = await _create_project(db_session)
         repo = AgentRepository(db_session)
         service = AgentService(repo, BoardRepository(db_session))
 
-        reg = await service.register(project.id, "/repo/wt-shutdown", "wt-shutdown")
+        worktree_path = tmp_path / "wt-shutdown"
+        worktree_path.mkdir()
+        reg = await service.register(project.id, str(worktree_path), "wt-shutdown")
         wt_id = reg["worktree_id"]
 
         await service.request_shutdown(wt_id)
 
-        inbox_path = Path(f"/tmp/cloglog-inbox-{wt_id}")
+        inbox_path = worktree_path / ".cloglog" / "inbox"
         assert inbox_path.exists()
+        # The legacy path must NOT be used.
+        assert not Path(f"/tmp/cloglog-inbox-{wt_id}").exists()
 
         content = inbox_path.read_text().strip()
         message = json.loads(content)
         assert message["type"] == "shutdown"
         assert "shut down" in message["message"].lower()
 
-        # Cleanup
-        inbox_path.unlink()
+    async def test_request_shutdown_creates_inbox_when_missing(
+        self, db_session: AsyncSession, tmp_path: Path
+    ) -> None:
+        """request_shutdown creates .cloglog/inbox if the file does not yet exist."""
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+        service = AgentService(repo, BoardRepository(db_session))
 
-    async def test_request_shutdown_sets_db_flag(self, db_session: AsyncSession) -> None:
+        worktree_path = tmp_path / "wt-fresh"
+        worktree_path.mkdir()  # no .cloglog subdir exists yet
+        reg = await service.register(project.id, str(worktree_path), "wt-fresh")
+        wt_id = reg["worktree_id"]
+
+        inbox_path = worktree_path / ".cloglog" / "inbox"
+        assert not inbox_path.exists()
+        assert not inbox_path.parent.exists()
+
+        await service.request_shutdown(wt_id)
+
+        assert inbox_path.exists()
+
+    async def test_request_shutdown_appends_does_not_truncate(
+        self, db_session: AsyncSession, tmp_path: Path
+    ) -> None:
+        """request_shutdown appends to existing inbox events rather than overwriting."""
+        import json
+
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+        service = AgentService(repo, BoardRepository(db_session))
+
+        worktree_path = tmp_path / "wt-append"
+        worktree_path.mkdir()
+        inbox_path = worktree_path / ".cloglog" / "inbox"
+        inbox_path.parent.mkdir()
+        prior = json.dumps({"type": "pr_merged", "pr_number": 1})
+        inbox_path.write_text(prior + "\n")
+
+        reg = await service.register(project.id, str(worktree_path), "wt-append")
+        wt_id = reg["worktree_id"]
+
+        await service.request_shutdown(wt_id)
+
+        lines = inbox_path.read_text().splitlines()
+        assert len(lines) == 2
+        assert json.loads(lines[0])["type"] == "pr_merged"
+        assert json.loads(lines[1])["type"] == "shutdown"
+
+    async def test_request_shutdown_sets_db_flag(
+        self, db_session: AsyncSession, tmp_path: Path
+    ) -> None:
         """request_shutdown also sets the shutdown_requested DB flag as fallback."""
         project = await _create_project(db_session)
         repo = AgentRepository(db_session)
         service = AgentService(repo, BoardRepository(db_session))
 
-        reg = await service.register(project.id, "/repo/wt-shutdown2", "wt-shutdown2")
+        worktree_path = tmp_path / "wt-shutdown2"
+        worktree_path.mkdir()
+        reg = await service.register(project.id, str(worktree_path), "wt-shutdown2")
         wt_id = reg["worktree_id"]
 
         await service.request_shutdown(wt_id)
@@ -1014,11 +1069,6 @@ class TestRequestShutdown:
         worktree = await repo.get_worktree(wt_id)
         assert worktree is not None
         assert worktree.shutdown_requested is True
-
-        # Cleanup inbox file
-        from pathlib import Path
-
-        Path(f"/tmp/cloglog-inbox-{wt_id}").unlink(missing_ok=True)
 
     async def test_request_shutdown_rejects_unknown_worktree(
         self, db_session: AsyncSession
@@ -1030,6 +1080,68 @@ class TestRequestShutdown:
 
         with pytest.raises(ValueError, match="not found"):
             await service.request_shutdown(uuid.uuid4())
+
+    async def test_request_shutdown_rejects_missing_worktree_path(
+        self, db_session: AsyncSession
+    ) -> None:
+        """request_shutdown raises a clear error when worktree_path is empty."""
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+        service = AgentService(repo, BoardRepository(db_session))
+
+        reg = await service.register(project.id, "", "wt-empty-path")
+        wt_id = reg["worktree_id"]
+
+        with pytest.raises(ValueError, match="worktree_path"):
+            await service.request_shutdown(wt_id)
+
+    async def test_request_shutdown_tail_receives_message(
+        self, db_session: AsyncSession, tmp_path: Path
+    ) -> None:
+        """Tailing subprocess observes the shutdown line from request_shutdown."""
+        import json
+
+        spawn = asyncio.create_subprocess_exec  # noqa: SLF001 — alias to keep line short
+
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+        service = AgentService(repo, BoardRepository(db_session))
+
+        worktree_path = tmp_path / "wt-tail"
+        worktree_path.mkdir()
+        inbox_dir = worktree_path / ".cloglog"
+        inbox_dir.mkdir()
+        inbox_path = inbox_dir / "inbox"
+        inbox_path.touch()
+
+        reg = await service.register(project.id, str(worktree_path), "wt-tail")
+        wt_id = reg["worktree_id"]
+
+        tail_proc = await spawn(
+            "tail",
+            "-F",
+            "-n",
+            "0",
+            str(inbox_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            # Give tail a beat to attach before we write.
+            await asyncio.sleep(0.2)
+            await service.request_shutdown(wt_id)
+
+            assert tail_proc.stdout is not None
+            line_bytes = await asyncio.wait_for(tail_proc.stdout.readline(), timeout=5.0)
+            line = line_bytes.decode().strip()
+            msg = json.loads(line)
+            assert msg["type"] == "shutdown"
+        finally:
+            tail_proc.terminate()
+            try:
+                await asyncio.wait_for(tail_proc.wait(), timeout=2.0)
+            except TimeoutError:
+                tail_proc.kill()
 
     async def test_heartbeat_no_longer_returns_shutdown_flag(
         self, db_session: AsyncSession

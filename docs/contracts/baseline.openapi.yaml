@@ -1520,7 +1520,11 @@ components:
       properties:
         worktree_path:
           type: string
+          minLength: 1
           title: Worktree Path
+          description: Absolute path to the git worktree on the calling side's
+            filesystem. Must be non-empty — downstream code derives the inbox
+            path (``<worktree_path>/.cloglog/inbox``) from this value.
         branch_name:
           type: string
           title: Branch Name

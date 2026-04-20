@@ -437,7 +437,7 @@ The MCP server exposes 28 tools organized by function:
 The database-based agent message queue (the `agent_messages` table) was dropped in migration `f1a2b3c4d5e6`. Two file-based channels replaced it:
 
 1. **Webhook notifications** (merge, review, CI events): The webhook pipeline appends events to `<worktree_path>/.cloglog/inbox`. Agents tail this file via the `Monitor` tool.
-2. **Shutdown requests**: `AgentService.request_shutdown()` writes a shutdown message to `/tmp/cloglog-inbox-{worktree_id}` for instant Monitor delivery, and also sets the `shutdown_requested` flag in the database (checked on next heartbeat).
+2. **Shutdown requests**: `AgentService.request_shutdown()` appends a shutdown JSON line to the same `<worktree_path>/.cloglog/inbox` file for instant Monitor delivery, and also sets the `shutdown_requested` flag in the database as a fallback.
 
 ---
 

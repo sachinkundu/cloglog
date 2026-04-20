@@ -1710,3 +1710,55 @@ async def test_retire_emits_event(client: AsyncClient):
         event = mock_publish.call_args[0][0]
         assert event.type == "task_retired"
         assert event.data["task_id"] == task["id"]
+
+
+# --- Dashboard request-shutdown delegates to AgentService ---
+
+
+async def test_dashboard_request_shutdown_writes_inbox(client: AsyncClient, tmp_path):
+    """Clicking "Request Shutdown" in the dashboard must write to
+    <worktree>/.cloglog/inbox via AgentService, not just flip a DB flag.
+    Regression guard for the T-215 review finding where the board-facing
+    route and the agent-facing route diverged.
+    """
+    import json
+
+    proj = (await client.post("/api/v1/projects", json={"name": "dash-shutdown"})).json()
+
+    worktree_path = tmp_path / "wt-dash-shutdown"
+    worktree_path.mkdir()
+
+    reg = await client.post(
+        "/api/v1/agents/register",
+        json={"worktree_path": str(worktree_path), "branch_name": "wt-dash-shutdown"},
+        headers={"Authorization": f"Bearer {proj['api_key']}"},
+    )
+    assert reg.status_code == 201
+    wt_id = reg.json()["worktree_id"]
+
+    resp = await client.post(f"/api/v1/projects/{proj['id']}/worktrees/{wt_id}/request-shutdown")
+    assert resp.status_code == 200
+    assert resp.json() == {"shutdown_requested": True}
+
+    inbox = worktree_path / ".cloglog" / "inbox"
+    assert inbox.exists(), "dashboard shutdown must write the inbox event, not just the DB flag"
+    msg = json.loads(inbox.read_text().strip())
+    assert msg["type"] == "shutdown"
+
+
+async def test_dashboard_request_shutdown_rejects_wrong_project(client: AsyncClient, tmp_path):
+    """A worktree on a different project returns 404 from the dashboard endpoint."""
+    proj_a = (await client.post("/api/v1/projects", json={"name": "dash-a"})).json()
+    proj_b = (await client.post("/api/v1/projects", json={"name": "dash-b"})).json()
+
+    worktree_path = tmp_path / "wt-owned-by-a"
+    worktree_path.mkdir()
+    reg = await client.post(
+        "/api/v1/agents/register",
+        json={"worktree_path": str(worktree_path), "branch_name": "wt-owned-by-a"},
+        headers={"Authorization": f"Bearer {proj_a['api_key']}"},
+    )
+    wt_id = reg.json()["worktree_id"]
+
+    resp = await client.post(f"/api/v1/projects/{proj_b['id']}/worktrees/{wt_id}/request-shutdown")
+    assert resp.status_code == 404

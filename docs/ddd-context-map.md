@@ -89,7 +89,7 @@ graph TB
 
 | Term | Definition |
 |------|-----------|
-| **API Key** | A per-project bearer token used by agents to authenticate. Generated when a project is created. Stored as a hash in the database. Shown once to the user, then placed in `~/.agent-vm/credentials/`. |
+| **API Key** | A per-project bearer token used by agents to authenticate. Generated when a project is created. Stored as a hash in the database. Shown once to the user, then placed in `~/.cloglog/credentials` (mode `0600`) or exported as `CLOGLOG_API_KEY` in the launcher's environment. MUST NOT live in `.mcp.json` or any per-worktree file (T-214); the MCP server reads only those two sources. See `docs/setup-credentials.md`. |
 | **SSE Stream** | A Server-Sent Events endpoint per project. The dashboard subscribes to receive real-time updates when tasks change status, agents come online/offline, or documents are attached. |
 | **Quality Gate** | The mandatory `make quality` check that must pass before any commit, push, or PR. Enforced by a Claude Code hook. Includes lint, type check, tests, and coverage. |
 

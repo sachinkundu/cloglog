@@ -764,13 +764,19 @@ cd mcp-server && make test
          "command": "node",
          "args": ["./mcp-server/dist/index.js"],
          "env": {
-           "CLOGLOG_URL": "http://localhost:8000",
-           "CLOGLOG_API_KEY": "<your-project-api-key>"
+           "CLOGLOG_URL": "http://localhost:8000"
          }
        }
      }
    }
    ```
+
+   The project API key (`CLOGLOG_API_KEY`) MUST NOT live in `.mcp.json` or
+   any per-project file — anything inside a project checkout is reachable by
+   tooling that bypasses MCP. Place it in `~/.cloglog/credentials` (mode
+   `0600`) or export it in the launcher's environment. See
+   [`docs/setup-credentials.md`](setup-credentials.md) for the full
+   resolution order and the operator one-liner.
 5. Start Claude Code in a worktree — it registers automatically and begins working tasks from the board
 
 ---

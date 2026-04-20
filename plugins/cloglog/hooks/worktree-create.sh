@@ -41,19 +41,12 @@ print('PROJECT_NAME=' + repr(cfg.get('project', '')))
 " 2>/dev/null)" || exit 0
 
 # --- Resolve API key ---
+# T-214: read from env or ~/.cloglog/credentials only. Per-worktree files
+# (.env, .mcp.json) MUST NOT carry the project key — anything inside the
+# worktree is reachable by tooling that bypasses MCP.
 API_KEY="${CLOGLOG_API_KEY:-}"
-if [[ -z "$API_KEY" ]]; then
-  API_KEY=$(grep CLOGLOG_API_KEY "${WORKTREE_PATH}/.env" 2>/dev/null | cut -d= -f2 || true)
-fi
-if [[ -z "$API_KEY" ]]; then
-  REPO_ROOT=$(cd "$WORKTREE_PATH" && git rev-parse --show-toplevel 2>/dev/null || true)
-  if [[ -n "$REPO_ROOT" ]] && [[ -f "${REPO_ROOT}/.mcp.json" ]]; then
-    API_KEY=$(python3 -c "
-import json
-d=json.load(open('${REPO_ROOT}/.mcp.json'))
-print(d.get('mcpServers',{}).get('cloglog',{}).get('env',{}).get('CLOGLOG_API_KEY',''))
-" 2>/dev/null || true)
-  fi
+if [[ -z "$API_KEY" ]] && [[ -r "${HOME}/.cloglog/credentials" ]]; then
+  API_KEY=$(grep -E '^CLOGLOG_API_KEY=' "${HOME}/.cloglog/credentials" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '"'"'" || true)
 fi
 
 # --- Register agent on the board ---

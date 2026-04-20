@@ -49,8 +49,17 @@ async def rotate(project_name: str | None) -> None:
         print(f"Project: {project.name} ({project.id})")
         print(f"New API key: {new_key}")
         print()
-        print("Set this in your MCP server config:")
-        print(f'  CLOGLOG_API_KEY={new_key}')
+        print("Replace the value in ~/.cloglog/credentials on every host that runs an")
+        print("MCP server (dev workstation, prod, alt-checkouts):")
+        print()
+        print(f"  printf 'CLOGLOG_API_KEY={new_key}\\n' > ~/.cloglog/credentials")
+        print("  chmod 600 ~/.cloglog/credentials")
+        print()
+        print("Or export in the launcher's environment:")
+        print(f"  export CLOGLOG_API_KEY={new_key}")
+        print()
+        print("Each MCP server picks up the new key on its next start. See")
+        print("docs/setup-credentials.md.")
 
 
 async def main() -> None:

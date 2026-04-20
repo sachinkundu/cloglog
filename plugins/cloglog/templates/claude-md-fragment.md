@@ -67,11 +67,11 @@
 
 ### Agent Communication
 
-- **Agents communicate via inbox files.** Each agent has an inbox at `/tmp/cloglog-inbox-{worktree_id}`.
-- **Receiving:** On registration, start a persistent Monitor on your inbox (`tail -f /tmp/cloglog-inbox-{your_worktree_id}`). Messages arrive as Monitor notifications in real-time.
-- **Sending:** Append to the target agent's inbox: `echo "[sender] message" >> /tmp/cloglog-inbox-{target_id}`.
-- **Inbox lifecycle:** Create the file on registration (`touch`), clean up on worktree removal (`rm`).
-- **Main agent inbox:** The main session should also Monitor its own inbox so worktree agents can report back (e.g., "PR #N merged").
+- **Agents communicate via inbox files.** Each agent has an inbox at `<worktree_path>/.cloglog/inbox` — the per-worktree file the webhook consumer and backend both write to. Never use `/tmp/cloglog-inbox-*`; that legacy location is removed (see `docs/design/agent-lifecycle.md` Section 3).
+- **Receiving:** On registration, start a persistent Monitor on your inbox (`tail -f <worktree_path>/.cloglog/inbox`). Messages arrive as Monitor notifications in real-time.
+- **Sending:** Append to the target agent's inbox: `echo "[sender] message" >> <target_worktree_path>/.cloglog/inbox`. Look up the target path on the `worktrees` table — do not construct a path from a worktree id.
+- **Inbox lifecycle:** The backend creates the inbox on first write (`mkdir -p` + append). On worktree removal, remove the `.cloglog/` directory.
+- **Main agent inbox:** The main session runs its own Monitor on `<project_root>/.cloglog/inbox` so worktree agents can report back (e.g., `pr_merged`, `agent_unregistered`).
 
 ### Autonomous Agent Behavior
 

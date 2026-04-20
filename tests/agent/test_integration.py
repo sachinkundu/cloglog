@@ -135,6 +135,78 @@ class TestAgentRegistrationAPI:
         )
         assert resp.status_code == 401
 
+    async def test_register_rejects_empty_worktree_path(self, client: AsyncClient) -> None:
+        """An empty worktree_path is rejected at the schema layer (422).
+
+        Defense for downstream code that derives the inbox path from
+        worktree.worktree_path — see request_shutdown in src/agent/services.py.
+        """
+        project = await _create_project_via_api(client)
+        resp = await client.post(
+            "/api/v1/agents/register",
+            json={"worktree_path": "", "branch_name": "wt-empty"},
+            headers=_auth(project["api_key"]),
+        )
+        assert resp.status_code == 422
+
+
+class TestRequestShutdownAPI:
+    async def test_request_shutdown_empty_path_returns_409(
+        self, client: AsyncClient, db_session: AsyncSession, tmp_path
+    ) -> None:
+        """Legacy row with empty worktree_path surfaces as a controlled 409.
+
+        New registrations are blocked at the schema (see TestAgentRegistrationAPI),
+        but a pre-schema row could still exist. The route maps the service's
+        ValueError to 409 Conflict instead of letting it bubble out as 500.
+        """
+        project = await _create_project_via_api(client)
+
+        # Register normally, then clear worktree_path directly on the row
+        # (bypassing the schema) to simulate a pre-migration record.
+        wt_id, _ = await _register_and_get_token(
+            client,
+            project["api_key"],
+            str(tmp_path / "wt-will-be-emptied"),
+        )
+
+        from src.agent.models import Worktree
+
+        result = await db_session.execute(select(Worktree).where(Worktree.id == uuid.UUID(wt_id)))
+        worktree = result.scalar_one()
+        worktree.worktree_path = ""
+        await db_session.commit()
+
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/request-shutdown",
+            headers=_auth(project["api_key"]),
+        )
+        assert resp.status_code == 409
+        assert "worktree_path" in resp.json()["detail"]
+
+    async def test_request_shutdown_success_returns_200(
+        self, client: AsyncClient, tmp_path
+    ) -> None:
+        """Happy path: shutdown delivered to <worktree>/.cloglog/inbox, 200 returned."""
+        import json
+
+        project = await _create_project_via_api(client)
+        worktree_path = tmp_path / "wt-shutdown-ok"
+        worktree_path.mkdir()
+        wt_id, _ = await _register_and_get_token(client, project["api_key"], str(worktree_path))
+
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/request-shutdown",
+            headers=_auth(project["api_key"]),
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"shutdown_requested": True}
+
+        inbox = worktree_path / ".cloglog" / "inbox"
+        assert inbox.exists()
+        msg = json.loads(inbox.read_text().strip())
+        assert msg["type"] == "shutdown"
+
 
 class TestHeartbeatAPI:
     async def test_heartbeat_success(self, client: AsyncClient) -> None:

@@ -5,13 +5,13 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 # --- Registration ---
 
 
 class RegisterRequest(BaseModel):
-    worktree_path: str
+    worktree_path: str = Field(min_length=1)
     branch_name: str = ""
 
 
@@ -98,7 +98,7 @@ class ArtifactPaths(BaseModel):
 
 
 class UnregisterByPathRequest(BaseModel):
-    worktree_path: str
+    worktree_path: str = Field(min_length=1)
     artifacts: ArtifactPaths | None = None
 
 

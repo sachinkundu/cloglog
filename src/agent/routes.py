@@ -186,14 +186,19 @@ async def report_artifact(
 async def request_shutdown(worktree_id: UUID, service: ServiceDep) -> dict[str, bool]:
     """Request a worktree agent to shut down gracefully.
 
-    Writes a shutdown message to the agent's inbox file for instant
-    Monitor-based delivery (sub-second latency), replacing the old
-    heartbeat polling approach.
+    Writes a shutdown JSON line to ``<worktree_path>/.cloglog/inbox`` for
+    instant Monitor-based delivery. If the stored worktree_path is empty
+    (legacy rows predating the schema's ``min_length=1``), the service
+    raises ``ValueError`` and we translate that to a 409 rather than letting
+    it bubble out as a 500.
     """
     worktree = await service._repo.get_worktree(worktree_id)
     if worktree is None:
         raise HTTPException(status_code=404, detail="Worktree not found")
-    await service.request_shutdown(worktree_id)
+    try:
+        await service.request_shutdown(worktree_id)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
     return {"shutdown_requested": True}
 
 

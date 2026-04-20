@@ -126,20 +126,32 @@ This handles CLAUDE.md learnings, work log consolidation, and worktree cleanup.
 
 ## Agent Communication
 
-Agents communicate via inbox files, not the backend API.
+Agents communicate via inbox files, not the backend API. The canonical path is
+`<worktree_path>/.cloglog/inbox` — one file per worktree, in the worktree tree
+itself. The webhook consumer, `request_shutdown`, and every sending agent all
+write to this single path. The legacy `/tmp/cloglog-inbox-{id}` location is
+removed (see `docs/design/agent-lifecycle.md` Section 3).
 
 - **Receiving:** On registration, start a persistent Monitor on your inbox:
   ```
-  Monitor("tail -f /tmp/cloglog-inbox-{your_worktree_id}", persistent: true, description: "Agent inbox")
+  Monitor("tail -f <your_worktree_path>/.cloglog/inbox", persistent: true, description: "Agent inbox")
   ```
-  Messages arrive as Monitor notifications in real-time — no polling needed.
+  Your worktree path is whatever `pwd` returns at session start (the launch
+  script always `cd`s into the worktree first) and is also returned by
+  `register_agent`. Messages arrive as Monitor notifications in real-time —
+  no polling needed.
 
-- **Sending:** To message another agent, append to their inbox file:
+- **Sending:** To message another agent, look up the target's `worktree_path`
+  on the `worktrees` table and append to that file:
   ```bash
-  echo "[{your_worktree_name}] your message here" >> /tmp/cloglog-inbox-{target_worktree_id}
+  echo "[{your_worktree_name}] your message here" >> <target_worktree_path>/.cloglog/inbox
   ```
+  Do NOT construct the path from a worktree id — the id is not part of the
+  inbox path any more.
 
-- **Format:** One message per line, prefixed with `[sender]`.
+- **Format:** One JSON event per line (`{"type": "...", ...}`). Plain text is
+  accepted by older consumers but new events should stick to the structured
+  shape.
 
 ## PR Workflow
 

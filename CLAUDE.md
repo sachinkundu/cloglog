@@ -106,10 +106,12 @@ These instructions are specific to cloglog's architecture and tech stack. They s
 - **Spawn `migration-validator`** when touching database models. It validates Alembic migration files (revision chain, upgrade/downgrade, model imports).
 - **Frontend worktrees need `cd frontend && npm install`** before tests will run — node_modules are not shared across worktrees.
 
-### Host / agent-VM Split Affects Data Access
-- **cloglog backend runs on the host; cloglog-mcp runs inside each agent-vm; worktree paths are VM-local.** See `docs/ddd-context-map.md`. Before writing any code in `src/` that stats, reads, or shells out to a path stored on a `Worktree` row, remember that path is NOT visible to the backend process in production — it exists inside the agent-vm's filesystem, not the host's. Derive such values in `cloglog-mcp` (which has the filesystem) and send them over the wire; keep the backend a pass-through.
-- **Corollary for data migrations:** Alembic migrations in `src/alembic/versions/` must be additive-only with respect to environment state. NEVER flip row status (`status='offline'`, soft-deletes, etc.) based on a host-side filesystem probe of a path that's actually in an agent-vm — the migration will silently zero out live agents. Destructive cleanup belongs in a reconciliation path (F-48 `/cloglog reconcile`), not migrations that run on every deploy.
-- **Corollary for upsert paths:** when an upsert accepts partial data (e.g., `upsert_worktree(branch_name=...)`), treat empty-string / null from the caller as "preserve existing," not "overwrite with empty." A transient probe failure on reconnect must not clobber a populated column.
+### Runtime & Deployment Assumptions
+
+cloglog, the MCP server, and every worktree agent share one host filesystem. There is no host/VM filesystem split. The backend can read and write worktree paths directly; no marshalling layer is needed. If that assumption ever changes it will be a separate, explicit project — do not pre-design for it.
+
+- **Don't rely on transient filesystem probes to drive destructive state changes.** Alembic migrations in `src/alembic/versions/` must be additive-only with respect to live environment state. Destructive cleanup (marking agents offline, soft-deleting rows, rewriting columns) belongs in a reconciliation path (F-48 `/cloglog reconcile`), not in migrations that run on every deploy.
+- **Upsert paths must preserve existing columns on partial input.** When an upsert accepts partial data (e.g., `upsert_worktree(branch_name=...)`), treat empty-string / null from the caller as "preserve existing," not "overwrite with empty." A transient probe failure or a reconnect must not clobber a populated column.
 - **`Path.cwd()` in backend code is a filesystem fingerprint of the launcher, not an invariant.** The backend may be launched from dev (`/home/sachin/code/cloglog`), prod (`../cloglog-prod`), or eventually Railway. Any subprocess that reads files via `-C`/`cwd=` must take its root from `Settings`, not `Path.cwd()` — otherwise codex/tools see a different tree than the PR's merge target. See T-255.
 
 ### Pydantic Schema Gotcha

@@ -5,9 +5,9 @@ import type { CloglogClient } from './client.js'
 /**
  * Resolve the current branch at ``worktree_path`` via ``git symbolic-ref``.
  *
- * Runs inside the agent-vm (where cloglog-mcp lives — see
- * ``docs/ddd-context-map.md``). The backend runs on the host and cannot see
- * VM-local paths, so we derive the branch name here and pass it over the wire.
+ * The caller (this MCP server) is already in the worktree and knows the
+ * branch; deriving it here keeps the cloglog backend a thin CRUD layer
+ * that doesn't need to shell out to ``git`` on every registration.
  *
  * Returns ``""`` when the path is missing, is not a git repo, or is in
  * detached-HEAD state (``symbolic-ref`` exits non-zero). The backend's
@@ -74,9 +74,9 @@ export interface ToolHandlers {
 export function createToolHandlers(client: CloglogClient): ToolHandlers {
   return {
     async register_agent({ worktree_path }) {
-      // Derive branch_name here (inside the VM) because the backend runs on
-      // the host and cannot reach VM-local paths. The backend stores whatever
-      // we send; its resolver guards handle any residual empty values safely.
+      // Derive branch_name here so the backend stays a thin CRUD layer —
+      // it stores whatever we send and never shells out to git itself.
+      // Resolver guards handle any residual empty values safely.
       const branch_name = deriveBranchName(worktree_path)
       return client.request('POST', '/api/v1/agents/register', {
         worktree_path,

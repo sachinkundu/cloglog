@@ -219,11 +219,11 @@ class TestAgentService:
         assert r2["current_task"]["id"] == task.id  # type: ignore[index]
 
     async def test_register_stores_branch_name_from_caller(self, db_session: AsyncSession) -> None:
-        """The backend is a pure pass-through for ``branch_name``. The MCP
-        server derives it inside the VM (see ``docs/ddd-context-map.md``) and
-        sends it; the backend stores exactly what it received. This test pins
-        that contract so a future refactor can't silently reintroduce a
-        backend-side filesystem probe that would not work in production."""
+        """The backend is a pure pass-through for ``branch_name``. The caller
+        (the MCP server or a direct API client) derives it and sends it; the
+        backend stores exactly what it received. This test pins that contract
+        so a future refactor can't silently reintroduce a backend-side
+        filesystem probe on every registration."""
         project = await _create_project(db_session)
         service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
         result = await service.register(project.id, "/vm-only/path/invisible", "wt-from-mcp")

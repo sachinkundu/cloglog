@@ -63,13 +63,13 @@ class AgentService:
     ) -> dict[str, object]:
         """Register or reconnect a worktree. Returns registration info.
 
-        ``branch_name`` must be derived by the caller. The MCP server
-        (``cloglog-mcp``) runs inside the agent-vm and has filesystem access to
-        the worktree; the backend (``cloglog``) runs on the host and does
-        **not** (see ``docs/ddd-context-map.md``). So we trust whatever the
-        MCP sends and never probe the filesystem here. The webhook resolver's
-        empty-``head_branch`` short-circuit and ``get_worktree_by_branch``'s
-        empty-guard are the safety nets if a caller does send an empty value.
+        ``branch_name`` is supplied by the caller rather than probed from the
+        filesystem here: the caller (the MCP server or a direct API client)
+        is already in the worktree and knows the branch, and keeping the
+        backend a pure CRUD layer avoids an unnecessary ``git`` subprocess
+        on every registration. The webhook resolver's empty-``head_branch``
+        short-circuit and ``get_worktree_by_branch``'s empty-guard are the
+        safety nets if a caller sends an empty value.
         """
         worktree, is_new = await self._repo.upsert_worktree(project_id, worktree_path, branch_name)
 
@@ -140,10 +140,6 @@ class AgentService:
                 f"Worktree {worktree_id} has no worktree_path; cannot deliver shutdown signal"
             )
 
-        # TODO: multi-VM — forward via MCP. worktree_path is VM-local (see
-        # docs/ddd-context-map.md "Host / agent-VM Split"). Host-side write
-        # is only correct while the host IS the filesystem root. Multi-VM
-        # deploy must route this through cloglog-mcp inside the target VM.
         inbox_path = Path(worktree.worktree_path) / ".cloglog" / "inbox"
         message = json.dumps(
             {

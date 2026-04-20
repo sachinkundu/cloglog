@@ -124,6 +124,16 @@ run-backend: ## Start the FastAPI backend
 		--reload-exclude '*.pyc'
 
 prod: ## Start prod server (gunicorn + vite preview, foreground — run in a zellij pane)
+	@if [ -f /tmp/cloglog-prod.pid ] && kill -0 "$$(cat /tmp/cloglog-prod.pid)" 2>/dev/null; then \
+		echo "ERROR: prod gunicorn is already running (pid $$(cat /tmp/cloglog-prod.pid)) on :8001."; \
+		echo "       Use 'make promote' to rotate workers, or 'make prod-stop' first."; \
+		exit 1; \
+	fi
+	@if ss -tln 2>/dev/null | awk '{print $$4}' | grep -qE '(^|:)8001$$'; then \
+		echo "ERROR: port 8001 is in use by another process, but /tmp/cloglog-prod.pid does not claim it."; \
+		echo "       Run 'ss -tlnp | grep :8001' to identify the owner, then 'make prod-stop' or clear it manually."; \
+		exit 1; \
+	fi
 	@echo "Starting cloglog prod server..."
 	@echo "  Backend:  http://localhost:8001"
 	@echo "  Frontend: http://localhost:4173"
@@ -145,6 +155,16 @@ prod: ## Start prod server (gunicorn + vite preview, foreground — run in a zel
 		wait
 
 prod-bg: ## Start prod server in background
+	@if [ -f /tmp/cloglog-prod.pid ] && kill -0 "$$(cat /tmp/cloglog-prod.pid)" 2>/dev/null; then \
+		echo "ERROR: prod gunicorn is already running (pid $$(cat /tmp/cloglog-prod.pid)) on :8001."; \
+		echo "       Use 'make promote' to rotate workers, or 'make prod-stop' first."; \
+		exit 1; \
+	fi
+	@if ss -tln 2>/dev/null | awk '{print $$4}' | grep -qE '(^|:)8001$$'; then \
+		echo "ERROR: port 8001 is in use by another process, but /tmp/cloglog-prod.pid does not claim it."; \
+		echo "       Run 'ss -tlnp | grep :8001' to identify the owner, then 'make prod-stop' or clear it manually."; \
+		exit 1; \
+	fi
 	@echo "Starting cloglog prod server (background)..."
 	@echo "  Backend:  http://localhost:8001"
 	@echo "  Frontend: http://localhost:4173"

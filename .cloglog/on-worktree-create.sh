@@ -28,3 +28,12 @@ fi
 if [[ "$WORKTREE_NAME" == wt-mcp* ]] && [[ -d "mcp-server" ]]; then
   cd mcp-server && npm install && cd ..
 fi
+
+# T-214: warn if the project API key cannot be located.
+# The MCP server reads CLOGLOG_API_KEY from env or ~/.cloglog/credentials only.
+# Per-worktree files (.env, .mcp.json) must NOT carry the key.
+if [[ -z "${CLOGLOG_API_KEY:-}" ]] && [[ ! -r "${HOME}/.cloglog/credentials" ]]; then
+  echo "WARN: CLOGLOG_API_KEY not set and ${HOME}/.cloglog/credentials is missing." >&2
+  echo "      The MCP server in this worktree will fail to authenticate." >&2
+  echo "      See docs/setup-credentials.md for setup instructions." >&2
+fi

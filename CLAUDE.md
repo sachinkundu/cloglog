@@ -69,7 +69,8 @@ cd mcp-server && make build  # Build TypeScript
 
 - **Run frontend tests from `frontend/` directory:** `cd frontend && npx vitest run`. Running from repo root causes `document is not defined` errors.
 - **Run backend tests from repo root:** `uv run pytest` from `/home/sachin/code/cloglog`.
-- **Sync dev deps with `--extra dev`, not `--group dev`:** fresh `.venv`s created by worktree bootstrap need `uv sync --extra dev` to pull the full toolchain (`pytest`, `mypy`, `ruff`, `pytest-cov`, etc.) from `[project.optional-dependencies].dev`. `--group dev` reads `[dependency-groups].dev`, a smaller set — `make quality` will fail with confusing `ModuleNotFoundError` messages during collection because `uv run` falls back to a system pytest shim.
+- **Worktree bootstrap runs `uv sync --extra dev` automatically.** The dev toolchain (`pytest`, `mypy`, `ruff`, `pytest-cov`) lives under `[project.optional-dependencies].dev`, not `[dependency-groups].dev`. If you hit a `ModuleNotFoundError` on a fresh `.venv` (e.g. `No module named 'respx'`), the root cause is almost always that `pytest` is missing from the venv and `uv run` fell back to a system shim — re-run `uv sync --extra dev` manually.
+- **`mcp-server/dist/` is gitignored and rebuilt automatically.** It is listed in both the repo-root `.gitignore` and `mcp-server/.gitignore`. Do NOT commit `dist/` — `on-worktree-create.sh` and CI rebuild it. When your change touches `mcp-server/src/`, run `cd mcp-server && make build` locally so `make quality`'s contract check sees the current artifact.
 
 ## Quality Gate
 

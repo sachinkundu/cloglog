@@ -121,7 +121,13 @@ class AgentService:
     # --- Shutdown ---
 
     async def request_shutdown(self, worktree_id: UUID) -> None:
-        """Request agent shutdown via inbox file for instant Monitor delivery."""
+        """Request agent shutdown via the worktree inbox.
+
+        Writes a shutdown JSON line to ``<worktree_path>/.cloglog/inbox`` —
+        the same file the webhook consumer writes to and the worktree agent
+        tails. See ``docs/design/agent-lifecycle.md`` section 3 for the
+        canonical inbox contract.
+        """
         import json
         from pathlib import Path
 
@@ -129,8 +135,16 @@ class AgentService:
         if worktree is None:
             raise ValueError(f"Worktree {worktree_id} not found")
 
-        # Write shutdown message to inbox file — Monitor picks this up instantly
-        inbox_path = Path(f"/tmp/cloglog-inbox-{worktree_id}")
+        if not worktree.worktree_path:
+            raise ValueError(
+                f"Worktree {worktree_id} has no worktree_path; cannot deliver shutdown signal"
+            )
+
+        # TODO: multi-VM — forward via MCP. worktree_path is VM-local (see
+        # docs/ddd-context-map.md "Host / agent-VM Split"). Host-side write
+        # is only correct while the host IS the filesystem root. Multi-VM
+        # deploy must route this through cloglog-mcp inside the target VM.
+        inbox_path = Path(worktree.worktree_path) / ".cloglog" / "inbox"
         message = json.dumps(
             {
                 "type": "shutdown",
@@ -142,9 +156,14 @@ class AgentService:
                 ),
             }
         )
-        inbox_path.write_text(message + "\n")
+        try:
+            inbox_path.parent.mkdir(parents=True, exist_ok=True)
+            with inbox_path.open("a") as f:
+                f.write(message + "\n")
+        except OSError as exc:
+            raise OSError(f"Failed to write shutdown signal to {inbox_path}: {exc}") from exc
 
-        # Also set the DB flag as fallback for agents not yet using Monitor
+        # DB flag stays as a secondary signal for agents not on Monitor.
         await self._repo.request_shutdown(worktree_id)
 
     # --- Heartbeat ---

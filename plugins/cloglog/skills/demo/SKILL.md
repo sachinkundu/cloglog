@@ -75,7 +75,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../../../scripts/worktree-ports.sh"  # sets $BACKEND_PORT, $FRONTEND_PORT, $DATABASE_URL
 
-DEMO_FILE="docs/demos/$(git rev-parse --abbrev-ref HEAD)/demo.md"
+# Normalize slashes in branch names — scripts/check-demo.sh maps feat/foo → feat-foo.
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+DEMO_FILE="docs/demos/${BRANCH//\//-}/demo.md"
 BASE="http://localhost:${BACKEND_PORT}/api/v1"
 
 uvx showboat init "$DEMO_FILE" "<stakeholder sentence here>"
@@ -126,8 +128,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../../../scripts/worktree-ports.sh"  # sets $BACKEND_PORT, $FRONTEND_PORT
 
-DEMO_FILE="docs/demos/$(git rev-parse --abbrev-ref HEAD)/demo.md"
-DEMO_DIR="docs/demos/$(git rev-parse --abbrev-ref HEAD)"
+# Normalize slashes in branch names — scripts/check-demo.sh maps feat/foo → feat-foo.
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+DEMO_DIR="docs/demos/${BRANCH//\//-}"
+DEMO_FILE="$DEMO_DIR/demo.md"
 
 uvx showboat init "$DEMO_FILE" "<stakeholder sentence here>"
 

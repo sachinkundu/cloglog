@@ -12,10 +12,11 @@ SCRIPT_DIR="${REPO_ROOT}/scripts"
 WORKTREE_PATH="$WORKTREE_PATH" WORKTREE_NAME="$WORKTREE_NAME" \
   "$SCRIPT_DIR/worktree-infra.sh" up
 
-# Install Python dependencies
+# Install Python dependencies (include dev toolchain: pytest, mypy, ruff, pytest-cov)
 cd "$WORKTREE_PATH"
 if [[ -f "pyproject.toml" ]]; then
-  uv sync 2>/dev/null || true
+  uv sync --extra dev || true
+  [[ -x "$WORKTREE_PATH/.venv/bin/pytest" ]] || echo "WARN: pytest not in $WORKTREE_PATH/.venv — re-run 'uv sync --extra dev' manually"
 fi
 
 # Frontend deps (if worktree touches frontend)

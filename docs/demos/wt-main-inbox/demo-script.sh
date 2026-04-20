@@ -7,7 +7,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../../../scripts/worktree-ports.sh"
 
-DEMO_FILE="docs/demos/$(git rev-parse --abbrev-ref HEAD)/demo.md"
+# Normalize slashes in branch names to hyphens so the demo directory matches
+# the lookup in scripts/check-demo.sh (which does ${FEATURE//\//-} at line 46).
+# Without this, a branch like "feat/foo" would write to docs/demos/feat/foo/
+# while make demo-check would look for docs/demos/feat-foo/ and fail.
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+BRANCH_DIR="${BRANCH//\//-}"
+DEMO_FILE="docs/demos/$BRANCH_DIR/demo.md"
 rm -f "$DEMO_FILE"
 
 uvx showboat init "$DEMO_FILE" "Webhook events for close-wave PRs (wt-close-*) now reach the main agent's inbox instead of being silently dropped — the main agent finally sees its own PRs merge."

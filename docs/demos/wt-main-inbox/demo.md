@@ -1,7 +1,7 @@
 # Webhook events for close-wave PRs (wt-close-*) now reach the main agent's inbox instead of being silently dropped — the main agent finally sees its own PRs merge.
 
-*2026-04-20T09:32:50Z by Showboat 0.6.1*
-<!-- showboat-id: 5c488076-e15e-473c-8ca1-f28a1a35bd8e -->
+*2026-04-20T09:41:39Z by Showboat 0.6.1*
+<!-- showboat-id: eb22f4d9-eeab-4bc1-959c-0192b6d54a65 -->
 
 The main-agent inbox path is opt-in via Settings — unset by default so the pre-T-253 drop behavior is preserved for projects that don't want it.
 

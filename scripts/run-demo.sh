@@ -34,11 +34,15 @@ if [[ -z "$FEATURE" ]]; then
   exit 1
 fi
 
+# Normalize slashes so slash-named branches (feat/foo) match demo dirs (feat-foo).
+# Matches scripts/check-demo.sh and plugins/cloglog/skills/demo/SKILL.md.
+FEATURE_NORM="${FEATURE//\//-}"
+
 # Find the demo directory
 DEMO_DIR=""
 for dir in docs/demos/*/; do
   [[ -d "$dir" ]] || continue
-  if echo "$dir" | grep -qi "$FEATURE"; then
+  if echo "$dir" | grep -qi "$FEATURE_NORM"; then
     DEMO_DIR="$dir"
     break
   fi

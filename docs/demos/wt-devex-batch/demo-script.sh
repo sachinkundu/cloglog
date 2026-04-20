@@ -24,14 +24,14 @@ uvx showboat exec "$DEMO_FILE" bash \
 
 # ────────────────────────────── T-251 ──────────────────────────────
 uvx showboat note "$DEMO_FILE" \
-  "T-251: demo-script templates in plugins/cloglog/skills/demo/SKILL.md now normalize slash-named branches via \${BRANCH//\\//-}, matching scripts/check-demo.sh. Verified: the normalized form is present twice and the raw 'docs/demos/\$(git rev-parse ...)' pattern no longer appears."
+  "T-251: both halves of the demo workflow now normalize slash-named branches via \${BRANCH//\\//-}, matching scripts/check-demo.sh. (a) plugins/cloglog/skills/demo/SKILL.md templates produce docs/demos/feat-foo/ paths, (b) scripts/run-demo.sh uses FEATURE_NORM for its directory lookup so 'make demo' actually finds the written path."
 
 uvx showboat exec "$DEMO_FILE" bash \
-  "printf 'normalized_form_hits=%s\nraw_form_hits=%s\n' \"\$(grep -cE 'BRANCH//\\\\/' plugins/cloglog/skills/demo/SKILL.md)\" \"\$(grep -cE 'docs/demos/\\\$\\(git rev-parse' plugins/cloglog/skills/demo/SKILL.md)\""
+  "printf 'skill_md_normalized_hits=%s\nskill_md_raw_hits=%s\nrun_demo_uses_feature_norm=%s\n' \"\$(grep -cE 'BRANCH//\\\\/' plugins/cloglog/skills/demo/SKILL.md)\" \"\$(grep -cE 'docs/demos/\\\$\\(git rev-parse' plugins/cloglog/skills/demo/SKILL.md)\" \"\$(grep -c 'FEATURE_NORM' scripts/run-demo.sh)\""
 
 # ────────────────────────────── T-252 ──────────────────────────────
 uvx showboat note "$DEMO_FILE" \
-  "T-252: no live template carried the 'they are checked in' phrasing — the misstatement existed only in a work-log. CLAUDE.md now documents durably that mcp-server/dist/ is gitignored and auto-rebuilt by on-worktree-create.sh / CI."
+  "T-252: no live template carried the 'they are checked in' phrasing — the misstatement existed only in a work-log. CLAUDE.md now documents durably that mcp-server/dist/ is gitignored, never committed, and must be rebuilt locally with 'cd mcp-server && make build' when mcp-server/src/ changes (neither on-worktree-create.sh nor CI rebuilds it)."
 
 uvx showboat exec "$DEMO_FILE" bash \
   "printf 'stale_phrase_in_live_templates=%s\nnew_guidance_in_claude_md=%s\n' \"\$(grep -l 'they are checked in' plugins/cloglog/skills/*/SKILL.md CLAUDE.md 2>/dev/null | wc -l)\" \"\$(grep -c 'mcp-server/dist.*gitignored' CLAUDE.md)\""

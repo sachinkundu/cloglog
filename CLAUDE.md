@@ -70,7 +70,7 @@ cd mcp-server && make build  # Build TypeScript
 - **Run frontend tests from `frontend/` directory:** `cd frontend && npx vitest run`. Running from repo root causes `document is not defined` errors.
 - **Run backend tests from repo root:** `uv run pytest` from `/home/sachin/code/cloglog`.
 - **Worktree bootstrap runs `uv sync --extra dev` automatically.** The dev toolchain (`pytest`, `mypy`, `ruff`, `pytest-cov`) lives under `[project.optional-dependencies].dev`, not `[dependency-groups].dev`. If you hit a `ModuleNotFoundError` on a fresh `.venv` (e.g. `No module named 'respx'`), the root cause is almost always that `pytest` is missing from the venv and `uv run` fell back to a system shim — re-run `uv sync --extra dev` manually.
-- **`mcp-server/dist/` is gitignored and rebuilt automatically.** It is listed in both the repo-root `.gitignore` and `mcp-server/.gitignore`. Do NOT commit `dist/` — `on-worktree-create.sh` and CI rebuild it. When your change touches `mcp-server/src/`, run `cd mcp-server && make build` locally so `make quality`'s contract check sees the current artifact.
+- **`mcp-server/dist/` is gitignored — you rebuild it, nothing else does.** It is listed in both the repo-root `.gitignore` and `mcp-server/.gitignore`. Do NOT commit `dist/`. Neither `on-worktree-create.sh` (only `npm install`s on `wt-mcp*` worktrees) nor CI (`.github/workflows/ci.yml` runs `npm ci` + tests, no `npm run build`) rebuilds it. If your change touches `mcp-server/src/`, run `cd mcp-server && make build` yourself — local MCP clients consume `mcp-server/dist/index.js` directly, and `scripts/demo-update-task-status.mjs` imports from `../dist/server.js`, so stale artifacts bite at runtime.
 
 ## Quality Gate
 

@@ -8,6 +8,18 @@ set -e
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT_DIR="${REPO_ROOT}/scripts"
 
+# T-242: every worktree starts with a fresh shutdown-artifacts/ directory.
+# Without this, newly created worktrees inherit stale work-log.md / learnings.md
+# from whichever worktree seeded the template (originally wt-depgraph,
+# 2026-04-05). Four downstream agents (T-247, T-249, T-253, devex-batch) had
+# to overwrite before noticing the stale content. Agents generate these
+# files from scratch during the shutdown sequence — no template seeding is
+# required here; see docs/design/agent-lifecycle.md §2 step 4.
+if [[ -n "${WORKTREE_PATH:-}" ]]; then
+  rm -rf "${WORKTREE_PATH}/shutdown-artifacts"
+  mkdir -p "${WORKTREE_PATH}/shutdown-artifacts"
+fi
+
 # Set up isolated infrastructure (ports, database, migrations, .env)
 WORKTREE_PATH="$WORKTREE_PATH" WORKTREE_NAME="$WORKTREE_NAME" \
   "$SCRIPT_DIR/worktree-infra.sh" up

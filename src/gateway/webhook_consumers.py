@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -16,6 +17,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.gateway.webhook_dispatcher import WebhookEvent, WebhookEventType
+from src.shared.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,31 @@ logger = logging.getLogger(__name__)
 # and "skipped" — must not trigger a ci_failed notification.
 # See: https://docs.github.com/en/rest/checks/runs#get-a-check-run
 CI_FAILED_CONCLUSIONS = frozenset({"failure", "cancelled", "timed_out", "action_required", "stale"})
+
+# Event types that may be routed to the main agent inbox when no worktree
+# resolves. ISSUE_COMMENT is intentionally excluded — bots generate heavy
+# noise on that event and the main agent should not receive it.
+MAIN_AGENT_EVENTS = frozenset(
+    {
+        WebhookEventType.PR_MERGED,
+        WebhookEventType.PR_CLOSED,
+        WebhookEventType.REVIEW_SUBMITTED,
+        WebhookEventType.REVIEW_COMMENT,
+        WebhookEventType.CHECK_RUN_COMPLETED,
+    }
+)
+
+
+@dataclass(frozen=True)
+class ResolvedRecipient:
+    """Resolved destination for a webhook event.
+
+    When ``worktree_id`` is None the recipient is the main agent inbox,
+    not a regular worktree agent.
+    """
+
+    inbox_path: Path
+    worktree_id: UUID | None
 
 
 class AgentNotifierConsumer:
@@ -49,7 +76,7 @@ class AgentNotifierConsumer:
 
         factory = self._session_factory or async_session_factory
         async with factory() as session:
-            # Resolve which agent owns this PR — returns (worktree_id, worktree_path)
+            # Resolve which agent owns this PR
             result = await self._resolve_agent(event, session)
 
             # For PR_MERGED, update the task's pr_merged flag regardless of agent status
@@ -60,34 +87,38 @@ class AgentNotifierConsumer:
                 logger.debug("No agent found for PR %s", event.pr_url)
                 return
 
-            worktree_id, worktree_path = result
-
             # Build message based on event type
             message = self._build_message(event)
             if message is None:
                 return
 
-            # Inbox is at <worktree_path>/.cloglog/inbox (matches agent launch config)
-            inbox_path = Path(worktree_path) / ".cloglog" / "inbox"
+            inbox_path = result.inbox_path
             inbox_path.parent.mkdir(parents=True, exist_ok=True)
             with inbox_path.open("a") as f:
                 f.write(json.dumps(message) + "\n")
             logger.info(
                 "Notified agent %s of %s on PR #%d",
-                worktree_id,
+                result.worktree_id,
                 event.type,
                 event.pr_number,
             )
 
     async def _resolve_agent(
         self, event: WebhookEvent, session: AsyncSession
-    ) -> tuple[UUID, str] | None:
-        """Resolve PR event to owning worktree.
+    ) -> ResolvedRecipient | None:
+        """Resolve PR event to owning worktree or main-agent inbox.
 
         Primary: match Task.pr_url → worktree_id → Worktree.worktree_path.
-        Fallback: match Worktree.branch_name (for PRs opened before agent sets pr_url).
+        Secondary: match Worktree.branch_name (for PRs opened before agent sets pr_url).
+        Tertiary: route to main-agent inbox when settings.main_agent_inbox_path is set
+          and the event type is in MAIN_AGENT_EVENTS. This handles close-wave PRs
+          (wt-close-* branches with no registered worktree) so they reach the main
+          agent instead of being silently dropped.
 
-        Returns (worktree_id, worktree_path) or None.
+        ISSUE_COMMENT is excluded from the main-agent fallback because bots generate
+        heavy noise on that event type.
+
+        Returns ResolvedRecipient or None.
         """
         from src.agent.repository import AgentRepository
         from src.board.repository import BoardRepository
@@ -100,21 +131,34 @@ class AgentNotifierConsumer:
         if task is not None and task.worktree_id is not None:
             worktree = await agent_repo.get_worktree(task.worktree_id)
             if worktree is not None:
-                return (worktree.id, worktree.worktree_path)
+                inbox_path = Path(worktree.worktree_path) / ".cloglog" / "inbox"
+                return ResolvedRecipient(inbox_path=inbox_path, worktree_id=worktree.id)
 
-        # Fallback: match by branch name. Issue-comment webhooks don't carry
+        # Both the branch-name fallback and the main-agent fallback require the
+        # event's repo to be a configured cloglog project. Gating on this also
+        # defends the main-agent inbox against valid signed webhooks from repos
+        # that happen to share this backend's webhook endpoint/secret but are
+        # NOT this cloglog project — without the guard, a foreign repo's PR
+        # merge could land in our main-agent inbox simply because the primary
+        # pr_url lookup missed.
+        project = await repo.find_project_by_repo(event.repo_full_name)
+        if project is None:
+            return None
+
+        # Secondary: match by branch name. Issue-comment webhooks don't carry
         # a head_branch the way PR events do, so skip the branch lookup when
         # it's empty — otherwise an equality match on '' would fan out across
         # every online worktree (many have legacy empty branch_name rows) and
         # raise MultipleResultsFound.
-        if not event.head_branch:
-            return None
-        project = await repo.find_project_by_repo(event.repo_full_name)
-        if project is None:
-            return None
-        worktree = await agent_repo.get_worktree_by_branch(project.id, event.head_branch)
-        if worktree is not None:
-            return (worktree.id, worktree.worktree_path)
+        if event.head_branch:
+            worktree = await agent_repo.get_worktree_by_branch(project.id, event.head_branch)
+            if worktree is not None:
+                inbox_path = Path(worktree.worktree_path) / ".cloglog" / "inbox"
+                return ResolvedRecipient(inbox_path=inbox_path, worktree_id=worktree.id)
+
+        # Tertiary: fall back to main-agent inbox for eligible event types
+        if settings.main_agent_inbox_path is not None and event.type in MAIN_AGENT_EVENTS:
+            return ResolvedRecipient(inbox_path=settings.main_agent_inbox_path, worktree_id=None)
 
         return None
 

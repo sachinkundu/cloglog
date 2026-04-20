@@ -20,8 +20,13 @@ from src.agent.models import Worktree
 from src.agent.repository import AgentRepository
 from src.board.models import Epic, Feature, Project, Task
 from src.board.repository import BoardRepository
-from src.gateway.webhook_consumers import AgentNotifierConsumer
+from src.gateway.webhook_consumers import (
+    MAIN_AGENT_EVENTS,
+    AgentNotifierConsumer,
+    ResolvedRecipient,
+)
 from src.gateway.webhook_dispatcher import WebhookEvent, WebhookEventType
+from src.shared.config import settings
 
 REPO = "sachinkundu/cloglog"
 BRANCH = "wt-test-branch"
@@ -136,9 +141,8 @@ class TestResolveAgent:
 
         result = await consumer._resolve_agent(event, db_session)
         assert result is not None
-        wt_id, wt_path = result
-        assert wt_id == worktree.id
-        assert wt_path == worktree.worktree_path
+        assert result.worktree_id == worktree.id
+        assert result.inbox_path == Path(worktree.worktree_path) / ".cloglog" / "inbox"
 
     @pytest.mark.asyncio
     async def test_resolve_by_branch_fallback(self, db_session: AsyncSession) -> None:
@@ -198,9 +202,8 @@ class TestResolveAgent:
 
         result = await consumer._resolve_agent(event, db_session)
         assert result is not None
-        wt_id, wt_path = result
-        assert wt_id == worktree.id
-        assert wt_path == worktree.worktree_path
+        assert result.worktree_id == worktree.id
+        assert result.inbox_path == Path(worktree.worktree_path) / ".cloglog" / "inbox"
 
     @pytest.mark.asyncio
     async def test_resolve_no_match(self, db_session: AsyncSession) -> None:
@@ -826,3 +829,170 @@ class TestAgentRepositoryBranchLookup:
         repo = AgentRepository(db_session)
         found = await repo.get_worktree_by_branch(_project.id, branch)
         assert found is None
+
+
+# ---------------------------------------------------------------------------
+# T-253 Main-Agent Fallback
+# ---------------------------------------------------------------------------
+
+
+class TestMainAgentFallback:
+    """Tests for T-253: close-wave PRs (wt-close-* branches with no registered
+    worktree) should reach the main agent rather than being silently dropped.
+
+    When (a) Task.pr_url lookup misses, (b) Worktree.branch_name fallback
+    misses, AND (c) settings.main_agent_inbox_path is configured, the resolver
+    routes the event to the main agent's inbox. ISSUE_COMMENT is deliberately
+    excluded from this fallback because bots generate heavy noise on that event.
+    """
+
+    @pytest.mark.asyncio
+    async def test_resolver_returns_main_agent_recipient_when_config_set_and_all_lookups_miss(
+        self, db_session: AsyncSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """T-253: resolver returns a ResolvedRecipient pointing at the main-agent
+        inbox when settings.main_agent_inbox_path is configured and neither the
+        pr_url nor branch_name matches any known worktree.
+
+        This is the critical path for close-wave PRs whose branch (e.g.
+        wt-close-foo) has no registered Worktree row.
+        """
+        main_inbox = tmp_path / "main-inbox"
+        monkeypatch.setattr(settings, "main_agent_inbox_path", main_inbox)
+
+        event = _make_event(
+            event_type=WebhookEventType.PR_MERGED,
+            pr_url=_unique_pr_url(),
+            head_branch="wt-close-no-match",
+        )
+        consumer = AgentNotifierConsumer()
+
+        result = await consumer._resolve_agent(event, db_session)
+
+        assert result is not None
+        assert isinstance(result, ResolvedRecipient)
+        assert result.inbox_path == main_inbox
+        assert result.worktree_id is None
+
+    @pytest.mark.asyncio
+    async def test_resolver_returns_none_when_config_unset(
+        self, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """T-253 regression: when settings.main_agent_inbox_path is None (default),
+        the resolver must still return None for events with no matching worktree —
+        the original behaviour is preserved and no fallback fires.
+        """
+        monkeypatch.setattr(settings, "main_agent_inbox_path", None)
+
+        event = _make_event(
+            event_type=WebhookEventType.PR_MERGED,
+            pr_url=_unique_pr_url(),
+            head_branch="wt-close-no-match",
+        )
+        consumer = AgentNotifierConsumer()
+
+        result = await consumer._resolve_agent(event, db_session)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_handle_appends_json_to_main_inbox_when_worktree_lookup_misses(
+        self, db_session: AsyncSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """T-253 integration: handle() must write a JSON line to the main-agent
+        inbox file when the event cannot be resolved to any worktree agent.
+
+        This simulates a close-wave PR (wt-close-foo) merging with no
+        registered Worktree — the main agent must receive the pr_merged event
+        so it can run post-merge processing.
+        """
+        main_inbox = tmp_path / "main-inbox"
+        monkeypatch.setattr(settings, "main_agent_inbox_path", main_inbox)
+
+        # Seed an unrelated project/worktree so the DB is not empty, but
+        # use a pr_url that does NOT match the event — ensuring both lookups miss.
+        unrelated_pr = _unique_pr_url()
+        await _seed_project_and_task(db_session, pr_url=unrelated_pr)
+
+        event_pr_url = _unique_pr_url()
+        event = _make_event(
+            event_type=WebhookEventType.PR_MERGED,
+            pr_url=event_pr_url,
+            head_branch="wt-close-foo",
+        )
+        consumer = AgentNotifierConsumer(session_factory=_make_session_factory(db_session))
+
+        await consumer.handle(event)
+
+        assert main_inbox.exists(), "Main-agent inbox file must be created by handle()"
+        lines = main_inbox.read_text().strip().split("\n")
+        assert len(lines) == 1
+        msg = json.loads(lines[0])
+        assert msg["type"] == "pr_merged"
+
+    @pytest.mark.asyncio
+    async def test_worktree_still_routed_to_own_inbox_when_pr_url_matches(
+        self, db_session: AsyncSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """T-253 regression: when the primary pr_url lookup succeeds, the main-agent
+        fallback must NOT fire — the event belongs to the matched worktree agent.
+
+        Ensures configuring main_agent_inbox_path does not intercept events that
+        already have a registered owner.
+        """
+        main_inbox = tmp_path / "main-inbox"
+        monkeypatch.setattr(settings, "main_agent_inbox_path", main_inbox)
+
+        wt_dir = tmp_path / "wt-real"
+        wt_dir.mkdir()
+        _project, task, _worktree = await _seed_project_and_task(
+            db_session, worktree_path=str(wt_dir)
+        )
+
+        event = _make_event(
+            event_type=WebhookEventType.PR_MERGED,
+            pr_url=task.pr_url,  # type: ignore[arg-type]
+        )
+        consumer = AgentNotifierConsumer(session_factory=_make_session_factory(db_session))
+
+        await consumer.handle(event)
+
+        # The worktree's own inbox must have received the event
+        worktree_inbox = wt_dir / ".cloglog" / "inbox"
+        assert worktree_inbox.exists(), "Worktree inbox must be written when pr_url matches"
+        msg = json.loads(worktree_inbox.read_text().strip())
+        assert msg["type"] == "pr_merged"
+
+        # The main-agent inbox must NOT have been touched
+        assert not main_inbox.exists(), (
+            "Main-agent inbox must NOT be written when a worktree owns the PR"
+        )
+
+    @pytest.mark.asyncio
+    async def test_issue_comment_does_not_reach_main_agent(
+        self, db_session: AsyncSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """T-253 filter: ISSUE_COMMENT must NOT fall back to the main-agent inbox
+        even when settings.main_agent_inbox_path is configured and no worktree
+        matches.
+
+        Bot spam on issue_comment would overwhelm the main agent's inbox; this
+        event type is deliberately excluded from MAIN_AGENT_EVENTS.
+        """
+        main_inbox = tmp_path / "main-inbox"
+        monkeypatch.setattr(settings, "main_agent_inbox_path", main_inbox)
+
+        event = _make_event(
+            event_type=WebhookEventType.ISSUE_COMMENT,
+            pr_url=_unique_pr_url(),
+            head_branch="",  # issue_comment arrives with empty head_branch
+            raw={"comment": {"body": "bot spam"}},
+        )
+        consumer = AgentNotifierConsumer()
+
+        result = await consumer._resolve_agent(event, db_session)
+
+        assert result is None, (
+            "ISSUE_COMMENT must not be routed to main agent; "
+            f"MAIN_AGENT_EVENTS={MAIN_AGENT_EVENTS!r}"
+        )

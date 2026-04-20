@@ -23,6 +23,14 @@ class Settings(BaseSettings):
             "When None, falls back to Path.cwd() — OK for dev, wrong in prod."
         ),
     )
+    main_agent_inbox_path: Path | None = Field(
+        default=None,
+        description=(
+            "Path to the main agent's inbox file. When set, PR events that cannot be "
+            "resolved to a worktree agent (e.g. wt-close-* branches) fall back to "
+            "appending to this file so the main agent receives them."
+        ),
+    )
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

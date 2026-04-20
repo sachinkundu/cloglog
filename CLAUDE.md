@@ -134,6 +134,7 @@ These instructions are specific to cloglog's architecture and tech stack. They s
 
 ### Ruff Linting
 - **`raise ... from None`** in except clauses — ruff B904 requires this for `raise HTTPException` inside `except` blocks.
+- **Prefer `StrEnum` over `class X(str, Enum)`** — ruff UP042 flags the mixin form. `from enum import StrEnum` (Python 3.11+) is the project's standard for string enums.
 
 ### Infrastructure Isolation
 - **Each worktree has its own ports and database.** Created by `.cloglog/on-worktree-create.sh`.

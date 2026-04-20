@@ -105,6 +105,11 @@ to the exiting task type, but never reorder them.
      opened, outstanding questions) if useful to the main agent's close-wave
      step. Absolute paths to both files must be included in the
      `agent_unregistered` event in the next step.
+
+   Agents generate these files from scratch every shutdown. The worktree
+   bootstrap (`.cloglog/on-worktree-create.sh`) removes any inherited
+   content at worktree-create time (T-242), so the directory is reliably
+   empty on first boot — no template seeding is expected.
 5. **Emit `agent_unregistered` to the main agent inbox**
    (`<project_root>/.cloglog/inbox` — see [Paths and discovery](#paths-and-discovery)
    in Section 3) *before* calling `unregister_agent`. Shape:

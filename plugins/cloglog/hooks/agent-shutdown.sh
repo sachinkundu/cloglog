@@ -6,6 +6,16 @@
 INPUT=$(cat)
 CWD=$(echo "$INPUT" | jq -r '.cwd')
 
+# T-217: write an unconditional breadcrumb as the very first step so that
+# post-incident investigators can tell whether Claude ran SessionEnd at all,
+# even if a subsequent step errors out. Presence of this file answers the
+# "did the hook fire?" question; absence means Claude never ran it.
+{
+  echo "[$(date -Iseconds)] agent-shutdown.sh fired"
+  echo "  cwd=${CWD}"
+  echo "  tool_input_keys=$(echo "$INPUT" | jq -r 'keys | join(",")' 2>/dev/null || echo '?')"
+} >> /tmp/agent-shutdown-debug.log 2>&1 || true
+
 # --- Detect if we're in a worktree ---
 GIT_DIR=$(cd "$CWD" && git rev-parse --git-dir 2>/dev/null) || exit 0
 GIT_COMMON=$(cd "$CWD" && git rev-parse --git-common-dir 2>/dev/null) || exit 0
@@ -51,11 +61,16 @@ CONFIG=$(find_config "$CWD") || true
 
 BACKEND_URL="http://localhost:8000"
 if [[ -n "$CONFIG" ]]; then
-  BACKEND_URL=$(python3 -c "
-import yaml
-cfg = yaml.safe_load(open('$CONFIG'))
-print(cfg.get('backend_url', 'http://localhost:8000'))
-" 2>/dev/null) || BACKEND_URL="http://localhost:8000"
+  # Read backend_url via a small grep+sed rather than python/yaml:
+  # the system `python3` on many machines lacks `pyyaml` (the project's
+  # pyyaml lives in the uv venv, not the global python the hook runs
+  # under), so the previous python snippet silently returned the
+  # default and the unregister POST went to the wrong port.
+  parsed=$(grep '^backend_url:' "$CONFIG" | head -1 \
+           | sed 's/^backend_url:[[:space:]]*//' \
+           | sed 's/[[:space:]]*#.*$//' \
+           | tr -d '"'"'")
+  [[ -n "$parsed" ]] && BACKEND_URL="$parsed"
 fi
 
 # --- Resolve API key ---
@@ -111,7 +126,11 @@ fi
 } > "${ARTIFACTS_DIR}/learnings.md"
 
 # --- Call unregister-by-path ---
+# NOTE: append to the debug log rather than overwriting — the top-of-script
+# breadcrumb (T-217) must survive this call so we can tell the hook fired
+# even if the POST fails or API_KEY is absent.
 if [[ -n "$API_KEY" ]]; then
+  echo "[$(date -Iseconds)] agent-shutdown.sh calling unregister-by-path backend=${BACKEND_URL}" >> /tmp/agent-shutdown-debug.log
   curl -s --max-time 5 -X POST "${BACKEND_URL}/api/v1/agents/unregister-by-path" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer ${API_KEY}" \
@@ -121,7 +140,9 @@ if [[ -n "$API_KEY" ]]; then
         \"work_log\": \"${ARTIFACTS_DIR}/work-log.md\",
         \"learnings\": \"${ARTIFACTS_DIR}/learnings.md\"
       }
-    }" > /tmp/agent-shutdown-debug.log 2>&1 || true
+    }" >> /tmp/agent-shutdown-debug.log 2>&1 || true
+else
+  echo "[$(date -Iseconds)] agent-shutdown.sh: no API_KEY — skipping unregister-by-path (will rely on tier-3 heartbeat timeout)" >> /tmp/agent-shutdown-debug.log
 fi
 
 exit 0

@@ -1,7 +1,7 @@
 # Webhook events for close-wave PRs (wt-close-*) now reach the main agent's inbox instead of being silently dropped — the main agent finally sees its own PRs merge.
 
-*2026-04-20T09:41:39Z by Showboat 0.6.1*
-<!-- showboat-id: eb22f4d9-eeab-4bc1-959c-0192b6d54a65 -->
+*2026-04-20T09:52:42Z by Showboat 0.6.1*
+<!-- showboat-id: b711c4c1-bbf3-41b9-8e9f-c2c62483bd78 -->
 
 The main-agent inbox path is opt-in via Settings — unset by default so the pre-T-253 drop behavior is preserved for projects that don't want it.
 
@@ -62,14 +62,14 @@ MAIN_AGENT_INBOX_PATH=/home/sachin/code/cloglog/.cloglog/inbox uv run --no-sync 
 main_agent_inbox_path: /home/sachin/code/cloglog/.cloglog/inbox
 ```
 
-Five new T-253 integration tests cover both paths of the fallback: on + off, the regression guard (worktree routing still wins when it matches), and the ISSUE_COMMENT filter.
+Six new T-253 integration tests cover both paths of the fallback: on + off, the regression guard (worktree routing still wins when it matches), the ISSUE_COMMENT filter, and the foreign-repo guard (unknown repo_full_name must not leak into the main inbox).
 
 ```bash
 uv run pytest tests/gateway/test_webhook_consumers.py::TestMainAgentFallback -q --no-header 2>&1 | grep -oE "[0-9]+ passed"
 ```
 
 ```output
-5 passed
+6 passed
 ```
 
 The full webhook-consumers test file still passes end-to-end, including the five new tests and the pre-existing resolver/message/inbox coverage.
@@ -79,5 +79,5 @@ uv run pytest tests/gateway/test_webhook_consumers.py -q --no-header 2>&1 | grep
 ```
 
 ```output
-46 passed
+47 passed
 ```

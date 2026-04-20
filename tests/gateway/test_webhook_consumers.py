@@ -855,10 +855,17 @@ class TestMainAgentFallback:
         pr_url nor branch_name matches any known worktree.
 
         This is the critical path for close-wave PRs whose branch (e.g.
-        wt-close-foo) has no registered Worktree row.
+        wt-close-foo) has no registered Worktree row. The project still has
+        to match — close-wave PRs live in the project's own repo — so seed a
+        project for ``sachinkundu/cloglog`` first.
         """
         main_inbox = tmp_path / "main-inbox"
         monkeypatch.setattr(settings, "main_agent_inbox_path", main_inbox)
+
+        # Seed the project so find_project_by_repo() succeeds — without this
+        # the resolver short-circuits before the main-agent fallback (foreign
+        # repos must NOT reach the main inbox; see the T-253 review follow-up).
+        await _seed_project_and_task(db_session, pr_url=_unique_pr_url())
 
         event = _make_event(
             event_type=WebhookEventType.PR_MERGED,
@@ -973,14 +980,19 @@ class TestMainAgentFallback:
         self, db_session: AsyncSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """T-253 filter: ISSUE_COMMENT must NOT fall back to the main-agent inbox
-        even when settings.main_agent_inbox_path is configured and no worktree
-        matches.
+        even when settings.main_agent_inbox_path is configured and the project
+        is known (no worktree matches).
 
         Bot spam on issue_comment would overwhelm the main agent's inbox; this
         event type is deliberately excluded from MAIN_AGENT_EVENTS.
         """
         main_inbox = tmp_path / "main-inbox"
         monkeypatch.setattr(settings, "main_agent_inbox_path", main_inbox)
+
+        # Seed the project so the foreign-repo guard passes and we actually
+        # exercise the MAIN_AGENT_EVENTS filter rather than short-circuiting
+        # earlier on project lookup.
+        await _seed_project_and_task(db_session, pr_url=_unique_pr_url())
 
         event = _make_event(
             event_type=WebhookEventType.ISSUE_COMMENT,
@@ -996,3 +1008,46 @@ class TestMainAgentFallback:
             "ISSUE_COMMENT must not be routed to main agent; "
             f"MAIN_AGENT_EVENTS={MAIN_AGENT_EVENTS!r}"
         )
+
+    @pytest.mark.asyncio
+    async def test_unknown_repo_does_not_reach_main_agent_even_with_config(
+        self, db_session: AsyncSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """T-253 guard: a valid signed webhook for a repo that is NOT registered
+        as a cloglog project must NOT fall through to the main-agent inbox, even
+        when main_agent_inbox_path is configured.
+
+        Without this guard, any signed webhook that shares the backend's endpoint
+        (e.g. a different repo mapped to the same secret) would leak into this
+        project's main-agent inbox whenever the primary pr_url lookup misses.
+        The main agent inbox belongs to this project only — foreign repos must
+        be dropped before the tertiary fallback runs.
+        """
+        main_inbox = tmp_path / "main-inbox"
+        monkeypatch.setattr(settings, "main_agent_inbox_path", main_inbox)
+
+        # Seed a project for sachinkundu/cloglog so the DB is not empty —
+        # the event will target a different repo_full_name.
+        await _seed_project_and_task(db_session, pr_url=_unique_pr_url())
+
+        foreign_repo = f"someone-else/unrelated-{uuid.uuid4().hex[:6]}"
+        event = WebhookEvent(
+            type=WebhookEventType.PR_MERGED,
+            delivery_id=f"d-foreign-{uuid.uuid4().hex[:6]}",
+            repo_full_name=foreign_repo,
+            pr_number=999,
+            pr_url=_unique_pr_url(),
+            head_branch="wt-close-foreign",
+            base_branch="main",
+            sender="nobody",
+            raw={},
+        )
+        consumer = AgentNotifierConsumer()
+
+        result = await consumer._resolve_agent(event, db_session)
+
+        assert result is None, (
+            f"Foreign repo {foreign_repo!r} must not reach the main-agent inbox — "
+            "the resolver must short-circuit when find_project_by_repo misses."
+        )
+        assert not main_inbox.exists(), "Main-agent inbox file must not be created"

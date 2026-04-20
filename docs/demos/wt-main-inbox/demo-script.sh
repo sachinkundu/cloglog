@@ -58,7 +58,7 @@ uvx showboat exec "$DEMO_FILE" bash \
 # -----------------------------------------------------------------------------
 # Proof 5 — the five T-253 tests (TestMainAgentFallback) all pass.
 # -----------------------------------------------------------------------------
-uvx showboat note "$DEMO_FILE" "Five new T-253 integration tests cover both paths of the fallback: on + off, the regression guard (worktree routing still wins when it matches), and the ISSUE_COMMENT filter."
+uvx showboat note "$DEMO_FILE" "Six new T-253 integration tests cover both paths of the fallback: on + off, the regression guard (worktree routing still wins when it matches), the ISSUE_COMMENT filter, and the foreign-repo guard (unknown repo_full_name must not leak into the main inbox)."
 uvx showboat exec "$DEMO_FILE" bash \
   'uv run pytest tests/gateway/test_webhook_consumers.py::TestMainAgentFallback -q --no-header 2>&1 | grep -oE "[0-9]+ passed"'
 

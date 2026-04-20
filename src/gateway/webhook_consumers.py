@@ -134,18 +134,27 @@ class AgentNotifierConsumer:
                 inbox_path = Path(worktree.worktree_path) / ".cloglog" / "inbox"
                 return ResolvedRecipient(inbox_path=inbox_path, worktree_id=worktree.id)
 
+        # Both the branch-name fallback and the main-agent fallback require the
+        # event's repo to be a configured cloglog project. Gating on this also
+        # defends the main-agent inbox against valid signed webhooks from repos
+        # that happen to share this backend's webhook endpoint/secret but are
+        # NOT this cloglog project — without the guard, a foreign repo's PR
+        # merge could land in our main-agent inbox simply because the primary
+        # pr_url lookup missed.
+        project = await repo.find_project_by_repo(event.repo_full_name)
+        if project is None:
+            return None
+
         # Secondary: match by branch name. Issue-comment webhooks don't carry
         # a head_branch the way PR events do, so skip the branch lookup when
         # it's empty — otherwise an equality match on '' would fan out across
         # every online worktree (many have legacy empty branch_name rows) and
         # raise MultipleResultsFound.
         if event.head_branch:
-            project = await repo.find_project_by_repo(event.repo_full_name)
-            if project is not None:
-                worktree = await agent_repo.get_worktree_by_branch(project.id, event.head_branch)
-                if worktree is not None:
-                    inbox_path = Path(worktree.worktree_path) / ".cloglog" / "inbox"
-                    return ResolvedRecipient(inbox_path=inbox_path, worktree_id=worktree.id)
+            worktree = await agent_repo.get_worktree_by_branch(project.id, event.head_branch)
+            if worktree is not None:
+                inbox_path = Path(worktree.worktree_path) / ".cloglog" / "inbox"
+                return ResolvedRecipient(inbox_path=inbox_path, worktree_id=worktree.id)
 
         # Tertiary: fall back to main-agent inbox for eligible event types
         if settings.main_agent_inbox_path is not None and event.type in MAIN_AGENT_EVENTS:

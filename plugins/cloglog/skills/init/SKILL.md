@@ -71,7 +71,7 @@ Check if `.claude/settings.json` exists in the project. If the cloglog MCP serve
       "command": "node",
       "args": ["/path/to/mcp-server/dist/index.js"],
       "env": {
-        "CLOGLOG_BACKEND_URL": "http://localhost:8000"
+        "CLOGLOG_URL": "http://localhost:8000"
       }
     }
   }

@@ -83,6 +83,17 @@ quality: ## Run full quality gate (lint + typecheck + test + coverage)
 	@echo "  Demo:"
 	@$(MAKE) --no-print-directory demo-check && echo "    verified           ✓" || (echo "    FAILED ✗" && exit 1)
 	@echo ""
+	@echo "── MCP server ──────────────────────────"
+	@echo ""
+	@echo "  Build + Tests:"
+	@if [ -d mcp-server ]; then \
+		$(MAKE) --no-print-directory -C mcp-server quality > /tmp/mcp-quality.out 2>&1 \
+			&& tail -3 /tmp/mcp-quality.out | sed 's/^/    /' \
+			|| (echo "    FAILED ✗" && cat /tmp/mcp-quality.out && exit 1); \
+	else \
+		echo "    (skipped — no mcp-server/)"; \
+	fi
+	@echo ""
 	@echo "── Quality gate: PASSED ────────────────"
 
 # ── Run ───────────────────────────────────────

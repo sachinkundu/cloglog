@@ -27,6 +27,8 @@ Do NOT modify files outside your assigned directories. If you need a change in a
 
 **This is enforced by the cloglog plugin's `protect-worktree-writes` hook.** Writes to files outside your assigned directories will be blocked automatically.
 
+**Edit/Write `file_path` inside a worktree must include the `.claude/worktrees/<wt-name>/` prefix.** The scope hook only blocks writes whose path is under the worktree. A `file_path` that resolves to `/home/sachin/code/cloglog/src/...` (the main repo) goes through unguarded — the write lands in the main checkout, creating a ghost diff that looks like the agent cross-contaminated main. Double-check every absolute `file_path` carries the worktree prefix before calling Edit or Write.
+
 ## Commands
 
 ```bash
@@ -126,6 +128,8 @@ These instructions are specific to cloglog's architecture and tech stack. They s
 - **Auth consistency:** All agent-facing endpoints use `Authorization: Bearer <api-key>`. Dashboard-facing endpoints are public (no auth). Never use query parameters for auth. Use the `CurrentProject` dependency from `src/gateway/auth.py`.
 - **Concurrent worktree merges:** When multiple worktrees are active, the last to merge faces conflicts in shared files (`events.py`, `schemas.py`, `types.ts`, `package.json`). Plan for this — rebase frequently and resolve conflicts before requesting review.
 - **Model imports in tests:** All model classes must be imported in `tests/conftest.py` so `Base.metadata.create_all` creates all tables. If you add a new model, verify the import exists.
+- **Refactoring webhook resolver short-circuits:** when editing a resolver that returns `None` at multiple gates (auth guard, project-match guard, branch-match guard), lift the gate conditions to a flat list at the top of the function and re-verify every `None` return is still reachable from foreign/malformed input. Moving a gate inside a new conditional can silently widen the surface. Load-bearing for `_resolve_agent` in `src/gateway/webhook_consumers.py`; caught as a second-round finding on PR #164.
+- **Path-composition conventions have three sides:** the writer, the verifier, and the lookup. When fixing path-building code, `grep -rn` for every consumer of the path convention (e.g. `FEATURE_NORM`, `rev-parse --abbrev-ref HEAD`, `docs/demos/`) before pushing. T-251's first cut fixed only the writer; `scripts/run-demo.sh` (the lookup) needed the same normalization — caught in review.
 
 ### API Contract Enforcement
 - **Frontend worktrees**: Import API types from `generated-types.ts` (auto-generated from the contract). NEVER hand-write API response types.

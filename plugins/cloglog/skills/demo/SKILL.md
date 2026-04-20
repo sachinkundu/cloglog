@@ -103,13 +103,24 @@ uvx showboat exec "$DEMO_FILE" \
 uvx showboat verify "$DEMO_FILE"
 ```
 
-**`exec` quoting — it's argv, not a shell.** The single-quoted string passed to `uvx showboat exec` is treated as argv, not as a shell command. A single binary + args works (`curl -sf ...`). Anything that needs shell features — pipes, `$(...)` command substitution, redirects, `&&` — must be wrapped explicitly:
+**`exec` quoting — it's argv, not a shell.** Showboat's form is `uvx showboat exec <file> <interpreter> [code]`. A single command + args works if the interpreter is shell-aware:
 
 ```bash
-uvx showboat exec "$DEMO_FILE" bash -c 'pytest tests/gateway 2>&1 | grep -oE "[0-9]+ passed"'
+uvx showboat exec "$DEMO_FILE" \
+  'curl -sf "$BASE/projects" -H "X-Dashboard-Key: cloglog-dashboard-dev"'
 ```
 
-Without the `bash -c`, showboat tries to exec a program literally named `pytest tests/gateway 2>&1 | grep -oE "[0-9]+ passed"` and fails with `no such file or directory`.
+When you need pipes, `$(...)` substitution, redirects, or `&&`, pass the interpreter explicitly as a SECOND positional and the code as the THIRD — do NOT use `bash -c`:
+
+```bash
+# CORRECT — two positionals: interpreter, then shell code
+uvx showboat exec "$DEMO_FILE" bash 'pytest tests/gateway 2>&1 | grep -oE "[0-9]+ passed"'
+
+# WRONG — showboat passes "-c" as the code and bash fails with "option requires an argument"
+uvx showboat exec "$DEMO_FILE" bash -c 'pytest ...'
+```
+
+The `bash "<code>"` two-positional form is the canonical way to run shell inside an `exec` block.
 
 Then run: `make demo`
 

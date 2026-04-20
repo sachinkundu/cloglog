@@ -370,16 +370,27 @@ A Claude Code session is one process; it cannot restart itself. Specifically:
    `mcp_tools_updated` broadcast (T-244): an agent that needs new MCP tools
    CANNOT pick them up by exiting.
 
-### Restart-for-new-tools protocol (target state, pending T-244)
+### Restart-for-new-tools protocol
 
-1. Main-agent post-merge hook rebuilds `mcp-server/dist/` after any merge that
-   touched `mcp-server/src/**`.
-2. Main broadcasts an `mcp_tools_updated` event to every active worktree's
-   `.cloglog/inbox`:
+1. After a merge, the main agent runs `make sync-mcp-dist` (wraps
+   `scripts/sync_mcp_dist.py`). The script rebuilds `mcp-server/dist/` via
+   `npm run build` and diffs the tool names declared in `dist/server.js`
+   before and after. The `close-wave` skill invokes it between
+   `git pull origin main` and the main-branch quality gate (step 9.5); it is
+   idempotent and a no-op when the tool surface did not change, so it is safe
+   to run on every close.
+2. If `added`/`removed` is non-empty, the script broadcasts an
+   `mcp_tools_updated` event to every online worktree's `.cloglog/inbox`
+   plus the main agent inbox:
 
    ```json
    {"type":"mcp_tools_updated","added":["new_tool_a"],"removed":[],"ts":"..."}
    ```
+
+   Online worktrees are enumerated via
+   `GET /api/v1/projects/{project_id}/worktrees` (public endpoint, no auth)
+   filtered to `status='online'`. The script does not shell out to psql and
+   does not require agent credentials.
 3. A worktree agent that needs the new tools emits `need_session_restart` to
    the main inbox and pauses (no new MCP calls, no new commits).
 4. Main closes the worktree's zellij tab and opens a new one via the launch
@@ -389,6 +400,25 @@ A Claude Code session is one process; it cannot restart itself. Specifically:
 
 An agent that receives `mcp_tools_updated` but does NOT need the change keeps
 working as normal — no restart, no pause.
+
+#### Why a main-side script, not a git hook or CI job
+
+Three alternatives were considered:
+
+- **Commit `mcp-server/dist/` to git.** Rejected: dist is gitignored at both
+  the repo root and `mcp-server/.gitignore`; every future worktree would
+  inherit a stale snapshot and regenerate conflicts on every PR.
+- **GitHub Action that rebuilds and commits on merge.** Rejected for the
+  same reason — plus it introduces a CI-only code path that devs cannot
+  reproduce locally.
+- **`make promote` step.** Promote rebuilds the prod clone, not the dev
+  clone — but the dev clone's `.mcp.json` is what worktrees consume.
+  Moving the rebuild to promote would not fix the T-224 → T-225 incident.
+
+A main-side script hooked into `close-wave` is the cheapest correct path:
+rebuild runs on the same host that owns the dev `.mcp.json` target, the
+broadcast reaches any agents that are still attached, and the whole thing
+takes ~1 s.
 
 ## See also
 

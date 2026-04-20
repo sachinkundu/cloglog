@@ -104,6 +104,28 @@ git checkout main
 git pull origin main
 ```
 
+## Step 9.5: Sync MCP Server Dist (T-244)
+
+Any merged PR that touched `mcp-server/src/**` changed the MCP tool surface,
+but `mcp-server/dist/` is gitignored and every worktree's `.mcp.json` points
+at the main clone's compiled artifact. After pulling main, rebuild dist and
+notify any still-running worktrees so they know their cached tool list is
+stale:
+
+```bash
+make sync-mcp-dist
+```
+
+The script rebuilds `mcp-server/dist/` via `npm run build`, diffs the tool
+names before/after, and appends an `mcp_tools_updated` event to every online
+worktree's `.cloglog/inbox` plus the main agent inbox. It is a no-op when the
+tool surface did not change, so it is safe to run on every close-wave.
+
+A running worktree agent that receives the event follows the protocol in
+`docs/design/agent-lifecycle.md` §6 — pause, write `need_session_restart` to
+the main inbox, wait for a tab relaunch (no MCP hot-reload exists; the tool
+list is cached at session start).
+
 ## Step 10: Run Quality Gate
 
 Read the quality command from `.cloglog/config.yaml` if it exists, otherwise fall back to `make quality`. Run it and fix any issues before proceeding.

@@ -7,10 +7,8 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.agent.models import Worktree as WorktreeModel
 from src.agent.repository import AgentRepository
 from src.agent.services import AgentService
 from src.board.repository import BoardRepository
@@ -865,17 +863,24 @@ async def request_worktree_shutdown(
 ) -> dict[str, bool]:
     """Request a worktree agent to shut down. Dashboard-facing endpoint.
 
-    Sets shutdown_requested=True on the worktree record. The agent will
-    see this on its next heartbeat and shut down cleanly.
+    Delegates to ``AgentService.request_shutdown`` so the shutdown JSON
+    line lands in ``<worktree_path>/.cloglog/inbox`` for sub-second
+    Monitor delivery. The DB ``shutdown_requested`` flag is still set by
+    the service itself as a fallback. A 404 is returned if the worktree
+    doesn't belong to the project in the URL; a 409 is returned if the
+    worktree row is in an unroutable state (empty ``worktree_path`` — a
+    legacy-row guard, since new registrations are blocked at the schema).
     """
-    result = await session.execute(
-        sa_update(WorktreeModel)
-        .where(WorktreeModel.id == worktree_id, WorktreeModel.project_id == project_id)
-        .values(shutdown_requested=True)
-    )
-    await session.commit()
-    if getattr(result, "rowcount", 0) == 0:
-        raise HTTPException(status_code=404, detail="Worktree not found") from None
+    agent_repo = AgentRepository(session)
+    worktree = await agent_repo.get_worktree(worktree_id)
+    if worktree is None or worktree.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Worktree not found")
+
+    service = AgentService(agent_repo, BoardRepository(session))
+    try:
+        await service.request_shutdown(worktree_id)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
     return {"shutdown_requested": True}
 
 

@@ -311,6 +311,20 @@ class TestHandles:
 # ---------------------------------------------------------------------------
 
 
+class _FakeStream:
+    """Minimal StreamReader stand-in — exposes ``read()`` returning preset bytes."""
+
+    def __init__(self, data: bytes = b"") -> None:
+        self._data = data
+        self.read_calls = 0
+
+    async def read(self, n: int = -1) -> bytes:
+        self.read_calls += 1
+        out = self._data
+        self._data = b""  # drain once
+        return out
+
+
 class _FakeProcess:
     """Minimal stand-in for an ``asyncio.subprocess.Process`` used in tests."""
 
@@ -321,12 +335,17 @@ class _FakeProcess:
         stderr: bytes = b"",
         returncode: int = 0,
         hang: bool = False,
+        stderr_after_kill: bytes | None = None,
     ) -> None:
         self._stdout = stdout
         self._stderr = stderr
         self.returncode = returncode
         self._hang = hang
         self.kill_calls = 0
+        # `stderr` stream exposes whatever the kernel buffered before kill.
+        # Default: the same bytes ``communicate()`` would have returned.
+        tail = stderr_after_kill if stderr_after_kill is not None else stderr
+        self.stderr: _FakeStream | None = _FakeStream(tail)
 
     def kill(self) -> None:
         # After kill, wait() must return promptly (mirrors real subprocess behavior).
@@ -1475,3 +1494,678 @@ class TestReviewSourceRoot:
         assert sha_match is not None, (
             f"Expected a 40-char hex SHA in the log message, got: {message!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# T-238: TestPostSkipComment — the helper itself
+# ---------------------------------------------------------------------------
+
+from src.gateway.review_skip_comments import (  # noqa: E402
+    SkipReason,
+    post_skip_comment,
+    reset_skip_comment_cache,
+)
+
+_ISSUES_COMMENTS_URL = "https://api.github.com/repos/sachinkundu/cloglog/issues/42/comments"
+_ISSUES_COMMENTS_URL_43 = "https://api.github.com/repos/sachinkundu/cloglog/issues/43/comments"
+_GH_REVIEWS_URL = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
+
+
+class TestPostSkipComment:
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        reset_skip_comment_cache()
+        yield
+        reset_skip_comment_cache()
+
+    @pytest.mark.asyncio
+    async def test_posts_issue_comment_on_first_call(self) -> None:
+        """POST fires with correct URL, auth header, API version, and body payload."""
+        with respx.mock() as mock:
+            route = mock.post(_ISSUES_COMMENTS_URL).mock(
+                return_value=httpx.Response(201, json={"id": 1})
+            )
+            ok = await post_skip_comment(
+                "sachinkundu/cloglog",
+                42,
+                SkipReason.RATE_LIMIT,
+                "rate limit hit",
+                "ghs_tok",
+            )
+
+        assert ok is True
+        assert route.call_count == 1
+        req = route.calls.last.request
+        assert req.headers["Authorization"] == "Bearer ghs_tok"
+        assert req.headers["X-GitHub-Api-Version"] == "2022-11-28"
+        assert req.headers["Accept"] == "application/vnd.github+json"
+        payload = json.loads(req.content)
+        assert payload["body"] == "rate limit hit"
+
+    @pytest.mark.asyncio
+    async def test_repeat_same_reason_suppressed_within_window(self) -> None:
+        """Second call with same (repo, pr, reason) within window returns False without posting."""
+        with respx.mock() as mock:
+            route = mock.post(_ISSUES_COMMENTS_URL).mock(
+                return_value=httpx.Response(201, json={"id": 1})
+            )
+            ok1 = await post_skip_comment(
+                "sachinkundu/cloglog", 42, SkipReason.RATE_LIMIT, "msg", "tok"
+            )
+            ok2 = await post_skip_comment(
+                "sachinkundu/cloglog", 42, SkipReason.RATE_LIMIT, "msg", "tok"
+            )
+
+        assert ok1 is True
+        assert ok2 is False
+        assert route.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_different_reasons_both_post(self) -> None:
+        """Two different reasons for the same (repo, pr) both fire a POST."""
+        with respx.mock() as mock:
+            route = mock.post(_ISSUES_COMMENTS_URL).mock(
+                return_value=httpx.Response(201, json={"id": 1})
+            )
+            ok1 = await post_skip_comment(
+                "sachinkundu/cloglog", 42, SkipReason.RATE_LIMIT, "a", "tok"
+            )
+            ok2 = await post_skip_comment(
+                "sachinkundu/cloglog", 42, SkipReason.MAX_REVIEWS, "b", "tok"
+            )
+
+        assert ok1 is True
+        assert ok2 is True
+        assert route.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_different_prs_both_post(self) -> None:
+        """Same reason for two different PR numbers both fire a POST."""
+        with respx.mock() as mock:
+            route42 = mock.post(_ISSUES_COMMENTS_URL).mock(
+                return_value=httpx.Response(201, json={"id": 1})
+            )
+            route43 = mock.post(_ISSUES_COMMENTS_URL_43).mock(
+                return_value=httpx.Response(201, json={"id": 2})
+            )
+            ok1 = await post_skip_comment(
+                "sachinkundu/cloglog", 42, SkipReason.RATE_LIMIT, "msg", "tok"
+            )
+            ok2 = await post_skip_comment(
+                "sachinkundu/cloglog", 43, SkipReason.RATE_LIMIT, "msg", "tok"
+            )
+
+        assert ok1 is True
+        assert ok2 is True
+        assert route42.call_count == 1
+        assert route43.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_http_error_returns_false_does_not_raise(self) -> None:
+        """A 500 from GitHub returns False without bubbling an exception."""
+        with respx.mock() as mock:
+            mock.post(_ISSUES_COMMENTS_URL).mock(
+                return_value=httpx.Response(500, json={"message": "boom"})
+            )
+            ok = await post_skip_comment(
+                "sachinkundu/cloglog", 42, SkipReason.MAX_REVIEWS, "body", "tok"
+            )
+
+        assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# T-238: TestSkipCommentsInHandler — the six wiring points
+# ---------------------------------------------------------------------------
+
+
+class TestSkipCommentsInHandler:
+    """Assert each short-circuit site posts a skip comment via the issues endpoint."""
+
+    @pytest.fixture(autouse=True)
+    def _auto_setup(self):
+        """Token stubs + reset skip cache for every test in this class."""
+        reset_skip_comment_cache()
+        with (
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.review_engine.count_bot_reviews",
+                new=AsyncMock(return_value=0),
+            ),
+        ):
+            yield
+        reset_skip_comment_cache()
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_posts_skip_comment(self) -> None:
+        """max_per_hour=0 triggers rate-limit short-circuit and posts a comment."""
+        consumer = ReviewEngineConsumer(max_per_hour=0)
+        with respx.mock() as mock:
+            comments_route = mock.post(_ISSUES_COMMENTS_URL).mock(
+                return_value=httpx.Response(201, json={"id": 1})
+            )
+            await consumer.handle(_event())
+
+        assert comments_route.call_count == 1
+        payload = json.loads(comments_route.calls.last.request.content)
+        assert "rate limit" in payload["body"].lower()
+
+    @pytest.mark.asyncio
+    async def test_max_reviews_cap_posts_skip_comment(self) -> None:
+        """When prior bot reviews == MAX_REVIEWS_PER_PR, posts a 'maximum' comment."""
+        consumer = ReviewEngineConsumer(max_per_hour=10)
+        with (
+            patch(
+                "src.gateway.review_engine.count_bot_reviews",
+                new=AsyncMock(return_value=MAX_REVIEWS_PER_PR),
+            ),
+            respx.mock() as mock,
+        ):
+            comments_route = mock.post(_ISSUES_COMMENTS_URL).mock(
+                return_value=httpx.Response(201, json={"id": 1})
+            )
+            await consumer.handle(_event())
+
+        assert comments_route.call_count == 1
+        payload = json.loads(comments_route.calls.last.request.content)
+        body_lower = payload["body"].lower()
+        assert "maximum" in body_lower or str(MAX_REVIEWS_PER_PR) in payload["body"]
+
+    @pytest.mark.asyncio
+    async def test_empty_filtered_diff_posts_skip_comment(self) -> None:
+        """A lockfile-only diff triggers NO_REVIEWABLE_FILES and posts a comment."""
+        consumer = ReviewEngineConsumer(max_per_hour=10)
+        only_lock = (
+            "diff --git a/package-lock.json b/package-lock.json\n"
+            "--- a/package-lock.json\n"
+            "+++ b/package-lock.json\n"
+            "@@ -1 +1 @@\n-x\n+y\n"
+        )
+
+        async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
+            if argv[0] == "gh":
+                return _FakeProcess(stdout=only_lock.encode())
+            pytest.fail("_spawn should only be called for gh")
+
+        with (
+            patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            respx.mock() as mock,
+        ):
+            comments_route = mock.post(_ISSUES_COMMENTS_URL).mock(
+                return_value=httpx.Response(201, json={"id": 1})
+            )
+            await consumer.handle(_event())
+
+        assert comments_route.call_count == 1
+        payload = json.loads(comments_route.calls.last.request.content)
+        assert "no reviewable files" in payload["body"].lower()
+
+    @pytest.mark.asyncio
+    async def test_oversized_diff_posts_skip_comment(self) -> None:
+        """A diff exceeding MAX_DIFF_CHARS triggers DIFF_TOO_LARGE and posts a comment."""
+        consumer = ReviewEngineConsumer(max_per_hour=10)
+        big_body = "x" * (MAX_DIFF_CHARS + 100)
+        huge_diff = (
+            "diff --git a/src/big.py b/src/big.py\n"
+            "--- a/src/big.py\n"
+            "+++ b/src/big.py\n"
+            f"@@ -1 +1 @@\n-{big_body}\n+{big_body}\n"
+        )
+
+        async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
+            if argv[0] == "gh":
+                return _FakeProcess(stdout=huge_diff.encode())
+            pytest.fail("_spawn should only be called for gh")
+
+        with (
+            patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            respx.mock() as mock,
+        ):
+            comments_route = mock.post(_ISSUES_COMMENTS_URL).mock(
+                return_value=httpx.Response(201, json={"id": 1})
+            )
+            await consumer.handle(_event())
+
+        assert comments_route.call_count == 1
+        payload = json.loads(comments_route.calls.last.request.content)
+        assert "too large" in payload["body"].lower()
+
+    @pytest.mark.asyncio
+    async def test_unparseable_output_posts_skip_comment(self, sample_diff: str) -> None:
+        """Agent exits 1 with bad output triggers AGENT_UNPARSEABLE and posts a comment."""
+        consumer = ReviewEngineConsumer(max_per_hour=10)
+
+        async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
+            if argv[0] == "gh":
+                return _FakeProcess(stdout=sample_diff.encode())
+            pytest.fail("_spawn should only be called for gh")
+
+        async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
+            for i, arg in enumerate(args):
+                if arg == "-o" and i + 1 < len(args):
+                    Path(args[i + 1]).write_text("NOT JSON")
+                    break
+            return _FakeProcess(returncode=1, stderr=b"codex: panic at line 42\n")
+
+        with (
+            patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
+            respx.mock() as mock,
+        ):
+            comments_route = mock.post(_ISSUES_COMMENTS_URL).mock(
+                return_value=httpx.Response(201, json={"id": 1})
+            )
+            await consumer.handle(_event())
+
+        assert comments_route.call_count == 1
+        payload = json.loads(comments_route.calls.last.request.content)
+        body_lower = payload["body"].lower()
+        assert "unparseable" in body_lower
+        assert "codex: panic" in payload["body"]
+
+    @pytest.mark.asyncio
+    async def test_successful_review_posts_no_skip_comment(
+        self, sample_diff: str, sample_review_json: str
+    ) -> None:
+        """Happy path: reviews endpoint fires, issue-comments endpoint is never called."""
+        consumer = ReviewEngineConsumer(max_per_hour=10)
+
+        async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
+            if argv[0] == "gh":
+                return _FakeProcess(stdout=sample_diff.encode())
+            pytest.fail("_spawn should only be called for gh")
+
+        async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
+            for i, arg in enumerate(args):
+                if arg == "-o" and i + 1 < len(args):
+                    Path(args[i + 1]).write_text(sample_review_json)
+                    break
+            return _FakeProcess(returncode=0)
+
+        with (
+            patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
+            # assert_all_called=False: the comments route must remain un-called —
+            # do not let respx fail because the route was never hit.
+            respx.mock(assert_all_called=False) as mock,
+        ):
+            reviews_route = mock.post(_GH_REVIEWS_URL).mock(
+                return_value=httpx.Response(200, json={"id": 1})
+            )
+            comments_route = mock.post(_ISSUES_COMMENTS_URL).mock(
+                return_value=httpx.Response(201, json={"id": 99})
+            )
+            await consumer.handle(_event())
+
+        assert reviews_route.call_count == 1
+        assert comments_route.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# T-239: TestTimeoutRetryAndProbes — retry logic, stderr capture, probe wiring
+# ---------------------------------------------------------------------------
+
+
+class TestTimeoutRetryAndProbes:
+    """Tests for the one-retry timeout path, stderr capture, and health probes."""
+
+    @pytest.fixture(autouse=True)
+    def _auto_setup(self):
+        reset_skip_comment_cache()
+        with (
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.review_engine.count_bot_reviews",
+                new=AsyncMock(return_value=0),
+            ),
+        ):
+            yield
+        reset_skip_comment_cache()
+
+    @pytest.mark.asyncio
+    async def test_first_timeout_retries_then_succeeds(
+        self, sample_diff: str, sample_review_json: str
+    ) -> None:
+        """First subprocess hangs; second attempt succeeds — review posted, no skip comment."""
+        consumer = ReviewEngineConsumer(max_per_hour=10)
+        call_count = 0
+
+        async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
+            if argv[0] == "gh":
+                return _FakeProcess(stdout=sample_diff.encode())
+            pytest.fail("_spawn should only be called for gh")
+
+        async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _FakeProcess(hang=True)
+            for i, arg in enumerate(args):
+                if arg == "-o" and i + 1 < len(args):
+                    Path(args[i + 1]).write_text(sample_review_json)
+                    break
+            return _FakeProcess(returncode=0)
+
+        with (
+            patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_SECONDS", 0.01),
+            patch(
+                "src.gateway.review_engine._probe_codex_alive",
+                new=AsyncMock(return_value=(True, "codex 0.1.0")),
+            ),
+            patch(
+                "src.gateway.review_engine._probe_github_reachable",
+                new=AsyncMock(return_value=(True, "200 ok")),
+            ),
+            respx.mock(assert_all_called=False) as mock,
+        ):
+            reviews_route = mock.post(_GH_REVIEWS_URL).mock(
+                return_value=httpx.Response(200, json={"id": 1})
+            )
+            comments_route = mock.post(_ISSUES_COMMENTS_URL).mock(
+                return_value=httpx.Response(201, json={"id": 99})
+            )
+            await consumer.handle(_event())
+
+        assert reviews_route.call_count == 1
+        assert comments_route.call_count == 0
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_second_timeout_posts_skip_comment_with_probe_results(
+        self, sample_diff: str
+    ) -> None:
+        """Both attempts hang — skip comment body contains timed_out, probe results."""
+        consumer = ReviewEngineConsumer(max_per_hour=10)
+        hanging_procs: list[_FakeProcess] = []
+        call_count = 0
+
+        async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
+            if argv[0] == "gh":
+                return _FakeProcess(stdout=sample_diff.encode())
+            pytest.fail("_spawn should only be called for gh")
+
+        async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
+            nonlocal call_count
+            call_count += 1
+            proc = _FakeProcess(hang=True)
+            hanging_procs.append(proc)
+            return proc
+
+        with (
+            patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_SECONDS", 0.01),
+            patch(
+                "src.gateway.review_engine._probe_codex_alive",
+                new=AsyncMock(return_value=(True, "codex 0.1.0")),
+            ),
+            patch(
+                "src.gateway.review_engine._probe_github_reachable",
+                new=AsyncMock(return_value=(False, "HTTPError: boom")),
+            ),
+            respx.mock() as mock,
+        ):
+            comments_route = mock.post(_ISSUES_COMMENTS_URL).mock(
+                return_value=httpx.Response(201, json={"id": 1})
+            )
+            await consumer.handle(_event())
+
+        assert comments_route.call_count == 1
+        payload = json.loads(comments_route.calls.last.request.content)
+        body = payload["body"]
+        assert "timed out" in body.lower()
+        assert "codex 0.1.0" in body
+        assert "HTTPError" in body
+        assert all(p.kill_calls >= 1 for p in hanging_procs)
+
+    @pytest.mark.asyncio
+    async def test_timeout_captures_stderr_excerpt(self, sample_diff: str) -> None:
+        """Stderr text appears in the skip-comment body after both attempts time out."""
+        consumer = ReviewEngineConsumer(max_per_hour=10)
+        stderr_bytes = b"fatal: stack overflow at line 7\n"
+
+        async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
+            if argv[0] == "gh":
+                return _FakeProcess(stdout=sample_diff.encode())
+            pytest.fail("_spawn should only be called for gh")
+
+        async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
+            return _FakeProcess(hang=True, stderr_after_kill=stderr_bytes)
+
+        with (
+            patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_SECONDS", 0.01),
+            patch(
+                "src.gateway.review_engine._probe_codex_alive",
+                new=AsyncMock(return_value=(True, "ok")),
+            ),
+            patch(
+                "src.gateway.review_engine._probe_github_reachable",
+                new=AsyncMock(return_value=(True, "200 ok")),
+            ),
+            respx.mock() as mock,
+        ):
+            comments_route = mock.post(_ISSUES_COMMENTS_URL).mock(
+                return_value=httpx.Response(201, json={"id": 1})
+            )
+            await consumer.handle(_event())
+
+        assert comments_route.call_count == 1
+        payload = json.loads(comments_route.calls.last.request.content)
+        assert "stack overflow" in payload["body"]
+
+    @pytest.mark.asyncio
+    async def test_structured_log_entry_on_second_timeout(
+        self, sample_diff: str, caplog: Any
+    ) -> None:
+        """Second timeout emits a WARNING starting with 'review_timeout' with all required keys."""
+        consumer = ReviewEngineConsumer(max_per_hour=10)
+
+        async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
+            if argv[0] == "gh":
+                return _FakeProcess(stdout=sample_diff.encode())
+            pytest.fail("_spawn should only be called for gh")
+
+        async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
+            return _FakeProcess(hang=True)
+
+        with (
+            patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_SECONDS", 0.01),
+            patch(
+                "src.gateway.review_engine._probe_codex_alive",
+                new=AsyncMock(return_value=(True, "codex 0.1.0")),
+            ),
+            patch(
+                "src.gateway.review_engine._probe_github_reachable",
+                new=AsyncMock(return_value=(False, "HTTPError: unreachable")),
+            ),
+            caplog.at_level("WARNING", logger="src.gateway.review_engine"),
+            respx.mock() as mock,
+        ):
+            mock.post(_ISSUES_COMMENTS_URL).mock(return_value=httpx.Response(201, json={"id": 1}))
+            await consumer.handle(_event())
+
+        timeout_records = [
+            r for r in caplog.records if r.getMessage().startswith("review_timeout ")
+        ]
+        assert timeout_records, "Expected a 'review_timeout' WARNING log record"
+        msg = timeout_records[0].getMessage()
+        # The structured dict is %s-formatted into the message — check each key by name
+        for key in (
+            "event",
+            "pr_number",
+            "attempt",
+            "stderr_excerpt",
+            "codex_alive",
+            "github_reachable",
+            "elapsed_seconds",
+        ):
+            assert key in msg, f"Missing key '{key}' in review_timeout log message"
+
+
+# ---------------------------------------------------------------------------
+# T-239: TestRateLimiterWaitSeconds — seconds_until_next_slot
+# ---------------------------------------------------------------------------
+
+
+class TestRateLimiterWaitSeconds:
+    def test_zero_when_slots_free(self) -> None:
+        """Fresh limiter with capacity has 0 wait."""
+        rl = RateLimiter(max_per_hour=5)
+        assert rl.seconds_until_next_slot() == 0.0
+
+    def test_positive_when_full(self) -> None:
+        """After filling all slots, wait > 0 and <= RATE_LIMIT_WINDOW_SECONDS."""
+        rl = RateLimiter(max_per_hour=1)
+        rl.allow()
+        wait = rl.seconds_until_next_slot()
+        assert wait > 0.0
+        assert wait <= RATE_LIMIT_WINDOW_SECONDS
+
+    def test_zero_when_max_is_zero(self) -> None:
+        """max_per_hour=0 means permanently blocked — no timestamp to wait on."""
+        rl = RateLimiter(max_per_hour=0)
+        assert rl.seconds_until_next_slot() == 0.0
+
+    def test_drops_expired_timestamps(self) -> None:
+        """Timestamps older than RATE_LIMIT_WINDOW_SECONDS are evicted."""
+        rl = RateLimiter(max_per_hour=2)
+        rl._timestamps = [0.0, 0.1]
+        with patch(
+            "src.gateway.review_engine.time.monotonic",
+            return_value=RATE_LIMIT_WINDOW_SECONDS + 10,
+        ):
+            assert rl.seconds_until_next_slot() == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Health probes (T-239) — exercised directly via the module functions. The
+# timeout-path tests mock these out; these cover the probe code itself so
+# the structured log entry's probe fields are never silent on regression.
+# ---------------------------------------------------------------------------
+
+
+class TestProbes:
+    @pytest.mark.asyncio
+    async def test_codex_probe_success_reports_version(self) -> None:
+        from src.gateway.review_engine import _probe_codex_alive
+
+        async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
+            return _FakeProcess(stdout=b"codex 1.2.3\n", returncode=0)
+
+        with patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create):
+            alive, detail = await _probe_codex_alive()
+        assert alive is True
+        assert "codex 1.2.3" in detail
+
+    @pytest.mark.asyncio
+    async def test_codex_probe_nonzero_exit_reports_stderr(self) -> None:
+        from src.gateway.review_engine import _probe_codex_alive
+
+        async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
+            return _FakeProcess(stderr=b"codex: command not found", returncode=127)
+
+        with patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create):
+            alive, detail = await _probe_codex_alive()
+        assert alive is False
+        assert "command not found" in detail
+
+    @pytest.mark.asyncio
+    async def test_codex_probe_oserror_does_not_raise(self) -> None:
+        from src.gateway.review_engine import _probe_codex_alive
+
+        async def _boom(*args: Any, **kwargs: Any) -> _FakeProcess:
+            raise OSError("no such binary")
+
+        with patch("src.gateway.review_engine._create_subprocess", side_effect=_boom):
+            alive, detail = await _probe_codex_alive()
+        assert alive is False
+        assert "OSError" in detail
+
+    @pytest.mark.asyncio
+    async def test_github_probe_success(self) -> None:
+        from src.gateway.review_engine import _probe_github_reachable
+
+        with respx.mock() as mock:
+            mock.get("https://api.github.com/zen").mock(
+                return_value=httpx.Response(200, text="keep it logically awesome")
+            )
+            reachable, detail = await _probe_github_reachable()
+        assert reachable is True
+        assert "200" in detail
+        assert "awesome" in detail
+
+    @pytest.mark.asyncio
+    async def test_github_probe_non200_is_reachable_false(self) -> None:
+        from src.gateway.review_engine import _probe_github_reachable
+
+        with respx.mock() as mock:
+            mock.get("https://api.github.com/zen").mock(return_value=httpx.Response(503))
+            reachable, detail = await _probe_github_reachable()
+        assert reachable is False
+        assert "503" in detail
+
+    @pytest.mark.asyncio
+    async def test_github_probe_http_error_does_not_raise(self) -> None:
+        from src.gateway.review_engine import _probe_github_reachable
+
+        with respx.mock() as mock:
+            mock.get("https://api.github.com/zen").mock(side_effect=httpx.ConnectError("dns fail"))
+            reachable, detail = await _probe_github_reachable()
+        assert reachable is False
+        assert "ConnectError" in detail
+
+
+# ---------------------------------------------------------------------------
+# _notify_skip — token-fetch failure must not raise
+# ---------------------------------------------------------------------------
+
+
+class TestNotifySkipErrorPaths:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self) -> Any:
+        from src.gateway.review_skip_comments import reset_skip_comment_cache
+
+        reset_skip_comment_cache()
+        yield
+
+    @pytest.mark.asyncio
+    async def test_token_fetch_failure_swallowed(self, caplog: Any) -> None:
+        """A token-fetch exception inside _notify_skip must not break the handler."""
+        from src.gateway.review_engine import ReviewEngineConsumer
+
+        consumer = ReviewEngineConsumer(max_per_hour=0)
+
+        async def _boom() -> str:
+            raise RuntimeError("PEM missing")
+
+        with (
+            caplog.at_level("WARNING", logger="src.gateway.review_engine"),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                side_effect=_boom,
+            ),
+        ):
+            # Must not raise — token error is logged, short-circuit proceeds.
+            await consumer.handle(_event())
+
+        assert any("Cannot fetch Codex token" in r.message for r in caplog.records)

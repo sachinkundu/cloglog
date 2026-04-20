@@ -31,12 +31,14 @@ import re
 import shutil
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
 import httpx
 from pydantic import BaseModel, field_validator
 
+from src.gateway.review_skip_comments import SkipReason, post_skip_comment
 from src.gateway.webhook_dispatcher import WebhookEvent, WebhookEventType
 from src.shared.config import settings
 
@@ -59,6 +61,15 @@ REVIEW_REQUEST_TIMEOUT_SECONDS: Final = 30.0
 # prevents is a third bot review on top of two prior ones — by that point
 # the human reviewer has enough context to act.
 MAX_REVIEWS_PER_PR: Final = 2
+# When the codex subprocess times out we kill it, then best-effort drain any
+# stderr the kernel has already flushed into the pipe. 1s is enough for the
+# kernel to hand over the buffered bytes without blocking the handler.
+_STDERR_POSTMORTEM_READ_SECONDS: Final = 1.0
+# Health probe caps — deliberately tight: these are diagnostics, not a retry
+# budget. A slow probe is no better than no probe.
+_HEALTH_PROBE_TIMEOUT_SECONDS: Final = 3.0
+# How many trailing stderr lines to carry into logs and PR comments.
+_STDERR_TAIL_LINES: Final = 30
 
 _HUNK_HEADER_RE: Final = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
@@ -140,6 +151,21 @@ class RateLimiter:
             return False
         self._timestamps.append(now)
         return True
+
+    def seconds_until_next_slot(self) -> float:
+        """Seconds until the oldest timestamp ages out of the window.
+
+        Returns ``0.0`` if a slot is currently free. Used to build the
+        "retry after ~N minutes" message in the rate-limit skip comment.
+        """
+        now = time.monotonic()
+        active = [t for t in self._timestamps if now - t < RATE_LIMIT_WINDOW_SECONDS]
+        # When max_per_hour is 0 the window is always "full" but there are
+        # no timestamps to wait on — the limit is effectively permanent.
+        if not active or len(active) < self._max:
+            return 0.0
+        oldest = min(active)
+        return max(0.0, (oldest + RATE_LIMIT_WINDOW_SECONDS) - now)
 
 
 def _extract_target_path(file_header_line: str) -> str | None:
@@ -474,10 +500,20 @@ class ReviewEngineConsumer:
 
     async def handle(self, event: WebhookEvent) -> None:
         if not self._rate_limiter.allow():
+            wait_seconds = self._rate_limiter.seconds_until_next_slot()
             logger.warning(
                 "Review rate limit exceeded, skipping PR #%d (%s)",
                 event.pr_number,
                 event.repo_full_name,
+            )
+            await self._notify_skip(
+                event,
+                SkipReason.RATE_LIMIT,
+                (
+                    f"Codex review skipped: rate limit exceeded "
+                    f"({settings.review_max_per_hour} reviews/hour). "
+                    f"Will retry after ~{int(wait_seconds // 60)} minutes."
+                ),
             )
             return
 
@@ -490,6 +526,34 @@ class ReviewEngineConsumer:
                     event.pr_number,
                     event.repo_full_name,
                 )
+
+    async def _notify_skip(self, event: WebhookEvent, reason: SkipReason, body: str) -> None:
+        """Post a skip-notification comment on the PR as the Codex bot.
+
+        Never raises — a token fetch failure or POST error must never cause
+        the short-circuit to fail; the caller proceeds either way.
+        """
+        from src.gateway.github_token import get_codex_reviewer_token
+
+        try:
+            token = await get_codex_reviewer_token()
+        except Exception as err:
+            logger.warning(
+                "Cannot fetch Codex token to post skip comment (pr=%d reason=%s): %s",
+                event.pr_number,
+                reason.value,
+                err,
+            )
+            return
+        try:
+            await post_skip_comment(event.repo_full_name, event.pr_number, reason, body, token)
+        except Exception as err:
+            logger.warning(
+                "Unexpected error posting skip comment (pr=%d reason=%s): %s",
+                event.pr_number,
+                reason.value,
+                err,
+            )
 
     async def _review_pr(self, event: WebhookEvent) -> None:
         from src.gateway.github_token import get_codex_reviewer_token, get_github_app_token
@@ -507,12 +571,29 @@ class ReviewEngineConsumer:
                 prior,
                 MAX_REVIEWS_PER_PR,
             )
+            await self._notify_skip(
+                event,
+                SkipReason.MAX_REVIEWS,
+                (
+                    f"Codex review skipped: this PR already has the "
+                    f"maximum of {MAX_REVIEWS_PER_PR} bot reviews. "
+                    f"Request human review."
+                ),
+            )
             return
 
         diff = await self._fetch_pr_diff(event.repo_full_name, event.pr_number, claude_token)
         filtered = filter_diff(diff)
         if not filtered.strip():
             logger.info("PR #%d has no reviewable files after filtering", event.pr_number)
+            await self._notify_skip(
+                event,
+                SkipReason.NO_REVIEWABLE_FILES,
+                (
+                    "Codex review skipped: no reviewable files after "
+                    "filtering (only lockfiles / generated / excluded paths)."
+                ),
+            )
             return
         if len(filtered) > MAX_DIFF_CHARS:
             logger.warning(
@@ -521,10 +602,20 @@ class ReviewEngineConsumer:
                 len(filtered),
                 MAX_DIFF_CHARS,
             )
+            await self._notify_skip(
+                event,
+                SkipReason.DIFF_TOO_LARGE,
+                (
+                    f"Codex review skipped: diff too large "
+                    f"({len(filtered)} chars, cap {MAX_DIFF_CHARS}). "
+                    f"Break into smaller PRs or request human review."
+                ),
+            )
             return
 
-        result = await self._run_review_agent(filtered, event.pr_number)
+        result = await self._run_review_agent(filtered, event, review_token)
         if result is None:
+            # Skip comment (timeout / unparseable) already posted inside _run_review_agent.
             return
 
         posted = await post_review(
@@ -558,12 +649,22 @@ class ReviewEngineConsumer:
             )
         return stdout.decode(errors="replace")
 
-    async def _run_review_agent(self, diff: str, pr_number: int) -> ReviewResult | None:
+    async def _run_review_agent(
+        self,
+        diff: str,
+        event: WebhookEvent,
+        codex_token: str,
+    ) -> ReviewResult | None:
         """Launch ``codex exec`` with the project prompt and diff via stdin.
 
-        Uses ``--output-schema`` for structured JSON output when the project
-        has a schema file, otherwise falls back to parsing free-form JSON
-        from the output file.
+        On timeout: capture buffered stderr, run parallel health probes
+        (``codex --version`` + ``GET api.github.com/zen``), emit a
+        structured log entry, and retry once. A second consecutive timeout
+        posts an ``agent_timeout`` skip comment and returns ``None``.
+        On unparseable output: post an ``agent_unparseable`` skip comment
+        with a short stderr excerpt and return ``None``.
+
+        Silent failure is never acceptable here — see PR #149 / #159.
         """
         # `settings.review_source_root` must point at a checkout of the PR's
         # merge target (usually main). When unset, fall back to Path.cwd() —
@@ -572,13 +673,69 @@ class ReviewEngineConsumer:
         project_root = settings.review_source_root or Path.cwd()
         prompt = _load_project_prompt(project_root)
         schema_path = _get_schema_path(project_root)
+        full_prompt = f"{prompt}\n\nDIFF:\n{diff}"
 
+        last_outcome: _AgentAttemptOutcome | None = None
+        # Matches T-229's retry philosophy: one retry swallows a transient
+        # stall; a second consecutive timeout is systemic and must surface.
+        for attempt in (1, 2):
+            outcome = await self._run_agent_once(
+                full_prompt, project_root, schema_path, event.pr_number
+            )
+            last_outcome = outcome
+            if outcome.result is not None:
+                return outcome.result
+            if outcome.timed_out:
+                if attempt == 1:
+                    logger.info(
+                        "Review agent timed out (attempt 1) for PR #%d — retrying once",
+                        event.pr_number,
+                    )
+                    continue
+                codex_alive, codex_detail = await _probe_codex_alive()
+                github_reachable, github_detail = await _probe_github_reachable()
+                log_entry = {
+                    "event": "review_timeout",
+                    "pr_number": event.pr_number,
+                    "attempt": attempt,
+                    "stderr_excerpt": outcome.stderr_excerpt,
+                    "codex_alive": codex_alive,
+                    "codex_probe": codex_detail,
+                    "github_reachable": github_reachable,
+                    "github_probe": github_detail,
+                    "elapsed_seconds": round(outcome.elapsed_seconds, 2),
+                }
+                logger.warning("review_timeout %s", log_entry)
+                body = _format_timeout_body(
+                    outcome, codex_alive, codex_detail, github_reachable, github_detail
+                )
+                await self._post_agent_skip(event, SkipReason.AGENT_TIMEOUT, body, codex_token)
+                return None
+            # Non-timeout failure: unparseable output.
+            logger.warning("Review agent produced no parseable output for PR #%d", event.pr_number)
+            body = _format_unparseable_body(outcome)
+            await self._post_agent_skip(event, SkipReason.AGENT_UNPARSEABLE, body, codex_token)
+            return None
+
+        # Unreachable — retained as a defensive return.
+        if last_outcome is not None and last_outcome.result is not None:
+            return last_outcome.result
+        return None
+
+    async def _run_agent_once(
+        self,
+        full_prompt: str,
+        project_root: Path,
+        schema_path: Path | None,
+        pr_number: int,
+    ) -> _AgentAttemptOutcome:
+        """One invocation of the review agent — returns a typed outcome.
+
+        On timeout: kills the subprocess and best-effort drains ``proc.stderr``
+        so the caller can attach the tail to logs / PR comments.
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            output_path = tmp / "review.json"
-
-            # Build the full prompt: instructions + diff
-            full_prompt = f"{prompt}\n\nDIFF:\n{diff}"
+            output_path = Path(tmpdir) / "review.json"
 
             args = [
                 settings.review_agent_cmd,
@@ -599,7 +756,6 @@ class ReviewEngineConsumer:
             if schema_path is not None:
                 args += ["--output-schema", str(schema_path)]
 
-            # Pass prompt via stdin using "-" sentinel
             args.append("-")
 
             proc = await _create_subprocess(
@@ -609,17 +765,25 @@ class ReviewEngineConsumer:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(project_root),
             )
+            start = time.monotonic()
             try:
                 stdout, stderr = await asyncio.wait_for(
                     proc.communicate(input=full_prompt.encode()),
                     timeout=REVIEW_TIMEOUT_SECONDS,
                 )
+                elapsed = time.monotonic() - start
             except TimeoutError:
+                elapsed = time.monotonic() - start
+                captured = await _drain_stderr_after_timeout(proc)
                 proc.kill()
                 with contextlib.suppress(ProcessLookupError):
                     await proc.wait()
-                logger.warning("Review agent timed out for PR #%d", pr_number)
-                return None
+                return _AgentAttemptOutcome(
+                    result=None,
+                    timed_out=True,
+                    stderr_excerpt=_tail_excerpt(captured),
+                    elapsed_seconds=elapsed,
+                )
 
             if proc.returncode != 0:
                 logger.warning(
@@ -629,21 +793,57 @@ class ReviewEngineConsumer:
                     stderr.decode(errors="replace")[:500],
                 )
 
-            # Try output file first (written by -o flag)
             if output_path.exists():
                 raw = output_path.read_text()
                 result = self._parse_output(raw, pr_number)
                 if result is not None:
-                    return result
+                    return _AgentAttemptOutcome(
+                        result=result,
+                        timed_out=False,
+                        returncode=proc.returncode,
+                        elapsed_seconds=elapsed,
+                    )
 
-            # Fallback: try parsing stdout
             if stdout:
                 result = self._parse_output(stdout.decode(errors="replace"), pr_number)
                 if result is not None:
-                    return result
+                    return _AgentAttemptOutcome(
+                        result=result,
+                        timed_out=False,
+                        returncode=proc.returncode,
+                        elapsed_seconds=elapsed,
+                    )
 
-            logger.warning("Review agent produced no parseable output for PR #%d", pr_number)
-            return None
+            return _AgentAttemptOutcome(
+                result=None,
+                timed_out=False,
+                stderr_excerpt=_tail_excerpt(stderr),
+                returncode=proc.returncode,
+                elapsed_seconds=elapsed,
+            )
+
+    async def _post_agent_skip(
+        self,
+        event: WebhookEvent,
+        reason: SkipReason,
+        body: str,
+        token: str,
+    ) -> None:
+        """Post a skip comment for an agent-path failure (timeout / unparseable).
+
+        We already have the codex_token in hand, so we don't go through
+        ``_notify_skip`` (which re-fetches). Swallows all errors — a comment
+        failure must never mask the underlying agent failure.
+        """
+        try:
+            await post_skip_comment(event.repo_full_name, event.pr_number, reason, body, token)
+        except Exception as err:
+            logger.warning(
+                "Unexpected error posting skip comment (pr=%d reason=%s): %s",
+                event.pr_number,
+                reason.value,
+                err,
+            )
 
     def _parse_output(self, raw: str, pr_number: int) -> ReviewResult | None:
         """Try to parse review output, handling both schema formats.
@@ -691,6 +891,151 @@ class ReviewEngineConsumer:
             }
 
         return parse_review_output(json.dumps(data))
+
+
+@dataclass
+class _AgentAttemptOutcome:
+    """Outcome of a single review-agent subprocess invocation."""
+
+    result: ReviewResult | None
+    timed_out: bool
+    stderr_excerpt: str = ""
+    returncode: int | None = None
+    elapsed_seconds: float = 0.0
+
+
+def _tail_excerpt(data: bytes | str) -> str:
+    """Return the last ``_STDERR_TAIL_LINES`` of ``data`` as text.
+
+    Used for structured logs and PR comments. Large stderr is fine —
+    we only surface the tail, which is where the error usually lives.
+    """
+    text = data.decode(errors="replace") if isinstance(data, bytes) else data
+    if not text:
+        return ""
+    lines = text.splitlines()
+    return "\n".join(lines[-_STDERR_TAIL_LINES:])
+
+
+async def _drain_stderr_after_timeout(proc: asyncio.subprocess.Process) -> bytes:
+    """Best-effort read of any stderr still buffered after a timeout.
+
+    The subprocess has not yet been killed, but ``communicate()`` is
+    already cancelled — we give the kernel a short window to hand over
+    whatever it had flushed. Any error short-circuits to an empty string;
+    a bogus stderr is never worth failing the handler over.
+    """
+    if proc.stderr is None:
+        return b""
+    try:
+        return await asyncio.wait_for(
+            proc.stderr.read(),
+            timeout=_STDERR_POSTMORTEM_READ_SECONDS,
+        )
+    except (TimeoutError, Exception):
+        return b""
+
+
+def _format_timeout_body(
+    outcome: _AgentAttemptOutcome,
+    codex_alive: bool,
+    codex_detail: str,
+    github_reachable: bool,
+    github_detail: str,
+) -> str:
+    """PR comment body for a post-retry timeout."""
+    lines = [
+        f"Codex review failed: agent timed out after "
+        f"{int(REVIEW_TIMEOUT_SECONDS)}s (retried once). "
+        f"Push a new commit to retry.",
+        "",
+        f"- codex binary alive: **{'yes' if codex_alive else 'no'}**"
+        f" ({codex_detail or 'no detail'})",
+        f"- GitHub reachable: **{'yes' if github_reachable else 'no'}**"
+        f" ({github_detail or 'no detail'})",
+    ]
+    if outcome.stderr_excerpt:
+        lines += [
+            "",
+            "<details><summary>stderr tail</summary>",
+            "",
+            "```",
+            outcome.stderr_excerpt,
+            "```",
+            "",
+            "</details>",
+        ]
+    return "\n".join(lines)
+
+
+def _format_unparseable_body(outcome: _AgentAttemptOutcome) -> str:
+    """PR comment body for an unparseable-output failure."""
+    rc = outcome.returncode if outcome.returncode is not None else "unknown"
+    lines = [
+        f"Codex review failed: agent returned an unparseable response "
+        f"(exit {rc}). Push a new commit to retry.",
+    ]
+    if outcome.stderr_excerpt:
+        lines += [
+            "",
+            "<details><summary>stderr tail</summary>",
+            "",
+            "```",
+            outcome.stderr_excerpt,
+            "```",
+            "",
+            "</details>",
+        ]
+    return "\n".join(lines)
+
+
+async def _probe_codex_alive() -> tuple[bool, str]:
+    """Check the codex binary responds to ``--version``.
+
+    Returns ``(alive, detail)`` where ``detail`` is either the version
+    string (success) or a short error marker. Never raises.
+    """
+    try:
+        proc = await _create_subprocess(
+            settings.review_agent_cmd,
+            "--version",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=_HEALTH_PROBE_TIMEOUT_SECONDS
+        )
+        if proc.returncode == 0:
+            return True, stdout.decode(errors="replace").strip()[:120] or "ok"
+        err = (stderr.decode(errors="replace").strip() or "nonzero exit")[:120]
+        return False, err
+    except TimeoutError:
+        return False, f"probe timed out after {_HEALTH_PROBE_TIMEOUT_SECONDS:.0f}s"
+    except OSError as err:
+        return False, f"OSError: {err}"[:120]
+    except Exception as err:  # noqa: BLE001 - diagnostics only, never raise
+        return False, f"{type(err).__name__}: {err}"[:120]
+
+
+async def _probe_github_reachable() -> tuple[bool, str]:
+    """Check outbound connectivity via ``GET api.github.com/zen``.
+
+    Returns ``(reachable, detail)``. The ``/zen`` endpoint is unauthenticated
+    and always up — if it doesn't answer, outbound HTTPS is broken.
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                "https://api.github.com/zen",
+                timeout=_HEALTH_PROBE_TIMEOUT_SECONDS,
+            )
+            if resp.status_code == 200:
+                return True, f"200 {resp.text.strip()[:80]}"
+            return False, f"status {resp.status_code}"
+    except httpx.HTTPError as err:
+        return False, f"{type(err).__name__}: {err}"[:120]
+    except Exception as err:  # noqa: BLE001 - diagnostics only
+        return False, f"{type(err).__name__}: {err}"[:120]
 
 
 async def _create_subprocess(

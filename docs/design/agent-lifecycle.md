@@ -129,9 +129,21 @@ to the exiting task type, but never reorder them.
    }
    ```
 
+   The `artifacts.work_log` and `artifacts.learnings` values **must be absolute paths**, not worktree-relative — the main agent reads them after the worktree is torn down and the relative root is gone by then.
+
    This event is the trigger the main agent's close-wave flow reacts to. It is
    authoritative — the backend's `WORKTREE_OFFLINE` event is a fallback, not a
    substitute. See T-243.
+
+   **Hook backstop (T-243).** `plugins/cloglog/hooks/agent-shutdown.sh` writes
+   the event as well, with `reason: "best_effort_backstop_from_session_end_hook"`
+   and `worktree_id` omitted (the hook has no access to the UUID — it lives in
+   backend state). The close-wave consumer must therefore deduplicate on
+   `(worktree, ts)`, not `(worktree_id, ts)`, and prefer the richer
+   agent-written record when both are present. The backstop exists because
+   `zellij action close-tab` under close-wave has historically skipped the
+   hook (T-217); it is not a substitute for the agent emitting the event
+   itself.
 6. **`unregister_agent()`** — no arguments; it authenticates with the session's
    `agent_token` and ends the active session server-side.
 7. **Stop.** The Claude Code process returns control; the zellij tab stays

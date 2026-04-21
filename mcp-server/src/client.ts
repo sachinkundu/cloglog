@@ -55,7 +55,13 @@ export class CloglogClient {
     // Supervisor routes target a different worktree than the caller — the
     // caller's agent token (which is bound to its own worktree) would fail
     // the target-worktree check. Use the MCP service key instead.
-    const isSupervisorRoute = isAgentRoute && path.endsWith('/assign-task')
+    //
+    // ``/force-unregister`` (T-221) also *rejects* agent tokens at the
+    // backend; sending the MCP service key here is what makes the tool
+    // callable from the supervising agent even when no agent token exists.
+    const SUPERVISOR_SUFFIXES = ['/assign-task', '/request-shutdown', '/force-unregister']
+    const isSupervisorRoute =
+      isAgentRoute && SUPERVISOR_SUFFIXES.some((s) => path.endsWith(s))
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',

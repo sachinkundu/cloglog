@@ -138,6 +138,42 @@ async def get_mcp_or_dashboard(request: Request) -> None:
 CurrentMcpOrDashboard = Annotated[None, Depends(get_mcp_or_dashboard)]
 
 
+async def get_mcp_or_project(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> Project | None:
+    """Accept MCP service key OR project API key. Reject agent tokens.
+
+    Returns the authenticated ``Project`` when the caller presented a project
+    API key, or ``None`` when they presented the MCP service key. Used by
+    supervisor-style writes where an agent's own token must not be accepted
+    (e.g. force-unregister of a wedged worktree — see T-221).
+    """
+    token = _extract_bearer_token(request)
+    mcp_header = request.headers.get("X-MCP-Request")
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing credentials")
+
+    if mcp_header:
+        if not hmac.compare_digest(token, settings.mcp_service_key):
+            raise HTTPException(status_code=401, detail="Invalid MCP service key")
+        return None
+
+    board_service = BoardService(BoardRepository(session))
+    project = await board_service.verify_api_key(token)
+    if project is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid credentials (agent tokens are not accepted for this endpoint)",
+        )
+    request.state.project_id = project.id
+    return project
+
+
+McpOrProject = Annotated["Project | None", Depends(get_mcp_or_project)]
+
+
 async def get_supervisor_auth(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],

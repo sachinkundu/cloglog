@@ -841,6 +841,79 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+
+  /api/v1/agents/{worktree_id}/request-shutdown:
+    post:
+      summary: Request Shutdown
+      description: |
+        T-218 — supervisor-initiated graceful shutdown. Writes a `shutdown`
+        JSON line to `<worktree_path>/.cloglog/inbox`. Idempotent. Auth via
+        MCP service key or project API key.
+      operationId: request_shutdown_api_v1_agents__worktree_id__request_shutdown_post
+      parameters:
+      - name: worktree_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Worktree Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [shutdown_requested]
+                properties:
+                  shutdown_requested:
+                    type: boolean
+        '404':
+          description: Worktree not found
+        '409':
+          description: Worktree has no worktree_path (legacy row)
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+
+  /api/v1/agents/{worktree_id}/force-unregister:
+    post:
+      summary: Force Unregister
+      description: |
+        T-221 — tier-2 fallback for wedged worktrees. Ends the active
+        session, deletes the worktree row, and emits a single
+        `WORKTREE_OFFLINE` event with `reason: "force_unregistered"`.
+        Idempotent: returns `already_unregistered: true` on repeat calls.
+        Auth: MCP service key OR project API key (agent tokens are refused
+        so a wedged agent cannot force-unregister itself).
+      operationId: force_unregister_api_v1_agents__worktree_id__force_unregister_post
+      parameters:
+      - name: worktree_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Worktree Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForceUnregisterResponse'
+        '403':
+          description: Worktree belongs to a different project
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/projects/{project_id}/worktrees:
     get:
       summary: List Worktrees
@@ -1315,6 +1388,20 @@ components:
       - number
       - created_at
       title: FeatureResponse
+    ForceUnregisterResponse:
+      properties:
+        worktree_id:
+          type: string
+          format: uuid
+          title: Worktree Id
+        already_unregistered:
+          type: boolean
+          title: Already Unregistered
+      type: object
+      required:
+      - worktree_id
+      - already_unregistered
+      title: ForceUnregisterResponse
     HTTPValidationError:
       properties:
         detail:

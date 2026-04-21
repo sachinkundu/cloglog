@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -206,6 +207,213 @@ class TestRequestShutdownAPI:
         assert inbox.exists()
         msg = json.loads(inbox.read_text().strip())
         assert msg["type"] == "shutdown"
+
+
+class TestForceUnregisterAPI:
+    """T-221 — supervisor force-unregister for wedged worktrees."""
+
+    async def test_force_unregister_success_with_project_key(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Project API key can force-unregister its own worktree."""
+        from src.shared.events import EventType, event_bus
+
+        project = await _create_project_via_api(client)
+        wt_id, _ = await _register_and_get_token(client, project["api_key"], "/repo/wt-forced")
+
+        queue = event_bus.subscribe(uuid.UUID(project["id"]))
+        try:
+            # Drain WORKTREE_ONLINE from registration
+            import asyncio as _asyncio
+
+            while True:
+                try:
+                    await _asyncio.wait_for(queue.get(), timeout=0.05)
+                except TimeoutError:
+                    break
+
+            resp = await client.post(
+                f"/api/v1/agents/{wt_id}/force-unregister",
+                headers={
+                    "Authorization": f"Bearer {project['api_key']}",
+                    "X-Dashboard-Key": "",
+                },
+            )
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["worktree_id"] == wt_id
+            assert body["already_unregistered"] is False
+
+            events = []
+            while True:
+                try:
+                    events.append(await _asyncio.wait_for(queue.get(), timeout=0.2))
+                except TimeoutError:
+                    break
+            offline = [e for e in events if e.type == EventType.WORKTREE_OFFLINE]
+            assert len(offline) == 1
+            assert offline[0].data["reason"] == "force_unregistered"
+            assert offline[0].data["worktree_id"] == wt_id
+            assert offline[0].data["caller_project_id"] == project["id"]
+        finally:
+            event_bus.unsubscribe(uuid.UUID(project["id"]), queue)
+
+        # Worktree row is gone — a second force-unregister is idempotent.
+        r2 = await client.post(
+            f"/api/v1/agents/{wt_id}/force-unregister",
+            headers={
+                "Authorization": f"Bearer {project['api_key']}",
+                "X-Dashboard-Key": "",
+            },
+        )
+        assert r2.status_code == 200
+        assert r2.json()["already_unregistered"] is True
+
+    async def test_force_unregister_idempotent_second_call(
+        self, client: AsyncClient, db_session: AsyncSession
+    ) -> None:
+        """Second call on an already-gone worktree returns 200 + already_unregistered=True.
+
+        Also verifies no second ``WORKTREE_OFFLINE`` event fires — the event
+        log stays truthful (one offline event per real transition).
+        """
+        from src.shared.events import EventType, event_bus
+
+        project = await _create_project_via_api(client)
+        wt_id, _ = await _register_and_get_token(client, project["api_key"], "/repo/wt-force-idem")
+        h = {"Authorization": f"Bearer {project['api_key']}", "X-Dashboard-Key": ""}
+
+        # First call — real unregister
+        r1 = await client.post(f"/api/v1/agents/{wt_id}/force-unregister", headers=h)
+        assert r1.status_code == 200
+        assert r1.json()["already_unregistered"] is False
+
+        queue = event_bus.subscribe(uuid.UUID(project["id"]))
+        try:
+            r2 = await client.post(f"/api/v1/agents/{wt_id}/force-unregister", headers=h)
+            assert r2.status_code == 200
+            assert r2.json() == {
+                "worktree_id": wt_id,
+                "already_unregistered": True,
+            }
+
+            import asyncio as _asyncio
+
+            events = []
+            while True:
+                try:
+                    events.append(await _asyncio.wait_for(queue.get(), timeout=0.1))
+                except TimeoutError:
+                    break
+            offline = [e for e in events if e.type == EventType.WORKTREE_OFFLINE]
+            assert offline == [], "Idempotent second call must not re-emit WORKTREE_OFFLINE"
+        finally:
+            event_bus.unsubscribe(uuid.UUID(project["id"]), queue)
+
+    async def test_force_unregister_never_registered_idempotent(self, client: AsyncClient) -> None:
+        """A completely unknown worktree_id is treated as already-gone.
+
+        The backend has no memory of whether this ID ever belonged to a
+        worktree in this project, so the simplest honest response is
+        ``already_unregistered=True`` (with the 200 status matching the
+        "idempotent DELETE" convention on which this whole endpoint rests).
+        """
+        project = await _create_project_via_api(client)
+        unknown_id = str(uuid.uuid4())
+
+        resp = await client.post(
+            f"/api/v1/agents/{unknown_id}/force-unregister",
+            headers={
+                "Authorization": f"Bearer {project['api_key']}",
+                "X-Dashboard-Key": "",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "worktree_id": unknown_id,
+            "already_unregistered": True,
+        }
+
+    async def test_force_unregister_cross_project_forbidden(self, client: AsyncClient) -> None:
+        """Project B cannot force-unregister project A's worktree (403)."""
+        proj_a = await _create_project_via_api(client)
+        proj_b = await _create_project_via_api(client)
+        wt_id, _ = await _register_and_get_token(client, proj_a["api_key"], "/repo/wt-proj-a-force")
+
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/force-unregister",
+            headers={
+                "Authorization": f"Bearer {proj_b['api_key']}",
+                "X-Dashboard-Key": "",
+            },
+        )
+        assert resp.status_code == 403
+
+    async def test_force_unregister_rejects_agent_token(self, client: AsyncClient) -> None:
+        """A wedged agent cannot force-unregister itself via its own token."""
+        project = await _create_project_via_api(client)
+        wt_id, agent_token = await _register_and_get_token(
+            client, project["api_key"], "/repo/wt-self-force"
+        )
+
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/force-unregister",
+            headers=_agent_auth(agent_token),
+        )
+        assert resp.status_code == 401
+
+    async def test_force_unregister_with_mcp_service_key(self, client: AsyncClient) -> None:
+        """MCP service key authorizes force-unregister across any project."""
+        project = await _create_project_via_api(client)
+        wt_id, _ = await _register_and_get_token(client, project["api_key"], "/repo/wt-mcp-force")
+
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/force-unregister",
+            headers={
+                "Authorization": "Bearer cloglog-mcp-dev",
+                "X-MCP-Request": "true",
+                "X-Dashboard-Key": "",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["already_unregistered"] is False
+
+    async def test_force_unregister_emits_audit_log(
+        self,
+        client: AsyncClient,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Every call emits a grep-able ``audit=force_unregister`` log line.
+
+        The line carries the caller project (or ``mcp_service``), the target
+        worktree id, and whether the worktree was already gone — enough for
+        a supervisor to spot agents that regularly need forcing without
+        needing a dedicated DB table.
+        """
+        import logging
+
+        project = await _create_project_via_api(client)
+        wt_id, _ = await _register_and_get_token(client, project["api_key"], "/repo/wt-audit")
+
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="src.agent.services"):
+            resp = await client.post(
+                f"/api/v1/agents/{wt_id}/force-unregister",
+                headers={
+                    "Authorization": f"Bearer {project['api_key']}",
+                    "X-Dashboard-Key": "",
+                },
+            )
+        assert resp.status_code == 200
+
+        audit_lines = [
+            r.getMessage() for r in caplog.records if "audit=force_unregister" in r.getMessage()
+        ]
+        assert len(audit_lines) == 1, f"expected one audit line, got {audit_lines!r}"
+        line = audit_lines[0]
+        assert f"worktree_id={wt_id}" in line
+        assert f"caller_project_id={project['id']}" in line
+        assert "already_unregistered=False" in line
 
 
 class TestHeartbeatAPI:

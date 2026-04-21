@@ -102,6 +102,11 @@ class UnregisterByPathRequest(BaseModel):
     artifacts: ArtifactPaths | None = None
 
 
+class ForceUnregisterResponse(BaseModel):
+    worktree_id: UUID
+    already_unregistered: bool
+
+
 # --- Worktree ---
 
 

@@ -164,6 +164,20 @@ describe('Tool Handlers', () => {
     )
   })
 
+  it('request_shutdown (T-218) calls POST /agents/{wt}/request-shutdown', async () => {
+    await handlers.request_shutdown({ worktree_id: 'wt-123' })
+    expect(client.request).toHaveBeenCalledWith(
+      'POST', '/api/v1/agents/wt-123/request-shutdown'
+    )
+  })
+
+  it('force_unregister (T-221) calls POST /agents/{wt}/force-unregister', async () => {
+    await handlers.force_unregister({ worktree_id: 'wt-123' })
+    expect(client.request).toHaveBeenCalledWith(
+      'POST', '/api/v1/agents/wt-123/force-unregister'
+    )
+  })
+
   it('add_task_note calls POST /agents/{wt}/task-note', async () => {
     await handlers.add_task_note({
       worktree_id: 'wt-123', task_id: 't1', note: 'Working on it',

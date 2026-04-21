@@ -388,9 +388,12 @@ A Claude Code session is one process; it cannot restart itself. Specifically:
    ```
 
    Online worktrees are enumerated via
-   `GET /api/v1/projects/{project_id}/worktrees` (public endpoint, no auth)
-   filtered to `status='online'`. The script does not shell out to psql and
-   does not require agent credentials.
+   `GET /api/v1/projects/{project_id}/worktrees` filtered to
+   `status='online'`. The gateway's `ApiAccessControlMiddleware` rejects
+   unauthenticated access to non-agent routes, so the script sends an
+   `X-Dashboard-Key` header sourced from `settings.dashboard_secret`
+   (loaded from `.env` the same way the running backend does). The script
+   does not shell out to psql and does not require agent credentials.
 3. A worktree agent that needs the new tools emits `need_session_restart` to
    the main inbox and pauses (no new MCP calls, no new commits).
 4. Main closes the worktree's zellij tab and opens a new one via the launch

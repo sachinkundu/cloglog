@@ -1,7 +1,7 @@
 # After a merge touches mcp-server/src/, the main agent rebuilds mcp-server/dist/ and broadcasts mcp_tools_updated to every online worktree's inbox — the next worktree agent knows the MCP tool surface changed instead of silently missing new tools.
 
-*2026-04-20T16:59:45Z by Showboat 0.6.1*
-<!-- showboat-id: d0ad2321-de9f-4d52-830e-39c7f6c4120b -->
+*2026-04-21T06:03:43Z by Showboat 0.6.1*
+<!-- showboat-id: 9ada5b08-22fe-483d-9eb3-8c8d743af831 -->
 
 Setup: build a synthetic project tree with a stale mcp-server/dist/ and two worktrees under .claude/worktrees/. No real backend, no npm install — the demo proves the broadcast mechanism end-to-end without depending on environment state.
 
@@ -67,6 +67,10 @@ bodies = {
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a, **k): pass
     def do_GET(self):
+        # Mirror the real middleware: reject non-agent GETs that are missing
+        # the X-Dashboard-Key header. The demo proves the header is being sent.
+        if self.headers.get("X-Dashboard-Key") != "cloglog-dashboard-dev":
+            self.send_response(403); self.end_headers(); return
         body = bodies.get(self.path)
         if body is None:
             self.send_response(404); self.end_headers(); return
@@ -81,9 +85,10 @@ srv.serve_forever()
 PY
 MOCK_PID=$!
 trap "kill $MOCK_PID 2>/dev/null || true" EXIT
-# Wait until the mock is listening.
+# Wait until the mock is listening (send the auth header the real backend
+# would require — otherwise the mock returns 403 like the real gateway).
 for _ in $(seq 1 40); do
-    if curl -sf "http://127.0.0.1:61244/api/v1/projects/00000000-0000-0000-0000-000000000001/worktrees" > /dev/null; then break; fi
+    if curl -sf -H "X-Dashboard-Key: cloglog-dashboard-dev"         "http://127.0.0.1:61244/api/v1/projects/00000000-0000-0000-0000-000000000001/worktrees"         > /dev/null; then break; fi
     sleep 0.05
 done
 
@@ -129,7 +134,9 @@ print(f"tools added:   {sorted(added)}")
 print(f"tools removed: {sorted(removed)}")
 
 paths = m.fetch_online_worktree_paths(
-    "http://127.0.0.1:61244", "00000000-0000-0000-0000-000000000001"
+    "http://127.0.0.1:61244",
+    "00000000-0000-0000-0000-000000000001",
+    dashboard_secret="cloglog-dashboard-dev",
 )
 print(f"online worktrees from mock API: {[Path(p).name for p in paths]}")
 from datetime import datetime, UTC
@@ -187,7 +194,7 @@ grep -n "mcp_tools_updated\|need_session_restart\|sync-mcp-dist" docs/design/age
 375:1. After a merge, the main agent runs `make sync-mcp-dist` (wraps
 383:   `mcp_tools_updated` event to every online worktree's `.cloglog/inbox`
 387:   {"type":"mcp_tools_updated","added":["new_tool_a"],"removed":[],"ts":"..."}
-394:3. A worktree agent that needs the new tools emits `need_session_restart` to
-401:An agent that receives `mcp_tools_updated` but does NOT need the change keeps
-447:- **T-244** — Post-merge mcp-server dist rebuild + `mcp_tools_updated`
+397:3. A worktree agent that needs the new tools emits `need_session_restart` to
+404:An agent that receives `mcp_tools_updated` but does NOT need the change keeps
+450:- **T-244** — Post-merge mcp-server dist rebuild + `mcp_tools_updated`
 ```

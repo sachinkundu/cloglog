@@ -129,9 +129,25 @@ def test_inbox_paths_for_includes_main_plus_each_worktree(tmp_path: Path) -> Non
 # ── fetch_online_worktree_paths ───────────────────────────────────
 
 
-def test_fetch_online_worktree_paths_filters_by_status() -> None:
+def _patched_get(handler):  # type: ignore[no-untyped-def]
+    """Swap ``httpx.get`` with a mock-transport-backed variant for one call."""
+    transport = httpx.MockTransport(handler)
+    real_get = httpx.get
+
+    def fake_get(url: str, **kw):  # type: ignore[no-untyped-def]
+        with httpx.Client(transport=transport) as c:
+            return c.get(url, **kw)
+
+    httpx.get = fake_get
+    return real_get
+
+
+def test_fetch_online_worktree_paths_filters_by_status_and_sends_auth_header() -> None:
+    seen_headers: dict[str, str] = {}
+
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path.endswith("/worktrees")
+        seen_headers.update(dict(request.headers))
         return httpx.Response(
             200,
             json=[
@@ -142,41 +158,47 @@ def test_fetch_online_worktree_paths_filters_by_status() -> None:
             ],
         )
 
-    transport = httpx.MockTransport(handler)
-    # httpx.get uses a fresh client, but the module uses httpx.get directly.
-    # Override via monkeypatching is overkill — test the function by
-    # constructing our own client with the mock transport and patching
-    # httpx.get via attribute substitution.
-    real_get = httpx.get
-
-    def fake_get(url: str, **kw):  # type: ignore[no-untyped-def]
-        with httpx.Client(transport=transport) as c:
-            return c.get(url, **kw)
-
-    httpx.get = fake_get
+    real_get = _patched_get(handler)
     try:
-        paths = sync_mcp_dist.fetch_online_worktree_paths("http://fake", "pid-1")
+        paths = sync_mcp_dist.fetch_online_worktree_paths(
+            "http://fake", "pid-1", dashboard_secret="s3cret"
+        )
     finally:
         httpx.get = real_get
 
     assert paths == ["/tmp/wt-a", "/tmp/wt-c"]
+    # Middleware requires the X-Dashboard-Key header on non-agent routes.
+    assert seen_headers.get("x-dashboard-key") == "s3cret"
+
+
+def test_fetch_online_worktree_paths_rejects_401_and_403() -> None:
+    """Without the header (or with the wrong value), the server answers 403.
+    ``raise_for_status`` must surface that as an ``HTTPStatusError`` so the
+    caller does not silently proceed with an empty worktree list."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403, json={"detail": "Agents can only access /api/v1/agents/* routes."}
+        )
+
+    real_get = _patched_get(handler)
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            sync_mcp_dist.fetch_online_worktree_paths(
+                "http://fake", "pid-1", dashboard_secret="wrong"
+            )
+    finally:
+        httpx.get = real_get
 
 
 def test_fetch_online_worktree_paths_raises_on_non_list() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"error": "boom"})
 
-    transport = httpx.MockTransport(handler)
-    real_get = httpx.get
-
-    def fake_get(url: str, **kw):  # type: ignore[no-untyped-def]
-        with httpx.Client(transport=transport) as c:
-            return c.get(url, **kw)
-
-    httpx.get = fake_get
+    real_get = _patched_get(handler)
     try:
         with pytest.raises(RuntimeError, match="Expected list"):
-            sync_mcp_dist.fetch_online_worktree_paths("http://fake", "pid-1")
+            sync_mcp_dist.fetch_online_worktree_paths("http://fake", "pid-1", dashboard_secret="s")
     finally:
         httpx.get = real_get
 
@@ -198,6 +220,7 @@ def test_run_is_noop_when_tool_surface_unchanged(tmp_path: Path, capsys) -> None
         project_root=root,
         api_url="http://unused",
         project_id="pid",
+        dashboard_secret="s",
         skip_build=True,
         skip_broadcast=False,
     )
@@ -225,11 +248,16 @@ def test_run_broadcasts_on_added_tool(tmp_path: Path, monkeypatch, capsys) -> No
         )
 
     monkeypatch.setattr(sync_mcp_dist, "rebuild_dist", fake_rebuild)
-    monkeypatch.setattr(
-        sync_mcp_dist,
-        "fetch_online_worktree_paths",
-        lambda base_url, project_id: [str(wt_a)],
-    )
+
+    seen: dict[str, object] = {}
+
+    def fake_fetch(base_url: str, project_id: str, *, dashboard_secret: str) -> list[str]:
+        seen["base_url"] = base_url
+        seen["project_id"] = project_id
+        seen["dashboard_secret"] = dashboard_secret
+        return [str(wt_a)]
+
+    monkeypatch.setattr(sync_mcp_dist, "fetch_online_worktree_paths", fake_fetch)
 
     # Seed a minimal cloglog config the script reads for backend_url/project_id.
     (root / ".cloglog" / "config.yaml").write_text(
@@ -240,10 +268,15 @@ def test_run_broadcasts_on_added_tool(tmp_path: Path, monkeypatch, capsys) -> No
         project_root=root,
         api_url=None,
         project_id=None,
+        dashboard_secret="demo-secret",
         skip_build=False,
         skip_broadcast=False,
     )
     assert rc == 0
+    # run() forwarded the resolved secret into fetch_online_worktree_paths.
+    assert seen["dashboard_secret"] == "demo-secret"
+    assert seen["base_url"] == "http://fake"
+    assert seen["project_id"] == "pid"
 
     main_inbox = (root / ".cloglog" / "inbox").read_text(encoding="utf-8").strip()
     wt_inbox = (wt_a / ".cloglog" / "inbox").read_text(encoding="utf-8").strip()

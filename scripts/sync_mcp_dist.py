@@ -67,14 +67,30 @@ def rebuild_dist(mcp_server_dir: Path) -> None:
     )
 
 
-def fetch_online_worktree_paths(base_url: str, project_id: str, *, timeout: float = 5.0) -> list[str]:
+def fetch_online_worktree_paths(
+    base_url: str,
+    project_id: str,
+    *,
+    dashboard_secret: str,
+    timeout: float = 5.0,
+) -> list[str]:
     """Return absolute paths of worktrees in ``status='online'`` for a project.
 
-    The ``/api/v1/projects/{project_id}/worktrees`` endpoint is public (no
-    auth). If the backend is unreachable, raise — the caller decides whether
-    to tolerate a missing broadcast or abort.
+    Non-agent routes on the gateway require an ``X-Dashboard-Key`` header
+    matching ``settings.dashboard_secret`` (see
+    ``src/gateway/app.py::ApiAccessControlMiddleware``). The caller must
+    pass the same value the server loads from ``DASHBOARD_SECRET`` in
+    ``.env`` — ``run()`` derives it from ``src.shared.config.settings`` so
+    the script and the running backend agree automatically.
+
+    If the backend is unreachable, raise — the caller decides whether to
+    tolerate a missing broadcast or abort.
     """
-    resp = httpx.get(f"{base_url}/api/v1/projects/{project_id}/worktrees", timeout=timeout)
+    resp = httpx.get(
+        f"{base_url}/api/v1/projects/{project_id}/worktrees",
+        headers={"X-Dashboard-Key": dashboard_secret},
+        timeout=timeout,
+    )
     resp.raise_for_status()
     worktrees = resp.json()
     if not isinstance(worktrees, list):
@@ -141,11 +157,27 @@ def load_project_config(project_root: Path) -> dict[str, Any]:
     return data
 
 
+def _resolve_dashboard_secret(override: str | None) -> str:
+    """Pick the dashboard secret the server would accept.
+
+    Order: explicit CLI override → ``DASHBOARD_SECRET`` env var (via
+    ``src.shared.config.settings``, which reads ``.env``) → pydantic
+    default (``cloglog-dashboard-dev``). Importing ``settings`` lazily keeps
+    the script importable in unit tests that patch out the filesystem.
+    """
+    if override:
+        return override
+    from src.shared.config import settings
+
+    return settings.dashboard_secret
+
+
 def run(
     *,
     project_root: Path,
     api_url: str | None,
     project_id: str | None,
+    dashboard_secret: str | None,
     skip_build: bool,
     skip_broadcast: bool,
 ) -> int:
@@ -188,7 +220,10 @@ def run(
         )
         return 2
 
-    worktree_paths = fetch_online_worktree_paths(resolved_url, resolved_pid)
+    secret = _resolve_dashboard_secret(dashboard_secret)
+    worktree_paths = fetch_online_worktree_paths(
+        resolved_url, resolved_pid, dashboard_secret=secret
+    )
     event = build_event(added, removed)
     inboxes = inbox_paths_for(project_root, worktree_paths)
     written = broadcast(inboxes, event)
@@ -218,6 +253,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--api-url", help="Override backend URL (default: .cloglog/config.yaml)")
     parser.add_argument("--project-id", help="Override project UUID (default: .cloglog/config.yaml)")
     parser.add_argument(
+        "--dashboard-secret",
+        help="Override X-Dashboard-Key (default: settings.dashboard_secret from .env)",
+    )
+    parser.add_argument(
         "--skip-build", action="store_true", help="Skip the rebuild step (broadcast-only)"
     )
     parser.add_argument(
@@ -231,6 +270,7 @@ def main(argv: list[str] | None = None) -> int:
         project_root=root,
         api_url=ns.api_url,
         project_id=ns.project_id,
+        dashboard_secret=ns.dashboard_secret,
         skip_build=ns.skip_build,
         skip_broadcast=ns.skip_broadcast,
     )

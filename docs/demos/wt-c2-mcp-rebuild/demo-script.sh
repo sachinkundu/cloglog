@@ -75,6 +75,10 @@ bodies = {
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a, **k): pass
     def do_GET(self):
+        # Mirror the real middleware: reject non-agent GETs that are missing
+        # the X-Dashboard-Key header. The demo proves the header is being sent.
+        if self.headers.get("X-Dashboard-Key") != "cloglog-dashboard-dev":
+            self.send_response(403); self.end_headers(); return
         body = bodies.get(self.path)
         if body is None:
             self.send_response(404); self.end_headers(); return
@@ -89,9 +93,12 @@ srv.serve_forever()
 PY
 MOCK_PID=\$!
 trap "kill \$MOCK_PID 2>/dev/null || true" EXIT
-# Wait until the mock is listening.
+# Wait until the mock is listening (send the auth header the real backend
+# would require — otherwise the mock returns 403 like the real gateway).
 for _ in \$(seq 1 40); do
-    if curl -sf "http://127.0.0.1:61244/api/v1/projects/00000000-0000-0000-0000-000000000001/worktrees" > /dev/null; then break; fi
+    if curl -sf -H "X-Dashboard-Key: cloglog-dashboard-dev" \
+        "http://127.0.0.1:61244/api/v1/projects/00000000-0000-0000-0000-000000000001/worktrees" \
+        > /dev/null; then break; fi
     sleep 0.05
 done
 
@@ -137,7 +144,9 @@ print(f"tools added:   {sorted(added)}")
 print(f"tools removed: {sorted(removed)}")
 
 paths = m.fetch_online_worktree_paths(
-    "http://127.0.0.1:61244", "00000000-0000-0000-0000-000000000001"
+    "http://127.0.0.1:61244",
+    "00000000-0000-0000-0000-000000000001",
+    dashboard_secret="cloglog-dashboard-dev",
 )
 print(f"online worktrees from mock API: {[Path(p).name for p in paths]}")
 from datetime import datetime, UTC

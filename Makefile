@@ -1,4 +1,4 @@
-.PHONY: help install test test-board test-agent test-document test-gateway test-e2e test-e2e-browser test-e2e-browser-ui test-e2e-browser-headed test-e2e-browser-report lint typecheck coverage contract-check demo demo-check quality run-backend prod prod-bg promote prod-logs prod-stop db-up db-down db-migrate db-revision db-refresh-from-prod
+.PHONY: help install test test-board test-agent test-document test-gateway test-e2e test-e2e-browser test-e2e-browser-ui test-e2e-browser-headed test-e2e-browser-report lint typecheck coverage contract-check demo demo-check quality run-backend prod prod-bg promote prod-logs prod-stop db-up db-down db-migrate db-revision db-refresh-from-prod sync-mcp-dist
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -64,6 +64,9 @@ demo: ## Run proof-of-work demo for current feature
 
 demo-check: ## Check demo document exists and verifies
 	@scripts/check-demo.sh
+
+sync-mcp-dist: ## Rebuild mcp-server/dist and broadcast mcp_tools_updated to online worktrees (T-244)
+	@uv run python scripts/sync_mcp_dist.py
 
 quality: ## Run full quality gate (lint + typecheck + test + coverage)
 	@echo "── Backend ─────────────────────────────"

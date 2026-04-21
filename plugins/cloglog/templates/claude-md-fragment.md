@@ -28,8 +28,8 @@
 
 - **Always use subagent-driven development** — never ask which execution approach; subagent-driven is always the choice.
 - **Every phase of a feature needs a board task.** The full pipeline:
-  1. **"Write design spec for F-N"** — requires a PR. Move to `review` when spec PR is created. User reviews the spec.
-  2. **"Write implementation plan for F-N"** — no PR needed. Write the plan, commit it, and immediately proceed to implementation. No separate approval needed.
+  1. **"Write design spec for F-N"** — requires a PR. Move to `review` when spec PR is created. User reviews the spec. After the PR merges, call `mark_pr_merged` then `report_artifact` with the spec file path.
+  2. **"Write implementation plan for F-N"** — no PR needed. Write the plan, commit it locally. Then call `update_task_status(plan_task_id, "review", skip_pr=True)` followed by `report_artifact(plan_task_id, worktree_id, plan_path)`. No separate approval needed; proceed to implementation immediately after. **Known backend gap (T-NEW-b):** the pipeline guard at `src/agent/services.py:237` still requires `pr_url` on a `review`-status predecessor, so `start_task` on the impl returns 409 until T-NEW-b lands. When you hit the 409, emit a `pipeline_guard_blocked` event to the main inbox and stop — the main agent handles the advance. See `docs/design/agent-lifecycle.md` §1.
   3. **"Implement F-N"** — requires a PR. Move to `review` when implementation PR is created. User reviews the code.
 - Only spec and implementation need user review. The plan is an internal artifact.
 - The board must reflect what is being worked on in real-time.
@@ -50,10 +50,10 @@
 
 ### Agent Shutdown
 
-- **Agents deregister themselves.** When the feature pipeline is complete AND `get_my_tasks` returns empty, generate shutdown artifacts and unregister. Never rely on the main agent or scripts to deregister.
-- **Do NOT exit prematurely.** Check `get_my_tasks` AND verify the full pipeline is complete before shutting down.
-- **Three-tier shutdown:** (1) Cooperative — main agent requests shutdown, agent finishes current work and unregisters. (2) SIGTERM — if agent doesn't respond, send SIGTERM; SessionEnd hook unregisters best-effort. (3) Heartbeat timeout — stale sessions are cleaned up automatically.
-- **Artifact handoff is explicit.** The unregister call includes paths to shutdown artifacts. The `WORKTREE_OFFLINE` event carries these paths for the main agent to consolidate.
+- **Agents deregister themselves.** Exit condition: `get_my_tasks` returns no task with status `backlog` for this worktree. That is the single authoritative signal — do NOT wait for `done` (administrative, user-driven, no push notification) and do NOT gate on a derived "feature pipeline is complete" condition.
+- **Before `unregister_agent`, emit an `agent_unregistered` event to `<project_root>/.cloglog/inbox`** carrying `worktree`, `worktree_id`, `ts`, `tasks_completed`, absolute paths to `shutdown-artifacts/work-log.md` and `shutdown-artifacts/learnings.md`, and `reason`. This is how the main agent's close-wave flow learns you are done. The SessionEnd hook writes a best-effort fallback only.
+- **Three-tier shutdown:** (1) Cooperative — main agent calls `request_shutdown`; agent finishes the current MCP call, runs the full shutdown sequence, unregisters. (2) Force unregister — main agent calls `force_unregister` (project-scoped admin tool); the backend unregisters unconditionally and the agent's next MCP call fails, at which point the agent writes `mcp_unavailable` and exits. (3) Heartbeat timeout — server-side sweep at 180 s marks stale sessions offline; catch-all for crashes, not a cooperative signal.
+- **Artifact handoff is explicit.** The `agent_unregistered` event carries absolute paths so the main agent can read them after the worktree is torn down.
 
 ### Proof-of-Work Demos
 
@@ -67,7 +67,7 @@
 
 ### Agent Communication
 
-- **Agents communicate via inbox files.** Each agent has an inbox at `<worktree_path>/.cloglog/inbox` — the per-worktree file the webhook consumer and backend both write to. Never use `/tmp/cloglog-inbox-*`; that legacy location is removed (see `docs/design/agent-lifecycle.md` Section 3).
+- **Agents communicate via inbox files.** Each agent has an inbox at `<worktree_path>/.cloglog/inbox` — the per-worktree file the webhook consumer and backend both write to. See `docs/design/agent-lifecycle.md` Section 3 for the inbox contract and a note on the removed legacy path.
 - **Receiving:** On registration, start a persistent Monitor on your inbox (`tail -f <worktree_path>/.cloglog/inbox`). Messages arrive as Monitor notifications in real-time.
 - **Sending:** Append to the target agent's inbox: `echo "[sender] message" >> <target_worktree_path>/.cloglog/inbox`. Look up the target path on the `worktrees` table — do not construct a path from a worktree id.
 - **Inbox lifecycle:** The backend creates the inbox on first write (`mkdir -p` + append). On worktree removal, remove the `.cloglog/` directory.

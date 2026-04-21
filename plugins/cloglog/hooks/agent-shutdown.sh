@@ -117,6 +117,43 @@ fi
   echo "<!-- Fill in during consolidation -->"
 } > "${ARTIFACTS_DIR}/learnings.md"
 
+# --- T-243: emit agent_unregistered event to the main agent inbox ---
+# Best-effort backstop. The agent SHOULD have written this event itself
+# before calling unregister_agent (see docs/design/agent-lifecycle.md §2 step 5);
+# we always write here too because `zellij action close-tab` under close-wave
+# has historically skipped this hook (T-217), so when the hook DOES fire we
+# want the close-wave consumer to see the event even if the agent never ran
+# step 5. The consumer deduplicates on (worktree, ts) and keeps the richer
+# agent-written record when both are present. (worktree_id is NOT part of the
+# dedup key because this hook has no access to the UUID — it lives in backend
+# state, not the worktree filesystem.)
+# $GIT_COMMON is the absolute path to the main clone's .git directory; its
+# parent is the project root. $(git rev-parse --show-toplevel) is NOT
+# equivalent — from a worktree it returns the worktree path, not the main
+# clone, which would send the event to the wrong inbox.
+PROJECT_ROOT=$(dirname "$GIT_COMMON")
+MAIN_INBOX="${PROJECT_ROOT}/.cloglog/inbox"
+mkdir -p "$(dirname "$MAIN_INBOX")" 2>/dev/null || true
+
+TASKS_JSON='[]'
+if tasks_raw=$(cd "$CWD" && git log --pretty=%s%n%b main..HEAD 2>/dev/null); then
+  TASKS_JSON=$(printf '%s\n' "$tasks_raw" | jq -Rn '[inputs | scan("T-[0-9]+")] | unique')
+fi
+
+TS=$(date -Iseconds)
+jq -cn \
+  --arg wt "$WORKTREE_NAME" \
+  --arg ts "$TS" \
+  --arg wl "${ARTIFACTS_DIR}/work-log.md" \
+  --arg ln "${ARTIFACTS_DIR}/learnings.md" \
+  --argjson tasks "$TASKS_JSON" \
+  '{type:"agent_unregistered", worktree:$wt, ts:$ts, tasks_completed:$tasks,
+    artifacts:{work_log:$wl, learnings:$ln},
+    reason:"best_effort_backstop_from_session_end_hook"}' \
+  >> "$MAIN_INBOX" 2>> /tmp/agent-shutdown-debug.log || true
+
+echo "[$(date -Iseconds)] agent-shutdown.sh wrote agent_unregistered backstop to ${MAIN_INBOX}" >> /tmp/agent-shutdown-debug.log
+
 # --- Call unregister-by-path ---
 # NOTE: append to the debug log rather than overwriting — the top-of-script
 # breadcrumb (T-217) must survive this call so we can tell the hook fired

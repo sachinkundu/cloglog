@@ -81,27 +81,49 @@ When you receive a message, read it and act on the instruction. The main agent m
 
 ## Workflow
 1. Read the project CLAUDE.md for project-specific instructions
-2. Load MCP tools: call `ToolSearch(query: "select:mcp__cloglog__register_agent,mcp__cloglog__start_task,mcp__cloglog__update_task_status,mcp__cloglog__get_my_tasks,mcp__cloglog__unregister_agent,mcp__cloglog__add_task_note")` — MCP tools are deferred and MUST be loaded via ToolSearch before calling them. If ToolSearch returns no matches, MCP is unavailable — stop and notify the main agent.
+2. Load MCP tools: call `ToolSearch(query: "select:mcp__cloglog__register_agent,mcp__cloglog__start_task,mcp__cloglog__update_task_status,mcp__cloglog__get_my_tasks,mcp__cloglog__unregister_agent,mcp__cloglog__add_task_note,mcp__cloglog__mark_pr_merged,mcp__cloglog__report_artifact")` — MCP tools are deferred and MUST be loaded via ToolSearch before calling them. If ToolSearch returns no matches, MCP is unavailable — write an `mcp_unavailable` event to `<project_root>/.cloglog/inbox` and exit.
 3. Start inbox monitor (see Inbox section above)
 4. Register: call `mcp__cloglog__register_agent` with this worktree path
-5. Start task: call `mcp__cloglog__start_task` with the task ID
-6. Run existing tests first to establish a green baseline
-7. Implement the feature or fix
-8. Run the project quality gate
-9. Produce proof-of-work demo — invoke the demo skill (`cloglog:demo`) to
-   capture the feature working and generate `docs/demos/<branch>/demo.md`
-10. Create PR using the github-bot skill with the demo document at the top
-11. Move task to review with PR URL via `mcp__cloglog__update_task_status`
-12. Poll for comments and merge using the github-bot skill
-13. After merge: call `mcp__cloglog__get_my_tasks` — if more tasks remain, start the next one
-13. When all tasks complete: call `mcp__cloglog__unregister_agent` and exit
+5. Echo `agent_started` to the main agent inbox (`<project_root>/.cloglog/inbox`) so the main agent sees you are live:
+   ```bash
+   printf '{"type":"agent_started","worktree":"<wt-name>","worktree_id":"<uuid>","ts":"%s"}\n' "$(date -Is)" \
+     >> <project_root>/.cloglog/inbox
+   ```
+6. Start task: call `mcp__cloglog__start_task` with the task ID
+7. Run existing tests first to establish a green baseline
+8. Implement the feature or fix
+9. Run the project quality gate
+10. Produce proof-of-work demo — invoke the demo skill (`cloglog:demo`) to
+    capture the feature working and generate `docs/demos/<branch>/demo.md`
+11. Create PR using the github-bot skill with the demo document at the top
+12. Move task to review with PR URL via `mcp__cloglog__update_task_status`
+13. Your `.cloglog/inbox` Monitor delivers review/merge/CI events automatically — do NOT start a `/loop`. On `pr_merged`: call `mcp__cloglog__mark_pr_merged(task_id, worktree_id)`, then for `spec`/`plan` tasks call `mcp__cloglog__report_artifact(task_id, worktree_id, artifact_path)`, then `mcp__cloglog__get_my_tasks` and start the next `backlog` task. See the `github-bot` skill's PR Event Inbox section for each event's shape.
+14. Exit condition — `get_my_tasks` returns no task in `backlog` status. Then run the shutdown sequence:
+    - Generate `shutdown-artifacts/work-log.md` and `shutdown-artifacts/learnings.md` inside the worktree (use absolute paths when referring to them).
+    - **Emit `agent_unregistered` to `<project_root>/.cloglog/inbox` before `unregister_agent`.** Shape:
+      ```json
+      {
+        "type": "agent_unregistered",
+        "worktree": "<wt-name>",
+        "worktree_id": "<uuid>",
+        "ts": "<utc-iso>",
+        "tasks_completed": ["T-NNN"],
+        "artifacts": {
+          "work_log": "/abs/path/shutdown-artifacts/work-log.md",
+          "learnings": "/abs/path/shutdown-artifacts/learnings.md"
+        },
+        "reason": "all_assigned_tasks_complete"
+      }
+      ```
+      Absolute paths are required so the main agent can read the artifacts after the worktree is torn down. This event is authoritative — do not rely on the SessionEnd hook to emit it for you.
+    - Call `mcp__cloglog__unregister_agent` and exit.
 
 ## Pipeline (Features Only)
 If this is a feature with spec/plan/impl tasks:
-- Spec task: write design spec, create PR, wait for merge
-- Plan task: write implementation plan (no PR needed), commit and proceed
-- Impl task: implement the feature, create PR, wait for merge
-- After each PR merges, call `mcp__cloglog__get_my_tasks` to get the next task
+- Spec task: write design spec, create PR, wait for merge. On merge: `mark_pr_merged` → `report_artifact` with spec path.
+- Plan task: write implementation plan (no PR needed), commit locally, then call `update_task_status(plan_task_id, "review", skip_pr=True)` and `report_artifact(plan_task_id, worktree_id, plan_path)`, then `start_task` on the impl task. **Known backend gap (T-NEW-b):** `start_task` on the impl returns 409 until the pipeline guard at `src/agent/services.py:237` accepts artifact-only predecessor resolution; if you hit the 409, emit a `pipeline_guard_blocked` event to the main inbox and stop — main handles the advance. See `docs/design/agent-lifecycle.md` §1.
+- Impl task: implement the feature, create PR, wait for merge.
+- After each PR merges, call `mcp__cloglog__get_my_tasks` to get the next task.
 ```
 
 Use **absolute paths** when referencing the prompt file. Agents cannot reliably find files by relative path.

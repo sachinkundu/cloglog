@@ -29,11 +29,7 @@ You are an autonomous worktree agent. You work independently through the full fe
 - **The quality gate command is project-specific** — run whatever the project's CLAUDE.md defines (e.g., `make quality`). Run it before any commit.
 - Move tasks to review BEFORE presenting work
 - Add test reports with delta, strategy, and thinking — not just pass counts
-- **CRITICAL: After creating a PR and moving to review, you MUST set up a polling loop.** Without it, you will never know when the PR is merged or has comments. Use:
-  ```
-  /loop 5m Check PR #<NUM> for review comments, CI status, and merge state using the github-bot skill. If new comments: move task to in_progress, address feedback, push fix, move back to review. If merged: call mark_pr_merged with the task_id, then call report_artifact (for spec/plan tasks), then call get_my_tasks and start the next task.
-  ```
-  This is **not optional**. If you skip this, you will sit idle forever while the PR gets reviewed and merged.
+- **After creating a PR and moving to review, the webhook pipeline delivers review/merge/CI events to your inbox (`.cloglog/inbox`) directly.** Your persistent `Monitor` on the inbox receives each event sub-second. Do NOT start a `/loop 5m` — polling wastes tokens and lags webhooks by minutes. See the `github-bot` skill's **PR Event Inbox** section for each event's shape and required response.
 
 ## Pipeline Lifecycle
 
@@ -46,17 +42,17 @@ Your work follows a strict pipeline. Call `mcp__cloglog__get_my_tasks` to get yo
 3. If the project's CLAUDE.md specifies review agents or additional subagents for the spec phase, follow those instructions
 4. Create a PR with the spec (use `github-bot` skill)
 5. Call `mcp__cloglog__update_task_status` to move the task to `review` with the PR URL
-6. **Immediately** set up the polling loop — this is how you detect merge and comments:
-   ```
-   /loop 5m Check PR #<NUM> for review comments, CI status, and merge state using the github-bot skill. If new comments: move task to in_progress, address feedback, push fix, move back to review. If merged: call mark_pr_merged with the task_id, then call report_artifact with the spec file path, then call get_my_tasks and start the next task.
-   ```
-7. When merged, call `mcp__cloglog__report_artifact` with the path to the spec file
+6. Confirm your `.cloglog/inbox` Monitor is running — webhook events (`review_submitted`, `ci_failed`, `pr_merged`) arrive there automatically. On `pr_merged`: call `mcp__cloglog__mark_pr_merged`, then `mcp__cloglog__report_artifact` with the spec file path, then `mcp__cloglog__get_my_tasks` and start the next task. See the `github-bot` skill's **PR Event Inbox** section.
 
 ### Plan Task (task_type: "plan")
 
 1. Write an implementation plan based on the approved spec
 2. Commit the plan locally — **NO PR needed** for plans
-3. Proceed immediately to the next task
+3. Call `mcp__cloglog__update_task_status(plan_task_id, "review", skip_pr=True)` — the state machine requires the task be in `review` before an artifact can be attached
+4. Call `mcp__cloglog__report_artifact(plan_task_id, worktree_id, plan_file_path)` with the repo-relative path to the plan file
+5. Call `mcp__cloglog__start_task` on the impl task
+
+**BACKEND GAP — T-NEW-b.** The pipeline guard at `src/agent/services.py:237` currently treats a `review`-status predecessor as resolved only when `pr_url` is non-empty. A plan task finished via `skip_pr=True` has no `pr_url`, so step 5 above will return 409 Conflict until T-NEW-b relaxes the guard to accept artifact-only resolution for spec/plan predecessors. If you hit the 409: append a `{"type":"pipeline_guard_blocked","worktree":"...","predecessor_task_id":"...","ts":"..."}` line to the main agent's inbox (`<project_root>/.cloglog/inbox`) and stop. The main agent will either force-advance the impl task or wait for T-NEW-b. This matches the note in `docs/design/agent-lifecycle.md` §1 ("the canonical flow here is the target state").
 
 ### Impl Task (task_type: "impl")
 
@@ -73,10 +69,7 @@ Your work follows a strict pipeline. Call `mcp__cloglog__get_my_tasks` to get yo
    - **## Tests** — what tests were added, delta from baseline, strategy reasoning
    - **## Changes** — what changed and why
 5. Call `mcp__cloglog__update_task_status` to move the task to `review` with the PR URL
-6. **Immediately** set up the polling loop:
-   ```
-   /loop 5m Check PR #<NUM> for review comments, CI status, and merge state using the github-bot skill. If new comments: move task to in_progress, address feedback, push fix, move back to review. If merged: call mark_pr_merged with the task_id, then call get_my_tasks and start the next task.
-   ```
+6. Confirm your `.cloglog/inbox` Monitor is running — webhook events (`review_submitted`, `ci_failed`, `pr_merged`) arrive there automatically. On `pr_merged`: call `mcp__cloglog__mark_pr_merged`, then `mcp__cloglog__get_my_tasks` and start the next task. See the `github-bot` skill's **PR Event Inbox** section.
 
 ### Between Tasks
 
@@ -129,8 +122,8 @@ This handles CLAUDE.md learnings, work log consolidation, and worktree cleanup.
 Agents communicate via inbox files, not the backend API. The canonical path is
 `<worktree_path>/.cloglog/inbox` — one file per worktree, in the worktree tree
 itself. The webhook consumer, `request_shutdown`, and every sending agent all
-write to this single path. The legacy `/tmp/cloglog-inbox-{id}` location is
-removed (see `docs/design/agent-lifecycle.md` Section 3).
+write to this single path. See `docs/design/agent-lifecycle.md` Section 3 for
+the full inbox contract and a note on the removed legacy path.
 
 - **Receiving:** On registration, start a persistent Monitor on your inbox:
   ```
@@ -164,12 +157,18 @@ Do not write the PR body until the demo is produced and verified.
 
 ## Shutdown
 
-When `mcp__cloglog__get_my_tasks` returns empty AND the feature pipeline is complete:
+Exit condition: **`mcp__cloglog__get_my_tasks` returns no task with status `backlog` for this worktree.** That is the single authoritative signal — do not wait for `done` (administrative, user-driven, no push notification fires) and do not gate on a "feature pipeline is complete" derivation. If the project carries `docs/design/agent-lifecycle.md`, that document is the canonical protocol and overrides this section.
 
-1. Generate shutdown artifacts in `shutdown-artifacts/`:
-   - `work-log.md` — summary of what was done
-   - `learnings.md` — patterns discovered that future agents should know
-2. Call `mcp__cloglog__unregister_agent`
-3. Exit
+Shutdown sequence (in order, skip steps that do not apply):
 
-**Do NOT exit prematurely.** Check `get_my_tasks` AND verify the feature pipeline is complete before shutting down. If your feature has spec done but no plan or impl, you still have work to do.
+1. For any task with a merged PR: call `mcp__cloglog__mark_pr_merged(task_id, worktree_id)` as a fallback — idempotent with the webhook consumer.
+2. For `spec` or `plan` tasks: if still `in_progress`, move to `review` (`skip_pr=True` for plan) and call `mcp__cloglog__report_artifact(task_id, worktree_id, artifact_path)`.
+3. Generate shutdown artifacts inside the worktree:
+   - `shutdown-artifacts/work-log.md` — timeline and scope of this run
+   - `shutdown-artifacts/learnings.md` — patterns, gotchas, and follow-up items
+   Use **absolute paths** when referencing these files in the next step.
+4. **Emit `agent_unregistered` to the main agent inbox** (`<project_root>/.cloglog/inbox`) *before* calling `unregister_agent`. See `docs/design/agent-lifecycle.md` §2 step 5 for the full event shape (required fields: `type`, `worktree`, `worktree_id`, `ts`, `tasks_completed`, `artifacts.work_log`, `artifacts.learnings`, `reason`). Artifact paths MUST be absolute. This event is authoritative for the main agent's close-wave flow; the SessionEnd hook writes a best-effort fallback only.
+5. Call `mcp__cloglog__unregister_agent`.
+6. Exit.
+
+**Do NOT exit prematurely.** If `get_my_tasks` still returns any `backlog` task, you have more work to do.

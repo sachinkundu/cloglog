@@ -131,14 +131,28 @@ to the exiting task type, but never reorder them.
 
    The `artifacts.work_log` and `artifacts.learnings` values **must be absolute paths**, not worktree-relative — the main agent reads them after the worktree is torn down and the relative root is gone by then.
 
-   This event is the trigger the main agent's close-wave flow reacts to. It is
-   authoritative — the backend's `WORKTREE_OFFLINE` event is a fallback, not a
-   substitute. See T-243.
+   This event is the trigger the main agent's close-wave flow reacts to
+   (target state, T-220). It is authoritative — the backend's
+   `WORKTREE_OFFLINE` event is a fallback, not a substitute. See T-243.
+
+   **CONSUMER GAP — T-220.** The producer side (this PR / T-243) writes the
+   event unconditionally. The consumer side — `plugins/cloglog/skills/close-wave/SKILL.md`
+   and the supervisor's `tail -f` on `<project_root>/.cloglog/inbox` from
+   `plugins/cloglog/skills/setup/SKILL.md` — does NOT yet read the event
+   before tearing the worktree down. Until T-220 lands, a supervisor that
+   runs `close-wave` immediately after a merge may delete the worktree
+   (and its `shutdown-artifacts/`) before the supervisor has consolidated
+   them. The operational mitigation is that the supervisor reads
+   `agent_unregistered` lines manually off its inbox monitor and
+   consolidates `shutdown-artifacts/` before invoking close-wave. The
+   event is still worth writing now because (a) the backstop is defensive
+   for the eventual consumer wiring and (b) the supervisor can already
+   see the event arrive in its inbox tail. T-220 closes this gap.
 
    **Hook backstop (T-243).** `plugins/cloglog/hooks/agent-shutdown.sh` writes
    the event as well, with `reason: "best_effort_backstop_from_session_end_hook"`
    and `worktree_id` omitted (the hook has no access to the UUID — it lives in
-   backend state). The close-wave consumer must therefore deduplicate on
+   backend state). When T-220 wires up the consumer, it must deduplicate on
    `(worktree, ts)`, not `(worktree_id, ts)`, and prefer the richer
    agent-written record when both are present. The backstop exists because
    `zellij action close-tab` under close-wave has historically skipped the

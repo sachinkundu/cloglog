@@ -1,7 +1,7 @@
 # Worktree agents now share one inbox path across every plugin doc, and a missed agent_unregistered write no longer disappears — the SessionEnd hook writes a best-effort backstop to the main agent inbox on shutdown.
 
-*2026-04-20T17:13:25Z by Showboat 0.6.1*
-<!-- showboat-id: da25f7c3-8485-4f7d-b995-ea43bac713b9 -->
+*2026-04-21T06:30:32Z by Showboat 0.6.1*
+<!-- showboat-id: 3e782b84-139f-4e14-96a3-2e59338896bb -->
 
 T-216 proof 1 — no plugin doc or skill still points at the removed /tmp/cloglog-inbox-* path. Output is the match count (0 means clean).
 
@@ -13,14 +13,26 @@ echo "legacy_path_hits_in_plugins=$(grep -rn "/tmp/cloglog-inbox" plugins/ | wc 
 legacy_path_hits_in_plugins=0
 ```
 
-T-216 proof 2 — every plugin doc that talks about the inbox now uses the canonical <worktree_path>/.cloglog/inbox form. Output is the number of files referencing the canonical path.
+T-216 proof 2 — the four plugin files in the T-216 audit scope (worktree-agent.md, claude-md-fragment.md, launch/SKILL.md, github-bot/SKILL.md) each reference the canonical .cloglog/inbox form. Output: one OK per file — capturing per-file booleans rather than a repo-wide count keeps showboat verify byte-exact when future plugin docs add or remove unrelated inbox mentions.
 
 ```bash
-echo "canonical_path_files=$(grep -rl "\.cloglog/inbox" plugins/ | wc -l | tr -d " ")"
+for f in agents/worktree-agent.md \
+            templates/claude-md-fragment.md \
+            skills/launch/SKILL.md \
+            skills/github-bot/SKILL.md; do
+     if grep -q "\.cloglog/inbox" "plugins/cloglog/$f"; then
+       echo "${f}=OK"
+     else
+       echo "${f}=FAIL"
+     fi
+   done
 ```
 
 ```output
-canonical_path_files=8
+agents/worktree-agent.md=OK
+templates/claude-md-fragment.md=OK
+skills/launch/SKILL.md=OK
+skills/github-bot/SKILL.md=OK
 ```
 
 T-243 proof 1 — docs/design/agent-lifecycle.md carries the agent_unregistered contract: event name, absolute-paths rule, hook-backstop language. Output: one OK per property, all three required.

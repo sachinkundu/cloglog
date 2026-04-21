@@ -26,10 +26,19 @@ uvx showboat exec "$DEMO_FILE" bash \
   'echo "legacy_path_hits_in_plugins=$(grep -rn "/tmp/cloglog-inbox" plugins/ | wc -l | tr -d " ")"'
 
 uvx showboat note "$DEMO_FILE" \
-  "T-216 proof 2 — every plugin doc that talks about the inbox now uses the canonical <worktree_path>/.cloglog/inbox form. Output is the number of files referencing the canonical path."
+  "T-216 proof 2 — the four plugin files in the T-216 audit scope (worktree-agent.md, claude-md-fragment.md, launch/SKILL.md, github-bot/SKILL.md) each reference the canonical .cloglog/inbox form. Output: one OK per file — capturing per-file booleans rather than a repo-wide count keeps showboat verify byte-exact when future plugin docs add or remove unrelated inbox mentions."
 
 uvx showboat exec "$DEMO_FILE" bash \
-  'echo "canonical_path_files=$(grep -rl "\.cloglog/inbox" plugins/ | wc -l | tr -d " ")"'
+  'for f in agents/worktree-agent.md \
+            templates/claude-md-fragment.md \
+            skills/launch/SKILL.md \
+            skills/github-bot/SKILL.md; do
+     if grep -q "\.cloglog/inbox" "plugins/cloglog/$f"; then
+       echo "${f}=OK"
+     else
+       echo "${f}=FAIL"
+     fi
+   done'
 
 # ---------------------------------------------------------------------------
 # T-243 — canonical doc carries the agent_unregistered contract

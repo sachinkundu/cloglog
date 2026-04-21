@@ -120,10 +120,10 @@ When you receive a message, read it and act on the instruction. The main agent m
 
 ## Pipeline (Features Only)
 If this is a feature with spec/plan/impl tasks:
-- Spec task: write design spec, create PR, wait for merge
-- Plan task: write implementation plan (no PR needed), commit and proceed
-- Impl task: implement the feature, create PR, wait for merge
-- After each PR merges, call `mcp__cloglog__get_my_tasks` to get the next task
+- Spec task: write design spec, create PR, wait for merge. On merge: `mark_pr_merged` → `report_artifact` with spec path.
+- Plan task: write implementation plan (no PR needed), commit locally, then call `update_task_status(plan_task_id, "review", skip_pr=True)` and `report_artifact(plan_task_id, worktree_id, plan_path)`, then `start_task` on the impl task. **Known backend gap (T-NEW-b):** `start_task` on the impl returns 409 until the pipeline guard at `src/agent/services.py:237` accepts artifact-only predecessor resolution; if you hit the 409, emit a `pipeline_guard_blocked` event to the main inbox and stop — main handles the advance. See `docs/design/agent-lifecycle.md` §1.
+- Impl task: implement the feature, create PR, wait for merge.
+- After each PR merges, call `mcp__cloglog__get_my_tasks` to get the next task.
 ```
 
 Use **absolute paths** when referencing the prompt file. Agents cannot reliably find files by relative path.

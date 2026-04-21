@@ -165,5 +165,30 @@ describe('CloglogClient', () => {
         }),
       )
     })
+
+    it('uses project API key (not agent token) for /agents/close-off-task', async () => {
+      // T-246: close-off-task creation is a project-scoped bootstrap call
+      // (like /agents/register and /agents/unregister-by-path) — the caller
+      // does not yet have a per-agent token, so the project API key must win
+      // over any cached agent token.
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(
+          JSON.stringify({ task_id: 't-1', task_number: 42, worktree_id: 'wt-1', worktree_name: 'wt-x', created: true }),
+          { status: 201, headers: { 'Content-Type': 'application/json' } },
+        ),
+      )
+
+      await client.request('POST', '/api/v1/agents/close-off-task', {
+        worktree_path: '/tmp/wt-x',
+        worktree_name: 'wt-x',
+      })
+
+      const call = (fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+      expect(call[0]).toBe('http://localhost:8000/api/v1/agents/close-off-task')
+      const opts = call[1] as RequestInit
+      const headers = opts.headers as Record<string, string>
+      expect(headers.Authorization).toBe('Bearer test-key')
+      expect(headers['X-MCP-Request']).toBeUndefined()
+    })
   })
 })

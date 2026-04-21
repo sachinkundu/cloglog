@@ -49,3 +49,67 @@ if [[ -z "${CLOGLOG_API_KEY:-}" ]] && [[ ! -r "${HOME}/.cloglog/credentials" ]];
   echo "      The MCP server in this worktree will fail to authenticate." >&2
   echo "      See docs/setup-credentials.md for setup instructions." >&2
 fi
+
+# T-246: file a close-off task on the board so worktree teardown is visible
+# work, not an ad-hoc main-agent chore. Hits the backend directly with the
+# project API key — the same auth shape /agents/register uses — so the hook
+# does not require an MCP session or the MCP service key. Backend is the
+# source of truth for idempotency: re-running against the same worktree_path
+# returns the existing task (HTTP 201, body.created=false).
+#
+# Non-fatal by design: if the backend is unreachable, the auth key is
+# missing, or the worktree has not been registered yet, log and continue so
+# worktree bootstrap does not wedge. The main agent can re-file the task
+# after the fact via the MCP tool.
+_resolve_api_key() {
+  if [[ -n "${CLOGLOG_API_KEY:-}" ]]; then
+    echo "$CLOGLOG_API_KEY"
+    return
+  fi
+  local cred="${HOME}/.cloglog/credentials"
+  if [[ -r "$cred" ]]; then
+    local v
+    v=$(grep '^CLOGLOG_API_KEY=' "$cred" 2>/dev/null | head -n 1 | cut -d= -f2-)
+    [[ -n "$v" ]] && echo "$v"
+  fi
+}
+
+_resolve_backend_url() {
+  local cfg="${REPO_ROOT}/.cloglog/config.yaml"
+  if [[ -f "$cfg" ]]; then
+    python3 -c "
+import sys, yaml
+try:
+    print(yaml.safe_load(open('$cfg')).get('backend_url', 'http://localhost:8000'))
+except Exception:
+    print('http://localhost:8000')
+" 2>/dev/null || echo "http://localhost:8000"
+  else
+    echo "http://localhost:8000"
+  fi
+}
+
+if [[ -n "${WORKTREE_PATH:-}" ]] && [[ -n "${WORKTREE_NAME:-}" ]]; then
+  _api_key=$(_resolve_api_key)
+  _backend_url=$(_resolve_backend_url)
+  if [[ -z "$_api_key" ]]; then
+    echo "[on-worktree-create] skipping close-off-task creation: no CLOGLOG_API_KEY available" >&2
+  else
+    _body=$(printf '{"worktree_path":"%s","worktree_name":"%s"}' \
+      "${WORKTREE_PATH}" "${WORKTREE_NAME}")
+    _resp=$(curl -sS --max-time 5 -o /tmp/cloglog-close-off-$$.out -w '%{http_code}' \
+      -X POST "${_backend_url}/api/v1/agents/close-off-task" \
+      -H 'Content-Type: application/json' \
+      -H "Authorization: Bearer ${_api_key}" \
+      -d "$_body" 2>/dev/null || echo "000")
+    if [[ "$_resp" == "201" ]]; then
+      echo "[on-worktree-create] close-off task filed for ${WORKTREE_NAME}"
+    else
+      echo "[on-worktree-create] WARN close-off task create returned HTTP ${_resp}; continuing" >&2
+      if [[ -s /tmp/cloglog-close-off-$$.out ]]; then
+        sed 's/^/[on-worktree-create]   /' /tmp/cloglog-close-off-$$.out >&2
+      fi
+    fi
+    rm -f /tmp/cloglog-close-off-$$.out
+  fi
+fi

@@ -511,6 +511,32 @@ class BoardRepository:
         )
         return result.scalars().first()
 
+    # --- Close-off lookup ---
+
+    async def find_close_off_task(self, close_off_worktree_id: UUID) -> Task | None:
+        """Return the close-off task for ``close_off_worktree_id`` if one exists.
+
+        Scoped by the unique column so there is at most one row; a NULL
+        ``close_off_worktree_id`` (after a worktree delete cleared the FK)
+        never matches.
+        """
+        result = await self._session.execute(
+            select(Task).where(Task.close_off_worktree_id == close_off_worktree_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def find_epic_by_title(self, project_id: UUID, title: str) -> Epic | None:
+        result = await self._session.execute(
+            select(Epic).where(Epic.project_id == project_id, Epic.title == title).limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def find_feature_by_title(self, epic_id: UUID, title: str) -> Feature | None:
+        result = await self._session.execute(
+            select(Feature).where(Feature.epic_id == epic_id, Feature.title == title).limit(1)
+        )
+        return result.scalar_one_or_none()
+
     # --- PR Lookup ---
 
     async def find_task_by_pr_url(self, pr_url: str) -> Task | None:

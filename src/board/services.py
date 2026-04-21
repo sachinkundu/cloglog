@@ -10,6 +10,11 @@ from src.board.interfaces import BoardBlockerDTO, FeatureBlocker, TaskBlocker
 from src.board.models import Feature, Project, Task
 from src.board.repository import BoardRepository
 from src.board.schemas import ImportPlan, SearchResponse, SearchResult
+from src.board.templates import (
+    CLOSE_OFF_EPIC_TITLE,
+    CLOSE_OFF_FEATURE_TITLE,
+    close_worktree_template,
+)
 from src.document.models import Document
 
 
@@ -331,6 +336,83 @@ class BoardService:
                 }
             )
         return {"nodes": nodes, "edges": edge_list}
+
+    # --- Close-off tasks ---
+
+    async def create_close_off_task(
+        self,
+        project_id: UUID,
+        close_off_worktree_id: UUID,
+        worktree_name: str,
+        *,
+        main_agent_worktree_id: UUID | None = None,
+    ) -> tuple[Task, bool]:
+        """Find-or-create the close-off task for a worktree.
+
+        Idempotent on ``close_off_worktree_id``. Returns ``(task, created)``
+        where ``created`` is False for idempotent hits. Auto-provisions an
+        "Operations" epic and "Worktree Close-off" feature on first use so
+        the caller (``on-worktree-create.sh``) does not need to know about
+        the board hierarchy.
+        """
+        existing = await self._repo.find_close_off_task(close_off_worktree_id)
+        if existing is not None:
+            return existing, False
+
+        epic = await self._repo.find_epic_by_title(project_id, CLOSE_OFF_EPIC_TITLE)
+        if epic is None:
+            existing_count = await self._repo.count_epics(project_id)
+            color = EPIC_COLOR_PALETTE[existing_count % len(EPIC_COLOR_PALETTE)]
+            number = await self._repo.next_epic_number(project_id)
+            epic = await self._repo.create_epic(
+                project_id=project_id,
+                title=CLOSE_OFF_EPIC_TITLE,
+                description=(
+                    "Cross-cutting operational work — worktree teardown, "
+                    "wave close-off, and other supervisor-owned chores."
+                ),
+                bounded_context="",
+                context_description="",
+                position=existing_count,
+                color=color,
+                number=number,
+            )
+
+        feature = await self._repo.find_feature_by_title(epic.id, CLOSE_OFF_FEATURE_TITLE)
+        if feature is None:
+            feature_number = await self._repo.next_feature_number(project_id)
+            feature = await self._repo.create_feature(
+                epic_id=epic.id,
+                title=CLOSE_OFF_FEATURE_TITLE,
+                description=(
+                    "Each worktree gets a paired close-off task filed here "
+                    "at creation time (T-246). The task tracks archiving "
+                    "shutdown-artifacts, filing learnings, tearing down the "
+                    "worktree, and opening the close-wave PR."
+                ),
+                position=0,
+                number=feature_number,
+            )
+
+        title, description = close_worktree_template(worktree_name)
+        task_number = await self._repo.next_task_number(project_id)
+        task = await self._repo.create_task(
+            feature_id=feature.id,
+            title=title,
+            description=description,
+            priority="normal",
+            position=0,
+            number=task_number,
+            task_type="task",
+        )
+        # Assign to main agent so get_my_tasks surfaces it there; stamp the
+        # close_off FK so idempotency holds on resume.
+        fields: dict[str, object] = {"close_off_worktree_id": close_off_worktree_id}
+        if main_agent_worktree_id is not None:
+            fields["worktree_id"] = main_agent_worktree_id
+        updated = await self._repo.update_task(task.id, **fields)
+        assert updated is not None
+        return updated, True
 
     # --- Search ---
 

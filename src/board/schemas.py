@@ -154,6 +154,22 @@ class TaskResponse(BaseModel):
     updated_at: datetime
 
 
+# --- Close-off tasks ---
+
+
+class CloseOffTaskCreate(BaseModel):
+    worktree_path: str
+    worktree_name: str
+
+
+class CloseOffTaskResponse(BaseModel):
+    task_id: UUID
+    task_number: int
+    worktree_id: UUID
+    worktree_name: str
+    created: bool  # False when an existing close-off task was returned (idempotent hit)
+
+
 # --- Board view ---
 
 

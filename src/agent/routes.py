@@ -30,7 +30,10 @@ from src.agent.schemas import (
 )
 from src.agent.services import AgentService
 from src.board.repository import BoardRepository
+from src.board.schemas import CloseOffTaskCreate, CloseOffTaskResponse
+from src.board.services import BoardService
 from src.gateway.auth import CurrentAgent, CurrentProject, McpOrProject, SupervisorAuth
+from src.shared.config import settings
 from src.shared.database import get_session
 from src.shared.events import Event, EventType, event_bus
 
@@ -260,3 +263,79 @@ async def unregister_agent(worktree_id: UUID, service: ServiceDep, agent: Curren
 @router.get("/projects/{project_id}/worktrees", response_model=list[WorktreeResponse])
 async def list_worktrees(project_id: UUID, service: ServiceDep) -> list[dict[str, object]]:
     return await service.get_worktrees_for_project(project_id)
+
+
+@router.post(
+    "/agents/close-off-task",
+    response_model=CloseOffTaskResponse,
+    status_code=201,
+)
+async def create_close_off_task(
+    body: CloseOffTaskCreate,
+    service: ServiceDep,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    project: CurrentProject,
+) -> CloseOffTaskResponse:
+    """Find-or-create the paired close-off task for a worktree (T-246).
+
+    Called by ``.cloglog/on-worktree-create.sh`` and the
+    ``mcp__cloglog__create_close_off_task`` MCP tool so every new worktree
+    lands a first-class teardown card on the board. Idempotent on the
+    resolved worktree row: relaunching/resuming the same worktree path
+    returns the existing task with ``created=false``. Assigns the task to
+    the main-agent worktree (resolved from ``settings.main_agent_inbox_path``)
+    when that mapping is available; otherwise the card stays unassigned and
+    still surfaces to the supervisor on backlog.
+
+    Sibling to ``register_agent`` / ``unregister-by-path`` — same caller
+    (launch skill or worktree-bootstrap hook), same project-API-key auth,
+    same path-keyed lookup semantics.
+    """
+    agent_repo = AgentRepository(session)
+    worktree = await agent_repo.get_worktree_by_path(project.id, body.worktree_path)
+    if worktree is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Worktree not registered for this project: {body.worktree_path}. "
+                "Call register_agent first."
+            ),
+        ) from None
+
+    main_agent_worktree_id: UUID | None = None
+    if settings.main_agent_inbox_path is not None:
+        # The main-agent inbox lives at ``<main-clone>/.cloglog/inbox`` —
+        # the parent directory's parent is the main agent's worktree_path.
+        main_path = str(settings.main_agent_inbox_path.parent.parent)
+        main_agent = await agent_repo.get_worktree_by_path(project.id, main_path)
+        if main_agent is not None:
+            main_agent_worktree_id = main_agent.id
+
+    board_service = BoardService(BoardRepository(session))
+    task, created = await board_service.create_close_off_task(
+        project_id=project.id,
+        close_off_worktree_id=worktree.id,
+        worktree_name=body.worktree_name,
+        main_agent_worktree_id=main_agent_worktree_id,
+    )
+
+    if created:
+        await event_bus.publish(
+            Event(
+                type=EventType.TASK_CREATED,
+                project_id=project.id,
+                data={
+                    "task_id": str(task.id),
+                    "title": task.title,
+                    "close_off_worktree_id": str(worktree.id),
+                },
+            )
+        )
+
+    return CloseOffTaskResponse(
+        task_id=task.id,
+        task_number=task.number,
+        worktree_id=worktree.id,
+        worktree_name=body.worktree_name,
+        created=created,
+    )

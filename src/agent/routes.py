@@ -184,7 +184,9 @@ async def report_artifact(
 
 
 @router.post("/agents/{worktree_id}/request-shutdown", status_code=200)
-async def request_shutdown(worktree_id: UUID, service: ServiceDep) -> dict[str, bool]:
+async def request_shutdown(
+    worktree_id: UUID, service: ServiceDep, target: SupervisorAuth
+) -> dict[str, bool]:
     """Request a worktree agent to shut down gracefully.
 
     Writes a shutdown JSON line to ``<worktree_path>/.cloglog/inbox`` for
@@ -192,10 +194,15 @@ async def request_shutdown(worktree_id: UUID, service: ServiceDep) -> dict[str, 
     (legacy rows predating the schema's ``min_length=1``), the service
     raises ``ValueError`` and we translate that to a 409 rather than letting
     it bubble out as a 500.
+
+    Auth (``SupervisorAuth``) — before T-218 this route had no per-route
+    dependency and the gateway middleware passed any ``Authorization:
+    Bearer ...`` header through on ``/api/v1/agents/*``. Exposing the
+    endpoint as an MCP tool made that pre-existing hole reachable, so the
+    route now validates credentials: MCP service key, project API key
+    (project must own the target worktree), or the target agent's own
+    token. Mirrors the assign-task bar for consistency.
     """
-    worktree = await service._repo.get_worktree(worktree_id)
-    if worktree is None:
-        raise HTTPException(status_code=404, detail="Worktree not found")
     try:
         await service.request_shutdown(worktree_id)
     except ValueError as e:

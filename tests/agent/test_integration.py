@@ -208,6 +208,82 @@ class TestRequestShutdownAPI:
         msg = json.loads(inbox.read_text().strip())
         assert msg["type"] == "shutdown"
 
+    async def test_request_shutdown_invalid_token_rejected(
+        self, client: AsyncClient, tmp_path
+    ) -> None:
+        """An arbitrary Bearer token cannot trigger a worktree shutdown.
+
+        Regression guard — before T-218 this route had no per-route auth
+        dep and the gateway middleware only checked header *presence* on
+        /api/v1/agents/*, so any Bearer token reached the handler. The
+        SupervisorAuth dep now validates the credential.
+        """
+        project = await _create_project_via_api(client)
+        worktree_path = tmp_path / "wt-invalid-token"
+        worktree_path.mkdir()
+        wt_id, _ = await _register_and_get_token(client, project["api_key"], str(worktree_path))
+
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/request-shutdown",
+            headers={
+                "Authorization": "Bearer totally-invalid-token",
+                "X-Dashboard-Key": "",
+            },
+        )
+        assert resp.status_code == 401
+
+        # And the inbox must NOT have been written.
+        inbox = worktree_path / ".cloglog" / "inbox"
+        assert not inbox.exists()
+
+    async def test_request_shutdown_cross_project_forbidden(
+        self, client: AsyncClient, tmp_path
+    ) -> None:
+        """Project B cannot request shutdown for project A's worktree (403)."""
+        proj_a = await _create_project_via_api(client)
+        proj_b = await _create_project_via_api(client)
+        worktree_path = tmp_path / "wt-cross-proj-shutdown"
+        worktree_path.mkdir()
+        wt_id, _ = await _register_and_get_token(client, proj_a["api_key"], str(worktree_path))
+
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/request-shutdown",
+            headers={
+                "Authorization": f"Bearer {proj_b['api_key']}",
+                "X-Dashboard-Key": "",
+            },
+        )
+        assert resp.status_code == 403
+
+    async def test_request_shutdown_with_mcp_service_key(
+        self, client: AsyncClient, tmp_path
+    ) -> None:
+        """MCP service key authorises request_shutdown — this is the path
+        the main agent's MCP tool actually travels.
+        """
+        import json
+
+        project = await _create_project_via_api(client)
+        worktree_path = tmp_path / "wt-mcp-shutdown"
+        worktree_path.mkdir()
+        wt_id, _ = await _register_and_get_token(client, project["api_key"], str(worktree_path))
+
+        resp = await client.post(
+            f"/api/v1/agents/{wt_id}/request-shutdown",
+            headers={
+                "Authorization": "Bearer cloglog-mcp-dev",
+                "X-MCP-Request": "true",
+                "X-Dashboard-Key": "",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"shutdown_requested": True}
+
+        inbox = worktree_path / ".cloglog" / "inbox"
+        assert inbox.exists()
+        msg = json.loads(inbox.read_text().strip())
+        assert msg["type"] == "shutdown"
+
 
 class TestForceUnregisterAPI:
     """T-221 — supervisor force-unregister for wedged worktrees."""

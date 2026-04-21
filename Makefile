@@ -156,7 +156,7 @@ prod: ## Start prod server (gunicorn + vite preview, foreground — run in a zel
 		    --log-level info 2>&1 | sed -u 's/^/[backend] /') & \
 		(tail -F -n 0 /tmp/cloglog-prod.log 2>/dev/null | sed -u 's/^/[backend] /') & \
 		(cd ../cloglog-prod/frontend && npm run preview -- --port 4173 2>&1 | sed -u 's/^/[frontend] /' & echo $$! > /tmp/cloglog-prod-frontend.pid) & \
-		( if pgrep -f 'cloudflared tunnel run cloglog-webhooks' >/dev/null 2>&1; then \
+		( if pgrep -x cloudflared >/dev/null 2>&1; then \
 		    echo "[tunnel] already running in another process — not re-starting"; \
 		  elif command -v cloudflared >/dev/null 2>&1; then \
 		    cloudflared tunnel run cloglog-webhooks 2>&1 | sed -u 's/^/[tunnel] /' & \
@@ -217,7 +217,7 @@ prod-stop: ## Stop the prod server
 	@kill $$(cat /tmp/cloglog-prod-frontend.pid) 2>/dev/null && rm -f /tmp/cloglog-prod-frontend.pid && echo "  Frontend: stopped." || true
 	@fuser -k 4173/tcp 2>/dev/null && echo "  Frontend: killed by port." || true
 	@kill $$(cat /tmp/cloglog-cloudflared.pid) 2>/dev/null && rm -f /tmp/cloglog-cloudflared.pid && echo "  Tunnel: stopped." || true
-	@pkill -f 'cloudflared tunnel run cloglog-webhooks' 2>/dev/null && echo "  Tunnel: killed by pattern." || true
+	@pkill -x cloudflared 2>/dev/null && echo "  Tunnel: killed by name." || true
 
 # ── Database ──────────────────────────────────
 

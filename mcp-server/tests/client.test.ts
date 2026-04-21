@@ -129,5 +129,41 @@ describe('CloglogClient', () => {
         }),
       )
     })
+
+    it('uses MCP service key for request-shutdown (T-218 supervisor tool)', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ shutdown_requested: true }), { status: 200 }),
+      )
+
+      await client.request('POST', '/api/v1/agents/target-wt/request-shutdown')
+
+      expect(fetch).toHaveBeenCalledWith(
+        'http://localhost:8000/api/v1/agents/target-wt/request-shutdown',
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: 'Bearer test-service-key',
+            'X-MCP-Request': 'true',
+          }),
+        }),
+      )
+    })
+
+    it('uses MCP service key for force-unregister (T-221 supervisor tool, agent tokens rejected)', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ already_unregistered: false }), { status: 200 }),
+      )
+
+      await client.request('POST', '/api/v1/agents/target-wt/force-unregister')
+
+      expect(fetch).toHaveBeenCalledWith(
+        'http://localhost:8000/api/v1/agents/target-wt/force-unregister',
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: 'Bearer test-service-key',
+            'X-MCP-Request': 'true',
+          }),
+        }),
+      )
+    })
   })
 })

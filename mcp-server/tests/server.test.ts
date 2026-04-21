@@ -208,3 +208,90 @@ describe('guard error handling', () => {
     expect(result.content[0].text).toContain('Agents cannot mark tasks as done')
   })
 })
+
+describe('request_shutdown tool (T-218)', () => {
+  it('is registered and posts to the request-shutdown endpoint', async () => {
+    const client = mockClient()
+    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValue({ shutdown_requested: true })
+    const server = createServer(client)
+    const tools = (server as any)._registeredTools
+
+    expect(tools.request_shutdown).toBeDefined()
+    const result = await tools.request_shutdown.handler({ worktree_id: 'wt-target' })
+    expect(client.request).toHaveBeenCalledWith(
+      'POST', '/api/v1/agents/wt-target/request-shutdown'
+    )
+    expect(result.content[0].text).toContain('"shutdown_requested": true')
+  })
+
+  it('is idempotent — second call succeeds with the same payload', async () => {
+    const client = mockClient()
+    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValue({ shutdown_requested: true })
+    const server = createServer(client)
+    const tools = (server as any)._registeredTools
+
+    const r1 = await tools.request_shutdown.handler({ worktree_id: 'wt-target' })
+    const r2 = await tools.request_shutdown.handler({ worktree_id: 'wt-target' })
+    expect(r1.isError).toBeFalsy()
+    expect(r2.isError).toBeFalsy()
+    expect(r2.content[0].text).toContain('"shutdown_requested": true')
+    expect((client.request as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2)
+  })
+
+  it('does NOT require register_agent first (supervisor tool, not agent-scoped)', async () => {
+    // Main agent invoking this tool never calls register_agent for itself;
+    // the tool must be callable without that prerequisite.
+    const client = mockClient()
+    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValue({ shutdown_requested: true })
+    const server = createServer(client)
+    const tools = (server as any)._registeredTools
+
+    const result = await tools.request_shutdown.handler({ worktree_id: 'wt-foo' })
+    expect(result.isError).toBeFalsy()
+    expect(result.content[0].text).not.toContain('Not registered')
+  })
+})
+
+describe('force_unregister tool (T-221)', () => {
+  it('is registered and posts to the force-unregister endpoint', async () => {
+    const client = mockClient()
+    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
+      worktree_id: 'wt-target', already_unregistered: false,
+    })
+    const server = createServer(client)
+    const tools = (server as any)._registeredTools
+
+    expect(tools.force_unregister).toBeDefined()
+    const result = await tools.force_unregister.handler({ worktree_id: 'wt-target' })
+    expect(client.request).toHaveBeenCalledWith(
+      'POST', '/api/v1/agents/wt-target/force-unregister'
+    )
+    expect(result.content[0].text).toContain('"already_unregistered": false')
+  })
+
+  it('handles the already-gone idempotent response', async () => {
+    const client = mockClient()
+    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
+      worktree_id: 'wt-target', already_unregistered: true,
+    })
+    const server = createServer(client)
+    const tools = (server as any)._registeredTools
+
+    const result = await tools.force_unregister.handler({ worktree_id: 'wt-target' })
+    expect(result.isError).toBeFalsy()
+    expect(result.content[0].text).toContain('"already_unregistered": true')
+  })
+
+  it('description marks it as tier-2 fallback (surfaces the protocol to the caller)', () => {
+    const client = mockClient()
+    const server = createServer(client)
+    const tools = (server as any)._registeredTools
+    const description = tools.force_unregister.description as string
+    // The reconcile / close-wave rewrites (T-220) read this hint from the
+    // MCP tool listing — if the wording drifts, the caller is likely to
+    // skip request_shutdown and jump straight to force_unregister.
+    expect(description).toMatch(/TIER-2|tier-2/)
+    expect(description).toContain('request_shutdown')
+    expect(description).toMatch(/first|before/i)
+  })
+})

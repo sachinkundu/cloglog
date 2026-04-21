@@ -607,6 +607,73 @@ class AgentService:
 
         await self._repo.delete_worktree(worktree_id)
 
+    async def force_unregister(
+        self,
+        worktree_id: UUID,
+        caller_project_id: UUID | None,
+    ) -> dict[str, object]:
+        """Supervisor-initiated unregistration of a (possibly wedged) worktree.
+
+        Tier-2 fallback in the agent-lifecycle protocol — the supervisor
+        calls ``request_shutdown`` first and gives the agent a grace period;
+        only when that times out does ``force_unregister`` run. See
+        ``docs/design/agent-lifecycle.md`` for the full sequence.
+
+        Idempotent: if the worktree is already gone, returns
+        ``{"already_unregistered": true, ...}`` with no state change and no
+        second ``WORKTREE_OFFLINE`` event.
+
+        ``caller_project_id`` is ``None`` for MCP-service-key callers; when
+        set, we refuse to cross project boundaries (we can't tell whether a
+        missing worktree used to belong to a different project, so the "gone
+        and idempotent" response is the same either way — the audit log
+        records which project actually forced the action).
+        """
+        worktree = await self._repo.get_worktree(worktree_id)
+        already_unregistered = worktree is None
+
+        if worktree is not None:
+            if caller_project_id is not None and worktree.project_id != caller_project_id:
+                raise PermissionError(
+                    f"Worktree {worktree_id} does not belong to project {caller_project_id}"
+                )
+
+            session = await self._repo.get_active_session(worktree_id)
+            if session is not None:
+                await self._repo.end_session(session.id, status="force_unregistered")
+
+            await event_bus.publish(
+                Event(
+                    type=EventType.WORKTREE_OFFLINE,
+                    project_id=worktree.project_id,
+                    data={
+                        "worktree_id": str(worktree_id),
+                        "worktree_path": worktree.worktree_path,
+                        "reason": "force_unregistered",
+                        "caller_project_id": (
+                            str(caller_project_id) if caller_project_id else "mcp_service"
+                        ),
+                    },
+                )
+            )
+
+            await self._repo.delete_worktree(worktree_id)
+
+        # Audit log (structured, grep-able). Reserved keyword ``audit`` makes
+        # ``grep 'audit=force_unregister'`` a reliable supervisor query even
+        # if wording around it changes later.
+        logger.info(
+            "audit=force_unregister worktree_id=%s caller_project_id=%s already_unregistered=%s",
+            worktree_id,
+            caller_project_id if caller_project_id else "mcp_service",
+            already_unregistered,
+        )
+
+        return {
+            "worktree_id": worktree_id,
+            "already_unregistered": already_unregistered,
+        }
+
     async def unregister_by_path(
         self,
         project_id: UUID,

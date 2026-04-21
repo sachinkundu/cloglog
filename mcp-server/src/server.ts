@@ -269,6 +269,32 @@ export function createServer(client: CloglogClient): McpServer {
     }
   )
 
+  // ── Supervisor shutdown (F-48) ────────────────────────
+
+  server.tool(
+    'request_shutdown',
+    'Tier-1 shutdown: ask a worktree agent to shut down gracefully. Writes a "shutdown" JSON line to <worktree>/.cloglog/inbox so the agent Monitor delivers it instantly. Idempotent — a repeat call re-delivers the signal but does not change state. Returns {"shutdown_requested": true} on success. This is the FIRST lever the supervisor should pull; only escalate to force_unregister if the agent is wedged and never completes.',
+    {
+      worktree_id: z.string().describe('UUID of the worktree to shut down'),
+    },
+    wrapHandler(async ({ worktree_id }: { worktree_id: string }) => {
+      const result = await handlers.request_shutdown({ worktree_id })
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] }
+    })
+  )
+
+  server.tool(
+    'force_unregister',
+    'TIER-2 fallback ONLY — call request_shutdown first and give the agent time to exit gracefully. Use force_unregister only when that times out. Ends the worktree session, deletes the worktree row, and emits WORKTREE_OFFLINE(reason=force_unregistered). Idempotent: if the worktree is already gone, returns {"already_unregistered": true} without re-emitting the event. Agent tokens are refused; this must be invoked by the supervisor.',
+    {
+      worktree_id: z.string().describe('UUID of the wedged worktree to forcibly remove'),
+    },
+    wrapHandler(async ({ worktree_id }: { worktree_id: string }) => {
+      const result = await handlers.force_unregister({ worktree_id })
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] }
+    })
+  )
+
   // ── Board management ──────────────────────────────────
 
   server.tool(

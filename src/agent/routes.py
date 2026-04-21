@@ -15,6 +15,7 @@ from src.agent.schemas import (
     AssignTaskRequest,
     CompleteTaskRequest,
     CompleteTaskResponse,
+    ForceUnregisterResponse,
     HeartbeatResponse,
     MarkPrMergedRequest,
     RegisterRequest,
@@ -29,7 +30,7 @@ from src.agent.schemas import (
 )
 from src.agent.services import AgentService
 from src.board.repository import BoardRepository
-from src.gateway.auth import CurrentAgent, CurrentProject, SupervisorAuth
+from src.gateway.auth import CurrentAgent, CurrentProject, McpOrProject, SupervisorAuth
 from src.shared.database import get_session
 from src.shared.events import Event, EventType, event_bus
 
@@ -183,7 +184,9 @@ async def report_artifact(
 
 
 @router.post("/agents/{worktree_id}/request-shutdown", status_code=200)
-async def request_shutdown(worktree_id: UUID, service: ServiceDep) -> dict[str, bool]:
+async def request_shutdown(
+    worktree_id: UUID, service: ServiceDep, target: SupervisorAuth
+) -> dict[str, bool]:
     """Request a worktree agent to shut down gracefully.
 
     Writes a shutdown JSON line to ``<worktree_path>/.cloglog/inbox`` for
@@ -191,15 +194,43 @@ async def request_shutdown(worktree_id: UUID, service: ServiceDep) -> dict[str, 
     (legacy rows predating the schema's ``min_length=1``), the service
     raises ``ValueError`` and we translate that to a 409 rather than letting
     it bubble out as a 500.
+
+    Auth (``SupervisorAuth``) — before T-218 this route had no per-route
+    dependency and the gateway middleware passed any ``Authorization:
+    Bearer ...`` header through on ``/api/v1/agents/*``. Exposing the
+    endpoint as an MCP tool made that pre-existing hole reachable, so the
+    route now validates credentials: MCP service key, project API key
+    (project must own the target worktree), or the target agent's own
+    token. Mirrors the assign-task bar for consistency.
     """
-    worktree = await service._repo.get_worktree(worktree_id)
-    if worktree is None:
-        raise HTTPException(status_code=404, detail="Worktree not found")
     try:
         await service.request_shutdown(worktree_id)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None
     return {"shutdown_requested": True}
+
+
+@router.post(
+    "/agents/{worktree_id}/force-unregister",
+    response_model=ForceUnregisterResponse,
+    status_code=200,
+)
+async def force_unregister(
+    worktree_id: UUID, service: ServiceDep, caller: McpOrProject
+) -> dict[str, object]:
+    """Supervisor force-unregister — tier-2 fallback for a wedged worktree.
+
+    Auth: MCP service key OR project API key. Agent tokens are refused so
+    a wedged agent cannot force-unregister itself (which would defeat the
+    purpose of the tier-2 fallback). Idempotent: returns
+    ``{"already_unregistered": true}`` when the worktree row is already
+    gone, without re-emitting ``WORKTREE_OFFLINE``.
+    """
+    caller_project_id = caller.id if caller is not None else None
+    try:
+        return await service.force_unregister(worktree_id, caller_project_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from None
 
 
 @router.post("/agents/unregister-by-path", status_code=204)

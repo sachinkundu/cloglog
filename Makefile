@@ -138,11 +138,14 @@ prod: ## Start prod server (gunicorn + vite preview, foreground — run in a zel
 	@echo "  Backend:  http://localhost:8001"
 	@echo "  Frontend: http://localhost:4173"
 	@echo "  Tunnel:   https://cloglog.voxdez.com"
+	@if ! command -v cloudflared >/dev/null 2>&1; then \
+		echo "  WARN: cloudflared not installed — GitHub webhooks will not reach the backend."; \
+	fi
 	@echo "  Building frontend..."
 	@cd ../cloglog-prod/frontend && npm ci --silent && VITE_API_URL=http://localhost:8001/api/v1 npx vite build 2>&1 | tail -2
 	@echo "  Frontend: built"
 	@fuser -k 4173/tcp 2>/dev/null || true
-	@trap 'kill 0; fuser -k 4173/tcp 2>/dev/null; rm -f /tmp/cloglog-prod-frontend.pid' EXIT INT TERM; \
+	@trap 'kill 0; fuser -k 4173/tcp 2>/dev/null; rm -f /tmp/cloglog-prod-frontend.pid /tmp/cloglog-cloudflared.pid' EXIT INT TERM; \
 		(cd ../cloglog-prod && uv run gunicorn src.gateway.asgi:app \
 		    --worker-class uvicorn.workers.UvicornWorker \
 		    --workers 2 \
@@ -150,8 +153,18 @@ prod: ## Start prod server (gunicorn + vite preview, foreground — run in a zel
 		    --pid /tmp/cloglog-prod.pid \
 		    --error-logfile /tmp/cloglog-prod.log \
 		    --access-logfile /tmp/cloglog-prod-access.log \
-		    --log-level info) & \
-		(cd ../cloglog-prod/frontend && npm run preview -- --port 4173 & echo $$! > /tmp/cloglog-prod-frontend.pid) & \
+		    --log-level info 2>&1 | sed -u 's/^/[backend] /') & \
+		(tail -F -n 0 /tmp/cloglog-prod.log 2>/dev/null | sed -u 's/^/[backend] /') & \
+		(cd ../cloglog-prod/frontend && npm run preview -- --port 4173 2>&1 | sed -u 's/^/[frontend] /' & echo $$! > /tmp/cloglog-prod-frontend.pid) & \
+		( if pgrep -f 'cloudflared tunnel run cloglog-webhooks' >/dev/null 2>&1; then \
+		    echo "[tunnel] already running in another process — not re-starting"; \
+		  elif command -v cloudflared >/dev/null 2>&1; then \
+		    cloudflared tunnel run cloglog-webhooks 2>&1 | sed -u 's/^/[tunnel] /' & \
+		    echo $$! > /tmp/cloglog-cloudflared.pid; \
+		    wait; \
+		  else \
+		    echo "[tunnel] cloudflared not installed — webhooks will 530"; \
+		  fi ) & \
 		wait
 
 prod-bg: ## Start prod server in background
@@ -203,6 +216,8 @@ prod-stop: ## Stop the prod server
 	@kill $$(cat /tmp/cloglog-prod.pid) 2>/dev/null && rm -f /tmp/cloglog-prod.pid && echo "  Backend: stopped." || true
 	@kill $$(cat /tmp/cloglog-prod-frontend.pid) 2>/dev/null && rm -f /tmp/cloglog-prod-frontend.pid && echo "  Frontend: stopped." || true
 	@fuser -k 4173/tcp 2>/dev/null && echo "  Frontend: killed by port." || true
+	@kill $$(cat /tmp/cloglog-cloudflared.pid) 2>/dev/null && rm -f /tmp/cloglog-cloudflared.pid && echo "  Tunnel: stopped." || true
+	@pkill -f 'cloudflared tunnel run cloglog-webhooks' 2>/dev/null && echo "  Tunnel: killed by pattern." || true
 
 # ── Database ──────────────────────────────────
 

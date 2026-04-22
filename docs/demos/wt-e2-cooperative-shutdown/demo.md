@@ -1,7 +1,7 @@
 # close-wave and reconcile now ask worktree agents to shut themselves down cooperatively, only escalating to force_unregister on timeout.
 
-*2026-04-22T08:19:33Z by Showboat 0.6.1*
-<!-- showboat-id: 416eab78-0b1e-4bf4-8de8-240c2e1efdcb -->
+*2026-04-22T08:38:31Z by Showboat 0.6.1*
+<!-- showboat-id: 6a581ac3-b9a7-4efe-adc7-42c21411db19 -->
 
 Step 1 — helper script exists and is executable.
 
@@ -20,11 +20,13 @@ Step 2 — HAPPY PATH: write agent_unregistered to a fake inbox mid-wait; helper
   TMP=$(mktemp -d)
   INBOX="$TMP/inbox"
   : > "$INBOX"
+  SINCE=$(stat -c %s "$INBOX")
   ( sleep 0.3; echo "{\"type\":\"agent_unregistered\",\"worktree\":\"wt-coop-demo\",\"worktree_id\":\"00000000-0000-0000-0000-000000000001\",\"ts\":\"2026-04-22T00:00:00Z\",\"tasks_completed\":[\"T-220\"],\"artifacts\":{\"work_log\":\"/tmp/a\",\"learnings\":\"/tmp/b\"},\"reason\":\"all_assigned_tasks_complete\"}" >> "$INBOX" ) &
   set +e
   uv run python scripts/wait_for_agent_unregistered.py \
       --worktree wt-coop-demo \
       --inbox "$INBOX" \
+      --since-offset "$SINCE" \
       --timeout 5 \
       --poll-interval 0.05 >/dev/null 2>&1
   rc=$?
@@ -45,16 +47,45 @@ Step 3 — TIMEOUT PATH: no event arrives; helper exits 1 so the skill falls bac
   TMP=$(mktemp -d)
   INBOX="$TMP/inbox"
   : > "$INBOX"
+  SINCE=$(stat -c %s "$INBOX")
   set +e
   uv run python scripts/wait_for_agent_unregistered.py \
       --worktree wt-coop-demo \
       --inbox "$INBOX" \
+      --since-offset "$SINCE" \
       --timeout 0.3 \
       --poll-interval 0.05 >/dev/null 2>&1
   rc=$?
   set -e
   rm -rf "$TMP"
   [ "$rc" = "1" ] && echo OK || echo FAIL
+```
+
+```output
+OK
+```
+
+Step 3b — RACE CLOSED: agent_unregistered lands BEFORE the helper starts (fast-agent scenario the review flagged); helper still exits 0 because the caller captured the offset before request_shutdown.
+
+```bash
+
+  TMP=$(mktemp -d)
+  INBOX="$TMP/inbox"
+  : > "$INBOX"
+  SINCE=$(stat -c %s "$INBOX")
+  # Event lands BEFORE helper invocation — simulates the racy fast-agent path.
+  echo "{\"type\":\"agent_unregistered\",\"worktree\":\"wt-coop-demo\",\"worktree_id\":\"00000000-0000-0000-0000-000000000002\",\"ts\":\"2026-04-22T00:00:01Z\",\"tasks_completed\":[\"T-220\"],\"artifacts\":{\"work_log\":\"/tmp/a\",\"learnings\":\"/tmp/b\"},\"reason\":\"all_assigned_tasks_complete\"}" >> "$INBOX"
+  set +e
+  uv run python scripts/wait_for_agent_unregistered.py \
+      --worktree wt-coop-demo \
+      --inbox "$INBOX" \
+      --since-offset "$SINCE" \
+      --timeout 2 \
+      --poll-interval 0.05 >/dev/null 2>&1
+  rc=$?
+  set -e
+  rm -rf "$TMP"
+  [ "$rc" = "0" ] && echo OK || echo FAIL
 ```
 
 ```output
@@ -71,10 +102,20 @@ grep -q "mcp__cloglog__request_shutdown" plugins/cloglog/skills/close-wave/SKILL
 OK
 ```
 
-Step 5 — close-wave waits for agent_unregistered via the helper.
+Step 5 — close-wave waits for agent_unregistered via the helper WITH --since-offset (closes the race flagged in PR review).
 
 ```bash
-grep -q "scripts/wait_for_agent_unregistered.py" plugins/cloglog/skills/close-wave/SKILL.md && echo OK || echo FAIL
+grep -q "scripts/wait_for_agent_unregistered.py" plugins/cloglog/skills/close-wave/SKILL.md && grep -q -- "--since-offset" plugins/cloglog/skills/close-wave/SKILL.md && grep -q "SINCE_OFFSET" plugins/cloglog/skills/close-wave/SKILL.md && echo OK || echo FAIL
+```
+
+```output
+OK
+```
+
+Step 5b — close-wave resolves the supervisor inbox via --git-common-dir, not --show-toplevel (safe inside a worktree).
+
+```bash
+grep -q "git-common-dir" plugins/cloglog/skills/close-wave/SKILL.md && echo OK || echo FAIL
 ```
 
 ```output
@@ -111,20 +152,30 @@ grep -q "mcp__cloglog__request_shutdown" plugins/cloglog/skills/reconcile/SKILL.
 OK
 ```
 
-Step 9 — reconcile uses the cooperative-wait helper.
+Step 9 — reconcile uses the cooperative-wait helper with --since-offset.
 
 ```bash
-grep -q "scripts/wait_for_agent_unregistered.py" plugins/cloglog/skills/reconcile/SKILL.md && echo OK || echo FAIL
+grep -q "scripts/wait_for_agent_unregistered.py" plugins/cloglog/skills/reconcile/SKILL.md && grep -q -- "--since-offset" plugins/cloglog/skills/reconcile/SKILL.md && echo OK || echo FAIL
 ```
 
 ```output
 OK
 ```
 
-Step 10 — reconcile enumerates Case A (pr_merged), Case B (wedged), Case C (orphaned).
+Step 9b — reconcile resolves MAIN_INBOX via --git-common-dir (safe inside a worktree; CLAUDE.md-documented pitfall).
 
 ```bash
-grep -q "Case A" plugins/cloglog/skills/reconcile/SKILL.md && grep -q "Case B" plugins/cloglog/skills/reconcile/SKILL.md && grep -q "Case C" plugins/cloglog/skills/reconcile/SKILL.md && echo OK || echo FAIL
+grep -q "git-common-dir" plugins/cloglog/skills/reconcile/SKILL.md && echo OK || echo FAIL
+```
+
+```output
+OK
+```
+
+Step 10 — reconcile scopes Case A (pr_merged) to what IS derivable from get_board, and explicitly flags wedged/orphaned cases as a known gap pending a list_worktrees MCP tool.
+
+```bash
+grep -q "Case A" plugins/cloglog/skills/reconcile/SKILL.md && grep -q "Known gaps" plugins/cloglog/skills/reconcile/SKILL.md && grep -q "list_worktrees" plugins/cloglog/skills/reconcile/SKILL.md && echo OK || echo FAIL
 ```
 
 ```output
@@ -168,5 +219,5 @@ uv run pytest tests/test_wait_for_agent_unregistered.py -q 2>&1 | grep -oE "[0-9
 ```
 
 ```output
-6 passed
+8 passed
 ```

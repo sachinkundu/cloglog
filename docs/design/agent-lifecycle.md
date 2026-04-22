@@ -137,13 +137,20 @@ to the exiting task type, but never reorder them.
    and T-220 for the consumer side.
 
    **Consumer wiring (T-220).** `plugins/cloglog/skills/close-wave/SKILL.md`
-   Step 5 and `plugins/cloglog/skills/reconcile/SKILL.md` Step 5 both call
-   `mcp__cloglog__request_shutdown` and then invoke
-   `scripts/wait_for_agent_unregistered.py` against the supervisor inbox
-   (`<project_root>/.cloglog/inbox`). The helper only matches events
-   appended after it starts, so a stale `agent_unregistered` line from a
-   prior session cannot satisfy a fresh cooperative-shutdown wait
-   (`tests/test_wait_for_agent_unregistered.py` pins this invariant).
+   Step 5 and `plugins/cloglog/skills/reconcile/SKILL.md` Step 5 both
+   capture the supervisor inbox's byte offset BEFORE issuing
+   `mcp__cloglog__request_shutdown`, then invoke
+   `scripts/wait_for_agent_unregistered.py --since-offset $SINCE_OFFSET`
+   against that inbox. Capturing the offset before the MCP call binds
+   the wait window to "events produced in response to THIS shutdown
+   request" without dropping a fast agent's `agent_unregistered` that
+   lands between the MCP call returning and the helper starting
+   (`tests/test_wait_for_agent_unregistered.py` pins both the
+   race-is-closed invariant and the offset-filters-stale-events
+   invariant). The supervisor inbox is resolved via
+   `dirname "$(git rev-parse --path-format=absolute --git-common-dir)"`,
+   never `git rev-parse --show-toplevel` — the latter returns the
+   worktree path when the supervisor runs inside a worktree.
 
    **Hook backstop (T-243).** `plugins/cloglog/hooks/agent-shutdown.sh` writes
    the event as well, with `reason: "best_effort_backstop_from_session_end_hook"`
@@ -316,11 +323,15 @@ tried in order; later tiers are last resorts.
 - **Concrete numbers.**
   - Cooperative timeout: **120 s** from `request_shutdown` to
     `agent_unregistered`. Close-wave (Step 5b) and reconcile Case A use
-    this. Reconcile Case B (wedged agent) uses **30 s** because a wedged
-    MCP call is unlikely to recover within the longer window.
+    this.
   - The helper's `--poll-interval` defaults to 1 s — tight enough that a
     responsive agent's `agent_unregistered` is observed within ~1 s of
     being written.
+  - The supervisor MUST capture the inbox byte offset BEFORE the
+    `request_shutdown` MCP call and pass it to the helper as
+    `--since-offset`. Without that, a fast agent's `agent_unregistered`
+    that lands between the MCP call returning and the helper starting
+    would be ignored (the race caught by the PR #182 review).
 - **When to use.** Always first. Preserves shutdown-artifacts, learnings, and
   a clean `unregister` row. It is the only tier that yields a usable work log.
 
@@ -481,6 +492,15 @@ separate board task under F-48 (Agent Lifecycle Hardening — Graceful Shutdown
   worktree agents can locate the supervisor inbox without hardcoding. Also
   update the existing plugin prompts/templates to reference
   `<project_root>/.cloglog/inbox` rather than literal paths.
+- **T-NEW-c** — Add a `list_worktrees` MCP tool that returns
+  `WorktreeResponse` (id, path, status, last_heartbeat, branch_name,
+  current_task_id) for a project. The backend endpoint
+  `GET /projects/{project_id}/worktrees` already exists
+  (`src/agent/routes.py:263`); the MCP server just needs to wire it up.
+  Unblocks reconcile's Case B (wedged agent — needs
+  `last_heartbeat`/`status`) and Case C (orphaned worktree — needs
+  path→id mapping). Flagged as a gap in
+  `plugins/cloglog/skills/reconcile/SKILL.md` Step 3 "Known gaps".
 - **T-NEW-b** — Relax the pipeline guard's predecessor-resolution rule at
   `src/agent/services.py:237` so that a `review`-status spec/plan predecessor
   is "resolved" when `artifact_path` is set, regardless of whether `pr_url`

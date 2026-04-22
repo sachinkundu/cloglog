@@ -10,9 +10,15 @@ See ``docs/design/agent-lifecycle.md`` §2 and §5 for the protocol.
 
 Usage::
 
+    # Capture the inbox size BEFORE calling request_shutdown so a fast agent's
+    # agent_unregistered event (which may land before this helper starts) is
+    # still observed.
+    SINCE=$(stat -c %s "$MAIN_INBOX")
+    # … mcp__cloglog__request_shutdown(worktree_id) …
     uv run python scripts/wait_for_agent_unregistered.py \\
         --worktree wt-foo \\
-        --inbox /path/to/.cloglog/inbox \\
+        --inbox "$MAIN_INBOX" \\
+        --since-offset "$SINCE" \\
         --timeout 120
 
 Exit codes:
@@ -39,26 +45,39 @@ def wait_for_event(
     worktree: str,
     timeout: float,
     poll_interval: float,
+    since_offset: int = 0,
     *,
     clock: callable = time.monotonic,
     sleep: callable = time.sleep,
 ) -> int:
     """Return 0 if a matching event arrives before ``timeout``, else 1.
 
-    Only events appended AFTER the call are considered — the helper records
-    the inbox size at entry and re-reads from that offset. Skills call
-    ``request_shutdown`` immediately before invoking the helper, so any
-    pre-existing ``agent_unregistered`` line on the inbox is a stale one from
-    a previous session and must not satisfy the wait.
+    ``since_offset`` is the inbox byte offset the caller captured BEFORE
+    issuing ``request_shutdown``. Events at offsets < ``since_offset`` are
+    ignored. This closes the race the helper would otherwise have: a fast
+    agent can emit ``agent_unregistered`` in the gap between the caller's
+    MCP call returning and this helper starting. Snapshotting the inbox
+    size at helper entry would drop that event; snapshotting before the
+    MCP call is what actually binds the window.
+
+    Default ``since_offset=0`` scans the entire file — safe because the
+    caller filters by worktree name and worktree names are not reused
+    after teardown (close-wave deletes the branch + worktree row), so a
+    pre-existing ``agent_unregistered`` for the requested worktree would
+    only appear if that worktree is legitimately shutting down.
     """
     try:
-        initial_size = inbox.stat().st_size
+        size_at_entry = inbox.stat().st_size
     except FileNotFoundError:
         print(f"inbox not found: {inbox}", file=sys.stderr)
         return 2
 
+    if since_offset < 0:
+        since_offset = 0
+    # If the inbox is smaller than since_offset, the file was truncated —
+    # scan from the start rather than seeking past the end.
+    cursor = min(since_offset, size_at_entry)
     deadline = clock() + timeout
-    cursor = initial_size
 
     while True:
         try:
@@ -95,12 +114,24 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--inbox", required=True, type=Path, help="Path to main inbox file")
     p.add_argument("--timeout", type=float, default=120.0, help="Total timeout in seconds")
     p.add_argument("--poll-interval", type=float, default=1.0, help="Seconds between stat() polls")
+    p.add_argument(
+        "--since-offset",
+        type=int,
+        default=0,
+        help=(
+            "Inbox byte offset captured BEFORE the caller issued "
+            "request_shutdown. Events at offsets < this are ignored. "
+            "Default 0 scans the whole file (safe when worktree names are "
+            "unique per lifetime)."
+        ),
+    )
     args = p.parse_args(argv)
     return wait_for_event(
         inbox=args.inbox,
         worktree=args.worktree,
         timeout=args.timeout,
         poll_interval=args.poll_interval,
+        since_offset=args.since_offset,
     )
 
 

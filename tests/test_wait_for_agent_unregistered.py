@@ -26,25 +26,27 @@ HELPER = REPO_ROOT / "scripts" / "wait_for_agent_unregistered.py"
 
 
 def _run_helper(
-    inbox: Path, worktree: str, timeout: float, poll_interval: float = 0.05
+    inbox: Path,
+    worktree: str,
+    timeout: float,
+    poll_interval: float = 0.05,
+    since_offset: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [
-            sys.executable,
-            str(HELPER),
-            "--worktree",
-            worktree,
-            "--inbox",
-            str(inbox),
-            "--timeout",
-            str(timeout),
-            "--poll-interval",
-            str(poll_interval),
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    args = [
+        sys.executable,
+        str(HELPER),
+        "--worktree",
+        worktree,
+        "--inbox",
+        str(inbox),
+        "--timeout",
+        str(timeout),
+        "--poll-interval",
+        str(poll_interval),
+    ]
+    if since_offset is not None:
+        args += ["--since-offset", str(since_offset)]
+    return subprocess.run(args, text=True, capture_output=True, check=False)
 
 
 def _unregistered_event(
@@ -124,14 +126,45 @@ def test_ignores_events_for_other_worktrees(inbox: Path) -> None:
     assert result.returncode == 1
 
 
-def test_ignores_events_already_in_inbox_before_helper_started(inbox: Path) -> None:
-    """The helper records the inbox size at entry and only reads events
-    appended after that point. Stale ``agent_unregistered`` lines from a
-    previous session must not satisfy a fresh cooperative-shutdown wait."""
+def test_event_already_present_before_offset_is_ignored(inbox: Path) -> None:
+    """When the caller captures an offset BEFORE calling request_shutdown,
+    events at offsets < that value are treated as stale and ignored. This
+    is how skills bind the wait window to "events produced in response to
+    THIS shutdown request" rather than arbitrary prior events for the same
+    worktree name."""
+    inbox.write_text(_unregistered_event() + "\n")
+    size_after_stale = inbox.stat().st_size
+
+    result = _run_helper(inbox, "wt-coop", timeout=0.3, since_offset=size_after_stale)
+    assert result.returncode == 1
+
+
+def test_event_already_present_without_offset_is_matched(inbox: Path) -> None:
+    """The race the reviewer flagged: a fast agent can append
+    ``agent_unregistered`` in the gap between the caller's
+    ``request_shutdown`` MCP call returning and this helper starting. If
+    the caller did NOT capture an offset beforehand, the default
+    ``--since-offset=0`` scans the whole file — so the event is still
+    observed and the caller avoids an unnecessary force_unregister.
+
+    The write-before-arrival scenario is the one that matters for the
+    race; captured here directly."""
     inbox.write_text(_unregistered_event() + "\n")
 
-    result = _run_helper(inbox, "wt-coop", timeout=0.3)
-    assert result.returncode == 1, "stale pre-existing event must not satisfy the wait"
+    result = _run_helper(inbox, "wt-coop", timeout=1.0)
+    assert result.returncode == 0
+
+
+def test_truncated_inbox_does_not_seek_past_end(inbox: Path) -> None:
+    """If the inbox was rotated/truncated between the caller capturing
+    ``since_offset`` and the helper starting, the helper must not seek
+    past end-of-file. It should clamp to the current size and scan from
+    there (returning 1 on timeout if no new event arrives)."""
+    inbox.write_text(_unregistered_event(worktree="wt-unrelated") + "\n")
+    stale_offset = inbox.stat().st_size + 10_000  # well past EOF
+
+    result = _run_helper(inbox, "wt-coop", timeout=0.3, since_offset=stale_offset)
+    assert result.returncode == 1
 
 
 def test_ignores_malformed_json_lines(inbox: Path) -> None:

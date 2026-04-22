@@ -65,10 +65,26 @@ Claude process (see B-2 / T-217) and bypasses the shutdown hook; closing the
 tab before the backend session ends leaves the worktree row dangling until
 the tier-3 heartbeat sweep.
 
-### Step 5a — Request shutdown (tier 1)
+### Step 5a — Snapshot inbox offset + request shutdown (tier 1)
 
 For each worktree, look up its `worktree_id` (from the board / the
-`agent_started` inbox event the supervisor recorded at launch), then:
+`agent_started` inbox event the supervisor recorded at launch). Resolve
+the supervisor inbox BEFORE calling `request_shutdown` — `git rev-parse
+--show-toplevel` would return the worktree path when run inside a
+worktree (see CLAUDE.md "Inside a worktree, `git rev-parse
+--show-toplevel` returns the worktree path, not the main clone.");
+the main clone is always the parent of `--git-common-dir`:
+
+```bash
+MAIN_INBOX="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.cloglog/inbox"
+# Capture the offset BEFORE request_shutdown — a fast/idle agent can emit
+# agent_unregistered in the gap between the MCP call returning and the
+# wait helper starting. Binding the window to the offset-before-shutdown
+# makes that event still count.
+SINCE_OFFSET=$(stat -c %s "$MAIN_INBOX" 2>/dev/null || echo 0)
+```
+
+Then:
 
 ```
 mcp__cloglog__request_shutdown(worktree_id: "<uuid>")
@@ -84,18 +100,18 @@ Record the request timestamp per worktree so the work log can cite it.
 
 ### Step 5b — Wait for `agent_unregistered` (up to 120 s per worktree)
 
-Run the wait helper against the **main** inbox (`$(git rev-parse --show-toplevel)/.cloglog/inbox`):
-
 ```bash
 uv run python scripts/wait_for_agent_unregistered.py \
     --worktree "<wt-name>" \
-    --inbox "$(git rev-parse --show-toplevel)/.cloglog/inbox" \
+    --inbox "$MAIN_INBOX" \
+    --since-offset "$SINCE_OFFSET" \
     --timeout 120
 ```
 
-The helper only matches events appended AFTER it starts, so pre-existing
-`agent_unregistered` lines from prior sessions do not satisfy the wait
-(verified in `tests/test_wait_for_agent_unregistered.py`).
+The helper reads events appended at or after `SINCE_OFFSET`, so a fast
+agent's `agent_unregistered` that landed between `request_shutdown` and
+the helper launch is still observed (verified in
+`tests/test_wait_for_agent_unregistered.py`).
 
 Exit codes:
 - **0** — the worktree emitted `agent_unregistered`. Consolidate its

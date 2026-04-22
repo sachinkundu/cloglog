@@ -1,15 +1,15 @@
 # Reviewers have a single design doc that pins every semantic of the two-stage iterative PR review pipeline T-248 will implement — opencode (gemma4:e4b) for up to 5 turns, then codex for up to 2 turns, short-circuiting on consensus.
 
-*2026-04-22T16:59:16Z by Showboat 0.6.1*
-<!-- showboat-id: 6e70c977-9047-411d-bf19-4fbac3d6fec8 -->
+*2026-04-22T17:09:36Z by Showboat 0.6.1*
+<!-- showboat-id: 28b557c7-a409-405d-9929-04b8270785a7 -->
 
 ### The 8 questions and their answers (one-liners)
 
 1. **Per-reviewer loop semantics / consensus** → option (c): explicit `status: no_further_concerns` flag OR zero-new-findings (tuple key `(file, line, title_lower)`). Worked example in §1.2.
 2. **Sequencing** → strictly serial, handled by a single `WebhookConsumer` that `await`s stage A then stage B (no new event type). §2.
-3. **Turn accounting** → new `pr_review_turns` table keyed `(pr_url, head_sha, stage, turn_number)`. Idempotency via `INSERT ... ON CONFLICT DO NOTHING`. New SHA resets BOTH loops symmetrically. §3.
+3. **Turn accounting** → new **`Review` bounded context** at `src/review/` owning the `pr_review_turns` table — Gateway cannot own tables per `docs/ddd-context-map.md`, so Gateway consumes `IReviewTurnRegistry` via Open Host Service. Table keyed `(pr_url, head_sha, stage, turn_number)`; idempotency via `INSERT ... ON CONFLICT DO NOTHING`; new SHA resets BOTH loops symmetrically. §3.
 4. **Identity** → two GitHub App bots (`cloglog-opencode-reviewer[bot]`, `cloglog-codex-reviewer[bot]`); PEMs at `~/.agent-vm/credentials/*.pem` (same precedent as existing codex bot — `~/.cloglog/credentials` is for the backend API key only, NOT reviewer tokens); author-skip fix MUST change `handles()` to `event.sender in _REVIEWER_BOTS` (today's check is `== _CODEX_BOT` and `_BOT_USERNAMES` is not consulted); visible turn header `**opencode (gemma4:e4b) — turn 3/5**`. §4.
-5. **Timeouts** → opencode 180 s / turn, codex 300 s / turn. 5xx and 409 NOT retried; transient `ECONNRESET`/`ETIMEDOUT` get one ≥ 2 s backoff. Dead opencode never blocks codex. §5.
+5. **Timeouts + startup gate** → opencode 180 s / turn, codex 300 s / turn; 5xx and 409 NOT retried; transient `ECONNRESET`/`ETIMEDOUT` get one ≥ 2 s backoff; dead opencode never blocks codex at runtime (§5.3). New at boot: `app.py` lifespan now probes BOTH binaries (`is_review_agent_available()` extended with `is_opencode_available()`); registration falls to codex-only / opencode-only / disabled per the §5.4 matrix so a host missing one binary does not spam skip-comments. §5.
 6. **Contention / queuing** → one review at a time via existing `asyncio.Lock`; implicit FIFO, no dropping/deferring. Rate limit and per-PR cap counted per **session**, not per turn. §6.
 7. **Structured output** → additive top-level `status` on `review-schema.json` PLUS matching `ReviewResult.status` field PLUS `_parse_output` preserves it through Codex-schema normalization (today `_parse_output` rewrites data to `{verdict, summary, findings}` only, silently dropping any `status` — without all three changes the explicit-consensus branch is a dead branch). §7.
 8. **Observability** → `review_turn_start` / `review_turn_end` / `review_stage_end` / `review_session_end` structured log lines; metric names reserved; task-card badge extended to `opencode 2/5` / `codex 1/2`. §8.
@@ -51,7 +51,7 @@ t248_delta_section=present
 ```
 
 ```bash
-for f in src/gateway/review_engine.py src/gateway/app.py src/shared/config.py src/gateway/github_token.py .github/codex/prompts/review.md .github/codex/review-schema.json src/alembic/versions/; do
+for f in src/gateway/review_engine.py src/gateway/app.py src/shared/config.py src/gateway/github_token.py .github/codex/prompts/review.md .github/codex/review-schema.json src/alembic/versions/ src/review/ docs/ddd-context-map.md; do
      r=$(grep -c "\`${f}\`" docs/design/two-stage-pr-review.md || true)
      echo "names_${f}=$( [ "$r" -gt 0 ] && echo yes || echo no )"
    done
@@ -65,6 +65,8 @@ names_src/gateway/github_token.py=yes
 names_.github/codex/prompts/review.md=yes
 names_.github/codex/review-schema.json=yes
 names_src/alembic/versions/=yes
+names_src/review/=yes
+names_docs/ddd-context-map.md=yes
 ```
 
 ### First section of the design doc (for reviewer skim)

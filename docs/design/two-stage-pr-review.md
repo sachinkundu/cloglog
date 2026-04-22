@@ -17,18 +17,21 @@ Serial (not parallel) because: (a) codex benefits from seeing the author's respo
 
 ## Architecture snapshot — what lives where today
 
-The implementation will touch exactly these files:
+The implementation will touch exactly these files, and — critically — introduces a new `Review` bounded context (`src/review/`) to hold the turn-accounting table. Per `docs/ddd-context-map.md` and `docs/contracts/webhook-pipeline-spec.md`, **Gateway owns no tables** and the review engine is "a consumer of webhook events and a caller of external APIs [that] does not own any domain models." Placing `pr_review_turns` under `src/gateway/` would violate that boundary; placing it under Board or Agent would conflate pipeline-execution state with task/worktree state. A new supporting context is the right DDD answer (see §3 for the domain, §3.1 for the schema, §3.5 for the context-map update).
 
 | File | Today | Change in T-248 |
 |------|-------|-----------------|
-| `src/gateway/review_engine.py` | `ReviewEngineConsumer` runs a single codex pass per webhook; `ReviewResult = {verdict, summary, findings}`; `_parse_output` normalizes Codex-schema JSON into exactly those three fields (anything else is discarded). | Refactor into `TwoStageReviewSequencer` that orchestrates two `ReviewLoop` runs (opencode + codex). Extract a `Reviewer` protocol; `CodexReviewer` wraps the current subprocess path; new `OpencodeReviewer` wraps opencode CLI. **Extend `ReviewResult` with an optional `status` field** and update `_parse_output` to carry it through the Codex-schema normalization — otherwise the explicit-consensus branch in §1.1 would silently never fire (see §7.1). **Add `_OPENCODE_BOT` + a `_REVIEWER_BOTS` frozenset** and change the author-skip check in `handles()` from `event.sender == _CODEX_BOT` to `event.sender in _REVIEWER_BOTS`. Do **not** rely on the existing `_BOT_USERNAMES` constant — today it is not referenced from `handles()` at all (§4.1). |
-| `src/gateway/app.py` (lifespan) | Registers `ReviewEngineConsumer` | Register the new sequencer in its place. |
+| `src/gateway/review_engine.py` | `ReviewEngineConsumer` runs a single codex pass per webhook; `ReviewResult = {verdict, summary, findings}`; `_parse_output` normalizes Codex-schema JSON into exactly those three fields (anything else is discarded). | Refactor into `TwoStageReviewSequencer` that orchestrates two `ReviewLoop` runs (opencode + codex). Extract a `Reviewer` protocol; `CodexReviewer` wraps the current subprocess path; new `OpencodeReviewer` wraps opencode CLI. **Extend `ReviewResult` with an optional `status` field** and update `_parse_output` to carry it through the Codex-schema normalization — otherwise the explicit-consensus branch in §1.1 would silently never fire (see §7.1). **Add `_OPENCODE_BOT` + a `_REVIEWER_BOTS` frozenset** and change the author-skip check in `handles()` from `event.sender == _CODEX_BOT` to `event.sender in _REVIEWER_BOTS`. Do **not** rely on the existing `_BOT_USERNAMES` constant — today it is not referenced from `handles()` at all (§4.1). Sequencer consumes turn-accounting via `IReviewTurnRegistry` (from the new Review context) — never imports `src/review/models.py` or `repository.py` directly. |
+| `src/gateway/app.py` (lifespan) | Registers `ReviewEngineConsumer` gated on `is_review_agent_available()`, which only probes `shutil.which(settings.review_agent_cmd)` (one binary). | Replace the existing probe with a **dual-binary probe**: `review_engine_availability()` returns a `(codex_available, opencode_available)` tuple. The sequencer is registered when **at least one** stage can run; otherwise no registration and a loud warning. At registration, both availability flags are logged (including `--version` strings). The sequencer itself receives the flags at construction — if a stage's binary is missing, that stage is skipped at runtime with a single structured warning (not a per-PR skip comment; see §5.4). |
 | `src/shared/config.py` | `review_agent_cmd`, `review_max_per_hour`, `review_source_root` | Add `opencode_cmd`, `opencode_model`, `opencode_max_turns`, `codex_max_turns`, `opencode_turn_timeout_seconds`. All optional, all default to sane values listed below. |
 | `src/gateway/github_token.py` | `get_github_app_token()` reads `~/.agent-vm/credentials/github-app.pem`; `get_codex_reviewer_token()` reads `~/.agent-vm/credentials/codex-reviewer.pem`; both mint short-lived installation tokens via JWT → `POST /app/installations/{id}/access_tokens`. Hard-coded `_CLAUDE_APP_ID` / `_CODEX_APP_ID` / `_*_INSTALLATION_ID` constants per bot. `~/.cloglog/credentials` is NOT read from this file — that path is reserved for the backend API key (`CLOGLOG_API_KEY`, per T-214). | Add `_OPENCODE_APP_ID`, `_OPENCODE_INSTALLATION_ID`, `_OPENCODE_PEM = Path.home() / ".agent-vm" / "credentials" / "opencode-reviewer.pem"`, `_OPENCODE_PERMISSIONS`, `_opencode_cache`, and `get_opencode_reviewer_token()` — same JWT→installation-token shape as codex. Do NOT place the opencode GitHub token in `~/.cloglog/credentials`. |
 | `.github/codex/prompts/review.md`, `review-schema.json` | Prompt + schema for codex | Add `.github/opencode/prompts/review.md` (separate prompt — instructs the local model to emit the same JSON schema). Extend `review-schema.json` additively with one optional top-level `status` property; do NOT fork it. See §7.1. |
-| `src/alembic/versions/` | Existing revisions | Add an additive migration that creates the `pr_review_turns` table (see §3). |
-| New: `src/gateway/review_loop.py` | — | Houses `ReviewLoop`, `Reviewer` protocol, consensus check. Small — ~120 LOC. |
-| `tests/test_review_engine.py`, new `tests/test_review_loop.py`, `tests/test_opencode_reviewer.py` | — | Real-DB tests for the loop, consensus, idempotency, and opencode adapter. |
+| **New context** `src/review/` | — | New bounded context (DDD supporting domain). Owns `PrReviewTurn` model + table. Exposes `IReviewTurnRegistry` interface. Files: `__init__.py`, `models.py`, `interfaces.py`, `repository.py`, `services.py`, `schemas.py`. See §3. |
+| `src/alembic/versions/` | Existing revisions | Add an additive migration that creates the `pr_review_turns` table owned by the new `review` context (see §3.1). `down_revision` pins the latest merged revision; use `make db-revision` then rebase if another context merges a revision first. |
+| New: `src/gateway/review_loop.py` | — | Houses `ReviewLoop`, `Reviewer` protocol, consensus check. Small — ~120 LOC. Takes `IReviewTurnRegistry` by injection. |
+| `tests/conftest.py` | Imports Agent/Board/Document models for `Base.metadata.create_all` | Also import `src.review.models` so `pr_review_turns` is created for tests (T-247 pattern: missing imports here silently break real-DB tests). |
+| `tests/test_review_engine.py`, new `tests/test_review_loop.py`, `tests/test_opencode_reviewer.py`, `tests/review/test_repository.py` | — | Real-DB tests for the loop, consensus, idempotency, the opencode adapter, and the Review-context repository. |
+| `docs/ddd-context-map.md` | Four contexts: Board, Agent, Document, Gateway | Adds **Review** as a fifth supporting domain with an entry in the mermaid diagram, the relationships table (Gateway → Review = Open Host Service), and the ubiquitous-language glossary. See §3.5. |
 
 `src/gateway/webhook_dispatcher.py`, `src/gateway/webhook_consumers.py`, and the webhook endpoint in `src/gateway/webhook.py` are **not** touched — the sequencer is just a different `WebhookConsumer`.
 
@@ -115,11 +118,22 @@ The sequencer sits in the same registration slot as today's `ReviewEngineConsume
 
 A **dead stage A** (timeout, crash, empty output across all turns) **must not** block stage B. The sequencer posts a skip-comment from opencode bot (reason: `OPENCODE_FAILED`, reusing the `SkipReason` enum pattern) and falls through to codex. "An opencode that never answered" is operationally equivalent to "no opencode reviewer" — codex should still run.
 
-## 3. Turn accounting and storage
+## 3. Turn accounting and storage — new `Review` bounded context
 
-### 3.1 Schema — `pr_review_turns`
+### 3.0 Why a new bounded context
 
-New table (not new columns on an existing one) because turns are orthogonal to tasks/PRs/projects and putting them on `tasks` would denormalize badly for PRs that span multiple tasks (rare but legal).
+`docs/ddd-context-map.md` line 31 is explicit: **Gateway owns no tables.** `docs/contracts/webhook-pipeline-spec.md` line 29 restates it for the review engine specifically: "The review engine is a new module within Gateway, not a new bounded context. It is a consumer of webhook events and a caller of external APIs. It does not own any domain models." Persisting `pr_review_turns` "under the review engine" would contradict both rules.
+
+Alternatives evaluated:
+
+- **Extend Board.** Board owns `Project`, `Epic`, `Feature`, `Task`. A review turn is not a board entity; it is keyed by `(pr_url, head_sha)`, not by a `task_id`. A PR can span multiple tasks, and a task can precede any PR at all. Co-locating them would break the "Task is the smallest unit of work" ubiquitous-language invariant.
+- **Extend Agent.** Agent owns `Worktree` and `Session`. Turns belong to a PR's lifecycle, not an agent's. No natural home.
+- **Keep the state in-memory only.** Violates §3.2 idempotency guarantees and kills §8.3 dashboard surface. Rejected.
+- **New Review bounded context.** Introduces a fifth supporting domain dedicated to the PR review pipeline's persisted artifacts. Gateway consumes it via an Open Host Service interface (same pattern as Gateway→Board/Agent/Document).
+
+The new-context option is the architecturally clean answer and the one T-248 implements. The short-term cost is one extra directory and interface file; the long-term benefit is that when a later task adds anything else review-pipeline-specific (structured-output archive, reviewer-latency SLOs, etc.) the home is already there and does not muscle into Board or Gateway.
+
+### 3.1 Schema — `pr_review_turns` (owned by the Review context)
 
 ```sql
 CREATE TABLE pr_review_turns (
@@ -141,11 +155,59 @@ CREATE TABLE pr_review_turns (
 CREATE INDEX ix_pr_review_turns_pr ON pr_review_turns (pr_url, head_sha);
 ```
 
-A `CHECK (stage IN ('opencode', 'codex'))` and `CHECK (status IN (...))` are added in-migration as well. Alembic migration is **additive only** per the project rule in `CLAUDE.md` — no data backfill, no destructive cleanup.
+`CHECK (stage IN ('opencode', 'codex'))` and `CHECK (status IN ('running','completed','timed_out','failed'))` constraints are added in-migration. Alembic migration is **additive only** per the project rule in `CLAUDE.md` — no data backfill, no destructive cleanup.
 
-### 3.2 Idempotency against webhook re-fires
+The `project_id` FK binds turns to a project so a future project deletion cascades cleanly. The `ON DELETE CASCADE` is intentional — turns are derived artifacts; nothing outside Review references them. All other columns match the original §3.1 design.
 
-The `UNIQUE (pr_url, head_sha, stage, turn_number)` constraint is the primary guard. The sequencer uses `INSERT ... ON CONFLICT DO NOTHING` to claim a turn slot before running, and if the insert reports zero rows written, **another handler is already running this turn — exit immediately, do not double-post.** This covers:
+### 3.2 Context layout — `src/review/`
+
+```
+src/review/
+  __init__.py
+  models.py         # PrReviewTurn SQLAlchemy model + PrReviewTurnStage / PrReviewTurnStatus StrEnums
+  interfaces.py     # IReviewTurnRegistry protocol (what Gateway imports)
+  repository.py     # ReviewTurnRepository implementing IReviewTurnRegistry via SQLAlchemy
+  services.py       # ReviewTurnService — claim_turn, complete_turn, latest_for, is_consensus_run
+  schemas.py        # Pydantic DTOs for dashboard surface (§8.3)
+```
+
+`interfaces.py` declares the Protocol the Gateway sequencer depends on:
+
+```python
+from typing import Protocol
+from uuid import UUID
+
+class IReviewTurnRegistry(Protocol):
+    async def claim_turn(
+        self,
+        project_id: UUID,
+        pr_url: str,
+        head_sha: str,
+        stage: str,
+        turn_number: int,
+    ) -> bool: ...
+    async def complete_turn(
+        self,
+        *,
+        pr_url: str,
+        head_sha: str,
+        stage: str,
+        turn_number: int,
+        status: str,
+        finding_count: int | None,
+        consensus_reached: bool,
+        elapsed_seconds: float,
+    ) -> None: ...
+    async def latest_for(self, pr_url: str, head_sha: str) -> "ReviewTurnSnapshot | None": ...
+```
+
+`claim_turn` wraps the `INSERT ... ON CONFLICT DO NOTHING` and returns `True` iff this caller won the slot — the sole synchronization primitive for §3.3 idempotency.
+
+The Gateway sequencer imports ONLY `src.review.interfaces.IReviewTurnRegistry` and receives a concrete instance via dependency injection at `app.py` lifespan setup — it never imports `src.review.models` or `src.review.repository`. Cross-context imports of models/repositories are priority-3 violations by the codex reviewer's own rules.
+
+### 3.3 Idempotency against webhook re-fires
+
+The `UNIQUE (pr_url, head_sha, stage, turn_number)` constraint is the primary guard. The sequencer calls `registry.claim_turn(...)` which internally runs `INSERT ... ON CONFLICT DO NOTHING`. If the insert returns zero rows, **another handler is already running this turn — exit immediately, do not double-post.** This covers:
 
 - GitHub re-delivering the same webhook.
 - `webhook_dispatcher` delivery-id dedup failing open (e.g., in-memory set eviction).
@@ -153,13 +215,40 @@ The `UNIQUE (pr_url, head_sha, stage, turn_number)` constraint is the primary gu
 
 `head_sha` is taken from `event.raw["pull_request"]["head"]["sha"]` at dispatch time; it does not change mid-turn.
 
-### 3.3 Reset rules — new commit push resets BOTH loops
+### 3.4 Reset rules — new commit push resets BOTH loops
 
-When the author pushes a new commit, GitHub sends `pull_request.synchronize` with a new `head.sha`. The sequencer sees the new SHA, finds **no rows** for `(pr_url, new_sha, *, *)`, and starts both stages from turn 1.
+When the author pushes a new commit, GitHub sends `pull_request.synchronize` with a new `head.sha`. The sequencer sees the new SHA, `registry.latest_for(pr_url, new_sha)` returns `None`, and both stages start from turn 1.
 
 Prior-SHA rows are **not deleted** (the audit trail is useful). They are simply orphaned by the new SHA. The dashboard read query filters by `head_sha` = latest, so it naturally shows only the current review.
 
 **Symmetric** (not opencode-only): even if opencode already ran 5 turns on the old SHA, on a new SHA its loop restarts from 1. Reason: the findings are tied to diff content that no longer exists; pretending otherwise would surface stale comments at wrong line numbers.
+
+### 3.5 Context-map update
+
+`docs/ddd-context-map.md` gets a new subgraph and new relationship rows:
+
+```diff
+ subgraph Gateway["Gateway Context"]
+     G1["<b>Application Service</b>"]
+     G2["Owns: no tables"]
+     G3["Responsibilities:..."]
+ end
+
++subgraph Review["Review Context"]
++    R1["<b>Supporting Domain</b>"]
++    R2["Owns: PrReviewTurn"]
++    R3["Responsibilities:<br/>Turn accounting<br/>Consensus bookkeeping<br/>Idempotent turn claim"]
++end
+
+ Gateway -->|"Open Host Service"| Board
+ Gateway -->|"Open Host Service"| Agent
+ Gateway -->|"Open Host Service"| Document
++Gateway -->|"Open Host Service"| Review
+```
+
+Plus a new relationships-table row: **Review | Gateway | Open Host Service | Gateway calls Review's services through the `IReviewTurnRegistry` interface for turn accounting.** And a new glossary block explaining "Turn," "Stage," and "Consensus" in Review terms.
+
+T-248 updates the context map as part of the same PR — otherwise the next DDD-compliance review will flag a real table without a documented context home.
 
 ## 4. Per-turn GitHub identity
 
@@ -257,6 +346,26 @@ If all opencode turns fail or time out (an unlucky run: ollama is down, model is
 1. Posts one skip-comment on the PR authored by the opencode bot: `SkipReason.OPENCODE_UNAVAILABLE` or `SkipReason.OPENCODE_TIMEOUT`.
 2. Logs a structured warning.
 3. **Proceeds to codex.** Codex's reviewer prompt does not reference opencode's findings as prerequisites — it is self-contained.
+
+### 5.4 Startup-gate behaviour when a binary is missing
+
+Today `src/gateway/app.py:38-47` wires the review consumer behind a single `is_review_agent_available()` probe that only calls `shutil.which(settings.review_agent_cmd)` (the codex binary). A second stage A executable means T-248 must extend this gate — otherwise a host with `codex` installed but `opencode` missing (or misconfigured) boots up "healthy," and every PR then hits 5 stage-A failures before falling through to codex. That is a real deployment-path correctness gap.
+
+The fix:
+
+1. Add `is_opencode_available() -> bool` next to `is_review_agent_available()`. Implementation: `shutil.which(settings.opencode_cmd)` **and** a quick `opencode --version` probe with a 3 s timeout (mirrors `_probe_codex_alive` in `review_engine.py`).
+2. At lifespan setup, call both probes. Log one structured line per binary: `{"event":"review_binary_probe","binary":"opencode","available":true,"version":"1.14.20"}`.
+3. Registration policy (by the four possible outcomes):
+   | codex | opencode | Action |
+   |-------|----------|--------|
+   | ✓ | ✓ | Register sequencer with both stages enabled. |
+   | ✓ | ✗ | Register sequencer with **opencode-skipped mode**: stage A is a no-op that writes a single log line per session (`{"event":"opencode_stage_skipped_config","reason":"binary_missing"}`) — no PR skip-comment spam. Stage B runs as today. |
+   | ✗ | ✓ | Register sequencer with **codex-skipped mode**: mirror of the above. |
+   | ✗ | ✗ | **Do not register the sequencer at all.** Log one loud warning at ERROR level: `"Both reviewer binaries missing (codex, opencode) — review disabled."` Matches today's no-codex behaviour. |
+4. The skipped-mode log emission is **once per session**, not once per turn — otherwise a host with missing opencode would spam one log line per PR-turn per stage A invocation. One line per PR review session at INFO is enough to spot the drift.
+5. A new operational doc block (`docs/review-engine-e2e.md` — extend the existing review-engine ops doc) lists the expected startup log lines so oncall can verify both binaries were probed.
+
+The sequencer constructor receives `codex_available: bool, opencode_available: bool` from `app.py`, and the per-session code path skips a stage immediately if its flag is `False`. No code path ever assumes a binary exists — every subprocess launch is guarded.
 
 ## 6. Resource contention and queuing
 
@@ -430,8 +539,8 @@ These are the **concrete shifts** to T-248's acceptance criteria that this spec 
 
 1. **Codex is no longer single-pass.** T-248's earlier wording said codex runs after opencode; this spec extends codex to a **2-turn loop** with its own consensus check. The refactor extracts `ReviewLoop` and `Reviewer` so both stages share the loop machinery.
 2. **Consensus rule is pinned** — option (c) (explicit flag OR empty-diff). T-248 implements exactly this check; no re-litigation.
-3. **`pr_review_turns` table is new.** T-248 writes the Alembic revision (additive only), adds the SQLAlchemy model, imports it in `tests/conftest.py`. Column names, constraints, and indexes are fixed by §3.1 above.
-4. **Idempotency via `INSERT ... ON CONFLICT DO NOTHING`** on the `UNIQUE (pr_url, head_sha, stage, turn_number)` index. T-248's test suite MUST exercise webhook re-fire (same delivery-id, same sha) and MUST assert the number of posted reviews equals the number of distinct turns, not the number of webhook deliveries.
+3. **New `Review` bounded context** (`src/review/`) owns the `pr_review_turns` table. T-248 creates the six files in §3.2, updates `tests/conftest.py` to import the new model, writes the additive Alembic revision, updates `docs/ddd-context-map.md` per §3.5 (mermaid + relationships table + glossary), and ensures the Gateway sequencer imports ONLY `src.review.interfaces.IReviewTurnRegistry` — never `src.review.models` or `src.review.repository`. Column names, constraints, and indexes are fixed by §3.1.
+4. **Idempotency via `INSERT ... ON CONFLICT DO NOTHING`** on the `UNIQUE (pr_url, head_sha, stage, turn_number)` index, implemented inside `ReviewTurnRepository.claim_turn`. T-248's test suite MUST exercise webhook re-fire (same delivery-id, same sha) and MUST assert the number of posted reviews equals the number of distinct turns, not the number of webhook deliveries.
 5. **New commit push resets both loops** — T-248 tests must cover the `synchronize` event with a new SHA after both stages have already completed on the prior SHA, and assert both stages restart at turn 1.
 6. **Two bot identities with a real author-skip fix.** Add `_OPENCODE_BOT = "cloglog-opencode-reviewer[bot]"` alongside `_CODEX_BOT` in `src/gateway/review_engine.py`, introduce `_REVIEWER_BOTS = frozenset({_CODEX_BOT, _OPENCODE_BOT})`, and change the `ReviewEngineConsumer.handles()` guard from `event.sender == _CODEX_BOT` to `event.sender in _REVIEWER_BOTS`. Do NOT rely on the existing `_BOT_USERNAMES` constant — today `handles()` does not consult it (§4.1). Test must assert an `opencode` bot-authored PR is skipped.
 7. **Credential path — GitHub App PEM, not `~/.cloglog/credentials`.** T-248 adds `_OPENCODE_APP_ID`, `_OPENCODE_INSTALLATION_ID`, `_OPENCODE_PEM = Path.home() / ".agent-vm" / "credentials" / "opencode-reviewer.pem"`, `_OPENCODE_PERMISSIONS`, `_opencode_cache`, `get_opencode_reviewer_token()`, and extends `reset_token_cache()` in `src/gateway/github_token.py`. `~/.cloglog/credentials` is NOT touched; `tests/test_mcp_json_no_secret.py` is NOT extended (no new secret is added to `.mcp.json`'s blast radius). `docs/setup-credentials.md` documents the PEM provisioning step alongside the existing codex entry.
@@ -443,6 +552,7 @@ These are the **concrete shifts** to T-248's acceptance criteria that this spec 
 13. **Stage A failures never block stage B.** T-248 test suite must include: (a) opencode subprocess unreachable → opencode skip comment posted → codex still runs; (b) opencode all 5 turns time out → codex still runs.
 14. **`SkipReason` enum is extended** with `OPENCODE_FAILED`, `OPENCODE_TIMEOUT`, `OPENCODE_UNAVAILABLE` (named separately so dashboards can distinguish; reuse existing skip-comment posting machinery).
 15. **Observability log-line shapes are fixed** (§8.1). T-248's tests assert the exact event names and field names emit correctly.
+16. **Dual-binary startup gate** (§5.4). `src/gateway/app.py` lifespan probes both codex and opencode, emits one `review_binary_probe` log per binary, and registers the sequencer under the four-way outcome matrix in §5.4. A missing binary at boot is a single ERROR / single-per-session INFO — never per-PR skip-comment spam. Test coverage: (i) both present → sequencer registered; (ii) codex present, opencode missing → opencode-skipped mode registered; (iii) codex missing, opencode present → codex-skipped mode registered; (iv) both missing → no registration + loud ERROR log line.
 
 Items explicitly **out of scope** for T-248 (will be separate tasks if pursued):
 

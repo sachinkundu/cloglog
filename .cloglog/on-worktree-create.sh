@@ -75,23 +75,40 @@ _resolve_api_key() {
 }
 
 _resolve_backend_url() {
+  # T-259: parse backend_url with grep+sed, NEVER `python3 -c 'import yaml'`.
+  # The system `python3` this hook runs under typically lacks pyyaml (the
+  # project's pyyaml lives in the uv venv, not the global python). The
+  # previous python snippet silently swallowed ImportError and returned the
+  # `http://localhost:8000` default, so the subsequent close-off-task POST
+  # landed on port 8000 even on hosts where the backend actually binds to
+  # 127.0.0.1:8001 — the create succeeded from curl's view (HTTP 000 is
+  # non-fatal-by-design, logged as WARN) but no task ever reached the
+  # board. Authoritative precedent for this grep+sed pattern:
+  # plugins/cloglog/hooks/agent-shutdown.sh:62-74. If you need another
+  # config key here, extend this pattern; do NOT re-introduce `import yaml`.
   local cfg="${REPO_ROOT}/.cloglog/config.yaml"
+  local default="http://localhost:8000"
   if [[ -f "$cfg" ]]; then
-    python3 -c "
-import sys, yaml
-try:
-    print(yaml.safe_load(open('$cfg')).get('backend_url', 'http://localhost:8000'))
-except Exception:
-    print('http://localhost:8000')
-" 2>/dev/null || echo "http://localhost:8000"
-  else
-    echo "http://localhost:8000"
+    local parsed
+    parsed=$(grep '^backend_url:' "$cfg" | head -n1 \
+             | sed 's/^backend_url:[[:space:]]*//' \
+             | sed 's/[[:space:]]*#.*$//' \
+             | tr -d '"'"'")
+    if [[ -n "$parsed" ]]; then
+      echo "$parsed"
+      return
+    fi
   fi
+  echo "$default"
 }
 
 if [[ -n "${WORKTREE_PATH:-}" ]] && [[ -n "${WORKTREE_NAME:-}" ]]; then
   _api_key=$(_resolve_api_key)
   _backend_url=$(_resolve_backend_url)
+  # T-259: log the resolved URL unconditionally so that a silent fall-back
+  # to localhost:8000 on a host with a non-default backend port is visible
+  # in bootstrap output instead of hiding behind a WARN status code.
+  echo "[on-worktree-create] backend_url=${_backend_url}" >&2
   if [[ -z "$_api_key" ]]; then
     echo "[on-worktree-create] skipping close-off-task creation: no CLOGLOG_API_KEY available" >&2
   else

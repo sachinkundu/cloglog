@@ -80,6 +80,8 @@ BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 DEMO_FILE="docs/demos/${BRANCH//\//-}/demo.md"
 BASE="http://localhost:${BACKEND_PORT}/api/v1"
 
+# `uvx showboat init` refuses to overwrite — delete the file so `make demo` is re-runnable.
+rm -f "$DEMO_FILE"
 uvx showboat init "$DEMO_FILE" "<stakeholder sentence here>"
 
 # Show the before state
@@ -114,13 +116,22 @@ When you need pipes, `$(...)` substitution, redirects, or `&&`, pass the interpr
 
 ```bash
 # CORRECT — two positionals: interpreter, then shell code
-uvx showboat exec "$DEMO_FILE" bash 'pytest tests/gateway 2>&1 | grep -oE "[0-9]+ passed"'
+uvx showboat exec "$DEMO_FILE" bash 'curl -sf "$BASE/health" | jq -r .status'
 
 # WRONG — showboat passes "-c" as the code and bash fails with "option requires an argument"
-uvx showboat exec "$DEMO_FILE" bash -c 'pytest ...'
+uvx showboat exec "$DEMO_FILE" bash -c 'curl -sf "$BASE/health"'
 ```
 
 The `bash "<code>"` two-positional form is the canonical way to run shell inside an `exec` block.
+
+**Do NOT call `uv run pytest` inside an `exec` block.** `tests/conftest.py` has a session-autouse fixture that opens a PostgreSQL connection as soon as pytest loads. `make demo` runs with the dev DB up, so the pytest path succeeds during capture — but `uvx showboat verify` (called by `scripts/check-demo.sh` during `make quality`) re-executes the `exec` block on a clean host with no DB, so the fixture fails and the whole demo is rejected. For verify-safe proof of a test assertion, import the test module directly and call its functions:
+
+```bash
+uvx showboat exec "$DEMO_FILE" bash \
+  'python3 -c "import sys; sys.path.insert(0, \"tests\"); import test_foo as t; t.test_one(); t.test_two(); print(\"2 assertions passed\")"'
+```
+
+The session-autouse fixture in `conftest.py` only fires when pytest loads `conftest.py`, which only happens when pytest itself runs. A plain `python3 -c "import …"` imports just the test module and does NOT trigger conftest — so `showboat verify` passes with or without Postgres.
 
 Then run: `make demo`
 
@@ -144,6 +155,8 @@ BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 DEMO_DIR="docs/demos/${BRANCH//\//-}"
 DEMO_FILE="$DEMO_DIR/demo.md"
 
+# `uvx showboat init` refuses to overwrite — delete the file so `make demo` is re-runnable.
+rm -f "$DEMO_FILE"
 uvx showboat init "$DEMO_FILE" "<stakeholder sentence here>"
 
 # Start Rodney (headless browser — never open a visible browser)

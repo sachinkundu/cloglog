@@ -325,3 +325,128 @@ class TestCountBotReviews:
             count = await count_bot_reviews("owner/repo", 5, "fake-token", client=client)
 
         assert count == 2
+
+
+# ---------------------------------------------------------------------------
+# PR #187 round 1 HIGH-1 — opencode_app_id / installation_id via Settings
+# ---------------------------------------------------------------------------
+
+
+class TestOpencodeSettingsBased:
+    """The two opencode GitHub App identifiers must be read through
+    ``src.shared.config.settings`` so operator values in ``.env`` take effect.
+    Regression guard for PR #187 round 1 HIGH-1 (previously os.environ.get at
+    module import time, invisible to the Settings path)."""
+
+    @pytest.mark.asyncio
+    async def test_not_configured_error_when_settings_empty(self) -> None:
+        from src.gateway.github_token import (
+            OpencodeBotNotConfiguredError,
+            get_opencode_reviewer_token,
+            reset_token_cache,
+        )
+        from src.shared.config import settings
+
+        reset_token_cache()
+        original_app_id = settings.opencode_app_id
+        original_installation_id = settings.opencode_installation_id
+        settings.opencode_app_id = ""
+        settings.opencode_installation_id = ""
+        try:
+            with pytest.raises(OpencodeBotNotConfiguredError):
+                await get_opencode_reviewer_token()
+        finally:
+            settings.opencode_app_id = original_app_id
+            settings.opencode_installation_id = original_installation_id
+            reset_token_cache()
+
+    @pytest.mark.asyncio
+    async def test_settings_values_drive_token_request(self) -> None:
+        """Set settings fields, then assert the JWT path uses those values.
+
+        Patches ``_get_token`` (the shared helper that calls ``_build_jwt`` +
+        HTTPX). We only need to confirm the app_id and installation_id
+        propagated — we do NOT hit the real PEM or GitHub API.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        from src.gateway import github_token as gt
+        from src.shared.config import settings
+
+        gt.reset_token_cache()
+        original_app_id = settings.opencode_app_id
+        original_installation_id = settings.opencode_installation_id
+        settings.opencode_app_id = "app-12345"
+        settings.opencode_installation_id = "install-67890"
+        try:
+            captured: dict[str, str] = {}
+
+            async def fake_get(
+                app_id: str,
+                installation_id: str,
+                *args: object,
+                **kwargs: object,
+            ) -> str:
+                captured["app_id"] = app_id
+                captured["installation_id"] = installation_id
+                return "fake-token"
+
+            with patch.object(gt, "_get_token", new=AsyncMock(side_effect=fake_get)):
+                token = await gt.get_opencode_reviewer_token()
+
+            assert token == "fake-token"
+            assert captured["app_id"] == "app-12345"
+            assert captured["installation_id"] == "install-67890"
+        finally:
+            settings.opencode_app_id = original_app_id
+            settings.opencode_installation_id = original_installation_id
+            gt.reset_token_cache()
+
+
+# ---------------------------------------------------------------------------
+# PR #187 round 1 HIGH-2 — opencode-only host must not require codex token
+# ---------------------------------------------------------------------------
+
+
+class TestOpencodeOnlyHost:
+    """Regression guard: on an opencode-only host, ``_review_pr`` must NOT call
+    ``get_codex_reviewer_token()`` before any stage runs. Previously, the
+    unconditional codex token fetch blew up before stage A, defeating the
+    advertised registration-matrix ``opencode-only`` mode (spec §5.4)."""
+
+    @pytest.mark.asyncio
+    async def test_session_cap_check_skipped_when_codex_unavailable(self) -> None:
+        """With codex_available=False, count_bot_reviews MUST NOT be called."""
+        from unittest.mock import AsyncMock, patch
+
+        from src.gateway.review_engine import ReviewEngineConsumer
+
+        consumer = ReviewEngineConsumer(
+            codex_available=False,
+            opencode_available=True,
+            session_factory=None,  # fall-through degraded path
+        )
+
+        with (
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="claude-token"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(side_effect=RuntimeError("should not be called")),
+            ),
+            patch(
+                "src.gateway.review_engine.count_bot_reviews",
+                new=AsyncMock(side_effect=RuntimeError("cap not applicable to opencode-only")),
+            ),
+            patch.object(
+                consumer,
+                "_fetch_pr_diff",
+                new=AsyncMock(return_value=""),
+            ),
+        ):
+            # Empty filtered diff → skip comment path; but the cap check and
+            # codex-token fetch are both BEFORE the diff check. If either runs,
+            # the RuntimeError above surfaces. This test asserts neither fires.
+            await consumer._review_pr(_event(sender="human-user"))

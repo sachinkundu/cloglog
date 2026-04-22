@@ -92,3 +92,21 @@ class IReviewTurnRegistry(Protocol):
         across the union of all prior turns.
         """
         ...
+
+    async def reset_to_running(
+        self,
+        *,
+        pr_url: str,
+        head_sha: str,
+        stage: str,
+        turn_number: int,
+    ) -> bool:
+        """Flip a ``failed`` turn back to ``running`` so the loop can retry it.
+
+        Returns ``True`` iff the row existed with ``status='failed'`` and was
+        updated. ``False`` means no such row (another handler already re-ran,
+        or the turn never existed, or it is in a terminal non-failed state).
+        Used on webhook re-fire to retry a turn whose GitHub review POST
+        previously failed — see PR #187 round 1 HIGH-3 fix.
+        """
+        ...

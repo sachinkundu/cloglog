@@ -199,15 +199,27 @@ class ReviewLoop:
                     turn_number=turn,
                 )
                 if not claimed:
-                    # Another handler is running this turn — give up cleanly.
-                    logger.info(
-                        "review_turn_skipped_already_claimed stage=%s turn=%d pr=%d sha=%s",
-                        self._stage,
-                        turn,
-                        self._pr_number,
-                        self._head_sha[:7],
+                    # A prior POST-failed turn leaves a ``failed`` row that
+                    # blocks the ON CONFLICT DO NOTHING insert. Try to flip
+                    # it back to ``running`` — if that succeeds we own the
+                    # retry. Otherwise another handler is actively running
+                    # this turn; give up cleanly (spec §3.3 idempotency +
+                    # PR #187 round 1 HIGH-3 fix).
+                    reset_ok = await self._registry.reset_to_running(
+                        pr_url=self._pr_url,
+                        head_sha=self._head_sha,
+                        stage=self._stage,
+                        turn_number=turn,
                     )
-                    break
+                    if not reset_ok:
+                        logger.info(
+                            "review_turn_skipped_already_claimed stage=%s turn=%d pr=%d sha=%s",
+                            self._stage,
+                            turn,
+                            self._pr_number,
+                            self._head_sha[:7],
+                        )
+                        break
 
                 logger.info(
                     "review_turn_start stage=%s turn=%d/%d pr=%d sha=%s",
@@ -263,12 +275,32 @@ class ReviewLoop:
                     client=http,
                 )
                 if not posted:
+                    # GitHub POST failed twice (``post_review`` retries once
+                    # internally). Mark the turn ``failed`` so a webhook
+                    # re-fire can reset it back to running and retry — without
+                    # this, turn accounting advances past the missing comment
+                    # and the author never sees these findings (PR #187
+                    # round 1 HIGH-3 fix).
                     logger.warning(
-                        "review_turn_post_failed stage=%s turn=%d pr=%d",
+                        "review_turn_post_failed stage=%s turn=%d pr=%d — "
+                        "marked failed; webhook re-fire will retry",
                         self._stage,
                         turn,
                         self._pr_number,
                     )
+                    await self._registry.complete_turn(
+                        pr_url=self._pr_url,
+                        head_sha=self._head_sha,
+                        stage=self._stage,
+                        turn_number=turn,
+                        status=_TURN_STATUS_FAILED,
+                        finding_count=len(result.findings),
+                        consensus_reached=False,
+                        elapsed_seconds=elapsed,
+                    )
+                    outcome.turns_used = turn
+                    outcome.errors.append(f"turn {turn}: post_failed")
+                    break
 
                 consensus = _reached_consensus(result=result, prior_finding_keys=prior_keys)
                 await self._registry.complete_turn(
@@ -313,15 +345,23 @@ class ReviewLoop:
 
     @staticmethod
     def _compute_next_turn(existing: list[ReviewTurnSnapshot]) -> int:
-        """Smallest turn-number not yet persisted for this stage on this SHA.
+        """Turn number to resume at on this ``(pr_url, head_sha, stage)``.
 
-        A clean run with no prior rows returns 1. Idempotency path: if turns
-        1 and 2 already ran (either completed or terminally failed), return 3;
-        if turn 2 was claimed but ``claim_turn`` fails anyway, the outer loop
-        will exit on that claim.
+        Resolution order:
+
+        1. No prior rows → start at turn 1.
+        2. Any prior row with ``status='failed'`` (e.g. a previous GitHub
+           POST failure) → resume at the **lowest** failed turn so the loop
+           can retry it via ``reset_to_running``. Without this, post-failed
+           turns were advanced past and the author never saw those findings
+           (PR #187 round 1 HIGH-3).
+        3. Otherwise → ``max(turn_number) + 1`` (next unused turn).
         """
         if not existing:
             return 1
+        failed = sorted(t.turn_number for t in existing if t.status == "failed")
+        if failed:
+            return failed[0]
         return max(t.turn_number for t in existing) + 1
 
 

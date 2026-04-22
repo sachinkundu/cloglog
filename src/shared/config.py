@@ -20,6 +20,14 @@ class Settings(BaseSettings):
     opencode_max_turns: int = 5
     codex_max_turns: int = 2
     opencode_turn_timeout_seconds: float = 180.0
+    # GitHub App identity for the opencode reviewer bot. Empty defaults mean
+    # "not onboarded on this host" — the sequencer catches
+    # ``OpencodeBotNotConfiguredError`` and skips stage A with a single log
+    # line per session. Read through ``Settings`` (not ``os.environ.get``) so
+    # values in the backend's ``.env`` actually land here — see
+    # ``docs/setup-credentials.md``. PR #187 round 1 HIGH fix.
+    opencode_app_id: str = ""
+    opencode_installation_id: str = ""
     review_source_root: Path | None = Field(
         default=None,
         description=(

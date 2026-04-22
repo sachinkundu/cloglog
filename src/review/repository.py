@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -122,3 +122,33 @@ class ReviewTurnRepository:
         )
         rows = (await self._session.execute(stmt)).scalars().all()
         return [self._to_snapshot(row) for row in rows]
+
+    async def reset_to_running(
+        self,
+        *,
+        pr_url: str,
+        head_sha: str,
+        stage: str,
+        turn_number: int,
+    ) -> bool:
+        stmt = (
+            update(PrReviewTurn)
+            .where(
+                PrReviewTurn.pr_url == pr_url,
+                PrReviewTurn.head_sha == head_sha,
+                PrReviewTurn.stage == stage,
+                PrReviewTurn.turn_number == turn_number,
+                PrReviewTurn.status == PrReviewTurnStatus.FAILED.value,
+            )
+            .values(
+                status=PrReviewTurnStatus.RUNNING.value,
+                finding_count=None,
+                consensus_reached=False,
+                elapsed_seconds=None,
+                completed_at=None,
+            )
+        )
+        result = await self._session.execute(stmt)
+        await self._session.commit()
+        rowcount = getattr(result, "rowcount", 0) or 0
+        return rowcount > 0

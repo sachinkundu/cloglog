@@ -7,7 +7,6 @@ async function suitable for use from webhook consumers. Tokens expire after
 
 from __future__ import annotations
 
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +14,8 @@ from typing import Final
 
 import httpx
 import jwt
+
+from src.shared.config import settings
 
 _CACHE_TTL_SECONDS: Final = 3000.0  # 50 minutes; GitHub tokens expire at 60
 
@@ -46,11 +47,10 @@ _CODEX_PERMISSIONS: Final = {
 # Opencode reviewer bot (posts reviews only) — operational onboarding:
 # install the GitHub App, download its private key, and place it at
 # ~/.agent-vm/credentials/opencode-reviewer.pem (mode 0600). App-id and
-# installation-id are overridable via env vars so a host that hasn't
-# onboarded the App yet can still import this module without KeyError.
+# installation-id are read from ``Settings`` (not ``os.environ.get`` — see
+# PR #187 round 1 HIGH) so they honour the backend's ``.env`` file alongside
+# every other operator-facing setting.
 # ---------------------------------------------------------------------------
-_OPENCODE_APP_ID: Final = os.environ.get("OPENCODE_APP_ID", "")
-_OPENCODE_INSTALLATION_ID: Final = os.environ.get("OPENCODE_INSTALLATION_ID", "")
 _OPENCODE_PEM: Final = Path.home() / ".agent-vm" / "credentials" / "opencode-reviewer.pem"
 _OPENCODE_PERMISSIONS: Final = {
     "contents": "read",
@@ -144,14 +144,17 @@ async def get_opencode_reviewer_token() -> str:
     Raises ``OpencodeBotNotConfiguredError`` if the app-id/installation-id env
     vars are not set; the sequencer catches this and degrades gracefully.
     """
-    if not _OPENCODE_APP_ID or not _OPENCODE_INSTALLATION_ID:
+    app_id = settings.opencode_app_id
+    installation_id = settings.opencode_installation_id
+    if not app_id or not installation_id:
         raise OpencodeBotNotConfiguredError(
-            "OPENCODE_APP_ID and OPENCODE_INSTALLATION_ID must be set "
-            "(install the GitHub App and provide its identifiers via env vars)"
+            "settings.opencode_app_id and settings.opencode_installation_id must "
+            "be set (place them in backend .env or export OPENCODE_APP_ID / "
+            "OPENCODE_INSTALLATION_ID — see docs/setup-credentials.md)"
         )
     return await _get_token(
-        _OPENCODE_APP_ID,
-        _OPENCODE_INSTALLATION_ID,
+        app_id,
+        installation_id,
         _OPENCODE_PEM,
         _OPENCODE_PERMISSIONS,
         _opencode_cache,

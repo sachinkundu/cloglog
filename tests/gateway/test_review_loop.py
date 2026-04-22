@@ -110,6 +110,27 @@ class FakeRegistry:
             if pu == pr_url and hs == head_sha and s == stage
         ]
 
+    async def reset_to_running(
+        self, *, pr_url: str, head_sha: str, stage: str, turn_number: int
+    ) -> bool:
+        key = (pr_url, head_sha, stage, turn_number)
+        snap = self._turns.get(key)
+        if snap is None or snap.status != "failed":
+            return False
+        self._turns[key] = ReviewTurnSnapshot(
+            project_id=snap.project_id,
+            pr_url=snap.pr_url,
+            pr_number=snap.pr_number,
+            head_sha=snap.head_sha,
+            stage=snap.stage,
+            turn_number=snap.turn_number,
+            status="running",
+            finding_count=None,
+            consensus_reached=False,
+            elapsed_seconds=None,
+        )
+        return True
+
 
 # ---------------------------------------------------------------------------
 # Stub reviewer
@@ -429,6 +450,9 @@ class TestReviewLoopRun:
             async def claim_turn(self, **kwargs: object) -> bool:  # type: ignore[override]
                 return False  # concurrent handler wins every slot
 
+            async def reset_to_running(self, **kwargs: object) -> bool:  # type: ignore[override]
+                return False  # no failed row to reset either
+
         registry = AlwaysDeniesRegistry()
         stub = StubReviewer(responses=[(_ok_result(), 1.0, False)])
         loop = _make_loop(stub, max_turns=3, registry=registry, head_sha=sha)
@@ -468,3 +492,65 @@ class TestReviewLoopRun:
 
         assert outcome.turns_used == 0
         assert stub._call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# PR #187 round 1 HIGH-3 — post_review failure handling
+# ---------------------------------------------------------------------------
+
+
+class TestPostFailureRetryOnRefire:
+    """Spec §3.3 + PR #187 round 1 HIGH-3.
+
+    When the GitHub POST fails, the turn must be marked ``failed`` (not
+    ``completed``) so a webhook re-fire can retry the same turn number via
+    ``reset_to_running``. Without this fix, turn accounting advanced past the
+    missing comment and the author never saw those findings.
+    """
+
+    @pytest.mark.asyncio
+    async def test_post_failure_marks_turn_failed(self) -> None:
+        sha = "postfail" + "0" * 32
+        registry = FakeRegistry()
+        stub = StubReviewer(responses=[(_ok_result(findings=[_finding()]), 1.0, False)])
+        loop = _make_loop(stub, max_turns=3, registry=registry, head_sha=sha)
+
+        # post_review returns False → GitHub rejected both attempts
+        with patch(_PATCH_POST_REVIEW, new=AsyncMock(return_value=False)):
+            outcome = await loop.run(diff="diff")
+
+        assert outcome.turns_used == 1
+        assert any("post_failed" in e for e in outcome.errors)
+        # Turn row must be marked 'failed', NOT 'completed'.
+        turn_rows = await registry.turns_for_stage(pr_url=_PR_URL, head_sha=sha, stage="codex")
+        assert len(turn_rows) == 1
+        assert turn_rows[0].status == "failed"
+
+    @pytest.mark.asyncio
+    async def test_refire_resumes_at_failed_turn(self) -> None:
+        """A second webhook delivery picks up the failed turn, not max+1."""
+        sha = "refire" + "0" * 34
+        registry = FakeRegistry()
+        # Stub that always succeeds.
+        stub = StubReviewer(responses=[(_ok_result(status="no_further_concerns"), 1.0, False)])
+
+        # First run — POST fails, turn 1 persisted as 'failed'.
+        loop1 = _make_loop(stub, max_turns=3, registry=registry, head_sha=sha)
+        with patch(_PATCH_POST_REVIEW, new=AsyncMock(return_value=False)):
+            await loop1.run(diff="diff")
+
+        # Second run — POST succeeds. Loop must pick up turn 1 again (not 2).
+        stub2 = StubReviewer(responses=[(_ok_result(status="no_further_concerns"), 1.0, False)])
+        loop2 = _make_loop(stub2, max_turns=3, registry=registry, head_sha=sha)
+        with patch(_PATCH_POST_REVIEW, new=AsyncMock(return_value=True)) as mock_post:
+            outcome = await loop2.run(diff="diff")
+
+        # The reviewer ran one more time, posting on turn 1.
+        assert stub2._call_count == 1
+        mock_post.assert_awaited()
+        # After success, turn 1 is completed with consensus_reached=True.
+        rows = await registry.turns_for_stage(pr_url=_PR_URL, head_sha=sha, stage="codex")
+        assert len(rows) == 1
+        assert rows[0].status == "completed"
+        assert rows[0].turn_number == 1
+        assert outcome.consensus_reached is True

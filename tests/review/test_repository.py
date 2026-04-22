@@ -139,7 +139,11 @@ class TestClaimTurn:
         project = await _make_project(db_session)
         repo = ReviewTurnRepository(db_session)
         pr_url, sha_a = _unique_pr("reset_a")
-        sha_b = "b" + sha_a[1:]
+        # Derive sha_b from an independent uuid so the two shas are guaranteed
+        # distinct — the earlier "b" + sha_a[1:] trick collided when
+        # uuid.uuid4().hex[0] happened to be 'b' (1/16 CI flake).
+        _, sha_b = _unique_pr("reset_b")
+        assert sha_a != sha_b
 
         # Claim and complete a turn on sha_a
         await repo.claim_turn(

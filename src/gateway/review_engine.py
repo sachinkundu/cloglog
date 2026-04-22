@@ -667,30 +667,33 @@ class ReviewEngineConsumer:
         # Claude bot token for reading diffs (has contents:read).
         claude_token = await get_github_app_token()
 
-        # Per-PR session cap (spec §6.3): count distinct commit_ids the codex
-        # bot has reviewed on this PR. Each two-stage session posts multiple
-        # review POSTs (one per turn) on the same commit — ``count_bot_reviews``
-        # collapses those into a single count. A second push produces a new
-        # commit SHA and counts as a second session.
-        review_token = await get_codex_reviewer_token()
-        prior = await count_bot_reviews(event.repo_full_name, event.pr_number, review_token)
-        if prior >= MAX_REVIEWS_PER_PR:
-            logger.info(
-                "PR #%d already has %d bot sessions (cap=%d) — skipping",
-                event.pr_number,
-                prior,
-                MAX_REVIEWS_PER_PR,
+        # Per-PR session cap (spec §6.3): only applies when codex is runnable
+        # (the cap counts codex bot sessions specifically). On an opencode-only
+        # host (spec §5.4 registration matrix row 3), skip the cap check — an
+        # unconditional codex token fetch would blow up before stage A runs.
+        # Fix for PR #187 round 1 HIGH.
+        if self._codex_available:
+            codex_token_for_cap = await get_codex_reviewer_token()
+            prior = await count_bot_reviews(
+                event.repo_full_name, event.pr_number, codex_token_for_cap
             )
-            await self._notify_skip(
-                event,
-                SkipReason.MAX_REVIEWS,
-                (
-                    f"Review skipped: this PR already has the "
-                    f"maximum of {MAX_REVIEWS_PER_PR} bot review sessions. "
-                    f"Request human review."
-                ),
-            )
-            return
+            if prior >= MAX_REVIEWS_PER_PR:
+                logger.info(
+                    "PR #%d already has %d bot sessions (cap=%d) — skipping",
+                    event.pr_number,
+                    prior,
+                    MAX_REVIEWS_PER_PR,
+                )
+                await self._notify_skip(
+                    event,
+                    SkipReason.MAX_REVIEWS,
+                    (
+                        f"Review skipped: this PR already has the "
+                        f"maximum of {MAX_REVIEWS_PER_PR} bot review sessions. "
+                        f"Request human review."
+                    ),
+                )
+                return
 
         diff = await self._fetch_pr_diff(event.repo_full_name, event.pr_number, claude_token)
         filtered = filter_diff(diff)
@@ -736,17 +739,20 @@ class ReviewEngineConsumer:
                 bool(head_sha),
             )
             # Single-turn degraded path so the backend boots even if the new
-            # Review context isn't wired up in some test harness.
-            review_token = await get_codex_reviewer_token()
-            result = await self._run_review_agent(filtered, event, review_token)
-            if result is not None:
-                await post_review(
-                    event.repo_full_name,
-                    event.pr_number,
-                    result,
-                    filtered,
-                    review_token,
-                )
+            # Review context isn't wired up in some test harness. Only runs
+            # when codex is available — opencode-only hosts skip silently
+            # (the degraded path predates the two-stage loop).
+            if self._codex_available:
+                review_token = await get_codex_reviewer_token()
+                result = await self._run_review_agent(filtered, event, review_token)
+                if result is not None:
+                    await post_review(
+                        event.repo_full_name,
+                        event.pr_number,
+                        result,
+                        filtered,
+                        review_token,
+                    )
             return
 
         project_id = await self._resolve_project_id(event)

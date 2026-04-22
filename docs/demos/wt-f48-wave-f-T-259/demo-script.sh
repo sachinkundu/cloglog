@@ -9,11 +9,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 cd "$REPO_ROOT"
 
-BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-DEMO_DIR="docs/demos/${BRANCH//\//-}-T-259"
+# Derive DEMO_DIR from the script's own location, NOT from `git rev-parse`.
+# The original version used `docs/demos/${BRANCH//\//-}-T-259` which appended
+# a literal `-T-259` suffix to whatever branch the script ran from —
+# brittle under rename (e.g. close-off branches) and a convention deviation
+# from docs/demos/wt-d2-close-off-template/demo-script.sh. Since this
+# script lives at `docs/demos/wt-f48-wave-f-T-259/demo-script.sh`, the
+# committed demo.md and the regenerated demo.md always agree. Caught in
+# codex review of PR #186.
+DEMO_DIR="${SCRIPT_DIR#"$REPO_ROOT"/}"
 DEMO_FILE="$DEMO_DIR/demo.md"
 
-mkdir -p "$DEMO_DIR"
 # showboat init refuses to overwrite — rm first so `make demo` is re-runnable.
 rm -f "$DEMO_FILE"
 

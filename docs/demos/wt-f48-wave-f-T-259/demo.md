@@ -1,7 +1,7 @@
 # Worktree bootstrap resolves backend_url from .cloglog/config.yaml via grep+sed, so close-off-task creation no longer silently targets :8000 on hosts without pyyaml (T-259).
 
-*2026-04-22T17:24:14Z by Showboat 0.6.1*
-<!-- showboat-id: 87caefb1-1906-46cf-8fd6-aeacad4ab53f -->
+*2026-04-22T17:30:55Z by Showboat 0.6.1*
+<!-- showboat-id: b5da0538-7fb6-4c86-a3a5-0e8ff0a25978 -->
 
 Before: .cloglog/on-worktree-create.sh's _resolve_backend_url used a 'python3 -c import yaml' snippet that silently returned http://localhost:8000 when pyyaml was missing. The subsequent close-off-task POST landed on :8000 instead of the configured port; curl returned a non-fatal WARN and no board task was ever created — but nothing failed loudly.
 

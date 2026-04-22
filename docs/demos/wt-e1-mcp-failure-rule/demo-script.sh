@@ -25,6 +25,12 @@ DEMO_DIR="docs/demos/${BRANCH//\//-}"
 DEMO_FILE="$DEMO_DIR/demo.md"
 CANONICAL="$DEMO_DIR/canonical-rule.txt"
 
+# `uvx showboat init` refuses to overwrite an existing demo.md (T-222
+# learnings, docs/work-logs/2026-04-19-t222-lifecycle-spec-learnings.md).
+# Remove any prior run's output so `make demo` is idempotent and
+# `showboat verify` can re-run cleanly in CI or on a fresh checkout.
+rm -f "$DEMO_FILE"
+
 uvx showboat init "$DEMO_FILE" \
   "Worktree agents now halt on any MCP failure — startup OR runtime — emitting a typed inbox event (mcp_unavailable vs mcp_tool_error) so the main agent knows whether the agent has exited or is waiting for guidance."
 

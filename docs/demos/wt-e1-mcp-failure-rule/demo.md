@@ -1,7 +1,7 @@
 # Worktree agents now halt on any MCP failure — startup OR runtime — emitting a typed inbox event (mcp_unavailable vs mcp_tool_error) so the main agent knows whether the agent has exited or is waiting for guidance.
 
-*2026-04-22T08:23:27Z by Showboat 0.6.1*
-<!-- showboat-id: ddf2a292-e3b4-44c5-bbd8-de29fb16653a -->
+*2026-04-22T08:34:05Z by Showboat 0.6.1*
+<!-- showboat-id: c4ac7bae-9e6d-4207-ab68-596855a81fed -->
 
 ### Stakeholder framing
 

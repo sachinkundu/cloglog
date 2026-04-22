@@ -256,6 +256,19 @@ export function createServer(client: CloglogClient): McpServer {
   )
 
   server.tool(
+    'create_close_off_task',
+    'Find-or-create the paired close-off task for a newly created worktree (T-246). Called by .cloglog/on-worktree-create.sh at worktree bootstrap and by the launch skill so every worktree lands a first-class teardown card on the board. Idempotent on worktree_path — re-running for the same worktree returns the existing task with created=false.',
+    {
+      worktree_path: z.string().describe('Absolute path of the newly created worktree this close-off task is paired with'),
+      worktree_name: z.string().describe('Human-readable worktree name (e.g. wt-f42-foo) shown on the board card'),
+    },
+    wrapHandler(async ({ worktree_path, worktree_name }: { worktree_path: string; worktree_name: string }) => {
+      const result = await handlers.create_close_off_task({ worktree_path, worktree_name })
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] }
+    })
+  )
+
+  server.tool(
     'mark_pr_merged',
     'Set pr_merged=True on a task. Call this after receiving a pr_merged inbox event (idempotent — the webhook consumer also flips this flag), or as a fallback when the webhook does not fire. This allows start_task to proceed for the next task.',
     {

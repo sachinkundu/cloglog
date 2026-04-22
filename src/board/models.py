@@ -129,6 +129,9 @@ class Task(Base):
     pr_merged: Mapped[bool] = mapped_column(default=False)
     artifact_path: Mapped[str | None] = mapped_column(String(1000), default=None)
     worktree_id: Mapped[_uuid.UUID | None] = mapped_column(default=None)
+    close_off_worktree_id: Mapped[_uuid.UUID | None] = mapped_column(
+        ForeignKey("worktrees.id", ondelete="SET NULL"), default=None, unique=True
+    )
     position: Mapped[int] = mapped_column(default=0)
     number: Mapped[int] = mapped_column(default=0)
     archived: Mapped[bool] = mapped_column(default=False)

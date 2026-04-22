@@ -1,0 +1,93 @@
+openapi: 3.1.0
+info:
+  title: cloglog — close-off-task template (T-246)
+  version: '0.1.0'
+paths:
+  /api/v1/agents/close-off-task:
+    post:
+      summary: Create Close-Off Task
+      description: >-
+        Find-or-create the paired close-off task for a newly created worktree.
+        Called from .cloglog/on-worktree-create.sh and from the
+        mcp__cloglog__create_close_off_task MCP tool so every worktree lands a
+        first-class teardown card on the board. The endpoint is keyed by
+        worktree_path (not worktree_id) because both callers natively have the
+        path — the on-worktree-create hook runs before the launch skill's
+        worktree_id handoff is in caller scope, and the MCP tool wrapper uses
+        the same body shape for symmetry. Authentication is the project API key
+        (CurrentProject dependency), sibling to /agents/register and
+        /agents/unregister-by-path. Idempotent on the resolved worktree row:
+        resuming/re-running against the same worktree_path returns the existing
+        task with created=false.
+      operationId: create_close_off_task_api_v1_agents_close_off_task_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CloseOffTaskCreate'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CloseOffTaskResponse'
+        '404':
+          description: Worktree not registered for this project
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                type: object
+components:
+  schemas:
+    CloseOffTaskCreate:
+      type: object
+      required:
+        - worktree_path
+        - worktree_name
+      properties:
+        worktree_path:
+          type: string
+          description: >-
+            Absolute path of the worktree being paired with a close-off task.
+            Resolved against the authenticated project's registered worktrees
+            to obtain the worktree_id used for idempotency.
+        worktree_name:
+          type: string
+          description: Human-readable worktree name (e.g. wt-f42-foo) shown on the board card.
+    CloseOffTaskResponse:
+      type: object
+      required:
+        - task_id
+        - task_number
+        - worktree_id
+        - worktree_name
+        - created
+      properties:
+        task_id:
+          type: string
+          format: uuid
+        task_number:
+          type: integer
+          description: Human-readable task number (the T-N displayed on the board).
+        worktree_id:
+          type: string
+          format: uuid
+          description: UUID of the resolved worktree row.
+        worktree_name:
+          type: string
+        created:
+          type: boolean
+          description: >-
+            True when a new row was inserted; false when an existing close-off
+            task for this worktree was returned (idempotent resume path).

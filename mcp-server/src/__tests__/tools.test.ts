@@ -202,6 +202,35 @@ describe('Tool Handlers', () => {
     )
   })
 
+  it('create_close_off_task POSTs worktree_path + worktree_name to /agents/close-off-task', async () => {
+    // T-246: on-worktree-create.sh and the launch skill file a close-off
+    // task via this tool. The endpoint is keyed by path (not id) because the
+    // shell-side caller natively has WORKTREE_PATH but not WORKTREE_ID at
+    // bootstrap time — symmetric with /agents/register and /agents/unregister-by-path.
+    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
+      task_id: 't-1',
+      task_number: 246,
+      worktree_id: 'wt-new',
+      worktree_name: 'wt-foo',
+      created: true,
+    })
+
+    const result = await handlers.create_close_off_task({
+      worktree_path: '/home/user/repo/.claude/worktrees/wt-foo',
+      worktree_name: 'wt-foo',
+    })
+
+    expect(client.request).toHaveBeenCalledWith(
+      'POST',
+      '/api/v1/agents/close-off-task',
+      {
+        worktree_path: '/home/user/repo/.claude/worktrees/wt-foo',
+        worktree_name: 'wt-foo',
+      },
+    )
+    expect(result).toHaveProperty('created', true)
+  })
+
   it('assign_task calls PATCH /agents/{wt}/assign-task', async () => {
     (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
       task_id: 't1',

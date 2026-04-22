@@ -52,6 +52,11 @@ export class CloglogClient {
     const isAgentRoute = path.startsWith('/api/v1/agents/')
     const isRegisterRoute = path === '/api/v1/agents/register'
     const isUnregisterByPath = path === '/api/v1/agents/unregister-by-path'
+    // T-246: create_close_off_task is a launch-skill / worktree-bootstrap
+    // operation that authenticates as the project, not as a specific agent —
+    // the caller knows the worktree by path before any agent session owns a
+    // token. Route it like register_agent / unregister-by-path.
+    const isCloseOffTaskRoute = path === '/api/v1/agents/close-off-task'
     // Supervisor routes target a different worktree than the caller — the
     // caller's agent token (which is bound to its own worktree) would fail
     // the target-worktree check. Use the MCP service key instead.
@@ -67,8 +72,8 @@ export class CloglogClient {
       'Content-Type': 'application/json',
     }
 
-    if (isRegisterRoute || isUnregisterByPath) {
-      // Registration/unregister-by-path uses project API key
+    if (isRegisterRoute || isUnregisterByPath || isCloseOffTaskRoute) {
+      // Project-scoped agent bootstrap/teardown routes use project API key
       headers['Authorization'] = `Bearer ${this.apiKey}`
     } else if (isSupervisorRoute) {
       // Supervisor actions target another worktree — use MCP service key

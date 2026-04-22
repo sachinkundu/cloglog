@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from httpx import AsyncClient
 
@@ -9,8 +11,12 @@ from httpx import AsyncClient
 @pytest.fixture
 async def project_with_features(client: AsyncClient) -> dict:
     """Create a project with one epic and three features for dependency tests."""
+    # Use uuid4 rather than id(object()) — CPython re-uses memory addresses
+    # after GC, so id(object()) can collide across tests in the same run and
+    # cause intermittent projects_name_key UniqueViolation errors on CI (seen
+    # on run 24714149335 for PR #179).
     project = (
-        await client.post("/api/v1/projects", json={"name": f"dep-test-{id(object())}"})
+        await client.post("/api/v1/projects", json={"name": f"dep-test-{uuid.uuid4().hex[:12]}"})
     ).json()
     pid = project["id"]
     epic = (await client.post(f"/api/v1/projects/{pid}/epics", json={"title": "Dep Epic"})).json()

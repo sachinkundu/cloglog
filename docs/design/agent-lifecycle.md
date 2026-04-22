@@ -131,33 +131,37 @@ to the exiting task type, but never reorder them.
 
    The `artifacts.work_log` and `artifacts.learnings` values **must be absolute paths**, not worktree-relative — the main agent reads them after the worktree is torn down and the relative root is gone by then.
 
-   This event is the trigger the main agent's close-wave flow reacts to
-   (target state, T-220). It is authoritative — the backend's
-   `WORKTREE_OFFLINE` event is a fallback, not a substitute. See T-243.
+   This event is the trigger the main agent's close-wave and reconcile
+   flows react to. It is authoritative — the backend's `WORKTREE_OFFLINE`
+   event is a fallback, not a substitute. See T-243 for the producer side
+   and T-220 for the consumer side.
 
-   **CONSUMER GAP — T-220.** The producer side (this PR / T-243) writes the
-   event unconditionally. The consumer side — `plugins/cloglog/skills/close-wave/SKILL.md`
-   and the supervisor's `tail -f` on `<project_root>/.cloglog/inbox` from
-   `plugins/cloglog/skills/setup/SKILL.md` — does NOT yet read the event
-   before tearing the worktree down. Until T-220 lands, a supervisor that
-   runs `close-wave` immediately after a merge may delete the worktree
-   (and its `shutdown-artifacts/`) before the supervisor has consolidated
-   them. The operational mitigation is that the supervisor reads
-   `agent_unregistered` lines manually off its inbox monitor and
-   consolidates `shutdown-artifacts/` before invoking close-wave. The
-   event is still worth writing now because (a) the backstop is defensive
-   for the eventual consumer wiring and (b) the supervisor can already
-   see the event arrive in its inbox tail. T-220 closes this gap.
+   **Consumer wiring (T-220).** `plugins/cloglog/skills/close-wave/SKILL.md`
+   Step 5 and `plugins/cloglog/skills/reconcile/SKILL.md` Step 5 both
+   capture the supervisor inbox's byte offset BEFORE issuing
+   `mcp__cloglog__request_shutdown`, then invoke
+   `scripts/wait_for_agent_unregistered.py --since-offset $SINCE_OFFSET`
+   against that inbox. Capturing the offset before the MCP call binds
+   the wait window to "events produced in response to THIS shutdown
+   request" without dropping a fast agent's `agent_unregistered` that
+   lands between the MCP call returning and the helper starting
+   (`tests/test_wait_for_agent_unregistered.py` pins both the
+   race-is-closed invariant and the offset-filters-stale-events
+   invariant). The supervisor inbox is resolved via
+   `dirname "$(git rev-parse --path-format=absolute --git-common-dir)"`,
+   never `git rev-parse --show-toplevel` — the latter returns the
+   worktree path when the supervisor runs inside a worktree.
 
    **Hook backstop (T-243).** `plugins/cloglog/hooks/agent-shutdown.sh` writes
    the event as well, with `reason: "best_effort_backstop_from_session_end_hook"`
    and `worktree_id` omitted (the hook has no access to the UUID — it lives in
-   backend state). When T-220 wires up the consumer, it must deduplicate on
-   `(worktree, ts)`, not `(worktree_id, ts)`, and prefer the richer
-   agent-written record when both are present. The backstop exists because
-   `zellij action close-tab` under close-wave has historically skipped the
-   hook (T-217); it is not a substitute for the agent emitting the event
-   itself.
+   backend state). Close-wave's consumer deduplicates on `(worktree, ts)`,
+   not `(worktree_id, ts)`, and prefers the richer agent-written record when
+   both are present. The backstop exists because `zellij action close-tab`
+   has historically skipped the hook (T-217) — but under the cooperative
+   flow the tab is closed ONLY after `unregister_agent` has returned, so
+   the hook rarely fires in practice. The backstop remains defensive for
+   the tier-2 force_unregister path.
 6. **`unregister_agent()`** — no arguments; it authenticates with the session's
    `agent_token` and ends the active session server-side.
 7. **Stop.** The Claude Code process returns control; the zellij tab stays
@@ -314,13 +318,20 @@ tried in order; later tiers are last resorts.
   `Monitor` delivers the event in under a second; the agent runs the full
   Section 2 sequence and stops.
 - **Success signal.** Main waits for an `agent_unregistered` line in its own
-  inbox (primary) and polls the worktree row's status (secondary).
-- **Concrete numbers (proposed target for T-220).**
-  - Cooperative timeout: **120 s** from `request_shutdown` to `agent_unregistered`.
-  - Poll interval on the worktree row: **10 s**.
-  - Retries of `request_shutdown` itself: **1** if the first call did not
-    produce a `shutdown` line in the worktree inbox within 10 s — suggests the
-    inbox write failed, not that the agent is ignoring it.
+  inbox (primary, scripted by `scripts/wait_for_agent_unregistered.py`) and
+  optionally polls the worktree row's status as a secondary check.
+- **Concrete numbers.**
+  - Cooperative timeout: **120 s** from `request_shutdown` to
+    `agent_unregistered`. Close-wave (Step 5b) and reconcile Case A use
+    this.
+  - The helper's `--poll-interval` defaults to 1 s — tight enough that a
+    responsive agent's `agent_unregistered` is observed within ~1 s of
+    being written.
+  - The supervisor MUST capture the inbox byte offset BEFORE the
+    `request_shutdown` MCP call and pass it to the helper as
+    `--since-offset`. Without that, a fast agent's `agent_unregistered`
+    that lands between the MCP call returning and the helper starting
+    would be ignored (the race caught by the PR #182 review).
 - **When to use.** Always first. Preserves shutdown-artifacts, learnings, and
   a clean `unregister` row. It is the only tier that yields a usable work log.
 
@@ -361,15 +372,14 @@ tried in order; later tiers are last resorts.
 
 ```
 t = 0   : main calls request_shutdown (tier 1)
-t + 10s : if no shutdown line in worktree inbox, retry request_shutdown once
 t + 120s: if no agent_unregistered in main inbox, call force_unregister (tier 2)
 t + *   : if neither tier 1 nor tier 2 was reached (main agent itself is down),
           server sweep closes the session after 180 s of silence (tier 3)
 ```
 
-Timeouts marked "proposed target for T-220" are the recommended numbers for
-the close-wave/reconcile rewrite. Current close-wave does not ask; it rips
-tabs down without tier 1 at all. See T-220.
+Close-wave and reconcile both drive this escalation via
+`scripts/wait_for_agent_unregistered.py`; see the Step 5 blocks in the
+respective skills for the concrete command invocations.
 
 ## 6. Agent session can't self-exit and relaunch
 
@@ -468,7 +478,8 @@ separate board task under F-48 (Agent Lifecycle Hardening — Graceful Shutdown
   bypasses and broaden the rule from load-time to runtime MCP failures.
 - **T-220** — Rewrite `reconcile` and `close-wave` skills to use the Section 5
   three-tier shutdown flow. Uses the concrete numbers in Section 5 as its
-  target. Depends on T-218 and T-221.
+  target. Depends on T-218 and T-221. *Landed; consumer wired through
+  `scripts/wait_for_agent_unregistered.py`.*
 - **T-221** — Admin `force_unregister`: backend endpoint (project-scoped auth)
   plus MCP tool for tier 2.
 - **T-243** — Enforce the `agent_unregistered` inbox event in the agent
@@ -481,6 +492,12 @@ separate board task under F-48 (Agent Lifecycle Hardening — Graceful Shutdown
   worktree agents can locate the supervisor inbox without hardcoding. Also
   update the existing plugin prompts/templates to reference
   `<project_root>/.cloglog/inbox` rather than literal paths.
+- **T-NEW-c** — `list_worktrees` MCP tool returning `WorktreeResponse`
+  (id, path, status, last_heartbeat, branch_name, current_task_id) for
+  the caller's project. *Landed in PR #182 (round 2) alongside T-220;
+  consumed by close-wave Step 5a (map git-detected paths → UUIDs,
+  survives supervisor restart) and reconcile Cases A/B/C (merged-but-
+  registered, wedged, orphaned).*
 - **T-NEW-b** — Relax the pipeline guard's predecessor-resolution rule at
   `src/agent/services.py:237` so that a `review`-status spec/plan predecessor
   is "resolved" when `artifact_path` is set, regardless of whether `pr_url`

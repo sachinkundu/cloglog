@@ -308,6 +308,18 @@ export function createServer(client: CloglogClient): McpServer {
     })
   )
 
+  server.tool(
+    'list_worktrees',
+    'List all worktrees for the current project with their id, name, worktree_path, branch_name, status, current_task_id, last_heartbeat, and created_at. Supervisor uses this to map filesystem worktree paths (from `git worktree list`) back to worktree_ids for cooperative shutdown (close-wave / reconcile), to detect wedged agents (status=online + stale heartbeat), and to detect orphaned worktrees (path exists on disk but row has status=offline or is missing). Survives supervisor restarts — does not rely on the ephemeral supervisor inbox.',
+    {},
+    wrapHandler(async () => {
+      const pid = requireProject()
+      if (typeof pid !== 'string') return pid
+      const result = await handlers.list_worktrees({ project_id: pid })
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] }
+    })
+  )
+
   // ── Board management ──────────────────────────────────
 
   server.tool(

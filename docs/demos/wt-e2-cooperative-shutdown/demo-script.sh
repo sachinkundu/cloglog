@@ -21,6 +21,8 @@ HELPER="scripts/wait_for_agent_unregistered.py"
 CLOSE_SKILL="plugins/cloglog/skills/close-wave/SKILL.md"
 RECONCILE_SKILL="plugins/cloglog/skills/reconcile/SKILL.md"
 LIFECYCLE="docs/design/agent-lifecycle.md"
+MCP_TOOLS="mcp-server/src/tools.ts"
+MCP_SERVER="mcp-server/src/server.ts"
 
 uvx showboat init "$DEMO_FILE" \
   "close-wave and reconcile now ask worktree agents to shut themselves down cooperatively, only escalating to force_unregister on timeout."
@@ -144,14 +146,24 @@ uvx showboat exec "$DEMO_FILE" bash \
   'grep -q "git-common-dir" '"$RECONCILE_SKILL"' && echo OK || echo FAIL'
 
 uvx showboat note "$DEMO_FILE" \
-  "Step 10 — reconcile scopes Case A (pr_merged) to what IS derivable from get_board, and explicitly flags wedged/orphaned cases as a known gap pending a list_worktrees MCP tool."
+  "Step 10 — reconcile covers Case A (pr_merged), Case B (wedged), Case C (orphaned) — all derivable from list_worktrees."
 uvx showboat exec "$DEMO_FILE" bash \
-  'grep -q "Case A" '"$RECONCILE_SKILL"' && grep -q "Known gaps" '"$RECONCILE_SKILL"' && grep -q "list_worktrees" '"$RECONCILE_SKILL"' && echo OK || echo FAIL'
+  'grep -q "Case A" '"$RECONCILE_SKILL"' && grep -q "Case B" '"$RECONCILE_SKILL"' && grep -q "Case C" '"$RECONCILE_SKILL"' && grep -q "mcp__cloglog__list_worktrees" '"$RECONCILE_SKILL"' && echo OK || echo FAIL'
 
 uvx showboat note "$DEMO_FILE" \
   "Step 11 — reconcile keeps auto-fix (no separate fix step)."
 uvx showboat exec "$DEMO_FILE" bash \
   'grep -q "Always fix issues automatically" '"$RECONCILE_SKILL"' && echo OK || echo FAIL'
+
+uvx showboat note "$DEMO_FILE" \
+  "Step 11b — NEW MCP tool: list_worktrees is exposed by the MCP server and wraps GET /projects/{id}/worktrees (closes the supervisor-restart gap flagged in PR review round 2)."
+uvx showboat exec "$DEMO_FILE" bash \
+  'grep -q "list_worktrees" '"$MCP_TOOLS"' && grep -q "list_worktrees" '"$MCP_SERVER"' && grep -q "/projects/.*\\/worktrees" '"$MCP_TOOLS"' && echo OK || echo FAIL'
+
+uvx showboat note "$DEMO_FILE" \
+  "Step 11c — close-wave uses mcp__cloglog__list_worktrees to map filesystem paths → worktree_ids (doesn't rely on the ephemeral supervisor inbox)."
+uvx showboat exec "$DEMO_FILE" bash \
+  'grep -q "mcp__cloglog__list_worktrees" '"$CLOSE_SKILL"' && echo OK || echo FAIL'
 
 # ────────────────────────────────────────────────────────────────────────────
 # Section 4 — agent-lifecycle doc updated

@@ -492,15 +492,12 @@ separate board task under F-48 (Agent Lifecycle Hardening — Graceful Shutdown
   worktree agents can locate the supervisor inbox without hardcoding. Also
   update the existing plugin prompts/templates to reference
   `<project_root>/.cloglog/inbox` rather than literal paths.
-- **T-NEW-c** — Add a `list_worktrees` MCP tool that returns
-  `WorktreeResponse` (id, path, status, last_heartbeat, branch_name,
-  current_task_id) for a project. The backend endpoint
-  `GET /projects/{project_id}/worktrees` already exists
-  (`src/agent/routes.py:263`); the MCP server just needs to wire it up.
-  Unblocks reconcile's Case B (wedged agent — needs
-  `last_heartbeat`/`status`) and Case C (orphaned worktree — needs
-  path→id mapping). Flagged as a gap in
-  `plugins/cloglog/skills/reconcile/SKILL.md` Step 3 "Known gaps".
+- **T-NEW-c** — `list_worktrees` MCP tool returning `WorktreeResponse`
+  (id, path, status, last_heartbeat, branch_name, current_task_id) for
+  the caller's project. *Landed in PR #182 (round 2) alongside T-220;
+  consumed by close-wave Step 5a (map git-detected paths → UUIDs,
+  survives supervisor restart) and reconcile Cases A/B/C (merged-but-
+  registered, wedged, orphaned).*
 - **T-NEW-b** — Relax the pipeline guard's predecessor-resolution rule at
   `src/agent/services.py:237` so that a `review`-status spec/plan predecessor
   is "resolved" when `artifact_path` is set, regardless of whether `pr_url`

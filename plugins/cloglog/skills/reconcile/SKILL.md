@@ -45,62 +45,52 @@ Use `mcp__cloglog__get_board` to get all tasks. For each task in `review` or `in
 - **CLOSED + task in review** — issue: PR was closed, needs attention
 - **OPEN** — check for unaddressed comments: get last push date with `gh pr view <num> --json commits -q '.commits[-1].committedDate'`, then count comments after that date with `gh api repos/${REPO}/issues/<num>/comments --jq "[.[] | select(.created_at > \"<date>\")] | length"`
 
-### Check 2: Tasks with merged PRs still attached to a worktree
+### Check 2: Build the worktree inventory
 
-Use `mcp__cloglog__get_board`. `TaskCard` carries `status`, `pr_url`,
-`pr_merged`, and `worktree_id` (see `src/board/schemas.py` —
-`TaskResponse` → `TaskCard`). It does **not** carry worktree
-`status`/`last_heartbeat`/`worktree_path` — those live on
-`WorktreeResponse` at `/projects/{project_id}/worktrees`, which is not
-currently exposed via MCP (tracked as a follow-up — see the *Known gaps*
-block below).
-
-Given the available data, the automatable drift class is:
-
-- **`pr_merged_still_registered`** — task has `pr_merged=True`, `status=review`,
-  and a non-null `worktree_id`. The agent should have unregistered on the
-  `pr_merged` webhook (§2) but did not. Auto-fix: Case A.
-
-### Check 3: Project-local worktree inventory
+Call `mcp__cloglog__list_worktrees()` to get every `WorktreeResponse` in
+the project — `{id, name, worktree_path, branch_name, status,
+current_task_id, last_heartbeat, created_at}`. This is the authoritative
+source for worktree metadata; `get_board` only carries `worktree_id` on
+tasks and has no worktree status/heartbeat/path.
 
 Run `git worktree list --porcelain` and **filter to only worktrees whose
-path starts with the project root's `.claude/worktrees/` directory**.
-This is for the project-scope guardrail (never touch worktrees owned by
-claude-squad, vibe-kanban, a sibling project, etc.), not for classifying
-drift cases on its own. The project root is the parent of
-`--git-common-dir`:
+path starts with the project root's `.claude/worktrees/` directory**
+(never touch worktrees owned by claude-squad, vibe-kanban, a sibling
+project, etc.). The project root is the parent of `--git-common-dir`:
 
 ```bash
 PROJECT_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
 ```
 
-For each in-scope worktree, check whether its branch is fully merged into
-main (`git branch --merged main | grep <branch>`); a merged branch with
-no associated active task is stale.
+Join the two sets by `worktree_path`. Also call `mcp__cloglog__get_board`
+to get every task's `{status, pr_url, pr_merged, worktree_id}` so Case A
+can match merged PRs to the right worktree.
 
-**Never touch worktrees outside your project's directory.** Other tools
-manage their own worktrees.
+### Drift classification
 
-### Known gaps — wedged-agent and orphaned-worktree detection
+Classify each worktree against the joined data:
 
-The deliverables for this skill list two additional drift classes that
-the current MCP tool surface cannot detect on its own:
-
-- **Wedged agent** — registered, but not heartbeating / task stuck in
-  `in_progress`. Requires `last_heartbeat` and worktree `status` from
-  `WorktreeResponse`, currently only returned by the REST endpoint
-  `GET /projects/{project_id}/worktrees`. Add a `list_worktrees` MCP
-  tool (follow-up task) and then Case B becomes derivable here.
-- **Orphaned worktree** — filesystem worktree path exists under
-  `.claude/worktrees/` with no registered agent. `get_board` maps tasks
-  to `worktree_id`, not paths, so the same `list_worktrees` tool is what
-  closes this gap. Once it lands, Case C becomes `force_unregister` by
-  worktree_id resolved from path.
-
-Until the follow-up lands, the supervisor handles wedged/orphaned
-cases manually (cooperative shutdown if the agent is reachable;
-`force_unregister(worktree_id)` once the UUID is known from the
-agent_started inbox event).
+- **Case A — `pr_merged_still_registered`**. Task has `pr_merged=True`,
+  `status=review`, a non-null `worktree_id`, and `list_worktrees` shows
+  that worktree's `status=online`. The agent should have unregistered on
+  the `pr_merged` webhook (§2) but did not. Run tier-1 cooperative
+  shutdown; teardown on success.
+- **Case B — wedged agent**. `list_worktrees` shows `status=online` but
+  `last_heartbeat` is older than `heartbeat_timeout_seconds * 2` (the
+  backend marks the session timed out at 1×; 2× is the "definitely
+  wedged, not just a pending sweep" threshold). Run tier-1 cooperative
+  shutdown with a short timeout (30 s — a wedged MCP call rarely
+  recovers within the full 120 s window), then `force_unregister` on
+  timeout.
+- **Case C — orphaned worktree**. Filesystem path under
+  `.claude/worktrees/` exists, and either (a) `list_worktrees` shows
+  the matching row with `status=offline`, or (b) no row exists for the
+  path. Skip tier-1 — there is no agent to respond. Call
+  `mcp__cloglog__force_unregister(worktree_id)` (idempotent; returns
+  `{"already_unregistered": true}` when the row is already gone) only
+  when (a) applies. Then proceed directly to teardown.
+- **Healthy** — worktree row `status=online`, heartbeat fresh, task not
+  in the drift set. Skip.
 
 ### Check 4: Stale branches
 
@@ -126,7 +116,7 @@ cooperative-timeout fallback.**
 
 Same tier-1 → tier-2 path as close-wave Step 5. Snapshot the inbox offset
 BEFORE the MCP call so a fast agent's `agent_unregistered` is still
-observed (the race the reviewer flagged on PR #182).
+observed (the race the reviewer flagged on PR #182 round 1).
 
 ```bash
 SINCE_OFFSET=$(stat -c %s "$MAIN_INBOX" 2>/dev/null || echo 0)
@@ -146,10 +136,43 @@ SINCE_OFFSET=$(stat -c %s "$MAIN_INBOX" 2>/dev/null || echo 0)
    record `path: force_unregister (reconcile_pr_merged_timeout)` in the
    reconciliation report.
 
-### Teardown (Case A, after the agent is unregistered)
+### Case B — Wedged agent (status=online, stale heartbeat)
 
-Only after the worktree has unregistered — by Case A success OR Case A
-tier-2 fallback.
+Same shape as Case A but with a tighter wait — a wedged MCP call is
+unlikely to recover within the full cooperative window.
+
+```bash
+SINCE_OFFSET=$(stat -c %s "$MAIN_INBOX" 2>/dev/null || echo 0)
+```
+
+1. `mcp__cloglog__request_shutdown(worktree_id)`.
+2. Wait up to 30 s:
+   ```bash
+   uv run python scripts/wait_for_agent_unregistered.py \
+       --worktree "<wt-name>" \
+       --inbox "$MAIN_INBOX" \
+       --since-offset "$SINCE_OFFSET" \
+       --timeout 30
+   ```
+3. On exit 0 — the agent was responsive after all; proceed to teardown.
+4. On exit 1 — `mcp__cloglog__force_unregister(worktree_id)`; record
+   `path: force_unregister (reconcile_wedged)` and log the stale
+   `last_heartbeat` value for diagnosis.
+
+### Case C — Orphaned worktree (no running agent)
+
+Skip tier-1 — there is no agent to respond. If a `list_worktrees` row
+exists with `status=offline`, call
+`mcp__cloglog__force_unregister(worktree_id)` to ensure the row is
+fully cleared (idempotent — returns `{"already_unregistered": true}`
+when the row is already gone, which is also the expected shape for a
+path that never had a row). Then proceed directly to teardown. No
+cooperative wait, no `request_shutdown`.
+
+### Teardown (all cases, after the agent is unregistered)
+
+After the worktree has unregistered — by Case A/B cooperative success,
+Case A/B tier-2 fallback, or Case C directly.
 
 - **Zellij tab**: find via `zellij action query-tab-names`, close with
   `zellij action close-tab` (never the tab you are running in).

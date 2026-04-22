@@ -65,13 +65,19 @@ Claude process (see B-2 / T-217) and bypasses the shutdown hook; closing the
 tab before the backend session ends leaves the worktree row dangling until
 the tier-3 heartbeat sweep.
 
-### Step 5a — Snapshot inbox offset + request shutdown (tier 1)
+### Step 5a — Resolve worktree_id, snapshot inbox offset, request shutdown (tier 1)
 
-For each worktree, look up its `worktree_id` (from the board / the
-`agent_started` inbox event the supervisor recorded at launch). Resolve
-the supervisor inbox BEFORE calling `request_shutdown` — `git rev-parse
---show-toplevel` would return the worktree path when run inside a
-worktree (see CLAUDE.md "Inside a worktree, `git rev-parse
+Call `mcp__cloglog__list_worktrees()` once up front and build a map
+`worktree_path → {id, name, branch_name, status, last_heartbeat}` for
+every worktree in this project. This map survives supervisor restarts,
+unlike the `.cloglog/inbox` file (`plugins/cloglog/hooks/agent-shutdown.sh`
+truncates it when the main agent exits). For each git-detected worktree
+in scope, look up its `id` in the map — that's the UUID to pass to
+`mcp__cloglog__request_shutdown`.
+
+Resolve the supervisor inbox BEFORE calling `request_shutdown` — `git
+rev-parse --show-toplevel` would return the worktree path when run
+inside a worktree (see CLAUDE.md "Inside a worktree, `git rev-parse
 --show-toplevel` returns the worktree path, not the main clone.");
 the main clone is always the parent of `--git-common-dir`:
 

@@ -178,6 +178,28 @@ describe('Tool Handlers', () => {
     )
   })
 
+  it('list_worktrees (T-220) calls GET /projects/{pid}/worktrees — the supervisor reads this to map filesystem worktree paths back to UUIDs (survives supervisor restart, unlike the ephemeral inbox)', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        id: 'wt-uuid-1',
+        project_id: 'proj-1',
+        name: 'wt-demo',
+        worktree_path: '/abs/path/to/wt-demo',
+        branch_name: 'wt-demo',
+        status: 'online',
+        current_task_id: null,
+        last_heartbeat: '2026-04-22T08:50:00Z',
+        created_at: '2026-04-22T08:00:00Z',
+      },
+    ])
+
+    const result = await handlers.list_worktrees({ project_id: 'proj-1' })
+    expect(client.request).toHaveBeenCalledWith(
+      'GET', '/api/v1/projects/proj-1/worktrees'
+    )
+    expect(result).toHaveLength(1)
+  })
+
   it('add_task_note calls POST /agents/{wt}/task-note', async () => {
     await handlers.add_task_note({
       worktree_id: 'wt-123', task_id: 't1', note: 'Working on it',

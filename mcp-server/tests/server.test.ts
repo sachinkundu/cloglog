@@ -295,3 +295,57 @@ describe('force_unregister tool (T-221)', () => {
     expect(description).toMatch(/first|before/i)
   })
 })
+
+describe('list_worktrees tool (T-220)', () => {
+  it('requires registration to supply the project_id (no manual project argument)', async () => {
+    const client = mockClient()
+    const server = createServer(client)
+    const tools = (server as any)._registeredTools
+
+    const result = await tools.list_worktrees.handler({})
+    // Without register_agent first, requireProject() returns a not-registered
+    // error — the supervisor must register itself before querying worktrees.
+    expect(result.content[0].text).toContain('Not registered')
+  })
+
+  it('posts to GET /projects/{pid}/worktrees after register_agent sets the project', async () => {
+    const client = mockClient()
+    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
+      worktree_id: 'wt-sup',
+      project_id: 'proj-42',
+      current_task: null,
+      resumed: true,
+    })
+
+    const server = createServer(client)
+    const tools = (server as any)._registeredTools
+    await tools.register_agent.handler({ worktree_path: '/path' })
+
+    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        id: 'wt-uuid-1',
+        name: 'wt-demo',
+        worktree_path: '/abs/path/to/wt-demo',
+        branch_name: 'wt-demo',
+        status: 'online',
+        last_heartbeat: '2026-04-22T08:50:00Z',
+      },
+    ])
+
+    const result = await tools.list_worktrees.handler({})
+    expect(client.request).toHaveBeenCalledWith(
+      'GET', '/api/v1/projects/proj-42/worktrees'
+    )
+    expect(result.content[0].text).toContain('wt-demo')
+    expect(result.isError).toBeFalsy()
+  })
+
+  it('description explains it survives supervisor restart (the ephemeral-inbox failure mode the PR-182 review caught)', () => {
+    const client = mockClient()
+    const server = createServer(client)
+    const tools = (server as any)._registeredTools
+    const description = tools.list_worktrees.description as string
+    expect(description).toMatch(/supervisor restart|survives/i)
+    expect(description).toContain('worktree_id')
+  })
+})

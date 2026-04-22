@@ -1,7 +1,7 @@
 # close-wave and reconcile now ask worktree agents to shut themselves down cooperatively, only escalating to force_unregister on timeout.
 
-*2026-04-22T08:38:31Z by Showboat 0.6.1*
-<!-- showboat-id: 6a581ac3-b9a7-4efe-adc7-42c21411db19 -->
+*2026-04-22T08:51:20Z by Showboat 0.6.1*
+<!-- showboat-id: b74acded-2d7b-479c-8533-349e45366c9d -->
 
 Step 1 — helper script exists and is executable.
 
@@ -172,10 +172,10 @@ grep -q "git-common-dir" plugins/cloglog/skills/reconcile/SKILL.md && echo OK ||
 OK
 ```
 
-Step 10 — reconcile scopes Case A (pr_merged) to what IS derivable from get_board, and explicitly flags wedged/orphaned cases as a known gap pending a list_worktrees MCP tool.
+Step 10 — reconcile covers Case A (pr_merged), Case B (wedged), Case C (orphaned) — all derivable from list_worktrees.
 
 ```bash
-grep -q "Case A" plugins/cloglog/skills/reconcile/SKILL.md && grep -q "Known gaps" plugins/cloglog/skills/reconcile/SKILL.md && grep -q "list_worktrees" plugins/cloglog/skills/reconcile/SKILL.md && echo OK || echo FAIL
+grep -q "Case A" plugins/cloglog/skills/reconcile/SKILL.md && grep -q "Case B" plugins/cloglog/skills/reconcile/SKILL.md && grep -q "Case C" plugins/cloglog/skills/reconcile/SKILL.md && grep -q "mcp__cloglog__list_worktrees" plugins/cloglog/skills/reconcile/SKILL.md && echo OK || echo FAIL
 ```
 
 ```output
@@ -186,6 +186,26 @@ Step 11 — reconcile keeps auto-fix (no separate fix step).
 
 ```bash
 grep -q "Always fix issues automatically" plugins/cloglog/skills/reconcile/SKILL.md && echo OK || echo FAIL
+```
+
+```output
+OK
+```
+
+Step 11b — NEW MCP tool: list_worktrees is exposed by the MCP server and wraps GET /projects/{id}/worktrees (closes the supervisor-restart gap flagged in PR review round 2).
+
+```bash
+grep -q "list_worktrees" mcp-server/src/tools.ts && grep -q "list_worktrees" mcp-server/src/server.ts && grep -q "/projects/.*\\/worktrees" mcp-server/src/tools.ts && echo OK || echo FAIL
+```
+
+```output
+OK
+```
+
+Step 11c — close-wave uses mcp__cloglog__list_worktrees to map filesystem paths → worktree_ids (doesn't rely on the ephemeral supervisor inbox).
+
+```bash
+grep -q "mcp__cloglog__list_worktrees" plugins/cloglog/skills/close-wave/SKILL.md && echo OK || echo FAIL
 ```
 
 ```output

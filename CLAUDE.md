@@ -19,6 +19,8 @@ Contexts communicate through interfaces defined in `interfaces.py`, never by imp
 
 For the full context map, relationship types, and ubiquitous language glossary, see `docs/ddd-context-map.md`.
 
+The canonical agent lifecycle protocol (registration, shutdown, inbox events, three-tier teardown) lives in `docs/design/agent-lifecycle.md` — plugin skills and templates cite its §1/§2/§6 throughout.
+
 ## Worktree Discipline
 
 If you are working in a worktree (`wt-*` branch), you MUST only touch files in your assigned context. The directory mappings are defined in `.cloglog/config.yaml` under `worktree_scopes`.
@@ -50,6 +52,18 @@ make db-migrate       # Run Alembic migrations
 make db-revision      # Create new Alembic migration
 make contract-check   # Validate backend matches API contract
 make coverage         # Run tests with coverage report
+make sync-mcp-dist    # Rebuild mcp-server/dist + broadcast mcp_tools_updated to live agents
+make db-refresh-from-prod  # Snapshot prod DB into dev DB (debug prod issues locally)
+```
+
+### Production
+
+```bash
+make prod             # Start prod server (gunicorn + vite preview) in foreground
+make prod-bg          # Start prod in background (idempotent — fails fast if master already running)
+make prod-logs        # Tail prod server logs
+make prod-stop        # Stop prod backend + frontend (tunnel is systemd-managed, do NOT kill cloudflared)
+make promote          # Zero-downtime deploy of origin/main to prod
 ```
 
 ### Frontend

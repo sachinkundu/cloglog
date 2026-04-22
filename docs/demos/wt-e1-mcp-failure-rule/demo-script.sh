@@ -104,12 +104,17 @@ uvx showboat exec "$DEMO_FILE" bash \
 
 uvx showboat note "$DEMO_FILE" "### Backstop test — \`tests/test_mcp_failure_rule_wording.py\` pins the rule
 
-Three tests, one per invariant (canonical sentence presence, \`mcp_tool_error\`
-shape documented, outbound events table distinction). Output is reduced to the
-pass count so \`showboat verify\` stays byte-exact."
+Three assertions, one per invariant (canonical sentence presence,
+\`mcp_tool_error\` shape documented, outbound events table distinction). The
+demo imports the test module directly with \`python3\` instead of running it
+through \`pytest\` — \`tests/conftest.py\` has a session-autouse fixture that
+connects to Postgres on \`localhost:5432\`, which is NOT available when
+\`scripts/check-demo.sh\` invokes \`uvx showboat verify\` (it does not start
+the dev DB). Importing the module bypasses conftest entirely and keeps this
+check self-contained for re-verification on a clean checkout."
 
 uvx showboat exec "$DEMO_FILE" bash \
-  'uv run pytest tests/test_mcp_failure_rule_wording.py -q 2>&1 | grep -oE "[0-9]+ passed"'
+  'python3 -c "import sys; sys.path.insert(0, \"tests\"); import test_mcp_failure_rule_wording as t; t.test_canonical_rule_appears_verbatim_in_each_location(); t.test_mcp_tool_error_event_is_documented_in_agent_lifecycle(); t.test_outbound_events_table_distinguishes_unavailable_from_tool_error(); print(\"3 assertions passed\")"'
 
 # --- Part 5: regression — pre-T-213 wording is gone ---------------------------
 

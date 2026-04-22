@@ -126,7 +126,7 @@ When you receive a message, read it and act on the instruction. The main agent m
 ## Pipeline (Features Only)
 If this is a feature with spec/plan/impl tasks:
 - Spec task: write design spec, create PR, wait for merge. On merge: `mark_pr_merged` → `report_artifact` with spec path.
-- Plan task: write implementation plan (no PR needed), commit locally, then call `update_task_status(plan_task_id, "review", skip_pr=True)` and `report_artifact(plan_task_id, worktree_id, plan_path)`, then `start_task` on the impl task. **Known backend gap (T-NEW-b):** `start_task` on the impl returns 409 until the pipeline guard at `src/agent/services.py:237` accepts artifact-only predecessor resolution; if you hit the 409, emit a `pipeline_guard_blocked` event to the main inbox and stop — main handles the advance. See `docs/design/agent-lifecycle.md` §1.
+- Plan task: write implementation plan (no PR needed), commit locally, then call `update_task_status(plan_task_id, "review", skip_pr=True)` and `report_artifact(plan_task_id, worktree_id, plan_path)`, then `start_task` on the impl task. **Known backend gap (T-NEW-b):** `start_task` on the impl returns 409 until the pipeline guard at `src/agent/services.py:237` accepts artifact-only predecessor resolution; a 409 is a runtime MCP tool error per §4.1, so when you hit it emit `mcp_tool_error` with `reason: "pipeline_guard_blocked"` to the main inbox and stop — main recognises that reason and handles the advance. See `docs/design/agent-lifecycle.md` §1 for context and §4.1 for the event shape.
 - Impl task: implement the feature, create PR, wait for merge.
 - After each PR merges, call `mcp__cloglog__get_my_tasks` to get the next task.
 ```
@@ -204,18 +204,23 @@ print(yaml.safe_load(open('\$cfg')).get('backend_url','http://localhost:8000'))
 }
 
 _api_key() {
+  # Authoritative lookup order matches mcp-server/src/credentials.ts and the
+  # T-214 contract in docs/setup-credentials.md: env first, then
+  # ~/.cloglog/credentials (mode 0600). The worktree's .env and the repo's
+  # .mcp.json MUST NOT carry the key — tests/test_mcp_json_no_secret.py
+  # pins that invariant and .cloglog/on-worktree-create.sh never writes
+  # the key to .env.
   [[ -n "\${CLOGLOG_API_KEY:-}" ]] && { echo "\$CLOGLOG_API_KEY"; return; }
-  if [[ -f "\$WORKTREE_PATH/.env" ]]; then
+  local cred="\${HOME}/.cloglog/credentials"
+  if [[ -r "\$cred" ]]; then
     local v
-    v=\$(grep '^CLOGLOG_API_KEY=' "\$WORKTREE_PATH/.env" 2>/dev/null | cut -d= -f2-)
+    v=\$(grep '^CLOGLOG_API_KEY=' "\$cred" 2>/dev/null | head -n 1 | cut -d= -f2-)
+    # Strip optional surrounding single/double quotes to match
+    # credentials.ts loadApiKey behaviour.
+    v=\${v%\"}; v=\${v#\"}; v=\${v%\\'}; v=\${v#\\'}
     [[ -n "\$v" ]] && { echo "\$v"; return; }
   fi
-  [[ -f "\$PROJECT_ROOT/.mcp.json" ]] || return 0
-  python3 -c "
-import json
-d=json.load(open('\$PROJECT_ROOT/.mcp.json'))
-print(d.get('mcpServers',{}).get('cloglog',{}).get('env',{}).get('CLOGLOG_API_KEY',''))
-" 2>/dev/null || true
+  return 0
 }
 
 _unregister_fallback() {

@@ -347,6 +347,17 @@ Response:
      "reason": "runtime_tool_error"
    }
    ```
+
+   The `reason` field is an open enum. The default is `runtime_tool_error`;
+   use a more specific value when the agent recognises the error as a
+   known-classifiable case so the supervisor can auto-handle without
+   inspecting the error text. Recognised values today:
+
+   | `reason` | When | Supervisor response |
+   | --- | --- | --- |
+   | `runtime_tool_error` | Default — any 5xx, schema error, auth rejection, unrecognised 409, retry-exhausted transient. | Diagnose from `tool` + `error`; usually a code or state fix followed by an inbox write telling the agent to resume. |
+   | `pipeline_guard_blocked` | 409 from `start_task` on an impl task when the plan predecessor is in `review` with no `pr_url` (T-NEW-b backend gap). Agents MAY add a `predecessor_task_id` field carrying the blocking plan task's UUID. | Advance the impl task directly (bypass the guard) or wait for T-NEW-b to ship; then write a resume message to the worktree inbox. |
+
 3. **Wait** on the inbox Monitor for main-agent guidance. Main may repair the
    board state (e.g., advance the pipeline so a blocked `start_task` now
    succeeds) and signal resume via a message, or may decide to

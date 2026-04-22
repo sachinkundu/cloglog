@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 import src.agent.models  # noqa: F401 — register models for autogenerate
 import src.board.models  # noqa: F401 — register models for autogenerate
 import src.document.models  # noqa: F401 — register models for autogenerate
+import src.review.models  # noqa: F401 — register models for autogenerate
 from alembic import context
 from src.shared.database import Base
 

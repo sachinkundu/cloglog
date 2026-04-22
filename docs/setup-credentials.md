@@ -96,3 +96,30 @@ session. If it does not, agents launched on that host will fail to register.
 - `docs/postmortems/2026-04-10-mcp-registration-auth.md` — the original
   incident that introduced the key into `.mcp.json`; T-214 closes the
   follow-up.
+
+## GitHub reviewer bots — different credential path
+
+Reviewer bots (codex, opencode) do **not** use `~/.cloglog/credentials`. They
+are full GitHub Apps and mint short-lived installation tokens from PEM files
+under `~/.agent-vm/credentials/`:
+
+| Bot | PEM path | App-id / installation-id |
+|-----|----------|--------------------------|
+| `sakundu-claude-assistant[bot]` (code-push bot) | `~/.agent-vm/credentials/github-app.pem` | hard-coded in `src/gateway/github_token.py` |
+| `cloglog-codex-reviewer[bot]` | `~/.agent-vm/credentials/codex-reviewer.pem` | hard-coded in `src/gateway/github_token.py` |
+| `cloglog-opencode-reviewer[bot]` (**T-248**) | `~/.agent-vm/credentials/opencode-reviewer.pem` | read from `OPENCODE_APP_ID` / `OPENCODE_INSTALLATION_ID` env vars |
+
+Onboarding the opencode reviewer bot on a new host:
+
+1. Install the GitHub App on the target repo(s).
+2. Download the App's private key (a `.pem` file).
+3. Place it at `~/.agent-vm/credentials/opencode-reviewer.pem` and
+   `chmod 600` it.
+4. Export `OPENCODE_APP_ID` and `OPENCODE_INSTALLATION_ID` in the backend's
+   environment (the backend's `.env` is fine) with the values from the
+   GitHub App settings.
+
+If either env var is empty the sequencer logs one INFO line per session and
+falls through to codex-only — the backend still boots healthy.
+`~/.cloglog/credentials` is NOT consulted for reviewer tokens; do not place
+PEM contents there.

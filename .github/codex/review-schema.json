@@ -61,6 +61,10 @@
       "type": "number",
       "minimum": 0,
       "maximum": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": ["no_further_concerns", "review_in_progress"]
     }
   },
   "required": ["findings", "overall_correctness", "overall_explanation", "overall_confidence_score"],

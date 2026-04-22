@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 import src.agent.models  # noqa: F401  # Register models with Base.metadata
 import src.board.models  # noqa: F401
 import src.document.models  # noqa: F401
+import src.review.models  # noqa: F401
 from src.shared.database import Base, get_session
 
 # Base connection URL (without database name) for creating test databases

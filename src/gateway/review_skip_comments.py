@@ -43,6 +43,11 @@ class SkipReason(StrEnum):
     DIFF_TOO_LARGE = "diff_too_large"
     AGENT_UNPARSEABLE = "agent_unparseable"
     AGENT_TIMEOUT = "agent_timeout"
+    # T-248 additions — stage A (opencode) failures. Named separately from the
+    # codex failure reasons so a dashboard or log filter can distinguish.
+    OPENCODE_FAILED = "opencode_failed"
+    OPENCODE_TIMEOUT = "opencode_timeout"
+    OPENCODE_UNAVAILABLE = "opencode_unavailable"
 
 
 @dataclass

@@ -33,7 +33,8 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
+from uuid import UUID
 
 import httpx
 from pydantic import BaseModel, field_validator
@@ -42,12 +43,20 @@ from src.gateway.review_skip_comments import SkipReason, post_skip_comment
 from src.gateway.webhook_dispatcher import WebhookEvent, WebhookEventType
 from src.shared.config import settings
 
+if TYPE_CHECKING:
+    from src.review.interfaces import IReviewTurnRegistry
+
 logger = logging.getLogger(__name__)
 
-# Both bot identities — skip review if the PR author is either bot
+# Bot identities in this codebase:
+#  - _CLAUDE_BOT: the code-pushing bot. PRs authored by it are REVIEWED.
+#  - _CODEX_BOT / _OPENCODE_BOT: reviewer bots. Their own PRs are NOT reviewed
+#    (that would loop) — see ``_REVIEWER_BOTS`` usage in ``handles()`` below.
 _CLAUDE_BOT: Final = "sakundu-claude-assistant[bot]"
 _CODEX_BOT: Final = "cloglog-codex-reviewer[bot]"
-_BOT_USERNAMES: Final = frozenset({_CLAUDE_BOT, _CODEX_BOT})
+_OPENCODE_BOT: Final = "cloglog-opencode-reviewer[bot]"
+_REVIEWER_BOTS: Final = frozenset({_CODEX_BOT, _OPENCODE_BOT})
+_BOT_USERNAMES: Final = frozenset({_CLAUDE_BOT, _CODEX_BOT, _OPENCODE_BOT})
 MAX_DIFF_CHARS: Final = 200_000
 REVIEW_TIMEOUT_SECONDS: Final = 300.0
 RATE_LIMIT_WINDOW_SECONDS: Final = 3600.0
@@ -75,6 +84,7 @@ _HUNK_HEADER_RE: Final = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 _ALLOWED_SEVERITIES: Final = frozenset({"critical", "high", "medium", "low", "info"})
 _ALLOWED_VERDICTS: Final = frozenset({"approve", "request_changes", "comment"})
+_ALLOWED_STATUSES: Final = frozenset({"no_further_concerns", "review_in_progress"})
 
 # File paths we drop from the diff before sending it to the review agent.
 # Lockfiles and generated artifacts add noise; secret paths must never leave the host.
@@ -113,6 +123,11 @@ class ReviewFinding(BaseModel):
     line: int
     severity: str
     body: str
+    # Optional — used by ReviewLoop's consensus predicate (b) to key a stable
+    # de-dup tuple ``(file, line, title_lower)`` across turns (spec §1.1).
+    # Codex schema stores it as ``findings[].title``; the internal path populates
+    # it during normalization in ``_parse_output``.
+    title: str = ""
 
     @field_validator("severity")
     @classmethod
@@ -128,12 +143,25 @@ class ReviewResult(BaseModel):
     verdict: str
     summary: str
     findings: list[ReviewFinding]
+    # Optional top-level consensus flag (spec §1.1 predicate a). Absent or None
+    # means "not yet consensus"; ``no_further_concerns`` short-circuits the
+    # per-reviewer loop before its max-turn cap.
+    status: str | None = None
 
     @field_validator("verdict")
     @classmethod
     def _validate_verdict(cls, v: str) -> str:
         if v not in _ALLOWED_VERDICTS:
             raise ValueError(f"verdict must be one of {sorted(_ALLOWED_VERDICTS)}")
+        return v
+
+    @field_validator("status")
+    @classmethod
+    def _validate_status(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if v not in _ALLOWED_STATUSES:
+            raise ValueError(f"status must be one of {sorted(_ALLOWED_STATUSES)}")
         return v
 
 
@@ -231,8 +259,19 @@ def _get_schema_path(project_root: Path) -> Path | None:
 
 
 def is_review_agent_available() -> bool:
-    """Return True if the configured review agent command exists on PATH."""
+    """Return True if the configured codex review agent command exists on PATH."""
     return shutil.which(settings.review_agent_cmd) is not None
+
+
+def is_opencode_available() -> bool:
+    """Return True if the configured opencode command exists on PATH.
+
+    T-248 adds opencode as stage A of the two-stage sequencer. This helper
+    lets ``app.py`` lifespan probe both binaries independently so a host with
+    codex installed but opencode missing (or vice versa) is detected at boot
+    — not at the first review-turn subprocess spawn (spec §5.4).
+    """
+    return shutil.which(settings.opencode_cmd) is not None
 
 
 def resolve_review_source_root() -> Path:
@@ -384,12 +423,16 @@ async def count_bot_reviews(
     *,
     client: httpx.AsyncClient | None = None,
 ) -> int:
-    """Return how many reviews the bot has already posted on this PR.
+    """Return how many **sessions** the codex bot has posted on this PR.
 
-    Uses ``GET /repos/{owner}/{repo}/pulls/{pr_number}/reviews`` and counts
-    entries whose ``user.login`` matches a known bot username. A network failure
-    surfaces as a ``RuntimeError`` — the caller decides whether to proceed
-    (for safety the consumer currently skips the review on uncertainty).
+    A session = one full two-stage run against a single commit SHA. Multiple
+    turn POSTs on the same commit count as one session (spec §6.3). Reviews
+    without a ``commit_id`` (unlikely in practice) fall back to counting each
+    as a distinct session.
+
+    Uses ``GET /repos/{owner}/{repo}/pulls/{pr_number}/reviews`` and collapses
+    entries whose ``user.login`` is the codex bot by ``commit_id``. Network
+    failure raises — the caller currently skips on uncertainty.
     """
     url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}/reviews"
     headers = {
@@ -406,7 +449,20 @@ async def count_bot_reviews(
     finally:
         if close_when_done:
             await http.aclose()
-    return sum(1 for r in reviews if (r.get("user") or {}).get("login") == _CODEX_BOT)
+    # Count distinct commit_ids (session count, not POST count). Fall back to
+    # len(reviews) only if EVERY codex row is missing commit_id — otherwise one
+    # legacy row without commit_id would spuriously inflate the count.
+    commit_ids: set[str] = set()
+    codex_rows = [r for r in reviews if (r.get("user") or {}).get("login") == _CODEX_BOT]
+    for r in codex_rows:
+        cid = r.get("commit_id")
+        if cid:
+            commit_ids.add(cid)
+    if commit_ids:
+        return len(commit_ids)
+    # Legacy fallback: no commit_ids at all — back-compat with existing tests
+    # that don't set ``commit_id`` in their mocked review payloads.
+    return len(codex_rows)
 
 
 async def post_review(
@@ -481,20 +537,60 @@ async def post_review(
             await http.aclose()
 
 
+class _RegistryCtx:
+    """Async context manager wrapping a DB session + ``ReviewTurnRepository``.
+
+    Keeps the Gateway consumer from importing ``src.review.repository`` at
+    module load (lazy import inside ``__aenter__`` preserves the DDD rule
+    that Gateway depends on the Review context's *interface*, not models/
+    repository directly).
+    """
+
+    def __init__(self, session_factory: Any) -> None:
+        self._factory = session_factory
+        self._session: Any = None
+
+    async def __aenter__(self) -> IReviewTurnRegistry:
+        from src.review.repository import ReviewTurnRepository
+
+        self._session = self._factory()
+        await self._session.__aenter__()
+        return ReviewTurnRepository(self._session)
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        if self._session is not None:
+            await self._session.__aexit__(exc_type, exc, tb)
+            self._session = None
+
+
 class ReviewEngineConsumer:
     """Webhook consumer that runs a local review agent on every PR push."""
 
     _handled = frozenset({WebhookEventType.PR_OPENED, WebhookEventType.PR_SYNCHRONIZE})
 
-    def __init__(self, *, max_per_hour: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        max_per_hour: int | None = None,
+        codex_available: bool = True,
+        opencode_available: bool = False,
+        session_factory: Any | None = None,
+    ) -> None:
         rate = max_per_hour if max_per_hour is not None else settings.review_max_per_hour
         self._rate_limiter = RateLimiter(max_per_hour=rate)
         self._lock = asyncio.Lock()
+        self._codex_available = codex_available
+        self._opencode_available = opencode_available
+        self._session_factory = session_factory
 
     def handles(self, event: WebhookEvent) -> bool:
-        # Only skip if the Codex reviewer bot itself triggered the event
-        # (prevents review-of-review loops). Claude bot PRs SHOULD be reviewed.
-        if event.sender == _CODEX_BOT:
+        # Skip if ANY reviewer bot authored the PR (prevents review-of-review
+        # loops). Claude bot PRs SHOULD be reviewed — only reviewer bots
+        # themselves are filtered. Using ``_REVIEWER_BOTS`` (not the older
+        # ``_BOT_USERNAMES`` constant) so extending the set with a new
+        # reviewer bot automatically extends this guard — see T-248 acceptance
+        # criterion 6.
+        if event.sender in _REVIEWER_BOTS:
             return False
         return event.type in self._handled
 
@@ -556,17 +652,31 @@ class ReviewEngineConsumer:
             )
 
     async def _review_pr(self, event: WebhookEvent) -> None:
-        from src.gateway.github_token import get_codex_reviewer_token, get_github_app_token
+        from src.gateway.github_token import (
+            OpencodeBotNotConfiguredError,
+            get_codex_reviewer_token,
+            get_github_app_token,
+            get_opencode_reviewer_token,
+        )
+        from src.gateway.review_loop import (
+            CodexReviewer,
+            OpencodeReviewer,
+            ReviewLoop,
+        )
 
-        # Claude bot token for reading diffs (has contents:read)
+        # Claude bot token for reading diffs (has contents:read).
         claude_token = await get_github_app_token()
-        # Codex reviewer bot token for posting reviews (separate identity)
-        review_token = await get_codex_reviewer_token()
 
+        # Per-PR session cap (spec §6.3): count distinct commit_ids the codex
+        # bot has reviewed on this PR. Each two-stage session posts multiple
+        # review POSTs (one per turn) on the same commit — ``count_bot_reviews``
+        # collapses those into a single count. A second push produces a new
+        # commit SHA and counts as a second session.
+        review_token = await get_codex_reviewer_token()
         prior = await count_bot_reviews(event.repo_full_name, event.pr_number, review_token)
         if prior >= MAX_REVIEWS_PER_PR:
             logger.info(
-                "PR #%d already has %d bot reviews (cap=%d) — skipping",
+                "PR #%d already has %d bot sessions (cap=%d) — skipping",
                 event.pr_number,
                 prior,
                 MAX_REVIEWS_PER_PR,
@@ -575,8 +685,8 @@ class ReviewEngineConsumer:
                 event,
                 SkipReason.MAX_REVIEWS,
                 (
-                    f"Codex review skipped: this PR already has the "
-                    f"maximum of {MAX_REVIEWS_PER_PR} bot reviews. "
+                    f"Review skipped: this PR already has the "
+                    f"maximum of {MAX_REVIEWS_PER_PR} bot review sessions. "
                     f"Request human review."
                 ),
             )
@@ -590,7 +700,7 @@ class ReviewEngineConsumer:
                 event,
                 SkipReason.NO_REVIEWABLE_FILES,
                 (
-                    "Codex review skipped: no reviewable files after "
+                    "Review skipped: no reviewable files after "
                     "filtering (only lockfiles / generated / excluded paths)."
                 ),
             )
@@ -606,28 +716,132 @@ class ReviewEngineConsumer:
                 event,
                 SkipReason.DIFF_TOO_LARGE,
                 (
-                    f"Codex review skipped: diff too large "
+                    f"Review skipped: diff too large "
                     f"({len(filtered)} chars, cap {MAX_DIFF_CHARS}). "
                     f"Break into smaller PRs or request human review."
                 ),
             )
             return
 
-        result = await self._run_review_agent(filtered, event, review_token)
-        if result is None:
-            # Skip comment (timeout / unparseable) already posted inside _run_review_agent.
+        # Resolve the turn registry + project_id. The sequencer writes turn-
+        # accounting rows into ``pr_review_turns``; idempotency + reset rules
+        # (spec §3.3/§3.4) depend on the registry being consulted every turn.
+        head_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
+        if self._session_factory is None or not head_sha:
+            logger.warning(
+                "Review sequencer fell back to single-turn codex path for PR #%d "
+                "(session_factory=%s, head_sha=%s)",
+                event.pr_number,
+                self._session_factory is not None,
+                bool(head_sha),
+            )
+            # Single-turn degraded path so the backend boots even if the new
+            # Review context isn't wired up in some test harness.
+            review_token = await get_codex_reviewer_token()
+            result = await self._run_review_agent(filtered, event, review_token)
+            if result is not None:
+                await post_review(
+                    event.repo_full_name,
+                    event.pr_number,
+                    result,
+                    filtered,
+                    review_token,
+                )
             return
 
-        posted = await post_review(
-            event.repo_full_name, event.pr_number, result, filtered, review_token
-        )
+        project_id = await self._resolve_project_id(event)
+        if project_id is None:
+            logger.warning(
+                "No project found for repo %s — skipping review for PR #%d",
+                event.repo_full_name,
+                event.pr_number,
+            )
+            return
+
+        project_root = settings.review_source_root or Path.cwd()
+
+        # ----- Stage A: opencode (gemma4:e4b) — up to opencode_max_turns -----
+        if self._opencode_available:
+            try:
+                opencode_token = await get_opencode_reviewer_token()
+            except OpencodeBotNotConfiguredError as err:
+                logger.info(
+                    "Opencode bot not configured — skipping stage A for PR #%d (%s)",
+                    event.pr_number,
+                    err,
+                )
+                opencode_token = None
+        else:
+            opencode_token = None
+
+        if opencode_token is not None:
+            async with self._registry() as registry:
+                loop_a = ReviewLoop(
+                    OpencodeReviewer(project_root),
+                    max_turns=settings.opencode_max_turns,
+                    registry=registry,
+                    project_id=project_id,
+                    pr_url=event.pr_url,
+                    pr_number=event.pr_number,
+                    repo_full_name=event.repo_full_name,
+                    head_sha=head_sha,
+                    stage="opencode",
+                    reviewer_token=opencode_token,
+                )
+                outcome_a = await loop_a.run(diff=filtered)
+            if outcome_a.turns_used == 0 and outcome_a.errors:
+                # A completely failed stage A posts a single skip comment so
+                # the author knows why opencode produced nothing.
+                await self._notify_skip(
+                    event,
+                    SkipReason.OPENCODE_FAILED,
+                    (
+                        "Opencode stage A failed every turn. "
+                        f"Reasons: {', '.join(outcome_a.errors[:3])}. "
+                        "Codex (stage B) still runs."
+                    ),
+                )
+
+        # ----- Stage B: codex (Claude-API) — up to codex_max_turns -----
+        if self._codex_available:
+            review_token = await get_codex_reviewer_token()
+            async with self._registry() as registry:
+                loop_b = ReviewLoop(
+                    CodexReviewer(project_root),
+                    max_turns=settings.codex_max_turns,
+                    registry=registry,
+                    project_id=project_id,
+                    pr_url=event.pr_url,
+                    pr_number=event.pr_number,
+                    repo_full_name=event.repo_full_name,
+                    head_sha=head_sha,
+                    stage="codex",
+                    reviewer_token=review_token,
+                )
+                await loop_b.run(diff=filtered)
         logger.info(
-            "Review %s for PR #%d: verdict=%s findings=%d",
-            "posted" if posted else "dropped",
+            "review_session_end pr=%d repo=%s",
             event.pr_number,
-            result.verdict,
-            len(result.findings),
+            event.repo_full_name,
         )
+
+    def _registry(self) -> _RegistryCtx:
+        """Context manager that yields an ``IReviewTurnRegistry`` bound to a session."""
+        from src.shared.database import async_session_factory
+
+        factory = self._session_factory or async_session_factory
+        return _RegistryCtx(factory)
+
+    async def _resolve_project_id(self, event: WebhookEvent) -> UUID | None:
+        """Resolve the project UUID for this webhook event's repo."""
+        from src.board.repository import BoardRepository
+        from src.shared.database import async_session_factory
+
+        factory = self._session_factory or async_session_factory
+        async with factory() as session:
+            repo = BoardRepository(session)
+            project = await repo.find_project_by_repo(event.repo_full_name)
+            return project.id if project is not None else None
 
     async def _fetch_pr_diff(self, repo_full_name: str, pr_number: int, token: str) -> str:
         """Fetch the PR diff via ``gh pr diff`` using the GitHub App bot token."""
@@ -846,51 +1060,70 @@ class ReviewEngineConsumer:
             )
 
     def _parse_output(self, raw: str, pr_number: int) -> ReviewResult | None:
-        """Try to parse review output, handling both schema formats.
+        """Try to parse review output — thin wrapper around module-level helper."""
+        return parse_reviewer_output(raw, pr_number)
 
-        The Codex --output-schema format uses different field names than our
-        internal ReviewResult. This method normalizes both.
-        """
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            # Maybe there's JSON embedded in other output — try to extract it
-            start = raw.find("{")
-            end = raw.rfind("}") + 1
-            if start >= 0 and end > start:
-                try:
-                    data = json.loads(raw[start:end])
-                except json.JSONDecodeError:
-                    return None
-            else:
+
+def parse_reviewer_output(raw: str, pr_number: int | None = None) -> ReviewResult | None:
+    """Parse raw reviewer stdout into ``ReviewResult``, or ``None`` on failure.
+
+    Handles both the internal ``{verdict, summary, findings}`` schema and the
+    Codex ``--output-schema`` format (``findings[].code_location``,
+    ``overall_correctness``). The Codex path normalizes findings into the
+    internal shape while PRESERVING the optional top-level ``status`` field
+    (spec §7.1 — losing this was the MEDIUM finding on PR #185 round 1).
+
+    ``pr_number`` is informational only (appears in warning logs).
+    """
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        # Maybe there's JSON embedded in other output — try to extract it
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
+        if start >= 0 and end > start:
+            try:
+                data = json.loads(raw[start:end])
+            except json.JSONDecodeError:
                 return None
+        else:
+            return None
 
-        # Normalize from Codex schema format to our ReviewResult format
-        if "overall_correctness" in data and "verdict" not in data:
-            # Codex schema format — convert
-            is_correct = data.get("overall_correctness") == "patch is correct"
-            verdict = "approve" if is_correct else "request_changes"
-            findings = []
-            for f in data.get("findings", []):
-                loc = f.get("code_location", {})
-                line_range = loc.get("line_range", {})
-                priority = f.get("priority", 0)
-                severity = {3: "critical", 2: "high", 1: "medium", 0: "info"}.get(priority, "info")
-                findings.append(
-                    {
-                        "file": loc.get("absolute_file_path", "unknown"),
-                        "line": line_range.get("start", 1),
-                        "severity": severity,
-                        "body": f.get("body", f.get("title", "")),
-                    }
-                )
-            data = {
-                "verdict": verdict,
-                "summary": data.get("overall_explanation", ""),
-                "findings": findings,
-            }
+    # Normalize from Codex schema format to our ReviewResult format
+    if "overall_correctness" in data and "verdict" not in data:
+        # Codex schema format — convert. Preserve the optional top-level
+        # `status` field so the ReviewLoop's explicit-consensus check sees it
+        # (spec §7.1; losing this in the rewrite was the MEDIUM finding on
+        # PR #185 round 1 that triggered the T-261 re-work).
+        is_correct = data.get("overall_correctness") == "patch is correct"
+        verdict = "approve" if is_correct else "request_changes"
+        status = data.get("status")
+        findings = []
+        for f in data.get("findings", []):
+            loc = f.get("code_location", {})
+            line_range = loc.get("line_range", {})
+            priority = f.get("priority", 0)
+            severity = {3: "critical", 2: "high", 1: "medium", 0: "info"}.get(priority, "info")
+            findings.append(
+                {
+                    "file": loc.get("absolute_file_path", "unknown"),
+                    "line": line_range.get("start", 1),
+                    "severity": severity,
+                    "body": f.get("body", f.get("title", "")),
+                    # Keep the title too so ReviewLoop's predicate (b)
+                    # (zero-new-findings across prior turns) has a stable
+                    # key per spec §1.1.
+                    "title": f.get("title", ""),
+                }
+            )
+        data = {
+            "verdict": verdict,
+            "summary": data.get("overall_explanation", ""),
+            "findings": findings,
+            "status": status,
+        }
 
-        return parse_review_output(json.dumps(data))
+    return parse_review_output(json.dumps(data))
 
 
 @dataclass
@@ -987,6 +1220,35 @@ def _format_unparseable_body(outcome: _AgentAttemptOutcome) -> str:
             "</details>",
         ]
     return "\n".join(lines)
+
+
+async def _probe_opencode_alive() -> tuple[bool, str]:
+    """Check the opencode binary responds to ``--version``.
+
+    Returns ``(alive, detail)``. Never raises — diagnostics only.
+    Mirrors ``_probe_codex_alive`` exactly so the same health-check shape
+    works for both reviewer binaries (spec §5.4).
+    """
+    try:
+        proc = await _create_subprocess(
+            settings.opencode_cmd,
+            "--version",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=_HEALTH_PROBE_TIMEOUT_SECONDS
+        )
+        if proc.returncode == 0:
+            return True, stdout.decode(errors="replace").strip()[:120] or "ok"
+        err = (stderr.decode(errors="replace").strip() or "nonzero exit")[:120]
+        return False, err
+    except TimeoutError:
+        return False, f"probe timed out after {_HEALTH_PROBE_TIMEOUT_SECONDS:.0f}s"
+    except OSError as err:
+        return False, f"OSError: {err}"[:120]
+    except Exception as err:  # noqa: BLE001 - diagnostics only, never raise
+        return False, f"{type(err).__name__}: {err}"[:120]
 
 
 async def _probe_codex_alive() -> tuple[bool, str]:

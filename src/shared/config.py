@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     review_agent_cmd: str = "codex"
     review_max_per_hour: int = 10
     review_enabled: bool = True
+    opencode_cmd: str = "opencode"
+    opencode_model: str = "ollama/gemma4:e4b"
+    opencode_max_turns: int = 5
+    codex_max_turns: int = 2
+    opencode_turn_timeout_seconds: float = 180.0
     review_source_root: Path | None = Field(
         default=None,
         description=(

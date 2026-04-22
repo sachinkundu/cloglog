@@ -7,6 +7,7 @@ async function suitable for use from webhook consumers. Tokens expire after
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +42,21 @@ _CODEX_PERMISSIONS: Final = {
     "pull_requests": "write",
 }
 
+# ---------------------------------------------------------------------------
+# Opencode reviewer bot (posts reviews only) — operational onboarding:
+# install the GitHub App, download its private key, and place it at
+# ~/.agent-vm/credentials/opencode-reviewer.pem (mode 0600). App-id and
+# installation-id are overridable via env vars so a host that hasn't
+# onboarded the App yet can still import this module without KeyError.
+# ---------------------------------------------------------------------------
+_OPENCODE_APP_ID: Final = os.environ.get("OPENCODE_APP_ID", "")
+_OPENCODE_INSTALLATION_ID: Final = os.environ.get("OPENCODE_INSTALLATION_ID", "")
+_OPENCODE_PEM: Final = Path.home() / ".agent-vm" / "credentials" / "opencode-reviewer.pem"
+_OPENCODE_PERMISSIONS: Final = {
+    "contents": "read",
+    "pull_requests": "write",
+}
+
 
 @dataclass
 class _TokenCache:
@@ -50,6 +66,7 @@ class _TokenCache:
 
 _claude_cache = _TokenCache()
 _codex_cache = _TokenCache()
+_opencode_cache = _TokenCache()
 
 
 def _build_jwt(app_id: str, pem_path: Path) -> str:
@@ -113,9 +130,39 @@ async def get_codex_reviewer_token() -> str:
     )
 
 
+class OpencodeBotNotConfiguredError(RuntimeError):
+    """Raised when OPENCODE_APP_ID / OPENCODE_INSTALLATION_ID are unset.
+
+    Callers in the sequencer treat this as the same class of failure as a
+    missing PEM — stage A is skipped with a single structured log line.
+    """
+
+
+async def get_opencode_reviewer_token() -> str:
+    """Opencode reviewer bot token — for posting PR reviews.
+
+    Raises ``OpencodeBotNotConfiguredError`` if the app-id/installation-id env
+    vars are not set; the sequencer catches this and degrades gracefully.
+    """
+    if not _OPENCODE_APP_ID or not _OPENCODE_INSTALLATION_ID:
+        raise OpencodeBotNotConfiguredError(
+            "OPENCODE_APP_ID and OPENCODE_INSTALLATION_ID must be set "
+            "(install the GitHub App and provide its identifiers via env vars)"
+        )
+    return await _get_token(
+        _OPENCODE_APP_ID,
+        _OPENCODE_INSTALLATION_ID,
+        _OPENCODE_PEM,
+        _OPENCODE_PERMISSIONS,
+        _opencode_cache,
+    )
+
+
 def reset_token_cache() -> None:
     """Clear all cached tokens. Primarily for tests."""
     _claude_cache.token = None
     _claude_cache.fetched_at = 0.0
     _codex_cache.token = None
     _codex_cache.fetched_at = 0.0
+    _opencode_cache.token = None
+    _opencode_cache.fetched_at = 0.0

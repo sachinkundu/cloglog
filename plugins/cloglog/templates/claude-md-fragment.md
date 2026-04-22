@@ -52,7 +52,7 @@
 
 - **Agents deregister themselves.** Exit condition: `get_my_tasks` returns no task with status `backlog` for this worktree. That is the single authoritative signal — do NOT wait for `done` (administrative, user-driven, no push notification) and do NOT gate on a derived "feature pipeline is complete" condition.
 - **Before `unregister_agent`, emit an `agent_unregistered` event to `<project_root>/.cloglog/inbox`** carrying `worktree`, `worktree_id`, `ts`, `tasks_completed`, absolute paths to `shutdown-artifacts/work-log.md` and `shutdown-artifacts/learnings.md`, and `reason`. This is how the main agent's close-wave flow learns you are done. The SessionEnd hook writes a best-effort fallback only.
-- **Three-tier shutdown:** (1) Cooperative — main agent calls `request_shutdown`; agent finishes the current MCP call, runs the full shutdown sequence, unregisters. (2) Force unregister — main agent calls `force_unregister` (project-scoped admin tool); the backend unregisters unconditionally and the agent's next MCP call fails, at which point the agent writes `mcp_unavailable` and exits. (3) Heartbeat timeout — server-side sweep at 180 s marks stale sessions offline; catch-all for crashes, not a cooperative signal.
+- **Three-tier shutdown:** (1) Cooperative — main agent calls `request_shutdown`; agent finishes the current MCP call, runs the full shutdown sequence, unregisters. (2) Force unregister — main agent calls `force_unregister` (project-scoped admin tool); the backend unregisters unconditionally and the agent's next MCP call fails with auth rejection — a runtime tool error per §4.1, so the agent writes `mcp_tool_error` and waits (main initiated the force and can ignore the event). (3) Heartbeat timeout — server-side sweep at 180 s marks stale sessions offline; catch-all for crashes, not a cooperative signal.
 - **Artifact handoff is explicit.** The `agent_unregistered` event carries absolute paths so the main agent can read them after the worktree is torn down.
 
 ### Proof-of-Work Demos
@@ -77,3 +77,10 @@
 
 - **NEVER wait for user input.** Worktree agents are fully autonomous. All communication with the user happens via PR comments on GitHub — never via the terminal.
 - **Never use interactive skills that ask questions.** Write design specs directly with your own recommendations, create the PR, and let the user review it there.
+
+### Stop on MCP failure
+
+- **Halt on any MCP failure: startup unavailability emits `mcp_unavailable` and exits; runtime tool errors emit `mcp_tool_error` and wait for the main agent; transient network errors get one backoff retry before escalating.** See `docs/design/agent-lifecycle.md` §4.1 for the full rule and both event shapes.
+- **Startup unavailability** (ToolSearch returns no matches, or the first MCP call after register fails at the transport layer): write `mcp_unavailable` to `<project_root>/.cloglog/inbox` and exit. Do not fall back to direct HTTP, `gh api`, or the project API key — the agent cannot participate without MCP.
+- **Runtime tool error** (HTTP 5xx, backend exception, 409 state-machine guard, schema-validation error): write `mcp_tool_error` to `<project_root>/.cloglog/inbox` carrying the failing tool name and error text, then **wait** on the inbox Monitor for main-agent guidance. A 409 is not advisory — it is the backend refusing the transition; silent continuation ships broken work.
+- **Transient network errors** (`ECONNRESET`, `ETIMEDOUT`, fetch timeout): one retry after a short backoff (≥ 2 s). If the retry also fails, emit `mcp_tool_error` and wait. HTTP 5xx and 409 are NOT transient and MUST NOT be retried.

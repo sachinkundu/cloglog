@@ -99,6 +99,18 @@ Before completing any task or creating a PR, run `make quality` and verify it pa
 
 **All pushes, PRs, and GitHub API calls MUST use the GitHub App bot identity.** Use the `github-bot` skill for all GitHub operations — it has the exact commands for pushing, creating PRs, checking PR status, replying to comments, and CI recovery. Never use `git push`, `gh pr`, or `gh api` without the bot token.
 
+## Stop on MCP Failure
+
+Halt on any MCP failure: startup unavailability emits `mcp_unavailable` and exits; runtime tool errors emit `mcp_tool_error` and wait for the main agent; transient network errors get one backoff retry before escalating.
+
+This rule is authoritative in `docs/design/agent-lifecycle.md` §4.1. A short restatement for agents working in this repo:
+
+- **Startup unavailability** (ToolSearch returns no matches, or the first MCP call after register fails at the transport layer) → write an `mcp_unavailable` event to `<project_root>/.cloglog/inbox` and exit. Do not fall back to direct HTTP, `curl`, or `gh api` against the backend — the project API key in the worktree environment MUST NOT be used to work around MCP.
+- **Runtime tool error** (HTTP 5xx, backend exception, 409 state-machine guard, auth rejection, schema error mid-task) → write an `mcp_tool_error` event to `<project_root>/.cloglog/inbox` carrying the failing tool name and error text, halt the current task, and wait on your inbox Monitor for main-agent guidance. A 409 is not advisory; it is the backend refusing the transition. Silent continuation after a guard rejection has already shipped broken work more than once — do not "press on."
+- **Transient network errors** (`ECONNRESET`, `ETIMEDOUT`, fetch timeout) → one retry after ≥ 2 s backoff, then escalate to `mcp_tool_error` on the second failure. HTTP 5xx and 409 are NOT transient and MUST NOT be retried.
+
+The `plugins/cloglog/hooks/prefer-mcp.sh` pre-bash hook enforces the "no direct HTTP" half of this rule; T-219 extends its coverage from load-time to runtime.
+
 ## Non-Negotiable Principles
 
 These are CRITICAL. Every agent, every worktree, every task. No exceptions.

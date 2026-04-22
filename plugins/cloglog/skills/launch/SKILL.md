@@ -81,7 +81,12 @@ When you receive a message, read it and act on the instruction. The main agent m
 
 ## Workflow
 1. Read the project CLAUDE.md for project-specific instructions
-2. Load MCP tools: call `ToolSearch(query: "select:mcp__cloglog__register_agent,mcp__cloglog__start_task,mcp__cloglog__update_task_status,mcp__cloglog__get_my_tasks,mcp__cloglog__unregister_agent,mcp__cloglog__add_task_note,mcp__cloglog__mark_pr_merged,mcp__cloglog__report_artifact")` — MCP tools are deferred and MUST be loaded via ToolSearch before calling them. If ToolSearch returns no matches, MCP is unavailable — write an `mcp_unavailable` event to `<project_root>/.cloglog/inbox` and exit.
+2. Load MCP tools: call `ToolSearch(query: "select:mcp__cloglog__register_agent,mcp__cloglog__start_task,mcp__cloglog__update_task_status,mcp__cloglog__get_my_tasks,mcp__cloglog__unregister_agent,mcp__cloglog__add_task_note,mcp__cloglog__mark_pr_merged,mcp__cloglog__report_artifact")` — MCP tools are deferred and MUST be loaded via ToolSearch before calling them.
+
+   **Stop on MCP failure.** Halt on any MCP failure: startup unavailability emits `mcp_unavailable` and exits; runtime tool errors emit `mcp_tool_error` and wait for the main agent; transient network errors get one backoff retry before escalating. See `docs/design/agent-lifecycle.md` §4.1 for both event shapes.
+     - **Startup** (ToolSearch returns no matches, or the first MCP call after register fails at the transport layer): write an `mcp_unavailable` event to `<project_root>/.cloglog/inbox` and exit.
+     - **Runtime** (MCP tool call returns 5xx, backend exception, 409 state-machine guard, auth rejection, or schema error mid-task): write an `mcp_tool_error` event to `<project_root>/.cloglog/inbox` carrying the failing tool name + error, halt, and wait on your inbox Monitor for main-agent guidance. Never retry a 409 or a 5xx; never fall back to direct HTTP or `gh api`.
+     - **Transient network** (`ECONNRESET`, `ETIMEDOUT`, fetch timeout): one retry after ≥ 2 s backoff, then escalate to `mcp_tool_error` on second failure.
 3. Start inbox monitor (see Inbox section above)
 4. Register: call `mcp__cloglog__register_agent` with this worktree path
 5. Echo `agent_started` to the main agent inbox (`<project_root>/.cloglog/inbox`) so the main agent sees you are live:

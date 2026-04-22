@@ -1,17 +1,17 @@
 # Reviewers have a single design doc that pins every semantic of the two-stage iterative PR review pipeline T-248 will implement — opencode (gemma4:e4b) for up to 5 turns, then codex for up to 2 turns, short-circuiting on consensus.
 
-*2026-04-22T16:51:25Z by Showboat 0.6.1*
-<!-- showboat-id: 2ae68464-c38f-44ae-8439-2632697de55f -->
+*2026-04-22T16:59:16Z by Showboat 0.6.1*
+<!-- showboat-id: 6e70c977-9047-411d-bf19-4fbac3d6fec8 -->
 
 ### The 8 questions and their answers (one-liners)
 
 1. **Per-reviewer loop semantics / consensus** → option (c): explicit `status: no_further_concerns` flag OR zero-new-findings (tuple key `(file, line, title_lower)`). Worked example in §1.2.
 2. **Sequencing** → strictly serial, handled by a single `WebhookConsumer` that `await`s stage A then stage B (no new event type). §2.
 3. **Turn accounting** → new `pr_review_turns` table keyed `(pr_url, head_sha, stage, turn_number)`. Idempotency via `INSERT ... ON CONFLICT DO NOTHING`. New SHA resets BOTH loops symmetrically. §3.
-4. **Identity** → two GitHub bots (`cloglog-opencode-reviewer[bot]`, `cloglog-codex-reviewer[bot]`); tokens in `~/.cloglog/credentials` (T-214 pattern); visible turn header `**opencode (gemma4:e4b) — turn 3/5**`. §4.
+4. **Identity** → two GitHub App bots (`cloglog-opencode-reviewer[bot]`, `cloglog-codex-reviewer[bot]`); PEMs at `~/.agent-vm/credentials/*.pem` (same precedent as existing codex bot — `~/.cloglog/credentials` is for the backend API key only, NOT reviewer tokens); author-skip fix MUST change `handles()` to `event.sender in _REVIEWER_BOTS` (today's check is `== _CODEX_BOT` and `_BOT_USERNAMES` is not consulted); visible turn header `**opencode (gemma4:e4b) — turn 3/5**`. §4.
 5. **Timeouts** → opencode 180 s / turn, codex 300 s / turn. 5xx and 409 NOT retried; transient `ECONNRESET`/`ETIMEDOUT` get one ≥ 2 s backoff. Dead opencode never blocks codex. §5.
 6. **Contention / queuing** → one review at a time via existing `asyncio.Lock`; implicit FIFO, no dropping/deferring. Rate limit and per-PR cap counted per **session**, not per turn. §6.
-7. **Structured output** → reuse `review-schema.json` verbatim (plus one additive optional field `status`); opencode prompted to emit JSON; freeform fallback to largest-`{...}` substring (existing codex path). §7.
+7. **Structured output** → additive top-level `status` on `review-schema.json` PLUS matching `ReviewResult.status` field PLUS `_parse_output` preserves it through Codex-schema normalization (today `_parse_output` rewrites data to `{verdict, summary, findings}` only, silently dropping any `status` — without all three changes the explicit-consensus branch is a dead branch). §7.
 8. **Observability** → `review_turn_start` / `review_turn_end` / `review_stage_end` / `review_session_end` structured log lines; metric names reserved; task-card badge extended to `opencode 2/5` / `codex 1/2`. §8.
 
 ### Proof the artifact exists and is complete

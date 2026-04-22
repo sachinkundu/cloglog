@@ -538,12 +538,13 @@ async def post_review(
 
 
 class _RegistryCtx:
-    """Async context manager wrapping a DB session + ``ReviewTurnRepository``.
+    """Async context manager yielding an ``IReviewTurnRegistry`` bound to a session.
 
-    Keeps the Gateway consumer from importing ``src.review.repository`` at
-    module load (lazy import inside ``__aenter__`` preserves the DDD rule
-    that Gateway depends on the Review context's *interface*, not models/
-    repository directly).
+    Gateway obtains the registry via ``src.review.services.make_review_turn_registry``
+    — the Open Host Service boundary per ``docs/ddd-context-map.md``. The
+    concrete ``ReviewTurnRepository`` type is NOT imported from Gateway
+    (PR #187 round 2 CRITICAL fix — previously this imported the repository
+    directly, which is a priority-3 DDD violation).
     """
 
     def __init__(self, session_factory: Any) -> None:
@@ -551,11 +552,11 @@ class _RegistryCtx:
         self._session: Any = None
 
     async def __aenter__(self) -> IReviewTurnRegistry:
-        from src.review.repository import ReviewTurnRepository
+        from src.review.services import make_review_turn_registry
 
         self._session = self._factory()
         await self._session.__aenter__()
-        return ReviewTurnRepository(self._session)
+        return make_review_turn_registry(self._session)
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         if self._session is not None:

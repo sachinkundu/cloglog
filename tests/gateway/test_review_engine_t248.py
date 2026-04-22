@@ -450,3 +450,49 @@ class TestOpencodeOnlyHost:
             # codex-token fetch are both BEFORE the diff check. If either runs,
             # the RuntimeError above surfaces. This test asserts neither fires.
             await consumer._review_pr(_event(sender="human-user"))
+
+
+# ---------------------------------------------------------------------------
+# PR #187 round 2 CRITICAL — Gateway must not import Review's repository
+# ---------------------------------------------------------------------------
+
+
+class TestGatewayReviewContextBoundary:
+    """DDD priority-3 guard: Gateway code must only import Review's
+    ``interfaces`` or ``services`` modules — never ``models`` or ``repository``.
+
+    Previously ``src/gateway/review_engine.py::_RegistryCtx.__aenter__`` did
+    ``from src.review.repository import ReviewTurnRepository`` (a lazy import
+    but still a cross-context-internal dependency). PR #187 round 2 CRITICAL
+    moved Gateway to use ``src.review.services.make_review_turn_registry``
+    as the Open Host Service entry point; this test pins that invariant.
+    """
+
+    def test_gateway_code_does_not_import_review_repository(self) -> None:
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parent.parent.parent / "src" / "gateway"
+        offenders: list[str] = []
+        for path in root.rglob("*.py"):
+            text = path.read_text()
+            if "from src.review.repository" in text:
+                offenders.append(str(path.relative_to(root.parent.parent)))
+            if "import src.review.repository" in text:
+                offenders.append(str(path.relative_to(root.parent.parent)))
+        assert offenders == [], (
+            f"Gateway modules must not import src.review.repository directly "
+            f"(use src.review.services instead). Offenders: {offenders}"
+        )
+
+    def test_gateway_code_does_not_import_review_models(self) -> None:
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parent.parent.parent / "src" / "gateway"
+        offenders: list[str] = []
+        for path in root.rglob("*.py"):
+            text = path.read_text()
+            if "from src.review.models" in text or "import src.review.models" in text:
+                offenders.append(str(path.relative_to(root.parent.parent)))
+        assert offenders == [], (
+            f"Gateway modules must not import src.review.models directly. Offenders: {offenders}"
+        )

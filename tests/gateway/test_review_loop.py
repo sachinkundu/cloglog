@@ -554,3 +554,79 @@ class TestPostFailureRetryOnRefire:
         assert rows[0].status == "completed"
         assert rows[0].turn_number == 1
         assert outcome.consensus_reached is True
+
+
+# ---------------------------------------------------------------------------
+# PR #187 round 2 HIGH — webhook redelivery must not repost after consensus
+# ---------------------------------------------------------------------------
+
+
+class TestConsensusShortCircuitOnRefire:
+    """Spec §3.3 + PR #187 round 2 HIGH.
+
+    When a prior turn on the same (pr_url, head_sha, stage) already recorded
+    ``consensus_reached=True``, a webhook redelivery must be a NO-OP. Without
+    the short-circuit, redelivery resumed at turn N+1 and posted another
+    review on a PR that was already done.
+    """
+
+    @pytest.mark.asyncio
+    async def test_prior_consensus_short_circuits_whole_loop(self) -> None:
+        sha = "alreadydone" + "0" * 29
+        registry = FakeRegistry()
+        # Pre-populate: turn 1 already completed with consensus_reached=True.
+        registry._turns[(_PR_URL, sha, "codex", 1)] = ReviewTurnSnapshot(
+            project_id=_PROJECT_ID,
+            pr_url=_PR_URL,
+            pr_number=_PR_NUMBER,
+            head_sha=sha,
+            stage="codex",
+            turn_number=1,
+            status="completed",
+            finding_count=2,
+            consensus_reached=True,
+            elapsed_seconds=1.5,
+        )
+
+        stub = StubReviewer(responses=[(_ok_result(), 1.0, False)])
+        loop = _make_loop(stub, max_turns=3, registry=registry, head_sha=sha)
+
+        with patch(_PATCH_POST_REVIEW, new=AsyncMock(return_value=True)) as mock_post:
+            outcome = await loop.run(diff="diff")
+
+        # Reviewer was NOT invoked; no review posted; loop reports prior consensus.
+        assert stub._call_count == 0
+        mock_post.assert_not_awaited()
+        assert outcome.consensus_reached is True
+        assert outcome.turns_used == 1
+
+    @pytest.mark.asyncio
+    async def test_prior_consensus_on_later_turn_also_short_circuits(self) -> None:
+        """Consensus on turn 2 (e.g. after 1 failed + 1 successful) still short-circuits."""
+        sha = "laterconsensus" + "0" * 26
+        registry = FakeRegistry()
+        # Turn 1 completed without consensus, turn 2 completed WITH consensus.
+        for turn, consensus in [(1, False), (2, True)]:
+            registry._turns[(_PR_URL, sha, "codex", turn)] = ReviewTurnSnapshot(
+                project_id=_PROJECT_ID,
+                pr_url=_PR_URL,
+                pr_number=_PR_NUMBER,
+                head_sha=sha,
+                stage="codex",
+                turn_number=turn,
+                status="completed",
+                finding_count=1,
+                consensus_reached=consensus,
+                elapsed_seconds=1.0,
+            )
+
+        stub = StubReviewer(responses=[(_ok_result(), 1.0, False)])
+        loop = _make_loop(stub, max_turns=3, registry=registry, head_sha=sha)
+
+        with patch(_PATCH_POST_REVIEW, new=AsyncMock(return_value=True)) as mock_post:
+            outcome = await loop.run(diff="diff")
+
+        assert stub._call_count == 0
+        mock_post.assert_not_awaited()
+        assert outcome.consensus_reached is True
+        assert outcome.turns_used == 2

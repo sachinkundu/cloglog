@@ -182,6 +182,25 @@ class ReviewLoop:
         )
         outcome = LoopOutcome(turns_used=0, consensus_reached=False, total_elapsed_seconds=0.0)
 
+        # Spec §3.3 + PR #187 round 2 HIGH: if ANY prior turn on this
+        # (pr_url, head_sha, stage) already recorded consensus_reached=True,
+        # the stage is terminal for this SHA. A webhook redelivery must not
+        # post another review on the same commit — short-circuit here before
+        # claim_turn advances past the completed work.
+        if any(t.consensus_reached for t in existing):
+            prior_consensus_turn = max(t.turn_number for t in existing if t.consensus_reached)
+            logger.info(
+                "review_stage_already_at_consensus stage=%s pr=%d sha=%s turn=%d — noop",
+                self._stage,
+                self._pr_number,
+                self._head_sha[:7],
+                prior_consensus_turn,
+            )
+            outcome.turns_used = prior_consensus_turn
+            outcome.consensus_reached = True
+            outcome.total_elapsed_seconds = time.monotonic() - start_all
+            return outcome
+
         start_turn = self._compute_next_turn(existing)
         if start_turn > self._max_turns:
             # Already ran to cap on a prior webhook delivery — nothing to do.

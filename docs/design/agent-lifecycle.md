@@ -243,7 +243,8 @@ never received by it.
 | --- | --- |
 | `agent_started` | Immediately after a successful `register_agent`. Tells the main agent the worktree is live. |
 | `agent_unregistered` | Step 4 of the Section 2 shutdown sequence, before `unregister_agent`. Carries paths to shutdown artifacts. |
-| `mcp_unavailable` | Any MCP failure (Section 4). Includes the failing tool name and error text. |
+| `mcp_unavailable` | **Startup** MCP failure only (Section 4.1): ToolSearch returns no matches, or the first MCP call fails at the transport layer. Agent emits and exits. |
+| `mcp_tool_error` | **Runtime** MCP failure (Section 4.1): an MCP tool call returned a 5xx, a backend exception, a 409 state-machine guard, or — after one backoff retry — a transient network error. Agent emits and waits for main. |
 | `need_session_restart` | On `mcp_tools_updated` when the new tools are load-bearing for the active task. |
 
 ### Events that will NEVER arrive
@@ -274,34 +275,120 @@ hostname. No `curl`, `wget`, `httpie`, `python -c 'urllib...'`, `node -e
 present in the worktree environment; agents MUST ignore it (T-214 is the
 follow-up that removes it from the worktree entirely).
 
-An **MCP failure** is ANY of:
+### 4.1 Halt on any MCP failure
 
-- `ToolSearch` returns no matches for an `mcp__cloglog__*` tool (load failure).
-- An MCP tool call returns an error: fetch error, HTTP 5xx, auth rejection,
-  timeout, schema validation error, malformed response.
+Halt on any MCP failure: startup unavailability emits `mcp_unavailable` and exits; runtime tool errors emit `mcp_tool_error` and wait for the main agent; transient network errors get one backoff retry before escalating.
 
-Required response to any MCP failure:
+The rule applies at two moments in a session's life, each with its own
+response. An "MCP failure" never means "try something else" — the only
+two outcomes are (a) halt and exit after emitting `mcp_unavailable`, or
+(b) halt and wait after emitting `mcp_tool_error`. Silent continuation
+is never acceptable: a 409 guard, a 5xx, or an auth rejection is the
+backend telling the agent "you are wrong about board state"; proceeding
+anyway ships broken work.
 
-1. **Halt.** Do not retry the same call in a loop; do not fall back to direct
-   HTTP; do not skip the operation and continue.
-2. **Emit `mcp_unavailable` to the main inbox**
+#### Startup unavailability → `mcp_unavailable`
+
+Triggers:
+
+- `ToolSearch` returns no matches for an `mcp__cloglog__*` tool (the MCP
+  server did not load, or the worktree's `.mcp.json` was never generated).
+- First MCP call after registration fails with a transport-level error
+  (`ECONNREFUSED`, DNS failure, TLS handshake error).
+
+Response:
+
+1. Do not register with the board (or, if already registered, skip every
+   subsequent MCP call).
+2. Write `mcp_unavailable` to the main inbox
    (`<project_root>/.cloglog/inbox` — see [Paths and discovery](#paths-and-discovery)):
 
    ```json
    {
      "type": "mcp_unavailable",
-     "worktree": "wt-...",
-     "tool": "mcp__cloglog__<name>",
+     "worktree": "<wt-name>",
+     "worktree_id": "<uuid|null>",
+     "ts": "<utc-iso>",
+     "tool": "mcp__cloglog__<name>|ToolSearch",
      "error": "<concise error text>",
-     "ts": "<utc-iso>"
+     "reason": "startup_unavailable"
    }
    ```
-3. **Wait** for the main agent's guidance. The main agent may repair MCP and
-   signal resume, or may decide to force-unregister and reassign.
+3. Exit. The agent cannot participate in the board without MCP; waiting does
+   not help because the session itself cannot hot-reload tools (Section 6).
+   The main agent will force-unregister and re-launch after repairing MCP.
 
-Enforcement is in the `plugins/cloglog/hooks/prefer-mcp.sh` pre-bash hook. This
-document is the rule that hook enforces; see T-219 for the hook hardening that
-closes current bypass holes.
+#### Runtime tool error → `mcp_tool_error`
+
+Triggers (every one of these is the backend speaking — trust it):
+
+- HTTP 5xx from an MCP tool call.
+- Backend exception surfaced as a non-2xx error body.
+- Pipeline / state-machine guard (typically HTTP 409) — e.g.,
+  `start_task` returning 409 because the predecessor is not resolved,
+  `update_task_status` rejecting a disallowed column transition,
+  `mark_pr_merged` returning 409 because the task is not in `review`.
+- Auth rejection after a successful register (usually tier-2 force-unregister
+  — Section 5).
+- Schema-validation error, malformed response body, unknown tool error.
+
+Response:
+
+1. **Halt the current task.** Do not retry the same call; do not fall back to
+   direct HTTP or `gh api`; do not skip the step and "press on." A 409 is
+   not advisory — the backend is refusing the transition.
+2. Write `mcp_tool_error` to the main inbox:
+
+   ```json
+   {
+     "type": "mcp_tool_error",
+     "worktree": "<wt-name>",
+     "worktree_id": "<uuid>",
+     "ts": "<utc-iso>",
+     "tool": "<mcp_tool_name>",
+     "error": "<short message or status>",
+     "task_id": "<uuid|null>",
+     "reason": "runtime_tool_error"
+   }
+   ```
+
+   The `reason` field is an open enum. The default is `runtime_tool_error`;
+   use a more specific value when the agent recognises the error as a
+   known-classifiable case so the supervisor can auto-handle without
+   inspecting the error text. Recognised values today:
+
+   | `reason` | When | Supervisor response |
+   | --- | --- | --- |
+   | `runtime_tool_error` | Default — any 5xx, schema error, auth rejection, unrecognised 409, retry-exhausted transient. | Diagnose from `tool` + `error`; usually a code or state fix followed by an inbox write telling the agent to resume. |
+   | `pipeline_guard_blocked` | 409 from `start_task` on an impl task when the plan predecessor is in `review` with no `pr_url` (T-NEW-b backend gap). Agents MAY add a `predecessor_task_id` field carrying the blocking plan task's UUID. | Advance the impl task directly (bypass the guard) or wait for T-NEW-b to ship; then write a resume message to the worktree inbox. |
+
+3. **Wait** on the inbox Monitor for main-agent guidance. Main may repair the
+   board state (e.g., advance the pipeline so a blocked `start_task` now
+   succeeds) and signal resume via a message, or may decide to
+   force-unregister and reassign. Do not unregister voluntarily — the main
+   agent owns the decision.
+
+#### Transient network retry
+
+A small class of failures is known-transient and warrants exactly one retry
+before escalating:
+
+- `ECONNRESET`, `ETIMEDOUT`, `EAI_AGAIN` on an MCP tool call that previously
+  succeeded in this session.
+- A fetch timeout below the tool's default deadline.
+
+Retry policy: one attempt after a short backoff (≥ 2 s, ≤ 10 s). If the retry
+also fails, treat the second failure as a **runtime tool error** and follow
+the response above — emit `mcp_tool_error` and wait. Never enter a retry loop;
+"two tries then escalate" is the whole policy.
+
+HTTP 5xx and 409 are NOT transient. A 500 means the backend hit an exception;
+a 409 means the backend is refusing on purpose. Neither improves by retrying.
+
+Enforcement is in the `plugins/cloglog/hooks/prefer-mcp.sh` pre-bash hook.
+This document is the rule that hook enforces; see T-219 for the hook
+hardening that closes current bypass holes and extends enforcement from
+startup-only to runtime tool errors.
 
 ## 5. Three-tier shutdown from the main side
 
@@ -344,8 +431,9 @@ tried in order; later tiers are last resorts.
   active session row, and emits `WORKTREE_OFFLINE` with reason
   `force_unregistered`. The agent's Claude Code process is NOT killed — it
   merely loses its backend session. If the agent is still running, its next
-  MCP call will fail with auth rejection; the agent then follows Section 4 and
-  writes `mcp_unavailable` to the main inbox, which main can ignore.
+  MCP call will fail with auth rejection; the agent then follows Section 4.1
+  (runtime tool error) and writes `mcp_tool_error` to the main inbox, which
+  main can ignore (it initiated the force).
 - **When to use.** After tier 1's 120 s timeout elapses without an
   `agent_unregistered` event, OR when the agent is known wedged (process
   looping, MCP call stuck, terminal unresponsive) and cooperative shutdown has

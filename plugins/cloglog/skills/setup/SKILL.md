@@ -79,3 +79,14 @@ When the user asks "what are the current messages in inbox", "show inbox", "read
 ## Context
 
 You are the supervisor. Worktree agents write to your inbox when they need help (MCP failures, environment issues, questions). When you receive an inbox notification, diagnose the problem and respond by writing to the agent's inbox or sending a message via MCP.
+
+### Stop on MCP failure (supervisor side)
+
+Halt on any MCP failure: startup unavailability emits `mcp_unavailable` and exits; runtime tool errors emit `mcp_tool_error` and wait for the main agent; transient network errors get one backoff retry before escalating.
+
+Two distinct inbox events can land from a worktree agent hitting MCP trouble — react differently to each:
+
+- **`mcp_unavailable`** — the agent could not reach MCP at startup (ToolSearch returned no matches, or the first post-register call failed at the transport layer). The agent has already exited. Diagnose the outage (is the backend up? was the worktree's `.mcp.json` written? did `CLOGLOG_API_KEY` land in `~/.cloglog/credentials`?) and, once repaired, `force_unregister` the dead session and relaunch the agent.
+- **`mcp_tool_error`** — the agent reached MCP but a tool call returned a 5xx, 409 state guard, auth rejection, schema error, or (after one backoff retry) a transient network error. The agent is **still running and waiting** on its inbox Monitor. Inspect the `tool` + `error` fields, fix the root cause (advance a stuck pipeline predecessor, correct board state, resolve a conflict), then write a resume instruction to the agent's inbox (`<worktree_path>/.cloglog/inbox`) or force-unregister if the agent is beyond recovery. Do not ignore the event — the agent cannot self-resume.
+
+See `docs/design/agent-lifecycle.md` §4.1 for the full rule, both event shapes, and the retry policy that agents must follow.

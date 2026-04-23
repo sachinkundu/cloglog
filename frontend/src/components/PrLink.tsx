@@ -3,6 +3,7 @@ import './PrLink.css'
 interface PrLinkProps {
   url: string
   merged?: boolean
+  codexReviewed?: boolean
 }
 
 function extractPrNumber(url: string): string | null {
@@ -10,7 +11,7 @@ function extractPrNumber(url: string): string | null {
   return match ? match[1] : null
 }
 
-export function PrLink({ url, merged }: PrLinkProps) {
+export function PrLink({ url, merged, codexReviewed }: PrLinkProps) {
   const prNumber = extractPrNumber(url)
   const label = prNumber ? `PR #${prNumber}` : 'PR'
 
@@ -29,6 +30,14 @@ export function PrLink({ url, merged }: PrLinkProps) {
         </svg>
         {label}
       </a>
+      {codexReviewed && (
+        <span
+          className="pr-codex-badge"
+          title="codex has engaged with this PR"
+        >
+          codex reviewed
+        </span>
+      )}
       {merged && <span className="pr-merged-badge">Merged</span>}
     </span>
   )

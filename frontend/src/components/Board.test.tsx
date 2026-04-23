@@ -29,6 +29,7 @@ const makeTask = (id: string, title: string, status: string, overrides?: Partial
   epic_title: 'Epic A',
   feature_title: 'Feature A',
   epic_color: '#7c3aed',
+  codex_review_picked_up: false,
   ...overrides,
 })
 

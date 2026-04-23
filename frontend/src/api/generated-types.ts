@@ -451,6 +451,53 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/{worktree_id}/request-shutdown": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request Shutdown
+         * @description T-218 — supervisor-initiated graceful shutdown. Writes a `shutdown`
+         *     JSON line to `<worktree_path>/.cloglog/inbox`. Idempotent. Auth via
+         *     MCP service key or project API key.
+         */
+        post: operations["request_shutdown_api_v1_agents__worktree_id__request_shutdown_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/{worktree_id}/force-unregister": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Force Unregister
+         * @description T-221 — tier-2 fallback for wedged worktrees. Ends the active
+         *     session, deletes the worktree row, and emits a single
+         *     `WORKTREE_OFFLINE` event with `reason: "force_unregistered"`.
+         *     Idempotent: returns `already_unregistered: true` on repeat calls.
+         *     Auth: MCP service key OR project API key (agent tokens are refused
+         *     so a wedged agent cannot force-unregister itself).
+         */
+        post: operations["force_unregister_api_v1_agents__worktree_id__force_unregister_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/worktrees": {
         parameters: {
             query?: never;
@@ -753,6 +800,16 @@ export interface components {
              */
             created_at: string;
         };
+        /** ForceUnregisterResponse */
+        ForceUnregisterResponse: {
+            /**
+             * Worktree Id
+             * Format: uuid
+             */
+            worktree_id: string;
+            /** Already Unregistered */
+            already_unregistered: boolean;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -1010,6 +1067,15 @@ export interface components {
              * @default false
              */
             pr_merged: boolean;
+            /**
+             * Codex Review Picked Up
+             * @description True when at least one codex review turn has been persisted
+             *     for this task's pr_url. Drives the "codex reviewed" badge on
+             *     review-column task cards (T-260). Projected read-only from
+             *     ``pr_review_turns``; never a write target.
+             * @default false
+             */
+            codex_review_picked_up: boolean;
         };
         /** TaskCounts */
         TaskCounts: {
@@ -2117,6 +2183,91 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_shutdown_api_v1_agents__worktree_id__request_shutdown_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                worktree_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        shutdown_requested: boolean;
+                    };
+                };
+            };
+            /** @description Worktree not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Worktree has no worktree_path (legacy row) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    force_unregister_api_v1_agents__worktree_id__force_unregister_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                worktree_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ForceUnregisterResponse"];
+                };
+            };
+            /** @description Worktree belongs to a different project */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

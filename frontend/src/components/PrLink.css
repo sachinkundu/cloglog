@@ -41,3 +41,17 @@
   color: var(--green, #2ea043);
   text-transform: uppercase;
 }
+
+.pr-codex-badge {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--accent, #7c3aed) 18%, transparent);
+  color: var(--accent, #7c3aed);
+  text-transform: uppercase;
+}

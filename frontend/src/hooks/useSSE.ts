@@ -32,6 +32,7 @@ export function useSSE(
       'dependency_added',
       'dependency_removed',
       'bulk_agents_removed',
+      'review_codex_turn_started',
     ] as const
 
     for (const type of eventTypes) {

@@ -34,7 +34,13 @@ export function TaskCard({ task, onClick, worktreeNames }: TaskCardProps) {
         {task.worktree_id && (
           <span className="task-worktree">{worktreeNames?.[task.worktree_id] ?? 'agent (removed)'}</span>
         )}
-        {task.pr_url && <PrLink url={task.pr_url} merged={task.pr_merged} />}
+        {task.pr_url && (
+          <PrLink
+            url={task.pr_url}
+            merged={task.pr_merged}
+            codexReviewed={task.status === 'review' && task.codex_review_picked_up}
+          />
+        )}
       </div>
     </div>
   )

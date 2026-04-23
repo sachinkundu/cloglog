@@ -34,6 +34,7 @@ const baseTask: TaskCard = {
   epic_title: 'Security',
   feature_title: 'Auth System',
   epic_color: '#7c3aed',
+  codex_review_picked_up: false,
 }
 
 const mockDocs: DocumentSummary[] = [

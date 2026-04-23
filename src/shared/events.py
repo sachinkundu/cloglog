@@ -29,6 +29,13 @@ class EventType(StrEnum):
     TASK_RETIRED = "task_retired"
     BULK_RETIRED = "bulk_retired"
     BULK_AGENTS_REMOVED = "bulk_agents_removed"
+    # Emitted when the review engine claims the first turn of a codex review
+    # on a (pr_url, head_sha). Carries ``pr_url`` so the dashboard can flip
+    # the "codex reviewed" badge on the matching task card (T-260). The
+    # badge is boolean — subsequent turns emit the same event but it is
+    # idempotent on the frontend (a re-fetch of the board reads the same
+    # projected value).
+    REVIEW_CODEX_TURN_STARTED = "review_codex_turn_started"
 
 
 @dataclass

@@ -84,7 +84,20 @@ fi
 '
 
 uvx showboat note "$DEMO_FILE" \
-  "Proof 5 — the four new E2E regression tests exist and cover every credential shape on this route. Next time someone wants to flip /worktrees to a public route they must update these first — the tests are the contract."
+  'Proof 5 — per-route token validation on list_worktrees. Codex round 2 caught that the middleware only checks PRESENCE of the MCP headers; the actual bearer value was never validated, so a request with Authorization: Bearer garbage + X-MCP-Request: true succeeded against /worktrees. Adding CurrentMcpOrDashboard as a per-route Depends closes the hole — the dep runs hmac.compare_digest(token, mcp_service_key) and rejects mismatches.'
+
+uvx showboat exec "$DEMO_FILE" bash '
+set -euo pipefail
+if grep -q "CurrentMcpOrDashboard" src/agent/routes.py; then
+  echo "OK: src/agent/routes.py imports CurrentMcpOrDashboard (per-route bearer validation)"
+else
+  echo "FAIL: list_worktrees is not guarded by CurrentMcpOrDashboard"
+  exit 1
+fi
+'
+
+uvx showboat note "$DEMO_FILE" \
+  "Proof 6 — the five E2E regression tests exist and cover every credential shape on this route, including the post-codex-round-2 invalid-MCP-bearer case. Next time someone flips /worktrees to public or drops the CurrentMcpOrDashboard dep they must update these first — the tests are the contract."
 
 uvx showboat exec "$DEMO_FILE" bash '
 set -euo pipefail
@@ -93,13 +106,14 @@ needed=(
   test_worktrees_with_wrong_dashboard_key_is_rejected
   test_worktrees_with_dashboard_key_succeeds
   test_worktrees_with_agent_token_is_rejected
+  test_worktrees_with_invalid_mcp_bearer_is_rejected
 )
 missing=()
 for name in "${needed[@]}"; do
   grep -q "def ${name}" tests/e2e/test_access_control.py || missing+=("$name")
 done
 if [ ${#missing[@]} -eq 0 ]; then
-  echo "OK: all 4 T-258 regression tests present in tests/e2e/test_access_control.py"
+  echo "OK: all 5 T-258 regression tests present in tests/e2e/test_access_control.py"
 else
   echo "FAIL: missing tests: ${missing[*]}"
   exit 1

@@ -32,7 +32,13 @@ from src.agent.services import AgentService
 from src.board.repository import BoardRepository
 from src.board.schemas import CloseOffTaskCreate, CloseOffTaskResponse
 from src.board.services import BoardService
-from src.gateway.auth import CurrentAgent, CurrentProject, McpOrProject, SupervisorAuth
+from src.gateway.auth import (
+    CurrentAgent,
+    CurrentMcpOrDashboard,
+    CurrentProject,
+    McpOrProject,
+    SupervisorAuth,
+)
 from src.shared.config import settings
 from src.shared.database import get_session
 from src.shared.events import Event, EventType, event_bus
@@ -261,30 +267,49 @@ async def unregister_agent(worktree_id: UUID, service: ServiceDep, agent: Curren
 
 
 @router.get("/projects/{project_id}/worktrees", response_model=list[WorktreeResponse])
-async def list_worktrees(project_id: UUID, service: ServiceDep) -> list[dict[str, object]]:
+async def list_worktrees(
+    project_id: UUID,
+    service: ServiceDep,
+    _: CurrentMcpOrDashboard,
+) -> list[dict[str, object]]:
     """List worktrees for a project.
 
-    AUTH: NOT a public route. The gateway's ``ApiAccessControlMiddleware``
-    gates ALL requests before this handler runs and requires ONE of:
+    AUTH: NOT a public route. Two gates fire for every request:
 
-    - ``X-MCP-Request: true`` + ``Authorization: Bearer <project-api-key>``
-      — for MCP clients on behalf of an agent.
-    - ``X-Dashboard-Key: <DASHBOARD_SECRET>`` — for dashboard clients,
-      CLI callers (``src/gateway/cli.py``), and in-tree scripts
-      (``scripts/sync_mcp_dist.py``). The matching ``dashboard_secret``
-      comes from ``src.shared.config.settings``.
+    1. ``ApiAccessControlMiddleware`` (``src/gateway/app.py``) — checks
+       that ONE of ``X-MCP-Request``, ``X-Dashboard-Key``, or
+       ``Authorization: Bearer ...`` is present. This is a *presence*
+       check only; it does NOT validate the token value.
+    2. ``CurrentMcpOrDashboard`` (``src/gateway/auth.py``) — the
+       per-route ``Depends`` on this handler. This is where the token
+       value is actually validated. Required shapes:
+       - ``X-MCP-Request: true`` + ``Authorization: Bearer <mcp_service_key>``
+         (matched against ``settings.mcp_service_key``). An invalid
+         bearer under this shape returns ``401 Invalid MCP service key``
+         — before T-258/codex-round-2, the middleware passed it through
+         and the handler ran without further validation.
+       - ``X-Dashboard-Key: <DASHBOARD_SECRET>`` (matched against
+         ``settings.dashboard_secret``). Invalid → ``403 Invalid
+         dashboard key`` from the middleware.
 
-    An unauthenticated request returns ``401 Authentication required``; a
-    wrong dashboard key returns ``403 Invalid dashboard key``; an agent
-    token on this (non-agent) route returns ``403 Agents can only access
-    /api/v1/agents/* routes``.
+    Status codes surfaced:
+    - ``401 Authentication required`` — no credential at all.
+    - ``401 Invalid MCP service key`` — X-MCP-Request present but
+      bearer does not match (enforced here by the Depends).
+    - ``401 Missing or invalid credentials`` — X-MCP-Request absent and
+      no valid dashboard key (enforced here by the Depends).
+    - ``403 Invalid dashboard key`` — dashboard key present but wrong
+      (middleware rejects before Depends runs).
+    - ``403 Agents can only access /api/v1/agents/* routes`` — bare
+      agent token on this non-agent route (middleware rejects first).
 
     Do NOT add this route to the middleware allowlist — T-244 reviewers
-    flagged the ambiguity precisely because callers were silently relying
-    on env-passthrough of the dashboard key; Option B of T-258 keeps the
-    auth required and makes callers pass the header explicitly. See
-    ``docs/ddd-context-map.md § Auth Contract`` and ``docs/design.md §
-    Authentication Flow`` for the full route-to-credential mapping.
+    flagged the ambiguity precisely because callers were silently
+    relying on env-passthrough of the dashboard key; Option B of T-258
+    keeps the auth required and makes callers pass the header
+    explicitly. See ``docs/ddd-context-map.md § Auth Contract`` and
+    ``docs/design.md § Authentication Flow`` for the full
+    route-to-credential mapping.
     """
     return await service.get_worktrees_for_project(project_id)
 

@@ -1,7 +1,7 @@
 # /api/v1/projects/{id}/worktrees keeps its auth requirement (Option B) and is now advertised loudly — route docstring, doc cross-links, explicit dashboard-key guards in CLI and in-tree scripts, and E2E regression tests (T-258).
 
-*2026-04-23T07:00:42Z by Showboat 0.6.1*
-<!-- showboat-id: e3f5a025-01cd-4493-9bbc-b04f7a643efd -->
+*2026-04-23T07:10:15Z by Showboat 0.6.1*
+<!-- showboat-id: 66129d4e-c198-4809-852d-3ca904cd0d76 -->
 
 Before: the auth contract on /api/v1/projects/{id}/worktrees was implicit. src/gateway/cli.py and scripts/sync_mcp_dist.py relied on env-passthrough of the dashboard key through _auth_headers; a caller that forgot CLOGLOG_API_KEY got a cryptic remote 401. Codex flagged the ambiguity during PR #172 review.
 
@@ -67,7 +67,7 @@ fi
 ```
 
 ```output
-OK: src/gateway/cli.py references _require_dashboard_key in 5 locations
+OK: src/gateway/cli.py references _require_dashboard_key in 6 locations
 ```
 
 Proof 4 — sync_mcp_dist.py is explicit too. Sends X-Dashboard-Key and calls raise_for_status() so a future 403 surfaces instead of silently returning an empty list.
@@ -88,7 +88,25 @@ fi
 OK: scripts/sync_mcp_dist.py sends X-Dashboard-Key and calls raise_for_status
 ```
 
-Proof 5 — the four new E2E regression tests exist and cover every credential shape on this route. Next time someone wants to flip /worktrees to a public route they must update these first — the tests are the contract.
+Proof 5 — per-route token validation on list_worktrees. Codex round 2 caught that the middleware only checks PRESENCE of the MCP headers; the actual bearer value was never validated, so a request with Authorization: Bearer garbage + X-MCP-Request: true succeeded against /worktrees. Adding CurrentMcpOrDashboard as a per-route Depends closes the hole — the dep runs hmac.compare_digest(token, mcp_service_key) and rejects mismatches.
+
+```bash
+
+set -euo pipefail
+if grep -q "CurrentMcpOrDashboard" src/agent/routes.py; then
+  echo "OK: src/agent/routes.py imports CurrentMcpOrDashboard (per-route bearer validation)"
+else
+  echo "FAIL: list_worktrees is not guarded by CurrentMcpOrDashboard"
+  exit 1
+fi
+
+```
+
+```output
+OK: src/agent/routes.py imports CurrentMcpOrDashboard (per-route bearer validation)
+```
+
+Proof 6 — the five E2E regression tests exist and cover every credential shape on this route, including the post-codex-round-2 invalid-MCP-bearer case. Next time someone flips /worktrees to public or drops the CurrentMcpOrDashboard dep they must update these first — the tests are the contract.
 
 ```bash
 
@@ -98,13 +116,14 @@ needed=(
   test_worktrees_with_wrong_dashboard_key_is_rejected
   test_worktrees_with_dashboard_key_succeeds
   test_worktrees_with_agent_token_is_rejected
+  test_worktrees_with_invalid_mcp_bearer_is_rejected
 )
 missing=()
 for name in "${needed[@]}"; do
   grep -q "def ${name}" tests/e2e/test_access_control.py || missing+=("$name")
 done
 if [ ${#missing[@]} -eq 0 ]; then
-  echo "OK: all 4 T-258 regression tests present in tests/e2e/test_access_control.py"
+  echo "OK: all 5 T-258 regression tests present in tests/e2e/test_access_control.py"
 else
   echo "FAIL: missing tests: ${missing[*]}"
   exit 1
@@ -113,5 +132,5 @@ fi
 ```
 
 ```output
-OK: all 4 T-258 regression tests present in tests/e2e/test_access_control.py
+OK: all 5 T-258 regression tests present in tests/e2e/test_access_control.py
 ```

@@ -213,6 +213,34 @@ async def test_worktrees_with_agent_token_is_rejected(
     assert "Agents can only access" in resp.json()["detail"]
 
 
+async def test_worktrees_with_invalid_mcp_bearer_is_rejected(
+    client: AsyncClient, bare_client: AsyncClient
+) -> None:
+    """GET /worktrees with X-MCP-Request: true + an invalid Bearer
+    token returns 401 Invalid MCP service key. Codex round 2 on PR #191
+    caught that the middleware only checks PRESENCE of both headers and
+    does not validate the bearer value; without a per-route
+    ``CurrentMcpOrDashboard`` dep the handler accepted any garbage
+    bearer under this shape. This test pins the post-fix behaviour:
+    the per-route dep runs ``hmac.compare_digest(token, mcp_service_key)``
+    and rejects mismatches."""
+    proj = await create_project_with_tasks(client, n_tasks=0)
+    resp = await bare_client.get(
+        f"/api/v1/projects/{proj.id}/worktrees",
+        headers={
+            "Authorization": "Bearer totally-fake-garbage",
+            "X-MCP-Request": "true",
+        },
+    )
+    assert resp.status_code == 401, (
+        f"expected 401 Invalid MCP service key, got {resp.status_code}; "
+        f"body: {resp.text}. If this is 200, the per-route "
+        "CurrentMcpOrDashboard dependency has been removed and the route "
+        "has regressed to accepting any bearer under the MCP shape."
+    )
+    assert "Invalid MCP service key" in resp.json()["detail"]
+
+
 # ═══════════════════════════════════════════════════════════════
 # Scenario 9 — Key resolution, rotation, fallbacks
 # ═══════════════════════════════════════════════════════════════

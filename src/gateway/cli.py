@@ -406,11 +406,16 @@ def tasks_assign(
 ) -> None:
     """Assign a task to a worktree.
 
-    T-258: resolves the worktree name by hitting /api/v1/projects/{id}/worktrees
-    which is NOT a public route. `--api-key` (or `CLOGLOG_API_KEY`) is
-    required; the guard inside `_resolve_worktree` exits with a clear
-    local error if the key is unset.
+    T-258 / codex round 2: guard the dashboard key up front. Every step
+    of this command hits a non-agent route — /api/v1/projects for the
+    project resolver, /api/v1/projects/{id}/search for the task
+    resolver, /api/v1/projects/{id}/worktrees for the worktree
+    resolver, and /api/v1/tasks/{id} for the PATCH — and
+    ApiAccessControlMiddleware rejects every one of them without the
+    dashboard key. Guarding in `_resolve_worktree` only was too late:
+    `_resolve_project` fires first and would still surface a remote 401.
     """
+    _require_dashboard_key(api_key, "tasks assign")
     project_id, _ = _resolve_project(url, project, api_key=api_key)
     task_id, task_num, _ = _resolve_task(url, project_id, task, api_key=api_key)
     wt_id, _ = _resolve_worktree(url, project_id, worktree, api_key=api_key)

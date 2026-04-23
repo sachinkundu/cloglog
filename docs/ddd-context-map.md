@@ -32,11 +32,19 @@ graph TB
         G3["Responsibilities:<br/>API composition<br/>Authentication (API keys)<br/>SSE fan-out<br/>CLI interface"]
     end
 
+    subgraph Review["Review Context"]
+        direction TB
+        R1["<b>Supporting Domain</b>"]
+        R2["Owns: PrReviewTurn"]
+        R3["Responsibilities:<br/>Turn accounting<br/>Consensus bookkeeping<br/>Idempotent turn claim"]
+    end
+
     Agent -->|"Conformist<br/>uses TaskStatusService<br/>uses TaskAssignmentService"| Board
     Document -.->|"Shared Kernel (IDs only)<br/>references entity IDs<br/>no direct DB access"| Board
     Gateway -->|"Open Host Service"| Board
     Gateway -->|"Open Host Service"| Agent
     Gateway -->|"Open Host Service"| Document
+    Gateway -->|"Open Host Service"| Review
 ```
 
 ## Context Relationships
@@ -48,6 +56,7 @@ graph TB
 | **Board** | Gateway | Open Host Service | Gateway calls Board's routes and services through a published API. |
 | **Agent** | Gateway | Open Host Service | Gateway calls Agent's routes for worktree/session queries. |
 | **Document** | Gateway | Open Host Service | Gateway calls Document's routes for document retrieval. |
+| **Review** | Gateway | Open Host Service | Gateway's two-stage review sequencer calls Review's services through the `IReviewTurnRegistry` interface for turn accounting. Gateway imports only the protocol — never `src.review.models` or `src.review.repository` directly. |
 
 ## Ubiquitous Language (Glossary)
 
@@ -92,6 +101,15 @@ graph TB
 | **API Key** | A per-project bearer token used by agents to authenticate. Generated when a project is created. Stored as a hash in the database. Shown once to the user, then placed in `~/.cloglog/credentials` (mode `0600`) or exported as `CLOGLOG_API_KEY` in the launcher's environment. MUST NOT live in `.mcp.json` or any per-worktree file (T-214); the MCP server reads only those two sources. See `docs/setup-credentials.md`. |
 | **SSE Stream** | A Server-Sent Events endpoint per project. The dashboard subscribes to receive real-time updates when tasks change status, agents come online/offline, or documents are attached. |
 | **Quality Gate** | The mandatory `make quality` check that must pass before any commit, push, or PR. Enforced by a Claude Code hook. Includes lint, type check, tests, and coverage. |
+
+### Review Context
+
+| Term | Definition |
+|------|-----------|
+| **Turn** | One iteration of one reviewer (opencode or codex) against a single PR commit SHA. Produces zero or more findings and one GitHub review POST. Limited to 5 turns for opencode and 2 for codex per `docs/design/two-stage-pr-review.md`. |
+| **Stage** | Either `opencode` (stage A) or `codex` (stage B). A full review session runs both stages serially, opencode first. |
+| **Consensus** | Signal that a reviewer's per-stage loop may short-circuit before its turn cap. Reached when the reviewer emits `status: "no_further_concerns"` in its structured output OR produces zero new findings vs prior turns on the same SHA (spec §1.1). |
+| **Turn Registry** | The `IReviewTurnRegistry` Protocol exposed by `src/review/interfaces.py`. Backed by `ReviewTurnRepository` writing to the `pr_review_turns` table. Gateway consumes the protocol; the concrete repository is internal to the Review context. |
 
 ### Cross-Context Terms
 

@@ -15,6 +15,19 @@ class Settings(BaseSettings):
     review_agent_cmd: str = "codex"
     review_max_per_hour: int = 10
     review_enabled: bool = True
+    opencode_cmd: str = "opencode"
+    # Default: 32K-context variant created from a Modelfile in this repo
+    # (see ``ops/opencode/Modelfile.gemma4-e4b-32k``). The stock gemma4:e4b
+    # model ships with num_ctx=131072, whose KV cache will not fit on a 24 GB
+    # GPU alongside other workloads (ComfyUI etc.) — the 32K variant keeps
+    # the model fully on GPU, giving ~30–60 s per turn instead of 10+ min of
+    # CPU-offloaded inference. See docs/setup-credentials.md for the
+    # one-time ``ollama create`` step. 32K covers a near-cap PR (50K-token
+    # diff cap / ``MAX_DIFF_CHARS=200_000``) — larger PRs already skip review.
+    opencode_model: str = "ollama/gemma4-e4b-32k"
+    opencode_max_turns: int = 5
+    codex_max_turns: int = 2
+    opencode_turn_timeout_seconds: float = 240.0
     review_source_root: Path | None = Field(
         default=None,
         description=(

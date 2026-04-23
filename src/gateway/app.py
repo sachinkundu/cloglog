@@ -23,12 +23,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from src.gateway.notification_listener import run_notification_listener
     from src.gateway.review_engine import (
         ReviewEngineConsumer,
+        is_opencode_available,
         is_review_agent_available,
         log_review_source_root,
     )
     from src.gateway.webhook_consumers import AgentNotifierConsumer
     from src.gateway.webhook_dispatcher import webhook_dispatcher
     from src.shared.config import settings
+    from src.shared.database import async_session_factory
 
     logger = logging.getLogger(__name__)
 
@@ -36,14 +38,43 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     webhook_dispatcher.register(AgentNotifierConsumer())
 
     if settings.review_enabled:
-        if is_review_agent_available():
-            webhook_dispatcher.register(ReviewEngineConsumer())
-            logger.info("ReviewEngineConsumer registered (agent=%s)", settings.review_agent_cmd)
-            log_review_source_root(logger)
-        else:
-            logger.warning(
-                "Review agent %r not on PATH — ReviewEngineConsumer disabled",
+        # Dual-binary probe — §5.4 of docs/design/two-stage-pr-review.md.
+        # The sequencer registers when AT LEAST ONE stage can run; both-missing
+        # logs a loud ERROR and leaves the consumer out.
+        codex_ok = is_review_agent_available()
+        opencode_ok = is_opencode_available()
+        logger.info(
+            "review_binary_probe codex_available=%s opencode_available=%s",
+            codex_ok,
+            opencode_ok,
+        )
+        if codex_ok or opencode_ok:
+            webhook_dispatcher.register(
+                ReviewEngineConsumer(
+                    codex_available=codex_ok,
+                    opencode_available=opencode_ok,
+                    session_factory=async_session_factory,
+                )
+            )
+            if codex_ok and opencode_ok:
+                mode = "two-stage"
+            elif codex_ok:
+                mode = "codex-only"
+            else:
+                mode = "opencode-only"
+            logger.info(
+                "ReviewEngineConsumer registered (mode=%s, codex=%s, opencode=%s)",
+                mode,
                 settings.review_agent_cmd,
+                settings.opencode_cmd,
+            )
+            if codex_ok:
+                log_review_source_root(logger)
+        else:
+            logger.error(
+                "Both reviewer binaries missing (%s, %s) — review disabled.",
+                settings.review_agent_cmd,
+                settings.opencode_cmd,
             )
 
     task = asyncio.create_task(run_notification_listener())

@@ -41,6 +41,21 @@ _CODEX_PERMISSIONS: Final = {
     "pull_requests": "write",
 }
 
+# ---------------------------------------------------------------------------
+# Opencode reviewer bot (posts reviews only). Public identifiers are
+# hard-coded to match the _CLAUDE/_CODEX precedent above — the PEM at
+# ~/.agent-vm/credentials/opencode-reviewer.pem (mode 0600) is the only
+# per-host secret. Operators don't touch .env for this bot; provisioning
+# is one `chmod 600` on the PEM. See docs/setup-credentials.md.
+# ---------------------------------------------------------------------------
+_OPENCODE_APP_ID: Final = "3473952"
+_OPENCODE_INSTALLATION_ID: Final = "126333517"
+_OPENCODE_PEM: Final = Path.home() / ".agent-vm" / "credentials" / "opencode-reviewer.pem"
+_OPENCODE_PERMISSIONS: Final = {
+    "contents": "read",
+    "pull_requests": "write",
+}
+
 
 @dataclass
 class _TokenCache:
@@ -50,6 +65,7 @@ class _TokenCache:
 
 _claude_cache = _TokenCache()
 _codex_cache = _TokenCache()
+_opencode_cache = _TokenCache()
 
 
 def _build_jwt(app_id: str, pem_path: Path) -> str:
@@ -113,9 +129,27 @@ async def get_codex_reviewer_token() -> str:
     )
 
 
+async def get_opencode_reviewer_token() -> str:
+    """Opencode reviewer bot token — for posting PR reviews.
+
+    Raises ``FileNotFoundError`` on a host where the PEM hasn't been
+    provisioned. Unlike codex (which has no fallback), the two-stage
+    sequencer catches this in ``_review_pr`` and degrades to codex-only.
+    """
+    return await _get_token(
+        _OPENCODE_APP_ID,
+        _OPENCODE_INSTALLATION_ID,
+        _OPENCODE_PEM,
+        _OPENCODE_PERMISSIONS,
+        _opencode_cache,
+    )
+
+
 def reset_token_cache() -> None:
     """Clear all cached tokens. Primarily for tests."""
     _claude_cache.token = None
     _claude_cache.fetched_at = 0.0
     _codex_cache.token = None
     _codex_cache.fetched_at = 0.0
+    _opencode_cache.token = None
+    _opencode_cache.fetched_at = 0.0

@@ -25,7 +25,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Final, Protocol
 from uuid import UUID
 
 import httpx
@@ -117,23 +117,32 @@ def _finding_key(finding: dict[str, object] | object) -> tuple[str, int, str]:
     return (file_, line_, title_.strip().lower())
 
 
+_SEVERE_SEVERITIES: Final = frozenset({"critical", "high"})
+
+
 def _reached_consensus(
     *,
     result: ReviewResult,
     prior_finding_keys: set[tuple[str, int, str]],
 ) -> bool:
-    """Spec §1.1 — three independent short-circuit predicates; any one fires.
+    """Three independent short-circuit predicates; any one fires.
 
     (a) Explicit ``status == "no_further_concerns"`` flag.
-    (b) ``verdict == "approve"`` ("patch is correct" in the codex schema) —
-        user directive 2026-04-23: a pass verdict means the reviewer is
-        done, hand off to the next stage. This fires on turn 1, so a
-        single-turn approve skips turns 2..N for that reviewer.
+    (b) ``verdict == "approve"`` ("patch is correct" in the codex schema),
+        BUT only when the same review carries no ``critical``/``high``
+        findings. A model that marks the patch "correct" while listing a
+        critical or high issue has contradicted itself — short-circuiting
+        there would skip the codex stage and ship the contradiction.
+        Observed on PR #190 (2026-04-23) with gemma4-e4b-32k emitting
+        ``:pass:`` + ``[CRITICAL]`` in the same turn. Defensive: fall
+        through to predicate (c) in that case.
     (c) No new findings vs. all prior turns' finding keys.
     """
     if result.status == "no_further_concerns":
         return True
-    if result.verdict == "approve":
+    if result.verdict == "approve" and not any(
+        getattr(f, "severity", None) in _SEVERE_SEVERITIES for f in result.findings
+    ):
         return True
     current_keys = {_finding_key(f) for f in result.findings}
     return len(current_keys - prior_finding_keys) == 0

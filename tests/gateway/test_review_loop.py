@@ -320,6 +320,36 @@ class TestReachedConsensus:
         )
         assert _reached_consensus(result=result, prior_finding_keys=set()) is False
 
+    def test_approve_with_critical_finding_does_not_short_circuit(self) -> None:
+        """Self-contradictory output — approve verdict + a ``critical``
+        severity finding — must fall through to the empty-diff predicate
+        (false on turn 1 with any finding). Observed on PR #190 2026-04-23
+        with gemma4-e4b-32k. See the fix directly above this test."""
+        critical = ReviewFinding(
+            file="a.py", line=1, severity="critical", body="bug", title="crash"
+        )
+        result = _ok_result(findings=[critical], verdict="approve")
+        assert _reached_consensus(result=result, prior_finding_keys=set()) is False
+
+    def test_approve_with_high_finding_does_not_short_circuit(self) -> None:
+        """``high`` severity is equally a contradiction with an approve verdict."""
+        high = ReviewFinding(
+            file="a.py", line=1, severity="high", body="issue", title="ddd violation"
+        )
+        result = _ok_result(findings=[high], verdict="approve")
+        assert _reached_consensus(result=result, prior_finding_keys=set()) is False
+
+    def test_approve_with_medium_and_info_findings_still_short_circuits(self) -> None:
+        """``medium`` and ``info`` severity findings are nit-level — an
+        approve verdict alongside them is the intended short-circuit case.
+        Matches the user directive: ``if it says pass, it should just do one``."""
+        nits = [
+            ReviewFinding(file="a.py", line=1, severity="medium", body="b", title="t"),
+            ReviewFinding(file="b.py", line=2, severity="info", body="b", title="t"),
+        ]
+        result = _ok_result(findings=nits, verdict="approve")
+        assert _reached_consensus(result=result, prior_finding_keys=set()) is True
+
 
 # ---------------------------------------------------------------------------
 # ReviewLoop._build_body_header

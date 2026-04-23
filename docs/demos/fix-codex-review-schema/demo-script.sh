@@ -72,11 +72,11 @@ PY
 '
 
 uvx showboat note "$DEMO_FILE" \
-  "Proof 2 — _reached_consensus in src/gateway/review_loop.py now contains a verdict == approve predicate in addition to the explicit status flag and the empty finding-diff check. AST walk confirms the three predicates are present."
+  "Proof 2 — _reached_consensus in src/gateway/review_loop.py now contains a verdict == approve predicate gated by severity (no short-circuit when any finding is severity critical/high, to catch self-contradictory output like PR #190's :pass: + [CRITICAL]). Source inspection confirms the three predicates and the severity guard."
 
 uvx showboat exec "$DEMO_FILE" bash '
 python3 - <<PY
-import ast, pathlib, textwrap
+import ast, pathlib
 src = pathlib.Path("src/gateway/review_loop.py").read_text()
 tree = ast.parse(src)
 fn = next(
@@ -86,8 +86,20 @@ fn = next(
 body = ast.unparse(fn)
 assert "result.status == " in body and "no_further_concerns" in body, "predicate a (explicit status) missing"
 assert "result.verdict == " in body and "approve" in body, "predicate b (approve verdict) missing"
+assert "_SEVERE_SEVERITIES" in body, "severity guard on approve predicate missing"
 assert "prior_finding_keys" in body and "_finding_key" in body, "predicate c (empty diff) missing"
-print("OK _reached_consensus holds 3 short-circuit predicates: status, approve verdict, empty diff")
+# Also assert the severe-severities constant exists with critical + high.
+def _matches(n):
+    if isinstance(n, ast.AnnAssign):
+        return isinstance(n.target, ast.Name) and n.target.id == "_SEVERE_SEVERITIES"
+    if isinstance(n, ast.Assign):
+        return any(isinstance(t, ast.Name) and t.id == "_SEVERE_SEVERITIES" for t in n.targets)
+    return False
+
+severe_assign = next(n for n in ast.walk(tree) if _matches(n))
+severe_src = ast.unparse(severe_assign)
+assert "critical" in severe_src and "high" in severe_src, "severity guard must include critical and high"
+print("OK _reached_consensus: 3 predicates + severity guard (critical/high block the approve short-circuit)")
 PY
 '
 

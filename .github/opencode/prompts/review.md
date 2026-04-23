@@ -44,11 +44,22 @@ off to the next reviewer when any one fires:
 
 1. You set top-level `"status": "no_further_concerns"`.
 2. You set `"overall_correctness": "patch is correct"` (this becomes
-   `verdict: "approve"` in the sequencer's internal shape). A pass
-   verdict is itself a short-circuit — do not emit pass and also expect
-   further turns. If you pass, you are **done** for this PR.
+   `verdict: "approve"` in the sequencer's internal shape) **AND** all of
+   your findings are `priority: 0` (info) or `priority: 1` (medium). A
+   pass verdict with no severe issues is a true short-circuit — do not
+   emit pass and also expect further turns. If you pass, you are **done**
+   for this PR.
 3. Your `findings` set is a subset of prior turns' findings (no new
    issues since you last looked).
+
+**Verdict/severity consistency is mandatory.** If you emit ANY finding
+with `priority: 2` (high) or `priority: 3` (critical), then
+`overall_correctness` MUST be `"patch is incorrect"` — a `:pass:` verdict
+alongside a critical or high finding is a self-contradiction and the
+sequencer will NOT short-circuit on it (observed on PR #190 with
+gemma4-e4b-32k: `:pass:` + `[CRITICAL]` in the same turn, which is
+nonsense). Decide the verdict FIRST based on the severest finding, then
+write the `overall_explanation`. If the PR has a critical bug, say so.
 
 **On turn 1 specifically** — if you have no substantive findings, emit
 `"status": "no_further_concerns"` immediately. Do not wait for turn 2 "to

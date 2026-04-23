@@ -1,7 +1,7 @@
 # Fix codex reviewer wiring — review-schema.json is now valid under OpenAI Structured Outputs (required + nullable status) and the consensus predicate short-circuits on a turn-1 approve verdict, so opencode hands off immediately when it has nothing to flag.
 
-*2026-04-23T06:24:05Z by Showboat 0.6.1*
-<!-- showboat-id: 0c25ae99-f6c0-4a10-9f9d-f15bd2b23ff0 -->
+*2026-04-23T06:32:46Z by Showboat 0.6.1*
+<!-- showboat-id: eb91be9a-1df0-48a3-9c54-2c2aaa8561a7 -->
 
 Before: .github/codex/review-schema.json listed status in properties but not in required. OpenAI's Structured Outputs API rejected the schema with 400 invalid_json_schema on every codex exec call, so the codex reviewer posted zero reviews on every PR between 2026-04-23T05:32Z (PR #187 merge) and this fix. Each codex turn failed in ~2.5-3s, consistent with an OpenAI 400 round-trip.
 
@@ -54,12 +54,12 @@ PY
 OK schema passes OpenAI Structured Outputs rules
 ```
 
-Proof 2 — _reached_consensus in src/gateway/review_loop.py now contains a verdict == approve predicate in addition to the explicit status flag and the empty finding-diff check. AST walk confirms the three predicates are present.
+Proof 2 — _reached_consensus in src/gateway/review_loop.py now contains a verdict == approve predicate gated by severity (no short-circuit when any finding is severity critical/high, to catch self-contradictory output like PR #190's :pass: + [CRITICAL]). Source inspection confirms the three predicates and the severity guard.
 
 ```bash
 
 python3 - <<PY
-import ast, pathlib, textwrap
+import ast, pathlib
 src = pathlib.Path("src/gateway/review_loop.py").read_text()
 tree = ast.parse(src)
 fn = next(
@@ -69,14 +69,26 @@ fn = next(
 body = ast.unparse(fn)
 assert "result.status == " in body and "no_further_concerns" in body, "predicate a (explicit status) missing"
 assert "result.verdict == " in body and "approve" in body, "predicate b (approve verdict) missing"
+assert "_SEVERE_SEVERITIES" in body, "severity guard on approve predicate missing"
 assert "prior_finding_keys" in body and "_finding_key" in body, "predicate c (empty diff) missing"
-print("OK _reached_consensus holds 3 short-circuit predicates: status, approve verdict, empty diff")
+# Also assert the severe-severities constant exists with critical + high.
+def _matches(n):
+    if isinstance(n, ast.AnnAssign):
+        return isinstance(n.target, ast.Name) and n.target.id == "_SEVERE_SEVERITIES"
+    if isinstance(n, ast.Assign):
+        return any(isinstance(t, ast.Name) and t.id == "_SEVERE_SEVERITIES" for t in n.targets)
+    return False
+
+severe_assign = next(n for n in ast.walk(tree) if _matches(n))
+severe_src = ast.unparse(severe_assign)
+assert "critical" in severe_src and "high" in severe_src, "severity guard must include critical and high"
+print("OK _reached_consensus: 3 predicates + severity guard (critical/high block the approve short-circuit)")
 PY
 
 ```
 
 ```output
-OK _reached_consensus holds 3 short-circuit predicates: status, approve verdict, empty diff
+OK _reached_consensus: 3 predicates + severity guard (critical/high block the approve short-circuit)
 ```
 
 Proof 3 — parse_reviewer_output in src/gateway/review_engine.py reads the status field from the codex schema payload and copies it through to ReviewResult. Source inspection confirms the normalization preserves status.

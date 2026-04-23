@@ -44,6 +44,7 @@ from src.gateway.webhook_dispatcher import WebhookEvent, WebhookEventType
 from src.shared.config import settings
 
 if TYPE_CHECKING:
+    from src.agent.interfaces import IWorktreeQuery
     from src.review.interfaces import IReviewTurnRegistry
 
 logger = logging.getLogger(__name__)
@@ -284,12 +285,114 @@ def is_opencode_available() -> bool:
 
 
 def resolve_review_source_root() -> Path:
-    """Resolve the filesystem root codex will read.
+    """Resolve the host-level fallback filesystem root codex will read.
 
-    Mirrors the fallback inside ``_run_review_agent`` so the startup log
-    reports exactly what the review path will be at request time.
+    Used at backend boot (``log_review_source_root``) and as the fallback
+    branch inside the per-PR resolver (``resolve_pr_review_root``) when no
+    worktree row matches. T-278 introduced the per-PR resolver; this helper
+    remains the correct answer for the boot log and for PRs whose owning
+    worktree is not on this host.
     """
     return settings.review_source_root or Path.cwd()
+
+
+async def resolve_pr_review_root(
+    event: WebhookEvent,
+    *,
+    project_id: UUID,
+    worktree_query: IWorktreeQuery,
+) -> Path:
+    """Resolve the filesystem root codex should read **for this PR**.
+
+    Preference order:
+
+    1. The worktree whose ``branch_name == event.head_branch`` within
+       ``project_id`` — provided the row exists AND the path is on disk.
+       This is the PR's actual working tree, so codex sees the exact files
+       the author is iterating on. A brief SHA drift probe (``git -C <path>
+       rev-parse HEAD``) logs a warning when the worktree's HEAD disagrees
+       with ``event.head_sha``, but the worktree is still preferred because
+       the mismatch is typically a mid-rebase or unpushed commit — and even
+       a slightly-stale worktree beats prod's ``main`` checkout.
+
+    2. The host-level fallback — ``settings.review_source_root or
+       Path.cwd()`` — for PRs whose owning worktree is not on this host
+       (external contributors, closed worktrees, etc.).
+
+    This resolver assumes the filesystem invariant stated in
+    ``CLAUDE.md``: "cloglog, the MCP server, and every worktree agent
+    share one host filesystem." A future split (Railway, cloud VMs) would
+    need a different mechanism — likely a temp-dir checkout of
+    ``event.head_sha`` — which is explicitly out of scope for T-278.
+
+    This function never mutates the worktree: no ``git fetch``, no
+    ``checkout``, no ``reset``. The owning agent controls its own working
+    tree.
+    """
+    import subprocess  # local: keep top-level imports lean
+
+    fallback = resolve_review_source_root()
+    head_branch = event.head_branch
+    if not head_branch:
+        logger.warning(
+            "review_source=fallback reason=no_matching_worktree pr_branch=<empty> pr=#%d",
+            event.pr_number,
+        )
+        return fallback
+
+    row = await worktree_query.find_by_branch(project_id, head_branch)
+    if row is None:
+        logger.warning(
+            "review_source=fallback reason=no_matching_worktree pr_branch=%s pr=#%d",
+            head_branch,
+            event.pr_number,
+        )
+        return fallback
+
+    candidate = Path(row.worktree_path)
+    if not candidate.is_dir():
+        logger.warning(
+            "review_source=fallback reason=path_missing pr_branch=%s worktree_path=%s pr=#%d",
+            head_branch,
+            row.worktree_path,
+            event.pr_number,
+        )
+        return fallback
+
+    worktree_sha = "unknown"
+    try:
+        probe = subprocess.run(  # noqa: S603 -- fixed argv, path from trusted DB row
+            ["git", "-C", str(candidate), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if probe.returncode == 0:
+            worktree_sha = probe.stdout.strip() or "unknown"
+    except (OSError, subprocess.SubprocessError) as err:  # pragma: no cover - rare
+        logger.warning("Worktree review-root git probe failed: %s", err)
+
+    head_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
+    short_worktree = worktree_sha[:7] if worktree_sha != "unknown" else worktree_sha
+    if head_sha and worktree_sha != "unknown" and worktree_sha != head_sha:
+        logger.warning(
+            "review_source_drift worktree_head=%s pr_head=%s pr_branch=%s worktree_path=%s pr=#%d",
+            short_worktree,
+            head_sha[:7],
+            head_branch,
+            candidate,
+            event.pr_number,
+        )
+
+    logger.info(
+        "review_source=worktree path=%s branch=%s worktree_head=%s pr=#%d",
+        candidate,
+        head_branch,
+        short_worktree,
+        event.pr_number,
+    )
+    return candidate
 
 
 def log_review_source_root(logger_: logging.Logger) -> None:
@@ -573,6 +676,32 @@ class _RegistryCtx:
             self._session = None
 
 
+class _WorktreeQueryCtx:
+    """Async context manager yielding an ``IWorktreeQuery`` bound to a session.
+
+    Gateway obtains the query via ``src.agent.services.make_worktree_query``
+    — the Open Host Service boundary for the Agent context. The concrete
+    ``AgentRepository`` type is NOT imported from Gateway, matching the
+    Review-context precedent (see ``_RegistryCtx`` above). T-278.
+    """
+
+    def __init__(self, session_factory: Any) -> None:
+        self._factory = session_factory
+        self._session: Any = None
+
+    async def __aenter__(self) -> IWorktreeQuery:
+        from src.agent.services import make_worktree_query
+
+        self._session = self._factory()
+        await self._session.__aenter__()
+        return make_worktree_query(self._session)
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        if self._session is not None:
+            await self._session.__aexit__(exc_type, exc, tb)
+            self._session = None
+
+
 class ReviewEngineConsumer:
     """Webhook consumer that runs a local review agent on every PR push."""
 
@@ -773,7 +902,18 @@ class ReviewEngineConsumer:
             )
             return
 
-        project_root = settings.review_source_root or Path.cwd()
+        # T-278: resolve the PR's owning worktree per review, not once per
+        # backend process. The fallback inside ``resolve_pr_review_root`` is
+        # the old ``settings.review_source_root or Path.cwd()`` path — used
+        # when no worktree row matches ``event.head_branch``. Relies on the
+        # shared-filesystem invariant documented in CLAUDE.md ("cloglog, the
+        # MCP server, and every worktree agent share one host filesystem").
+        # If that ever splits (Railway, cloud VMs), this resolver needs
+        # rethinking — see T-278 scope notes.
+        async with self._worktree_query() as wq:
+            project_root = await resolve_pr_review_root(
+                event, project_id=project_id, worktree_query=wq
+            )
 
         # ----- Stage A: opencode (gemma4:e4b) — up to opencode_max_turns -----
         # T-275: gated on settings.opencode_enabled so the stage can be silenced
@@ -852,6 +992,17 @@ class ReviewEngineConsumer:
 
         factory = self._session_factory or async_session_factory
         return _RegistryCtx(factory)
+
+    def _worktree_query(self) -> _WorktreeQueryCtx:
+        """Context manager that yields an ``IWorktreeQuery`` bound to a session.
+
+        Used by ``_review_pr`` to resolve the PR's owning worktree before
+        constructing reviewers — see T-278.
+        """
+        from src.shared.database import async_session_factory
+
+        factory = self._session_factory or async_session_factory
+        return _WorktreeQueryCtx(factory)
 
     async def _resolve_project_id(self, event: WebhookEvent) -> UUID | None:
         """Resolve the project UUID for this webhook event's repo."""

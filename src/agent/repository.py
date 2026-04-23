@@ -120,6 +120,36 @@ class AgentRepository:
         )
         return result.scalar_one_or_none()
 
+    async def find_worktree_by_branch_any_status(
+        self, project_id: UUID, branch_name: str
+    ) -> Worktree | None:
+        """Find a worktree by branch within a project, regardless of ``status``.
+
+        Unlike ``get_worktree_by_branch`` (which filters to ``status='online'``
+        because it is used to route messages to a live agent), this query is
+        for callers that only need the worktree's filesystem path — e.g. the
+        T-278 per-PR review-root resolver. A recently-offline worktree row
+        still points at a valid checkout on disk, and that is a far better
+        codex review root than prod's ``main``.
+
+        Returns ``None`` when ``branch_name`` is empty or when more than one
+        row matches — the empty-branch data trap (many rows with
+        ``branch_name=''``) would otherwise surface as
+        ``MultipleResultsFound``.
+        """
+        if not branch_name:
+            return None
+        result = await self._session.execute(
+            select(Worktree).where(
+                Worktree.project_id == project_id,
+                Worktree.branch_name == branch_name,
+            )
+        )
+        rows = list(result.scalars().all())
+        if len(rows) != 1:
+            return None
+        return rows[0]
+
     async def get_offline_worktrees(self, project_id: UUID) -> list[Worktree]:
         result = await self._session.execute(
             select(Worktree).where(

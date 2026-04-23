@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import uuid
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -43,6 +44,7 @@ from src.gateway.review_engine import (
     log_review_source_root,
     parse_review_output,
     post_review,
+    resolve_pr_review_root,
     resolve_review_source_root,
 )
 from src.gateway.webhook_dispatcher import WebhookEvent, WebhookEventType
@@ -2240,6 +2242,23 @@ class TestOpencodeEnabledFlag:
         async def __aexit__(self, *exc: object) -> bool:
             return False
 
+    class _NoopWorktreeQueryCtx:
+        """Yields a stub ``IWorktreeQuery`` whose ``find_by_branch`` returns None,
+        so ``resolve_pr_review_root`` falls through to the host-level root
+        (``settings.review_source_root or Path.cwd()``) — the behaviour the
+        pre-T-278 tests assumed.
+        """
+
+        async def __aenter__(self) -> object:
+            from unittest.mock import AsyncMock, MagicMock
+
+            stub = MagicMock()
+            stub.find_by_branch = AsyncMock(return_value=None)
+            return stub
+
+        async def __aexit__(self, *exc: object) -> bool:
+            return False
+
     @staticmethod
     def _fake_outcome() -> Any:
         return type("Outcome", (), {"turns_used": 1, "errors": []})()
@@ -2309,6 +2328,11 @@ class TestOpencodeEnabledFlag:
                 consumer,
                 "_registry",
                 new=lambda: TestOpencodeEnabledFlag._NoopRegistryCtx(),
+            ),
+            patch.object(
+                consumer,
+                "_worktree_query",
+                new=lambda: TestOpencodeEnabledFlag._NoopWorktreeQueryCtx(),
             ),
         ):
             await consumer._review_pr(event)
@@ -2466,4 +2490,459 @@ class TestAppRegistrationGateT275:
         assert "ReviewEngineConsumer" in registered, (
             "Consumer must register whenever at least one effective stage is "
             "runnable; codex alone is enough."
+        )
+
+
+# ---------------------------------------------------------------------------
+# T-278 — per-PR review root resolution
+# ---------------------------------------------------------------------------
+
+
+class _StubWorktreeQuery:
+    """In-memory ``IWorktreeQuery`` for unit-testing ``resolve_pr_review_root``.
+
+    Holds one optional ``WorktreeRow`` and returns it for matching
+    ``(project_id, branch_name)`` lookups. Lets the resolver tests run
+    without a database — the DB path is covered independently in
+    ``tests/agent/test_integration.py`` and the DDD pin test below.
+    """
+
+    def __init__(self, row: Any | None = None) -> None:
+        self._row = row
+
+    async def find_by_branch(self, project_id: Any, branch_name: str) -> Any:
+        if self._row is None:
+            return None
+        if self._row.project_id != project_id:
+            return None
+        if self._row.branch_name != branch_name:
+            return None
+        return self._row
+
+
+def _init_git_repo_at(path: Path) -> str:
+    """Initialize a minimal git repo at ``path`` and return its HEAD SHA.
+
+    Used by the happy-path / drift tests: ``resolve_pr_review_root`` probes
+    ``git -C <path> rev-parse HEAD`` to compute the drift warning. Without
+    a real repo the probe would emit ``unknown`` and the drift assertion
+    would be vacuous.
+    """
+    import subprocess
+
+    path.mkdir(parents=True, exist_ok=True)
+    env = {
+        **{k: v for k, v in __import__("os").environ.items()},
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.com",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.com",
+    }
+    subprocess.run(["git", "init", "-q", str(path)], check=True, env=env)
+    subprocess.run(
+        ["git", "-C", str(path), "commit", "-q", "--allow-empty", "-m", "init"],
+        check=True,
+        env=env,
+    )
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+    )
+    return result.stdout.strip()
+
+
+class TestResolvePrReviewRoot:
+    """Per-PR review-root resolution — the worktree owning the PR wins over
+    the host-level fallback. T-278.
+
+    CLAUDE.md "``Path.cwd()`` in backend code is a filesystem fingerprint of
+    the launcher, not an invariant" (T-255) is host-level; this test class
+    pins the per-PR half of the same rule.
+    """
+
+    @staticmethod
+    def _event_for_branch(
+        head_branch: str, head_sha: str = "a" * 40, pr_number: int = 278
+    ) -> WebhookEvent:
+        return WebhookEvent(
+            type=WebhookEventType.PR_OPENED,
+            delivery_id=f"d-{pr_number}",
+            repo_full_name="sachinkundu/cloglog",
+            pr_number=pr_number,
+            pr_url=f"https://github.com/sachinkundu/cloglog/pull/{pr_number}",
+            head_branch=head_branch,
+            base_branch="main",
+            sender="sachinkundu",
+            raw={"pull_request": {"head": {"sha": head_sha}}},
+        )
+
+    @staticmethod
+    def _row(project_id: Any, branch_name: str, worktree_path: str, status: str = "online") -> Any:
+        from src.agent.interfaces import WorktreeRow
+
+        return WorktreeRow(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            worktree_path=worktree_path,
+            branch_name=branch_name,
+            status=status,
+        )
+
+    @pytest.mark.asyncio
+    async def test_happy_path_returns_worktree_path(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Matching worktree row + path exists → helper returns the worktree path."""
+        import logging as _logging
+
+        project_id = uuid.uuid4()
+        worktree_dir = tmp_path / "wt-foo"
+        sha = _init_git_repo_at(worktree_dir)
+        row = self._row(project_id, "wt-foo", str(worktree_dir))
+        query = _StubWorktreeQuery(row)
+        event = self._event_for_branch("wt-foo", head_sha=sha)
+
+        with caplog.at_level(_logging.INFO, logger="src.gateway.review_engine"):
+            result = await resolve_pr_review_root(
+                event, project_id=project_id, worktree_query=query
+            )
+
+        assert result == worktree_dir, f"Expected worktree path {worktree_dir}, got {result}"
+        # No fallback warning should fire on the happy path.
+        fallback_warnings = [
+            r for r in caplog.records if "review_source=fallback" in r.getMessage()
+        ]
+        assert fallback_warnings == [], (
+            f"Happy path must not emit fallback warning; got {fallback_warnings}"
+        )
+        # No drift warning when SHAs match.
+        drift_warnings = [r for r in caplog.records if "review_source_drift" in r.getMessage()]
+        assert drift_warnings == [], (
+            f"Matching SHAs must not emit drift warning; got {drift_warnings}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_fallback_no_matching_worktree(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """No worktree row → fallback to ``settings.review_source_root``; WARNING
+        names ``reason=no_matching_worktree``.
+        """
+        import logging as _logging
+
+        fallback_root = tmp_path / "host-fallback"
+        fallback_root.mkdir()
+        monkeypatch.setattr("src.gateway.review_engine.settings.review_source_root", fallback_root)
+        query = _StubWorktreeQuery(None)
+        event = self._event_for_branch("wt-unknown")
+
+        with caplog.at_level(_logging.WARNING, logger="src.gateway.review_engine"):
+            result = await resolve_pr_review_root(
+                event, project_id=uuid.uuid4(), worktree_query=query
+            )
+
+        assert result == fallback_root, (
+            f"No-match must fall back to settings.review_source_root; got {result}"
+        )
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            "review_source=fallback" in m and "reason=no_matching_worktree" in m for m in messages
+        ), f"Missing expected WARNING; got {messages}"
+
+    @pytest.mark.asyncio
+    async def test_fallback_worktree_path_missing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Worktree row exists but its path is not on disk → fallback with
+        ``reason=path_missing``. Cloglog agents and review share one
+        filesystem (CLAUDE.md "shared-host" invariant); if the path isn't
+        there, the row is stale.
+        """
+        import logging as _logging
+
+        fallback_root = tmp_path / "host-fallback"
+        fallback_root.mkdir()
+        monkeypatch.setattr("src.gateway.review_engine.settings.review_source_root", fallback_root)
+        project_id = uuid.uuid4()
+        gone_path = tmp_path / "this-directory-does-not-exist"
+        row = self._row(project_id, "wt-foo", str(gone_path))
+        query = _StubWorktreeQuery(row)
+        event = self._event_for_branch("wt-foo")
+
+        with caplog.at_level(_logging.WARNING, logger="src.gateway.review_engine"):
+            result = await resolve_pr_review_root(
+                event, project_id=project_id, worktree_query=query
+            )
+
+        assert result == fallback_root, f"Expected fallback; got {result}"
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            "review_source=fallback" in m and "reason=path_missing" in m for m in messages
+        ), f"Missing path_missing WARNING; got {messages}"
+
+    @pytest.mark.asyncio
+    async def test_drift_warning_but_still_returns_worktree(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Worktree HEAD != event.head_sha → drift WARNING, worktree path still
+        preferred. Per T-278: mid-rebase / unpushed commits are normal; a
+        slightly-stale worktree still beats prod's main checkout.
+        """
+        import logging as _logging
+
+        project_id = uuid.uuid4()
+        worktree_dir = tmp_path / "wt-drift"
+        worktree_sha = _init_git_repo_at(worktree_dir)
+        # Build an event with a DIFFERENT SHA. Generate a fully-independent
+        # hex string so the "different SHA" claim never collides with the
+        # worktree's real SHA (per CLAUDE.md "Test Determinism" rule).
+        event_sha = "b" * 40 if not worktree_sha.startswith("b") else "c" * 40
+        assert worktree_sha != event_sha, "Test setup error: generated SHAs accidentally matched"
+        row = self._row(project_id, "wt-drift", str(worktree_dir))
+        query = _StubWorktreeQuery(row)
+        event = self._event_for_branch("wt-drift", head_sha=event_sha)
+
+        with caplog.at_level(_logging.WARNING, logger="src.gateway.review_engine"):
+            result = await resolve_pr_review_root(
+                event, project_id=project_id, worktree_query=query
+            )
+
+        assert result == worktree_dir, f"Drift must NOT demote to fallback; got {result}"
+        drift_messages = [
+            r.getMessage() for r in caplog.records if "review_source_drift" in r.getMessage()
+        ]
+        assert drift_messages, (
+            f"Expected drift WARNING; got log records: {[r.getMessage() for r in caplog.records]}"
+        )
+        assert worktree_sha[:7] in drift_messages[0], (
+            f"Drift log missing worktree short SHA; got {drift_messages[0]!r}"
+        )
+        assert event_sha[:7] in drift_messages[0], (
+            f"Drift log missing event short SHA; got {drift_messages[0]!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_head_branch_uses_fallback(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """``event.head_branch == ''`` is pathological but not fatal; the
+        helper must short-circuit to the fallback without querying the DB,
+        mirroring the empty-branch guard in ``AgentRepository``."""
+        import logging as _logging
+
+        fallback_root = tmp_path / "host-fallback"
+        fallback_root.mkdir()
+        monkeypatch.setattr("src.gateway.review_engine.settings.review_source_root", fallback_root)
+        # If ``find_by_branch`` is called, raise — proving the short-circuit.
+        query = _StubWorktreeQuery(None)
+        event = self._event_for_branch("")
+
+        with caplog.at_level(_logging.WARNING, logger="src.gateway.review_engine"):
+            result = await resolve_pr_review_root(
+                event, project_id=uuid.uuid4(), worktree_query=query
+            )
+
+        assert result == fallback_root
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            "review_source=fallback" in m and "reason=no_matching_worktree" in m for m in messages
+        ), f"Empty head_branch must emit no_matching_worktree; got {messages}"
+
+
+class TestReviewEngineDDDBoundary:
+    """T-278 DDD backstop — Gateway's review engine must NOT import the
+    Agent context's models or repository (priority-3 DDD violation per
+    ``docs/ddd-context-map.md``; caught as CRITICAL on PR #187 round 2
+    for the Review context — this pin applies the same rule to the
+    Agent → Gateway seam.
+
+    Asserts absence (not presence) so leak-after-fix regressions fail
+    automatically — see CLAUDE.md "Leak-after-fix" rule.
+    """
+
+    _REVIEW_ENGINE_PATH = Path("src/gateway/review_engine.py")
+
+    def test_gateway_review_engine_does_not_import_agent_models(self) -> None:
+        text = self._REVIEW_ENGINE_PATH.read_text()
+        assert "from src.agent.models" not in text, (
+            f"{self._REVIEW_ENGINE_PATH} imports from src.agent.models — "
+            "priority-3 DDD violation. Gateway must consume Agent only via "
+            "interfaces/services factories. T-278."
+        )
+        assert "import src.agent.models" not in text, (
+            f"{self._REVIEW_ENGINE_PATH} imports src.agent.models — "
+            "priority-3 DDD violation. T-278."
+        )
+
+    def test_gateway_review_engine_does_not_import_agent_repository(self) -> None:
+        text = self._REVIEW_ENGINE_PATH.read_text()
+        assert "from src.agent.repository" not in text, (
+            f"{self._REVIEW_ENGINE_PATH} imports from src.agent.repository — "
+            "priority-3 DDD violation. Gateway must consume Agent only via "
+            "interfaces/services factories. T-278."
+        )
+        assert "import src.agent.repository" not in text, (
+            f"{self._REVIEW_ENGINE_PATH} imports src.agent.repository — "
+            "priority-3 DDD violation. T-278."
+        )
+
+    def test_gateway_review_engine_imports_agent_only_via_ohs(self) -> None:
+        """Allow-list the exact Agent-context imports Gateway is permitted
+        to have. Any new Gateway → Agent edge must either add its name to
+        this allow-list or route through the Protocol/factory boundary.
+        """
+        import ast
+
+        tree = ast.parse(self._REVIEW_ENGINE_PATH.read_text())
+        agent_imports: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module is not None:
+                if node.module.startswith("src.agent"):
+                    for alias in node.names:
+                        agent_imports.append(f"{node.module}.{alias.name}")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("src.agent"):
+                        agent_imports.append(alias.name)
+
+        allowed = {
+            "src.agent.interfaces.IWorktreeQuery",
+            "src.agent.services.make_worktree_query",
+        }
+        disallowed = [name for name in agent_imports if name not in allowed]
+        assert not disallowed, (
+            "Gateway review engine imported non-OHS Agent names: "
+            f"{disallowed}. Only IWorktreeQuery + make_worktree_query are "
+            "allowed. T-278."
+        )
+
+
+class TestReviewPrUsesWorktreeProjectRoot:
+    """Integration pin — ``_review_pr`` routes the worktree path into the
+    reviewer constructors. A regression that bypassed the resolver (e.g.
+    a partial merge reverting the call-site to ``settings.review_source_root
+    or Path.cwd()``) would silently re-open the T-278 bug; this test makes
+    that drift fail the suite.
+    """
+
+    class _RecordingRegistryCtx:
+        async def __aenter__(self) -> object:
+            from unittest.mock import MagicMock
+
+            return MagicMock()
+
+        async def __aexit__(self, *exc: object) -> bool:
+            return False
+
+    @pytest.mark.asyncio
+    async def test_review_pr_passes_worktree_path_to_reviewer(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        project_id = uuid.uuid4()
+        worktree_dir = tmp_path / "wt-t278"
+        _init_git_repo_at(worktree_dir)
+
+        from src.agent.interfaces import WorktreeRow
+
+        row = WorktreeRow(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            worktree_path=str(worktree_dir),
+            branch_name="wt-t278",
+            status="online",
+        )
+
+        class _MatchingQueryCtx:
+            async def __aenter__(self) -> object:
+                stub = MagicMock()
+                stub.find_by_branch = AsyncMock(return_value=row)
+                return stub
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        reviewer_init_args: list[Path] = []
+
+        class _StubLoop:
+            def __init__(self, reviewer: object, **kwargs: object) -> None:
+                # ``reviewer`` is the mocked OpencodeReviewer/CodexReviewer
+                # instance. We inspect the MagicMock call_args on the class
+                # patch instead — see ``captured_roots`` below.
+                self._stage = str(kwargs.get("stage", "?"))
+
+            async def run(self, *, diff: str) -> object:
+                return type("Outcome", (), {"turns_used": 1, "errors": []})()
+
+        event = WebhookEvent(
+            type=WebhookEventType.PR_OPENED,
+            delivery_id="d-t278",
+            repo_full_name="sachinkundu/cloglog",
+            pr_number=278,
+            pr_url="https://github.com/sachinkundu/cloglog/pull/278",
+            head_branch="wt-t278",
+            base_branch="main",
+            sender="sachinkundu",
+            raw={"pull_request": {"head": {"sha": "e" * 40}}},
+        )
+
+        consumer = ReviewEngineConsumer(
+            codex_available=True,
+            opencode_available=False,
+            session_factory=MagicMock(),
+        )
+
+        with (
+            patch(
+                "src.gateway.review_engine.settings.opencode_enabled",
+                False,
+            ),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="claude-tok"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="codex-tok"),
+            ),
+            patch(
+                "src.gateway.review_engine.count_bot_reviews",
+                new=AsyncMock(return_value=0),
+            ),
+            patch("src.gateway.review_loop.CodexReviewer") as codex_cls,
+            patch("src.gateway.review_loop.ReviewLoop", new=_StubLoop),
+            patch.object(consumer, "_fetch_pr_diff", new=AsyncMock(return_value="diff")),
+            patch.object(
+                consumer,
+                "_resolve_project_id",
+                new=AsyncMock(return_value=project_id),
+            ),
+            patch.object(
+                consumer,
+                "_registry",
+                new=lambda: TestReviewPrUsesWorktreeProjectRoot._RecordingRegistryCtx(),
+            ),
+            patch.object(consumer, "_worktree_query", new=lambda: _MatchingQueryCtx()),
+        ):
+            await consumer._review_pr(event)
+            reviewer_init_args.extend(
+                call.args[0] for call in codex_cls.call_args_list if call.args
+            )
+
+        assert reviewer_init_args, "Codex reviewer was never constructed — check the test wiring."
+        assert reviewer_init_args[0] == worktree_dir, (
+            f"Expected CodexReviewer project_root={worktree_dir}, got "
+            f"{reviewer_init_args[0]!r}. Regression: _review_pr bypassed "
+            "resolve_pr_review_root. T-278."
         )

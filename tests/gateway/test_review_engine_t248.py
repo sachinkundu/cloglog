@@ -204,6 +204,23 @@ class TestParseReviewerOutput:
         assert len(result.findings) == 1
         assert result.findings[0].title == "Null pointer"
 
+    def test_codex_schema_with_null_status_parses(self) -> None:
+        """T-264: schema now requires ``status`` in ``required`` with type
+        ``["string", "null"]``. Verify that an explicit ``null`` parses to
+        ``ReviewResult.status = None`` without exploding the validator."""
+        raw = json.dumps(
+            {
+                "overall_correctness": "patch is correct",
+                "overall_explanation": "Looks good",
+                "status": None,
+                "findings": [],
+            }
+        )
+        result = parse_reviewer_output(raw, pr_number=42)
+        assert result is not None
+        assert result.status is None
+        assert result.verdict == "approve"
+
     def test_returns_none_on_invalid_json(self) -> None:
         assert parse_reviewer_output("not json at all", pr_number=4) is None
 

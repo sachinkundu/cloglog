@@ -122,11 +122,18 @@ def _reached_consensus(
     result: ReviewResult,
     prior_finding_keys: set[tuple[str, int, str]],
 ) -> bool:
-    """Spec §1.1 option (c) — explicit flag OR empty-diff vs prior turns.
+    """Spec §1.1 — three independent short-circuit predicates; any one fires.
 
-    Returns True iff **either** predicate fires.
+    (a) Explicit ``status == "no_further_concerns"`` flag.
+    (b) ``verdict == "approve"`` ("patch is correct" in the codex schema) —
+        user directive 2026-04-23: a pass verdict means the reviewer is
+        done, hand off to the next stage. This fires on turn 1, so a
+        single-turn approve skips turns 2..N for that reviewer.
+    (c) No new findings vs. all prior turns' finding keys.
     """
     if result.status == "no_further_concerns":
+        return True
+    if result.verdict == "approve":
         return True
     current_keys = {_finding_key(f) for f in result.findings}
     return len(current_keys - prior_finding_keys) == 0

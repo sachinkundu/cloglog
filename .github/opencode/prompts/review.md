@@ -39,10 +39,20 @@ Priority order (flag the highest-priority problems first):
 
 ## Consensus behaviour
 
-If on this turn you have nothing new to add versus prior turns, set the top
-level `"status": "no_further_concerns"` in your JSON output. This causes the
-sequencer to short-circuit and pass control to the next reviewer. Otherwise
-emit `"status": "review_in_progress"`.
+Three independent short-circuits — the sequencer stops the loop and hands
+off to the next reviewer when any one fires:
+
+1. You set top-level `"status": "no_further_concerns"`.
+2. You set `"overall_correctness": "patch is correct"` (this becomes
+   `verdict: "approve"` in the sequencer's internal shape). A pass
+   verdict is itself a short-circuit — do not emit pass and also expect
+   further turns. If you pass, you are **done** for this PR.
+3. Your `findings` set is a subset of prior turns' findings (no new
+   issues since you last looked).
+
+**On turn 1 specifically** — if you have no substantive findings, emit
+`"status": "no_further_concerns"` immediately. Do not wait for turn 2 "to
+be sure." There is nothing to reconsider when you found nothing.
 
 Do NOT hold back findings on early turns "in case" consensus comes later — if
 there is a real issue, flag it now. The short-circuit exists for the case

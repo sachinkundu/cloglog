@@ -197,9 +197,14 @@ def _make_loop(
 def _ok_result(
     findings: list[ReviewFinding] | None = None,
     status: str | None = None,
+    verdict: str = "comment",
 ) -> ReviewResult:
+    # Default ``verdict="comment"`` (not "approve") so tests of the
+    # findings-diff predicate aren't accidentally short-circuited by the
+    # verdict-based predicate added 2026-04-23. Tests that exercise the
+    # approve short-circuit pass ``verdict="approve"`` explicitly.
     return ReviewResult(
-        verdict="approve",
+        verdict=verdict,
         summary="looks good",
         findings=findings or [],
         status=status,
@@ -280,6 +285,40 @@ class TestReachedConsensus:
     def test_empty_findings_with_no_prior_returns_true(self) -> None:
         result = _ok_result(findings=[])
         assert _reached_consensus(result=result, prior_finding_keys=set()) is True
+
+    def test_approve_verdict_short_circuits_turn_1_with_findings(self) -> None:
+        """Per user directive 2026-04-23 (T-263): ``verdict='approve'`` on
+        any turn, even turn 1, is itself a short-circuit signal — the
+        reviewer is done, hand off to the next stage. Findings posted this
+        turn stay posted; subsequent turns are skipped.
+        """
+        result = _ok_result(
+            findings=[_finding(file="x.py", line=1, title="nit: style")],
+            verdict="approve",
+        )
+        assert _reached_consensus(result=result, prior_finding_keys=set()) is True
+
+    def test_approve_verdict_short_circuits_without_status(self) -> None:
+        """An approve verdict short-circuits even when ``status`` is None
+        (model didn't emit the explicit consensus flag but verdict alone is enough)."""
+        result = _ok_result(findings=[], status=None, verdict="approve")
+        assert _reached_consensus(result=result, prior_finding_keys=set()) is True
+
+    def test_request_changes_verdict_does_not_short_circuit_on_new_findings(self) -> None:
+        """Negative case — non-approve verdict + new findings must not short-circuit."""
+        result = _ok_result(
+            findings=[_finding(file="a.py", line=1, title="bug")],
+            verdict="request_changes",
+        )
+        assert _reached_consensus(result=result, prior_finding_keys=set()) is False
+
+    def test_comment_verdict_does_not_short_circuit_on_new_findings(self) -> None:
+        """Negative case — comment verdict + new findings must not short-circuit."""
+        result = _ok_result(
+            findings=[_finding(file="a.py", line=1, title="suggestion")],
+            verdict="comment",
+        )
+        assert _reached_consensus(result=result, prior_finding_keys=set()) is False
 
 
 # ---------------------------------------------------------------------------

@@ -63,10 +63,10 @@
       "maximum": 1
     },
     "status": {
-      "type": "string",
-      "enum": ["no_further_concerns", "review_in_progress"]
+      "type": ["string", "null"],
+      "enum": ["no_further_concerns", "review_in_progress", null]
     }
   },
-  "required": ["findings", "overall_correctness", "overall_explanation", "overall_confidence_score"],
+  "required": ["findings", "overall_correctness", "overall_explanation", "overall_confidence_score", "status"],
   "additionalProperties": false
 }

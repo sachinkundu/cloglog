@@ -128,6 +128,28 @@ INFO line per session, and falls through to codex-only — the backend still
 boots healthy. `~/.cloglog/credentials` is NOT consulted for reviewer
 tokens; do not place PEM contents there.
 
+## Opencode reviewer — enable flag
+
+Stage A (opencode) is gated on the `OPENCODE_ENABLED` environment variable
+(`settings.opencode_enabled`, T-275). **Default is `false`** because the
+stock reviewer model (`gemma4-e4b-32k`) rubber-stamps `:pass:` regardless of
+diff content, so running stage A under the default model produces noise, not
+signal. Stage B (codex) runs unaffected; on a codex + opencode host, leaving
+the flag off just means "codex-only review."
+
+**Opencode-only hosts** (no `codex` binary on PATH) **must** set
+`OPENCODE_ENABLED=true`. Otherwise `app.py`'s registration gate evaluates
+`codex_ok or opencode_effective == False`, the consumer is NOT registered,
+and PR webhooks fall on the floor — a loud ERROR is logged at boot naming
+the three inputs (`codex_available`, `opencode_available`,
+`opencode_enabled`). Flip the flag once T-274's agentic-mode work lands a
+reviewer model that defends severity.
+
+```
+# .env on an opencode-only host — REQUIRED to re-enable stage A.
+OPENCODE_ENABLED=true
+```
+
 ## Opencode reviewer — ollama model + VRAM setup
 
 Default model: **`ollama/gemma4-e4b-32k`** (see

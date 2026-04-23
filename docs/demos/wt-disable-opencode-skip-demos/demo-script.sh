@@ -37,14 +37,18 @@ uvx showboat exec "$DEMO_FILE" bash \
    grep -q "if self._opencode_available and settings.opencode_enabled:" src/gateway/review_engine.py && echo "stage_a_gate_shape=and_conjunction" || echo "stage_a_gate_shape=MISMATCH"'
 
 # ------------------------------------------------------------------
-uvx showboat note "$DEMO_FILE" "### Change 2 — \`docs/demos/\` added to diff skip patterns
+uvx showboat note "$DEMO_FILE" "### Change 2 — only \`docs/demos/**/demo.md\` filtered; helper scripts still reach codex
 
-Proof-of-work under \`docs/demos/<branch>/\` is Showboat-rendered booleans
-plus captured tool output, not reviewable code. One regex in the
-\`_DIFF_SKIP_PATTERNS\` tuple makes every reviewer skip those sections."
+Only the Showboat-rendered \`demo.md\` is byte-exact captured output; the
+sibling \`demo-script.sh\` and \`proof_*.py\` / \`probe.py\` files are
+executable code that \`make demo\` / \`make quality\` actually run, so they
+MUST still reach codex. The regex \`(^|/)docs/demos/.*/demo\\.md\$\` matches
+only the rendered markdown — codex PR #197 round 2 HIGH pins this narrower
+shape against regression."
 
 uvx showboat exec "$DEMO_FILE" bash \
-  'grep -q "(\\^|/)docs/demos/" src/gateway/review_engine.py && echo "skip_pattern_registered=yes" || echo "skip_pattern_registered=MISSING"'
+  'grep -qF "(^|/)docs/demos/.*/demo\\.md\$" src/gateway/review_engine.py && echo "skip_pattern_narrowed_to_demo_md=yes" || echo "skip_pattern_narrowed_to_demo_md=MISSING"
+   grep -qE "^ *r\"\\(\\^\\|/\\)docs/demos/\"," src/gateway/review_engine.py && echo "broad_demos_filter=still_present_BUG" || echo "broad_demos_filter=absent_good"'
 
 # ------------------------------------------------------------------
 uvx showboat note "$DEMO_FILE" "### Proof 1 — \`filter_diff\` drops \`docs/demos/\` sections in process

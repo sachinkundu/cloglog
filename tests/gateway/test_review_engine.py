@@ -232,16 +232,34 @@ class TestFilterDiff:
         out = filter_diff(diff)
         assert out == diff
 
-    def test_drops_docs_demos_sections(self) -> None:
-        """T-275: ``docs/demos/<branch>/<task>/demo.md`` is showboat-rendered
-        proof-of-work, not code — codex should not spend a turn on it."""
+    def test_drops_docs_demos_demo_md_only(self) -> None:
+        """T-275: ONLY the showboat-rendered ``demo.md`` is filtered; helper
+        scripts (``demo-script.sh``, ``proof_*.py``) still reach codex because
+        they ARE code that ``make demo`` / ``make quality`` actually execute.
+
+        The original T-275 shipped a broader ``docs/demos/`` filter; codex on
+        PR #197 round 2 flagged it HIGH because it hid real executable code
+        from review. This test pins the narrower regex.
+        """
         diff = (
-            self._section("docs/demos/wt-disable-opencode-skip-demos/T-275/demo.md")
+            self._section("docs/demos/wt-foo/demo.md")
+            + "\n"
+            + self._section("docs/demos/wt-foo/demo-script.sh")
+            + "\n"
+            + self._section("docs/demos/wt-foo/proof_filter_diff.py")
+            + "\n"
+            + self._section("docs/demos/wt-foo/T-123/demo.md")
             + "\n"
             + self._section("src/gateway/review_engine.py")
         )
         out = filter_diff(diff)
-        assert "docs/demos/" not in out
+        # Byte-exact proof outputs — filtered.
+        assert "docs/demos/wt-foo/demo.md" not in out
+        assert "docs/demos/wt-foo/T-123/demo.md" not in out
+        # Helper scripts under docs/demos/ — MUST survive for codex review.
+        assert "docs/demos/wt-foo/demo-script.sh" in out
+        assert "docs/demos/wt-foo/proof_filter_diff.py" in out
+        # Unrelated source file survives.
         assert "src/gateway/review_engine.py" in out
 
 

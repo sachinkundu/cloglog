@@ -1,7 +1,7 @@
 # Stage A (opencode) is disabled by default via settings.opencode_enabled=False, and codex stops reviewing docs/demos/ proof-of-work artifacts.
 
-*2026-04-23T11:54:12Z by Showboat 0.6.1*
-<!-- showboat-id: 3e059c48-a508-42b9-85ff-757cf30a5690 -->
+*2026-04-23T12:05:46Z by Showboat 0.6.1*
+<!-- showboat-id: 956d4a2d-9ecc-47e6-8655-3c9f8f88ee94 -->
 
 ### Change 1 — `settings.opencode_enabled` flag (default OFF)
 
@@ -23,18 +23,23 @@ stage_a_gate_reads_setting=yes
 stage_a_gate_shape=and_conjunction
 ```
 
-### Change 2 — `docs/demos/` added to diff skip patterns
+### Change 2 — only `docs/demos/**/demo.md` filtered; helper scripts still reach codex
 
-Proof-of-work under `docs/demos/<branch>/` is Showboat-rendered booleans
-plus captured tool output, not reviewable code. One regex in the
-`_DIFF_SKIP_PATTERNS` tuple makes every reviewer skip those sections.
+Only the Showboat-rendered `demo.md` is byte-exact captured output; the
+sibling `demo-script.sh` and `proof_*.py` / `probe.py` files are
+executable code that `make demo` / `make quality` actually run, so they
+MUST still reach codex. The regex `(^|/)docs/demos/.*/demo\.md$` matches
+only the rendered markdown — codex PR #197 round 2 HIGH pins this narrower
+shape against regression.
 
 ```bash
-grep -q "(\\^|/)docs/demos/" src/gateway/review_engine.py && echo "skip_pattern_registered=yes" || echo "skip_pattern_registered=MISSING"
+grep -qF "(^|/)docs/demos/.*/demo\\.md\$" src/gateway/review_engine.py && echo "skip_pattern_narrowed_to_demo_md=yes" || echo "skip_pattern_narrowed_to_demo_md=MISSING"
+   grep -qE "^ *r\"\\(\\^\\|/\\)docs/demos/\"," src/gateway/review_engine.py && echo "broad_demos_filter=still_present_BUG" || echo "broad_demos_filter=absent_good"
 ```
 
 ```output
-skip_pattern_registered=yes
+skip_pattern_narrowed_to_demo_md=yes
+broad_demos_filter=absent_good
 ```
 
 ### Proof 1 — `filter_diff` drops `docs/demos/` sections in process
@@ -48,8 +53,9 @@ uv run python docs/demos/wt-disable-opencode-skip-demos/proof_filter_diff.py
 ```
 
 ```output
-filter_diff_dropped_demo_section=True
-filter_diff_kept_src_section=True
+demo_md_dropped=True
+helper_scripts_kept=True
+unrelated_source_kept=True
 filter_diff_proof=PASS
 ```
 

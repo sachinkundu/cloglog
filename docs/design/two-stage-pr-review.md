@@ -355,13 +355,15 @@ The fix:
 
 1. Add `is_opencode_available() -> bool` next to `is_review_agent_available()`. Implementation: `shutil.which(settings.opencode_cmd)` **and** a quick `opencode --version` probe with a 3 s timeout (mirrors `_probe_codex_alive` in `review_engine.py`).
 2. At lifespan setup, call both probes. Log one structured line per binary: `{"event":"review_binary_probe","binary":"opencode","available":true,"version":"1.14.20"}`.
-3. Registration policy (by the four possible outcomes):
-   | codex | opencode | Action |
-   |-------|----------|--------|
-   | ✓ | ✓ | Register sequencer with both stages enabled. |
-   | ✓ | ✗ | Register sequencer with **opencode-skipped mode**: stage A is a no-op that writes a single log line per session (`{"event":"opencode_stage_skipped_config","reason":"binary_missing"}`) — no PR skip-comment spam. Stage B runs as today. |
-   | ✗ | ✓ | Register sequencer with **codex-skipped mode**: mirror of the above. |
-   | ✗ | ✗ | **Do not register the sequencer at all.** Log one loud warning at ERROR level: `"Both reviewer binaries missing (codex, opencode) — review disabled."` Matches today's no-codex behaviour. |
+3. Registration policy — the probe now produces a triple `(codex_ok, opencode_ok, opencode_enabled)`; an `opencode_effective = opencode_ok AND opencode_enabled` term feeds the decision (T-275):
+   | codex | opencode_ok | opencode_enabled | opencode_effective | Action |
+   |-------|-------------|-------------------|---------------------|--------|
+   | ✓ | ✓ | ✓ | ✓ | Register sequencer with both stages enabled (**two-stage**). |
+   | ✓ | ✓ | ✗ | ✗ | Register **codex-only**; an INFO log notes "opencode binary at <cmd> is available but disabled via settings.opencode_enabled — stage A will be skipped." |
+   | ✓ | ✗ | — | ✗ | Register **codex-only**. Stage A is a no-op; no PR skip-comment spam. |
+   | ✗ | ✓ | ✓ | ✓ | Register **opencode-only**: stage B is a no-op, stage A runs as today. |
+   | ✗ | ✓ | ✗ | ✗ | **Do not register.** Same loud ERROR as both-missing — `Review pipeline disabled — no runnable stage (codex_available=false, opencode_available=true, opencode_enabled=false)`. Operators must install codex OR set `OPENCODE_ENABLED=true` in `.env`. |
+   | ✗ | ✗ | — | ✗ | **Do not register.** `Review pipeline disabled — no runnable stage (codex_available=false, opencode_available=false, opencode_enabled=...)`. Matches the pre-F-47 no-codex behaviour. |
 4. The skipped-mode log emission is **once per session**, not once per turn — otherwise a host with missing opencode would spam one log line per PR-turn per stage A invocation. One line per PR review session at INFO is enough to spot the drift.
 5. A new operational doc block (`docs/review-engine-e2e.md` — extend the existing review-engine ops doc) lists the expected startup log lines so oncall can verify both binaries were probed.
 
@@ -552,7 +554,7 @@ These are the **concrete shifts** to T-248's acceptance criteria that this spec 
 13. **Stage A failures never block stage B.** T-248 test suite must include: (a) opencode subprocess unreachable → opencode skip comment posted → codex still runs; (b) opencode all 5 turns time out → codex still runs.
 14. **`SkipReason` enum is extended** with `OPENCODE_FAILED`, `OPENCODE_TIMEOUT`, `OPENCODE_UNAVAILABLE` (named separately so dashboards can distinguish; reuse existing skip-comment posting machinery).
 15. **Observability log-line shapes are fixed** (§8.1). T-248's tests assert the exact event names and field names emit correctly.
-16. **Dual-binary startup gate** (§5.4). `src/gateway/app.py` lifespan probes both codex and opencode, emits one `review_binary_probe` log per binary, and registers the sequencer under the four-way outcome matrix in §5.4. A missing binary at boot is a single ERROR / single-per-session INFO — never per-PR skip-comment spam. Test coverage: (i) both present → sequencer registered; (ii) codex present, opencode missing → opencode-skipped mode registered; (iii) codex missing, opencode present → codex-skipped mode registered; (iv) both missing → no registration + loud ERROR log line.
+16. **Dual-binary startup gate** (§5.4). `src/gateway/app.py` lifespan probes both codex and opencode, emits one `review_binary_probe` log carrying `codex_available / opencode_available / opencode_enabled`, and registers the sequencer under the six-row outcome matrix in §5.4 (post-T-275). A missing binary OR a disabled-by-flag stage at boot is a single ERROR / single-per-session INFO — never per-PR skip-comment spam. Test coverage: (i) both present + flag on → two-stage registered; (ii) codex present, opencode missing → codex-only registered; (iii) codex missing, opencode present, flag on → opencode-only registered; (iv) codex missing, opencode present, **flag off** → NO registration + loud ERROR (T-275 regression guard); (v) both missing → no registration + loud ERROR.
 
 Items explicitly **out of scope** for T-248 (will be separate tasks if pursued):
 

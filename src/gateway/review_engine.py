@@ -102,10 +102,15 @@ _DIFF_SKIP_PATTERNS: Final = tuple(
         r"\.pem$",
         r"\.key$",
         r"(^|/)credentials/",
-        # T-275: proof-of-work demos are Showboat-rendered booleans plus
-        # captured tool output, not code. Feeding them to codex wastes a
-        # stage-B turn on artifacts the author already verified locally.
-        r"(^|/)docs/demos/",
+        # T-275: ONLY the showboat-rendered ``demo.md`` under ``docs/demos/`` is
+        # noise — it is byte-exact captured output, not code. The sibling
+        # ``demo-script.sh`` + ``proof_*.py`` / ``probe.py`` files under the
+        # same tree ARE executed by ``scripts/run-demo.sh`` and re-run by
+        # ``scripts/check-demo.sh`` on every ``make quality``, so they MUST
+        # still reach codex. A broader ``docs/demos/`` regex (the shape
+        # shipped in PR #197 round 1) was flagged HIGH — it hid real code
+        # from review.
+        r"(^|/)docs/demos/.*/demo\.md$",
     )
 )
 

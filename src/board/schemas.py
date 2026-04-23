@@ -179,6 +179,7 @@ class TaskCard(TaskResponse):
     epic_title: str = ""
     feature_title: str = ""
     epic_color: str = ""
+    codex_review_picked_up: bool = False
 
 
 class BoardColumn(BaseModel):

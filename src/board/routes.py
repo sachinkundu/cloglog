@@ -573,10 +573,19 @@ async def reorder_tasks(
 async def get_board(
     project_id: UUID,
     service: ServiceDep,
+    session: Annotated[AsyncSession, Depends(get_session)],
     status: Annotated[list[str] | None, Query()] = None,
     epic_id: UUID | None = None,
     exclude_done: bool = False,
 ) -> BoardResponse:
+    # DDD: Board projects a single boolean (``codex_review_picked_up``) from
+    # the Review context via its Open Host Service factory. Board never
+    # imports ``src.review.models`` or ``src.review.repository`` — only
+    # ``src.review.services.make_review_turn_registry``, whose return type
+    # is the ``IReviewTurnRegistry`` Protocol. See docs/ddd-context-map.md
+    # and the pin test in tests/board/test_board_review_boundary.py.
+    from src.review.services import make_review_turn_registry
+
     project = await service._repo.get_project(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -588,6 +597,20 @@ async def get_board(
         project_id, statuses=status, epic_id=epic_id, exclude_done=exclude_done
     )
 
+    # Single batched query across all pr_urls on the board (T-260). One
+    # round-trip per board load, not one per card. Empty input → empty set
+    # short-circuits in the repository. ``project_id`` is passed through
+    # so two cloglog projects tracking the same GitHub repo/PR URL never
+    # leak codex badges across each other's boards — pr_url uniqueness
+    # is feature-scoped today (see xfailed
+    # ``test_pr_url_reuse_blocked_cross_feature``), so cross-project
+    # collision is a real concern. PR #198 round 1 codex MEDIUM fix.
+    pr_urls = [t.pr_url for t in tasks if t.pr_url]
+    review_registry = make_review_turn_registry(session)
+    codex_touched = await review_registry.codex_touched_pr_urls(
+        project_id=project_id, pr_urls=pr_urls
+    )
+
     columns: dict[str, list[TaskCard]] = {col: [] for col in BOARD_COLUMNS}
     done_count = 0
 
@@ -597,6 +620,7 @@ async def get_board(
             epic_title=task.feature.epic.title,
             feature_title=task.feature.title,
             epic_color=task.feature.epic.color,
+            codex_review_picked_up=bool(task.pr_url and task.pr_url in codex_touched),
         )
         if task.status in columns:
             columns[task.status].append(card)

@@ -43,6 +43,7 @@ from src.gateway.review_engine import (
 )
 from src.review.interfaces import IReviewTurnRegistry, ReviewTurnSnapshot
 from src.shared.config import settings
+from src.shared.events import Event, EventType, event_bus
 
 logger = logging.getLogger(__name__)
 
@@ -264,6 +265,26 @@ class ReviewLoop:
                     self._pr_number,
                     self._head_sha[:7],
                 )
+
+                # T-260: the dashboard's "codex reviewed" badge is driven by
+                # a boolean projection from ``pr_review_turns``. Publish an
+                # SSE event every time we enter a codex turn so the frontend
+                # re-fetches the board and the badge appears as soon as
+                # stage B is engaged. Opencode turns deliberately do not
+                # emit — only codex flips the badge.
+                if self._stage == "codex":
+                    await event_bus.publish(
+                        Event(
+                            type=EventType.REVIEW_CODEX_TURN_STARTED,
+                            project_id=self._project_id,
+                            data={
+                                "pr_url": self._pr_url,
+                                "pr_number": self._pr_number,
+                                "head_sha": self._head_sha,
+                                "turn_number": turn,
+                            },
+                        )
+                    )
 
                 result, elapsed, timed_out = await self._reviewer.run(
                     diff=diff,

@@ -110,3 +110,22 @@ class IReviewTurnRegistry(Protocol):
         previously failed — see PR #187 round 1 HIGH-3 fix.
         """
         ...
+
+    async def codex_touched_pr_urls(self, *, project_id: UUID, pr_urls: list[str]) -> set[str]:
+        """Return the subset of ``pr_urls`` with at least one ``stage='codex'`` turn.
+
+        Batched projection used by the Board context to render the
+        "codex reviewed" badge on review-column task cards (T-260). Returns
+        the empty set for an empty input list to avoid a round-trip.
+
+        Only ``stage='codex'`` turns count — opencode turns deliberately do
+        NOT flip the badge (see T-260 acceptance criteria).
+
+        ``project_id`` is required for cross-project isolation: if two
+        cloglog projects happen to track the same GitHub repo / PR URL
+        (supported today — ``pr_url`` uniqueness is feature-scoped, see
+        the xfailed ``test_pr_url_reuse_blocked_cross_feature``), a codex
+        turn persisted for project A must NOT flip the badge on project
+        B's board. PR #198 round 1 codex MEDIUM finding.
+        """
+        ...

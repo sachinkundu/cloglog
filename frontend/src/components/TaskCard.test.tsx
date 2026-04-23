@@ -24,6 +24,7 @@ const baseTask: TaskCardType = {
   epic_title: 'Auth',
   feature_title: 'User Login',
   epic_color: '#7c3aed',
+  codex_review_picked_up: false,
 }
 
 describe('TaskCard', () => {
@@ -126,5 +127,44 @@ describe('TaskCard', () => {
     render(<TaskCard task={task} onClick={onClick} />)
     await user.click(screen.getByRole('link'))
     expect(onClick).not.toHaveBeenCalled()
+  })
+
+  it('shows codex reviewed badge on a review-column card when codex_review_picked_up=true', () => {
+    const task = {
+      ...baseTask,
+      status: 'review',
+      pr_url: 'https://github.com/sachinkundu/cloglog/pull/42',
+      codex_review_picked_up: true,
+    }
+    render(<TaskCard task={task} onClick={vi.fn()} />)
+    expect(screen.getByText('codex reviewed')).toBeInTheDocument()
+  })
+
+  it('hides codex reviewed badge when codex_review_picked_up=false', () => {
+    const task = {
+      ...baseTask,
+      status: 'review',
+      pr_url: 'https://github.com/sachinkundu/cloglog/pull/42',
+      codex_review_picked_up: false,
+    }
+    render(<TaskCard task={task} onClick={vi.fn()} />)
+    expect(screen.queryByText('codex reviewed')).not.toBeInTheDocument()
+  })
+
+  it('hides codex reviewed badge when task moves back to in_progress (badge is review-column only)', () => {
+    const task = {
+      ...baseTask,
+      status: 'in_progress',
+      pr_url: 'https://github.com/sachinkundu/cloglog/pull/42',
+      codex_review_picked_up: true,
+    }
+    render(<TaskCard task={task} onClick={vi.fn()} />)
+    expect(screen.queryByText('codex reviewed')).not.toBeInTheDocument()
+  })
+
+  it('hides codex reviewed badge when there is no PR', () => {
+    const task = { ...baseTask, status: 'review', codex_review_picked_up: true }
+    render(<TaskCard task={task} onClick={vi.fn()} />)
+    expect(screen.queryByText('codex reviewed')).not.toBeInTheDocument()
   })
 })

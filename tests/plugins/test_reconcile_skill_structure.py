@@ -1,0 +1,134 @@
+"""Backstop: T-270.
+
+Reconcile's Step 5 used to tear down worktrees directly, destroying
+``<worktree>/shutdown-artifacts/{work-log,learnings}.md`` before
+``close-wave`` could archive them to ``docs/work-logs/`` or fold
+learnings into CLAUDE.md. T-270 resolves the split-brain by introducing
+a Step 5.0 that delegates the teardown of **cleanly-completed**
+worktrees to close-wave; Cases A/B/C remain the fallback for agents
+that crashed, wedged, or never produced shutdown-artifacts.
+
+These assertions pin the structure — one ``assert`` per load-bearing
+component — so a future partial deletion (e.g. someone drops the
+``pr_merged`` predicate check while refactoring) fails loudly with a
+pointer at the missing piece, rather than silently reintroducing the
+2026-04-23 regression.
+
+The canonical specification of the unified teardown flow lives in
+``docs/design/agent-lifecycle.md`` §5.5 (T-270). close-wave's
+reconcile-callable entry point is documented at the top of
+``plugins/cloglog/skills/close-wave/SKILL.md``.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+RECONCILE_SKILL = REPO_ROOT / "plugins/cloglog/skills/reconcile/SKILL.md"
+CLOSE_WAVE_SKILL = REPO_ROOT / "plugins/cloglog/skills/close-wave/SKILL.md"
+AGENT_LIFECYCLE = REPO_ROOT / "docs/design/agent-lifecycle.md"
+
+
+def _read(p: Path) -> str:
+    assert p.exists(), f"{p} missing — fix the path or the file was moved"
+    return p.read_text(encoding="utf-8")
+
+
+def test_reconcile_skill_has_close_wave_delegation_branch() -> None:
+    """Step 5.0 must call out the delegation explicitly. Without a
+    grep-able phrase a future edit can quietly remove the branch and
+    reconcile silently reverts to the destructive teardown path."""
+    body = _read(RECONCILE_SKILL)
+    assert "Step 5.0" in body, (
+        "reconcile SKILL.md must introduce a Step 5.0 section gating the "
+        "Cases A/B/C teardown — it is the delegation branch T-270 added."
+    )
+    assert "delegate the entire teardown to close-wave" in body, (
+        "reconcile Step 5.0 must state the delegation verbatim so the "
+        "intent survives ruff/prettier reformats and future partial edits."
+    )
+
+
+def test_reconcile_skill_references_all_three_predicate_components() -> None:
+    """Three separate asserts — one per predicate component — so a
+    future partial deletion (someone drops the `pr_merged` check during
+    a rewrite) fails loudly against the specific missing piece."""
+    body = _read(RECONCILE_SKILL)
+
+    assert "shutdown-artifacts/work-log.md" in body, (
+        "predicate component 1 (filesystem check for the work-log "
+        "artifact) must be referenced in reconcile Step 5.0. Without it "
+        "reconcile would delegate to close-wave on worktrees that have "
+        "nothing to archive."
+    )
+    assert "close-off task" in body.lower() or "close-off task queued" in body.lower(), (
+        "predicate component 2 (a `Close worktree <wt-name>` task exists "
+        "in backlog) must be referenced in reconcile Step 5.0. Without "
+        "it reconcile would delegate before the close-off task has been "
+        "filed, leaving close-wave with no task to close."
+    )
+    assert "pr_merged=True" in body or "pr_merged == True" in body or "`pr_merged`" in body, (
+        "predicate component 3 (every assigned task has `pr_merged=True`) "
+        "must be referenced in reconcile Step 5.0. Without it reconcile "
+        "would delegate for worktrees whose PRs have not actually merged."
+    )
+
+
+def test_reconcile_skill_keeps_cases_a_b_c_as_fallbacks() -> None:
+    """T-270 only adds a new early branch; it must not remove the
+    dirty-path handlers. Agents that crash, wedge, or never write
+    shutdown-artifacts still need cooperative-shutdown / force_unregister."""
+    body = _read(RECONCILE_SKILL)
+    for case_header in (
+        "### Case A — PR merged, agent still registered",
+        "### Case B — Wedged agent",
+        "### Case C — Orphaned worktree",
+    ):
+        assert case_header in body, (
+            f"reconcile SKILL.md lost '{case_header}'. Cases A/B/C are the "
+            "dirty-path fallback for worktrees that fail the predicate; "
+            "removing them collapses the split-brain fix back into a single "
+            "broken path."
+        )
+
+
+def test_close_wave_skill_documents_reconcile_delegation() -> None:
+    """Close-wave must declare its reconcile-callable entry point at the
+    top. A reconcile caller that cannot find documented invocation
+    semantics will either (a) invoke the user-driven flow and stall on
+    the user-confirmation prompt, or (b) skip close-wave entirely and
+    re-introduce the destructive reconcile teardown."""
+    body = _read(CLOSE_WAVE_SKILL)
+    assert "Invocation modes" in body, (
+        "close-wave SKILL.md must declare an 'Invocation modes' section "
+        "near the top documenting user-driven vs reconcile-delegated "
+        "entry points."
+    )
+    assert "Reconcile delegation" in body or "reconcile delegation" in body.lower(), (
+        "close-wave Invocation modes must name the 'Reconcile delegation' "
+        "mode explicitly so a reader can grep for it."
+    )
+    assert "Skip Step 1.5" in body or "skip Step 1.5" in body.lower(), (
+        "close-wave reconcile-mode must state that user confirmation "
+        "(Step 1.5) is skipped. Otherwise reconcile's auto-fix flow "
+        "stalls waiting for a prompt that will never be answered."
+    )
+
+
+def test_agent_lifecycle_documents_unified_teardown_flow() -> None:
+    """§5.5 is the authoritative spec for the reconcile-as-arbiter rule.
+    If this disappears, future agents will re-invent the split-brain."""
+    body = _read(AGENT_LIFECYCLE)
+    assert "Reconcile is the arbiter" in body, (
+        "docs/design/agent-lifecycle.md §5 must state the unified-flow "
+        "rule verbatim ('Reconcile is the arbiter. Close-wave is the "
+        "clean path. force_unregister is the dirty path.') so future "
+        "readers cannot ambiguate ownership."
+    )
+    assert "T-270" in body, (
+        "docs/design/agent-lifecycle.md §5.5 must reference T-270 as the "
+        "task that introduced the unified teardown flow. Tracking the "
+        "origin lets future maintainers locate the incident analysis."
+    )

@@ -469,6 +469,55 @@ Close-wave and reconcile both drive this escalation via
 `scripts/wait_for_agent_unregistered.py`; see the Step 5 blocks in the
 respective skills for the concrete command invocations.
 
+### 5.5 Teardown ownership — unified flow (T-270)
+
+The three tiers above cover the *session side* of shutdown: ending the
+backend row and flushing the agent's last MCP calls. Teardown — removing
+the worktree path, deleting the branch, closing the zellij tab, archiving
+`shutdown-artifacts/` into `docs/work-logs/`, and folding learnings into
+CLAUDE.md — is a separate concern with a single ownership rule:
+
+> **Reconcile is the arbiter. Close-wave is the clean path.
+> `force_unregister` is the dirty path.**
+
+Two code paths used to claim teardown ownership and they disagreed on
+what teardown meant:
+
+- **close-wave** treats teardown as the *final* step of a pipeline that
+  first archives `shutdown-artifacts/{work-log,learnings}.md` into
+  `docs/work-logs/`, runs pr-postprocessor to fold lessons into
+  CLAUDE.md, files follow-up tasks, and opens a close-off PR.
+- **reconcile** treated teardown as a *direct* action: Case A / Case C
+  would `git worktree remove --force` the path, and the artifacts would
+  vaporize before close-wave ever saw them.
+
+Observed on 2026-04-23 during the T-268 close-out — reconcile ran first,
+the artifacts were destroyed, and the auto-filed close-off task could
+not complete its archive steps. T-270 resolves the split-brain:
+
+1. **Reconcile's Step 5.0 now gates Case A / Case C on a
+   "completed-cleanly" predicate** — `shutdown-artifacts/work-log.md`
+   exists, a `Close worktree <wt-name>` task exists in `backlog`, and
+   every assigned task has `pr_merged=True`.
+2. **When the predicate holds, reconcile delegates the entire teardown
+   to close-wave** via close-wave's "Invocation modes — Reconcile
+   delegation" entry point. Close-wave then runs its full archive →
+   pr-postprocessor → teardown pipeline for that single worktree.
+3. **When the predicate fails**, reconcile falls through to Cases A/B/C
+   unchanged. An agent that crashed, wedged, or never wrote
+   shutdown-artifacts has nothing to archive; the dirty path
+   (cooperative shutdown → `force_unregister` on timeout → direct
+   teardown) is the correct response.
+
+See `plugins/cloglog/skills/reconcile/SKILL.md` Step 5.0 for the
+predicate check and delegation shape, and
+`plugins/cloglog/skills/close-wave/SKILL.md` "Invocation modes" for the
+reconcile-driven entry point. The reconcile skill never tears a
+predicate-true worktree down directly, and close-wave never runs
+without having validated its preconditions (the predicate is that
+validation when delegated; user confirmation is that validation when
+invoked directly).
+
 ## 6. Agent session can't self-exit and relaunch
 
 A Claude Code session is one process; it cannot restart itself. Specifically:

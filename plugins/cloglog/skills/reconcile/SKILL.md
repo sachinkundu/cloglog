@@ -112,6 +112,72 @@ found, follow the rule that matches its class. **Worktree teardown goes
 through the cooperative path first; `force_unregister` is only for the
 cooperative-timeout fallback.**
 
+### Step 5.0 — Close-wave delegation for cleanly-completed worktrees
+
+BEFORE executing Case A / Case C teardown on any worktree in the drift set,
+check the **completed-cleanly predicate** for that worktree. When it holds,
+**delegate the entire teardown to close-wave** instead of running reconcile's
+own teardown path. If reconcile tore down the worktree first, `git worktree
+remove --force` would vaporize `<worktree_path>/shutdown-artifacts/` before
+close-wave gets a chance to archive them to `docs/work-logs/` and fold the
+learnings into CLAUDE.md — the exact split-brain observed on 2026-04-23
+during the T-268 close-out (T-270).
+
+Reconcile is the arbiter: close-wave is the clean path (cleanly-completed
+worktrees with artifacts), `force_unregister` is the dirty path (everything
+else). See `docs/design/agent-lifecycle.md` §5 for the unified-flow spec.
+
+#### Completed-cleanly predicate
+
+All three must hold for a worktree to be eligible for close-wave delegation:
+
+1. **Shutdown artifact present.** `<worktree_path>/shutdown-artifacts/work-log.md`
+   exists on disk. (Check with a plain `[ -f "<path>/shutdown-artifacts/work-log.md" ]`.)
+2. **Close-off task queued.** A close-off task whose title matches
+   `Close worktree <wt-name>` exists in `backlog` status for this worktree.
+   Resolve via `mcp__cloglog__get_board` and filter tasks by
+   `worktree_id == <wt-id>` AND `status == "backlog"` AND the title prefix.
+3. **All assigned tasks merged.** Every task whose `worktree_id` matches
+   this worktree has `pr_merged=True`. Same `get_board` call; the check
+   is "no task with `worktree_id == <wt-id>` has `pr_merged=False` AND
+   a `pr_url`".
+
+If ALL three hold, proceed to the delegation step below. If ANY component
+fails, skip delegation and fall through to Cases A/B/C — agents that
+crashed, wedged, or never produced shutdown-artifacts have nothing to
+archive.
+
+#### Delegation
+
+Invoke the close-wave skill on this single worktree per
+`plugins/cloglog/skills/close-wave/SKILL.md` **Invocation modes — Reconcile
+delegation**. Close-wave accepts a worktree-name argument today, so the
+call shape is:
+
+```
+close-wave(worktree="<wt-name>", invoked_from="reconcile")
+```
+
+The reconcile-invoked entry point skips user confirmation (Step 1.5),
+overrides the work-log naming to `reconcile-<date>-<wt-name>.md`, and
+otherwise runs Steps 2–14 unchanged. Reconcile performs no teardown
+steps itself for a delegated worktree — close-wave owns the full
+sequence (cooperative shutdown → shutdown-artifact consolidation →
+worktree/branch/tab removal → quality gate → learnings extraction).
+
+Record in the reconciliation report: `path: close-wave delegated
+(predicate: all three components held)`. Continue to the next worktree.
+
+#### When the predicate unexpectedly fails
+
+A worktree that looks like Case A (`pr_merged=True`, `status=online`)
+but whose predicate fails — usually because `shutdown-artifacts/work-log.md`
+is missing (agent died after `mark_pr_merged` but before writing the
+log) — falls through to Case A's cooperative shutdown path below. Log
+each failed predicate component in the reconciliation report (e.g.
+`predicate-false: missing shutdown-artifacts/work-log.md`) so we can
+diagnose what broke the flow.
+
 ### Case A — PR merged, agent still registered
 
 Same tier-1 → tier-2 path as close-wave Step 5. Snapshot the inbox offset

@@ -18,6 +18,52 @@ lifecycle using the **cooperative shutdown** protocol from
 
 Arguments: `$ARGUMENTS` — optional list of worktree names. If omitted, auto-detect all active worktrees.
 
+## Invocation modes
+
+This skill runs in one of two modes:
+
+1. **User-driven** (`/cloglog close-wave [worktrees...]`) — the default.
+   Walks Steps 1–14 including user confirmation. Wave name is derived from
+   existing work logs (`wave-N.md`).
+2. **Reconcile delegation** — `plugins/cloglog/skills/reconcile/SKILL.md`
+   Step 5.0 hands off a single cleanly-completed worktree after verifying
+   the three-part predicate (shutdown-artifacts present, close-off task in
+   backlog, every assigned task `pr_merged=True`). Reconcile is the system's
+   arbiter: close-wave is the clean path, `force_unregister` is the dirty
+   path, and delegation ensures the two stop fighting over teardown (T-270;
+   see `docs/design/agent-lifecycle.md` §5 for the unified-flow spec).
+
+### When invoked from reconcile
+
+Call shape from reconcile's Step 5.0:
+
+```
+close-wave(worktree="<wt-name>", invoked_from="reconcile")
+```
+
+The reconcile entry point diverges from the user-driven flow in three
+places and runs Steps 2–14 unchanged otherwise:
+
+- **Skip Step 1.5 — user confirmation.** Reconcile has already declared
+  the auto-fix path (`/cloglog reconcile` always fixes, no separate
+  confirm step); re-prompting the user would stall the automation.
+- **Single-worktree scope.** Reconcile passes exactly one `wt-*` name.
+  Treat it as a single-worktree wave — no multi-worktree fan-out, no
+  auto-detection pass against `git worktree list`.
+- **Override wave-name derivation (Step 4).** Use
+  `reconcile-<date>-<wt-name>.md` instead of `wave-N.md`. Reconcile
+  invocations are orphan cleanups, not natural waves, so wave numbering
+  would falsely advance the counter and break the next user-driven
+  `/cloglog close-wave` numbering logic.
+
+**Callable from reconcile** — everything else (Steps 2, 3, 5, 5a–5d, 6,
+7, 8, 9, 9.5, 10, 11, 12, 13, 14) is identical to the user-driven mode.
+The cooperative shutdown, shutdown-artifact consolidation into the work
+log, worktree/branch/tab removal, quality gate on main, and learnings
+extraction all run unchanged. Anything close-wave does today for a
+single worktree is the correct behaviour for reconcile's case — the
+delegation is a pure entry-point change, not a refactor of the pipeline.
+
 ## Step 1: Detect Worktrees
 
 1. Run `git worktree list --porcelain` to find active worktrees. **Filter to only worktrees whose path starts with `$(git rev-parse --show-toplevel)/.claude/worktrees/`.** Skip the main worktree and any worktree outside that directory (e.g., `../cloglog-prod` is the prod worktree — never touch it).

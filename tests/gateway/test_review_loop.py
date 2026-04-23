@@ -713,25 +713,33 @@ _OPENCODE_PROMPT_FILE = _REPO_ROOT / ".github" / "opencode" / "prompts" / "revie
 
 
 class TestOpencodeArgv:
-    """The opencode CLI argv must not include --pure (T-268).
+    """The opencode CLI argv MUST include --pure (T-272 hotfix).
 
-    --pure disables tool/file access, which contradicts the prompt's
-    instruction to read files outside the diff. --dangerously-skip-permissions
-    stays so opencode doesn't prompt interactively.
+    T-272 regression: removing --pure in T-268 made opencode agentic
+    (tool calls via default plugins). gemma4-e4b-32k then narrates tool
+    calls instead of emitting JSON and parse_reviewer_output fails.
+    See PR #194 (2026-04-23 live breakage). --pure = "no plugins" =
+    single-shot text emission. MUST be in the argv.
     """
 
-    def test_opencode_argv_does_not_pass_pure(self) -> None:
+    def test_opencode_argv_passes_pure(self) -> None:
         reviewer = OpencodeReviewer(_REPO_ROOT)
         args = reviewer._build_args("full prompt body")
-        assert "--pure" not in args
+        assert "--pure" in args
         assert "--dangerously-skip-permissions" in args
 
 
 class TestOpencodePromptPin:
-    """Pin the opencode prompt to the deep-verification framing (T-268).
+    """Pin the opencode prompt to the deep-verification framing (T-268 + T-272).
 
-    The prior "first-pass" framing biased gemma4-e4b-32k toward pass-everything
-    verdicts (see PR #190). These assertions prevent that regression.
+    T-268 flipped the prompt from "first-pass" to "deep verification review" to
+    stop the pass-everything bias observed on PR #190.
+
+    T-272 hotfix trims the T-268 rewrite's filesystem-access framing — under
+    ``--pure`` the model has no tools, so claims like "FULL ACCESS to the
+    project filesystem. USE IT." and "evidence from a file you read outside
+    the diff" are dishonest. They must be gone; the honest "no tool access"
+    analogue must be present. See PR #194 live breakage on 2026-04-23.
     """
 
     def _prompt(self) -> str:
@@ -740,8 +748,18 @@ class TestOpencodePromptPin:
     def test_opencode_prompt_has_deep_review_framing(self) -> None:
         text = self._prompt()
         assert "deep verification review" in text
-        assert "FULL ACCESS to the project filesystem" in text
-        assert "evidence from a file you read outside the diff" in text
+        # T-272: replaced the file-read framing with the honest "no tool
+        # access" paragraph. Both the positive presence of the new phrase and
+        # the absence of the old dishonest phrases are load-bearing.
+        assert "no tool access" in text
+        assert "do not claim to have read files outside the diff" in text
+
+    def test_opencode_prompt_drops_dishonest_file_access_framing(self) -> None:
+        # T-272: these phrases imply the model can read files outside the
+        # diff. Under ``--pure`` it cannot. They must not return.
+        text = self._prompt()
+        assert "FULL ACCESS to the project filesystem" not in text
+        assert "evidence from a file you read outside the diff" not in text
 
     def test_opencode_prompt_drops_first_pass_framing(self) -> None:
         text = self._prompt().lower()

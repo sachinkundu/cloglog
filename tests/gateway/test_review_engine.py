@@ -37,10 +37,12 @@ from src.gateway.review_engine import (
     ReviewResult,
     _format_review_body,
     _partition_findings,
+    _should_skip_for_cap,
     count_bot_reviews,
     extract_diff_new_lines,
     filter_diff,
     is_review_agent_available,
+    latest_codex_review_is_approval,
     log_review_source_root,
     parse_review_output,
     post_review,
@@ -1195,34 +1197,127 @@ class TestCountBotReviews:
         assert n == 1
 
 
-class TestTwoCycleCap:
+class TestShouldSkipForCap:
+    """Pure decision-helper unit tests (T-227).
+
+    The helper collapses the verdict-based + backstop cap logic into a
+    total function so integration tests don't have to re-simulate it and
+    demos can call it in-process. Exercised from three callers: the
+    cap-check in ``_review_pr``, these tests, and the T-227 demo.
+    """
+
+    def test_proceeds_under_backstop_with_no_approval(self) -> None:
+        # Below backstop AND no approval → proceed.
+        assert _should_skip_for_cap(0, False) == (False, False)
+        assert _should_skip_for_cap(1, False) == (False, False)
+        assert _should_skip_for_cap(MAX_REVIEWS_PER_PR - 1, False) == (False, False)
+
+    def test_silent_skip_when_latest_is_approval(self) -> None:
+        # Latest bot review emitted `:pass:` — silent skip, no backstop comment.
+        # Author already has the approval signal.
+        assert _should_skip_for_cap(1, True) == (True, False)
+        assert _should_skip_for_cap(MAX_REVIEWS_PER_PR - 1, True) == (True, False)
+
+    def test_backstop_triggers_at_cap_without_approval(self) -> None:
+        # At or above the backstop with no approval → skip WITH comment.
+        assert _should_skip_for_cap(MAX_REVIEWS_PER_PR, False) == (True, True)
+        assert _should_skip_for_cap(MAX_REVIEWS_PER_PR + 1, False) == (True, True)
+
+    def test_approval_beats_backstop(self) -> None:
+        # If both approval and backstop are true, approval wins — posting
+        # a "maximum reached" comment on an already-approved PR is noise.
+        assert _should_skip_for_cap(MAX_REVIEWS_PER_PR, True) == (True, False)
+        assert _should_skip_for_cap(MAX_REVIEWS_PER_PR + 5, True) == (True, False)
+
+    def test_backstop_value_is_five(self) -> None:
+        # T-227: pin the backstop at 5 so a bump needs a deliberate edit.
+        assert MAX_REVIEWS_PER_PR == 5
+
+
+class TestLatestCodexReviewIsApproval:
+    """HTTP-integration tests for the approval-detection helper (T-227).
+
+    ``:pass:`` is the body prefix ``_format_review_body`` emits when codex
+    returns ``verdict="approve"``. The bot never posts with
+    ``event="APPROVE"`` (pinned by ``test_verdict_never_becomes_approve_or_request_changes``),
+    so body-prefix detection is the canonical approval signal on GitHub.
+    """
+
     @pytest.mark.asyncio
-    async def test_skips_agent_when_bot_already_reviewed_max(self, sample_diff: str) -> None:
-        """Having MAX_REVIEWS_PER_PR or more prior bot reviews short-circuits."""
-        consumer = ReviewEngineConsumer(max_per_hour=10)
-
-        async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
-            pytest.fail("No subprocess should launch when the cap is already reached")
-
-        with (
-            patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
-            patch(
-                "src.gateway.github_token.get_github_app_token",
-                new=AsyncMock(return_value="ghs_test"),
-            ),
-            patch(
-                "src.gateway.github_token.get_codex_reviewer_token",
-                new=AsyncMock(return_value="ghs_test"),
-            ),
-            patch(
-                "src.gateway.review_engine.count_bot_reviews",
-                new=AsyncMock(return_value=MAX_REVIEWS_PER_PR),
-            ),
-        ):
-            await consumer.handle(_event())
+    async def test_returns_true_when_latest_codex_body_starts_with_pass(self) -> None:
+        url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
+        reviews_json = [
+            {"user": {"login": _CODEX_BOT}, "body": ":warning: found an issue"},
+            {"user": {"login": _CODEX_BOT}, "body": ":pass: looks good, all addressed"},
+        ]
+        with respx.mock() as mock:
+            mock.get(url).mock(return_value=httpx.Response(200, json=reviews_json))
+            result = await latest_codex_review_is_approval("sachinkundu/cloglog", 42, "t")
+        assert result is True
 
     @pytest.mark.asyncio
-    async def test_proceeds_when_under_cap(self, sample_diff: str) -> None:
+    async def test_returns_false_when_latest_codex_body_is_warning(self) -> None:
+        url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
+        reviews_json = [
+            {"user": {"login": _CODEX_BOT}, "body": ":pass: earlier commit was clean"},
+            {"user": {"login": _CODEX_BOT}, "body": ":warning: new change broke X"},
+        ]
+        with respx.mock() as mock:
+            mock.get(url).mock(return_value=httpx.Response(200, json=reviews_json))
+            result = await latest_codex_review_is_approval("sachinkundu/cloglog", 42, "t")
+        # Latest is `:warning:`, so the earlier `:pass:` does NOT count — a
+        # newer commit with regressions must re-open the review window.
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_no_codex_reviews(self) -> None:
+        url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
+        with respx.mock() as mock:
+            mock.get(url).mock(return_value=httpx.Response(200, json=[]))
+            result = await latest_codex_review_is_approval("sachinkundu/cloglog", 42, "t")
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_ignores_non_codex_bot_reviews(self) -> None:
+        """Human or claude-bot ``:pass:``-looking bodies must not count as bot approval."""
+        url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
+        reviews_json = [
+            {"user": {"login": "sachinkundu"}, "body": ":pass: LGTM"},
+            {"user": {"login": _CLAUDE_BOT}, "body": ":pass: pushed fix"},
+            {"user": {"login": _CODEX_BOT}, "body": ":warning: still has issues"},
+        ]
+        with respx.mock() as mock:
+            mock.get(url).mock(return_value=httpx.Response(200, json=reviews_json))
+            result = await latest_codex_review_is_approval("sachinkundu/cloglog", 42, "t")
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_tolerates_missing_body_and_missing_user(self) -> None:
+        """Dismissed/malformed rows never crash — missing body just fails the prefix test."""
+        url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
+        reviews_json = [
+            {"state": "DISMISSED"},  # no user, no body
+            {"user": None, "state": "DISMISSED"},
+            {"user": {"login": _CODEX_BOT}},  # no body key
+        ]
+        with respx.mock() as mock:
+            mock.get(url).mock(return_value=httpx.Response(200, json=reviews_json))
+            result = await latest_codex_review_is_approval("sachinkundu/cloglog", 42, "t")
+        assert result is False
+
+
+class TestVerdictBasedCap:
+    """Integration coverage for T-227 verdict-based stop + backstop=5.
+
+    Replaces the T-193 ``TestTwoCycleCap`` at this file location. The cap is
+    now: skip when the latest codex review emitted ``:pass:``; otherwise run
+    until ``MAX_REVIEWS_PER_PR=5`` sessions without approval, then skip with
+    a comment.
+    """
+
+    @pytest.mark.asyncio
+    async def test_proceeds_when_under_backstop_and_no_approval(self, sample_diff: str) -> None:
+        """Coverage 1: N prior COMMENTED/CHANGES_REQUESTED reviews, N < 5 → proceed."""
         consumer = ReviewEngineConsumer(max_per_hour=10)
         launched: list[tuple[str, ...]] = []
 
@@ -1232,7 +1327,7 @@ class TestTwoCycleCap:
                 return _FakeProcess(stdout=sample_diff.encode())
             pytest.fail("_spawn should only be called for gh")
 
-        codex_launched = []
+        codex_launched: list[tuple[Any, ...]] = []
 
         async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
             codex_launched.append(args)
@@ -1260,15 +1355,107 @@ class TestTwoCycleCap:
                 new=AsyncMock(return_value=MAX_REVIEWS_PER_PR - 1),
             ),
             patch(
+                "src.gateway.review_engine.latest_codex_review_is_approval",
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
                 "src.gateway.review_engine.post_review",
                 new=AsyncMock(return_value=True),
             ),
         ):
             await consumer.handle(_event())
 
-        # gh pr diff via _spawn, codex via create_subprocess_exec
+        # Review proceeded: one gh diff fetch + one codex subprocess.
         assert len(launched) == 1
         assert len(codex_launched) == 1
+
+    @pytest.mark.asyncio
+    async def test_skips_silently_when_latest_bot_review_is_approval(
+        self, sample_diff: str
+    ) -> None:
+        """Coverage 2: latest bot review is `:pass:` → skip, no subprocess, no skip comment."""
+        consumer = ReviewEngineConsumer(max_per_hour=10)
+
+        async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
+            pytest.fail("No subprocess should launch when the bot has already approved")
+
+        async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
+            pytest.fail("No codex subprocess should launch on approval skip")
+
+        with (
+            patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.review_engine.count_bot_reviews",
+                new=AsyncMock(return_value=2),
+            ),
+            patch(
+                "src.gateway.review_engine.latest_codex_review_is_approval",
+                new=AsyncMock(return_value=True),
+            ),
+            respx.mock(assert_all_called=False) as mock,
+        ):
+            # Route is pre-registered so any accidental skip-comment POST
+            # lands here; the assertion below pins call_count == 0.
+            comments_route = mock.post(_ISSUES_COMMENTS_URL).mock(
+                return_value=httpx.Response(201, json={"id": 1})
+            )
+            await consumer.handle(_event())
+
+        assert comments_route.call_count == 0, (
+            "Silent-skip branch must not post a skip comment — author already has :pass:"
+        )
+
+    @pytest.mark.asyncio
+    async def test_backstop_triggers_at_max_without_approval(self, sample_diff: str) -> None:
+        """Coverage 3: count >= 5 and no approval → backstop skip (no subprocess)."""
+        consumer = ReviewEngineConsumer(max_per_hour=10)
+
+        async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
+            pytest.fail("No subprocess should launch when the backstop has tripped")
+
+        with (
+            patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.review_engine.count_bot_reviews",
+                new=AsyncMock(return_value=MAX_REVIEWS_PER_PR),
+            ),
+            patch(
+                "src.gateway.review_engine.latest_codex_review_is_approval",
+                new=AsyncMock(return_value=False),
+            ),
+            respx.mock() as mock,
+        ):
+            comments_route = mock.post(_ISSUES_COMMENTS_URL).mock(
+                return_value=httpx.Response(201, json={"id": 1})
+            )
+            await consumer.handle(_event())
+
+        # Backstop MUST post the skip comment.
+        assert comments_route.call_count == 1
+        payload = json.loads(comments_route.calls.last.request.content)
+        body = payload["body"]
+        # Coverage 4: body must mention the maximum and the backstop's number
+        # so the author knows why review stopped.
+        assert str(MAX_REVIEWS_PER_PR) in body
+        assert "maximum" in body.lower()
+        assert "approval" in body.lower() or "approved" in body.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1691,12 +1878,16 @@ class TestSkipCommentsInHandler:
 
     @pytest.mark.asyncio
     async def test_max_reviews_cap_posts_skip_comment(self) -> None:
-        """When prior bot reviews == MAX_REVIEWS_PER_PR, posts a 'maximum' comment."""
+        """Backstop (T-227) at MAX_REVIEWS_PER_PR sessions without approval posts a comment."""
         consumer = ReviewEngineConsumer(max_per_hour=10)
         with (
             patch(
                 "src.gateway.review_engine.count_bot_reviews",
                 new=AsyncMock(return_value=MAX_REVIEWS_PER_PR),
+            ),
+            patch(
+                "src.gateway.review_engine.latest_codex_review_is_approval",
+                new=AsyncMock(return_value=False),
             ),
             respx.mock() as mock,
         ):
@@ -1708,7 +1899,10 @@ class TestSkipCommentsInHandler:
         assert comments_route.call_count == 1
         payload = json.loads(comments_route.calls.last.request.content)
         body_lower = payload["body"].lower()
-        assert "maximum" in body_lower or str(MAX_REVIEWS_PER_PR) in payload["body"]
+        # T-227 body: mentions the numeric backstop AND an approval-adjacent word.
+        assert "maximum" in body_lower
+        assert str(MAX_REVIEWS_PER_PR) in payload["body"]
+        assert "approval" in body_lower or "approved" in body_lower
 
     @pytest.mark.asyncio
     async def test_empty_filtered_diff_posts_skip_comment(self) -> None:

@@ -277,10 +277,18 @@ def tasks_list(
 ) -> None:
     """List tasks grouped by status.
 
-    T-258: `--worktree` filter hits /api/v1/projects/{id}/worktrees which
-    is NOT a public route. `--api-key` (or `CLOGLOG_API_KEY`) is only
-    required when the worktree filter is used.
+    T-258 / codex round 1 correction: the dashboard key is required on
+    EVERY invocation, not just when the ``--worktree`` filter is used.
+    ``/api/v1/projects`` and ``/api/v1/projects/{id}/backlog`` are both
+    non-agent routes and ``ApiAccessControlMiddleware`` rejects
+    unauthenticated requests with 401 regardless of the filter flags.
+    Guard the key up front so an unset ``CLOGLOG_API_KEY`` surfaces as a
+    clear local error instead of a remote 401 from the first backend
+    call. (The worktree filter hits an additional non-agent route
+    ``/api/v1/projects/{id}/worktrees`` — still non-public — and is
+    covered by the same guard.)
     """
+    _require_dashboard_key(api_key, "tasks list")
     project_id, _ = _resolve_project(url, project, api_key=api_key)
     backlog = _api_get(url, f"/api/v1/projects/{project_id}/backlog", api_key=api_key)
     if not isinstance(backlog, list):

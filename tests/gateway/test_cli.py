@@ -229,7 +229,12 @@ def test_tasks_list_table_output() -> None:
         return_value=Response(200, json=MOCK_BACKLOG)
     )
 
-    result = runner.invoke(app, ["tasks", "list", "--project", "testproj", "--url", BASE])
+    # T-258 / codex round 1: `tasks list` always needs the dashboard key
+    # because /api/v1/projects and /api/v1/projects/{id}/backlog are both
+    # non-agent routes; pass a dummy key to clear the local guard.
+    result = runner.invoke(
+        app, ["tasks", "list", "--project", "testproj", "--url", BASE, "--api-key", "test-key"]
+    )
     assert result.exit_code == 0
     assert "In Progress (1)" in result.output
     assert "T-101" in result.output
@@ -246,7 +251,20 @@ def test_tasks_list_json_output() -> None:
         return_value=Response(200, json=MOCK_BACKLOG)
     )
 
-    result = runner.invoke(app, ["tasks", "list", "--project", "testproj", "--url", BASE, "--json"])
+    result = runner.invoke(
+        app,
+        [
+            "tasks",
+            "list",
+            "--project",
+            "testproj",
+            "--url",
+            BASE,
+            "--json",
+            "--api-key",
+            "test-key",
+        ],
+    )
     assert result.exit_code == 0
     data = json.loads(result.output)
     assert isinstance(data, list)
@@ -264,7 +282,18 @@ def test_tasks_list_status_filter() -> None:
 
     result = runner.invoke(
         app,
-        ["tasks", "list", "--project", "testproj", "--url", BASE, "--status", "in_progress"],
+        [
+            "tasks",
+            "list",
+            "--project",
+            "testproj",
+            "--url",
+            BASE,
+            "--status",
+            "in_progress",
+            "--api-key",
+            "test-key",
+        ],
     )
     assert result.exit_code == 0
     assert "T-101" in result.output
@@ -279,7 +308,20 @@ def test_tasks_list_all_shows_done() -> None:
         return_value=Response(200, json=MOCK_BACKLOG)
     )
 
-    result = runner.invoke(app, ["tasks", "list", "--project", "testproj", "--url", BASE, "--all"])
+    result = runner.invoke(
+        app,
+        [
+            "tasks",
+            "list",
+            "--project",
+            "testproj",
+            "--url",
+            BASE,
+            "--all",
+            "--api-key",
+            "test-key",
+        ],
+    )
     assert result.exit_code == 0
     assert "T-103" in result.output
     assert "hidden" not in result.output
@@ -494,7 +536,19 @@ def test_tasks_list_unknown_project() -> None:
     """tasks list with unknown project exits 1."""
     respx.get(f"{BASE}/api/v1/projects").mock(return_value=Response(200, json=[]))
 
-    result = runner.invoke(app, ["tasks", "list", "--project", "nonexistent", "--url", BASE])
+    result = runner.invoke(
+        app,
+        [
+            "tasks",
+            "list",
+            "--project",
+            "nonexistent",
+            "--url",
+            BASE,
+            "--api-key",
+            "test-key",
+        ],
+    )
     assert result.exit_code == 1
     assert "not found" in result.output.lower()
 

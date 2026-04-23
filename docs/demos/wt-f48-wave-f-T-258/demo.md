@@ -1,7 +1,7 @@
 # /api/v1/projects/{id}/worktrees keeps its auth requirement (Option B) and is now advertised loudly — route docstring, doc cross-links, explicit dashboard-key guards in CLI and in-tree scripts, and E2E regression tests (T-258).
 
-*2026-04-23T05:48:36Z by Showboat 0.6.1*
-<!-- showboat-id: 6c72bb69-4622-414b-b191-c765266b429e -->
+*2026-04-23T07:00:42Z by Showboat 0.6.1*
+<!-- showboat-id: e3f5a025-01cd-4493-9bbc-b04f7a643efd -->
 
 Before: the auth contract on /api/v1/projects/{id}/worktrees was implicit. src/gateway/cli.py and scripts/sync_mcp_dist.py relied on env-passthrough of the dashboard key through _auth_headers; a caller that forgot CLOGLOG_API_KEY got a cryptic remote 401. Codex flagged the ambiguity during PR #172 review.
 
@@ -67,7 +67,7 @@ fi
 ```
 
 ```output
-OK: src/gateway/cli.py references _require_dashboard_key in 4 locations
+OK: src/gateway/cli.py references _require_dashboard_key in 5 locations
 ```
 
 Proof 4 — sync_mcp_dist.py is explicit too. Sends X-Dashboard-Key and calls raise_for_status() so a future 403 surfaces instead of silently returning an empty list.

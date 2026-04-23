@@ -1,7 +1,7 @@
 # T-270 — reconcile delegates to close-wave for cleanly-completed worktrees so shutdown-artifacts survive archive; Cases A/B/C remain as the dirty-path fallback.
 
-*2026-04-23T10:01:14Z by Showboat 0.6.1*
-<!-- showboat-id: b05d5aca-8132-4e50-8122-127be99677aa -->
+*2026-04-23T10:17:50Z by Showboat 0.6.1*
+<!-- showboat-id: d1e0202a-b359-4230-9582-579574d9fff2 -->
 
 Proof 1 — reconcile SKILL.md introduces Step 5.0 delegation branch with the verbatim 'delegate to close-wave' phrasing. Grep targets the skill file only so unrelated future docs mentioning the phrase cannot mask a regression.
 
@@ -33,34 +33,45 @@ grep -q "shutdown-artifacts/work-log.md" "$f" \
 OK predicate-1 (shutdown-artifacts) referenced
 ```
 
-Proof 2b — predicate component 2 (close-off task in backlog) is referenced in reconcile Step 5.0.
+Proof 2b — predicate component 2 (close-off task in backlog) is referenced in reconcile Step 5.0 AND pins the title-equality match pattern (not worktree_id match). Codex round 1 on this PR caught an earlier version that filtered by worktree_id; close-off tasks carry the main agent worktree_id not the target, so the wrong filter never matched.
 
 ```bash
 
 f=plugins/cloglog/skills/reconcile/SKILL.md
 grep -qi "close-off task" "$f" \
-  && echo "OK predicate-2 (close-off task) referenced" \
-  || { echo "FAIL predicate-2 reference missing"; exit 1; }
+  && grep -qF "title == f\"Close worktree {wt_name}\"" "$f" \
+  && echo "OK predicate-2 (close-off task by title equality) referenced" \
+  || { echo "FAIL predicate-2 title-match pattern missing or uses wrong filter"; exit 1; }
 
 ```
 
 ```output
-OK predicate-2 (close-off task) referenced
+OK predicate-2 (close-off task by title equality) referenced
 ```
 
-Proof 2c — predicate component 3 (every assigned task has pr_merged=True) is referenced in reconcile Step 5.0.
+Proof 2c — predicate component 3 accepts all three project-completion terminal states per agent-lifecycle §1 and close_worktree_template (done, OR review+pr_merged=True, OR review+pr_url=None for skip_pr no-PR tasks). Codex round 2 on this PR caught a stricter earlier version that required pr_merged=True everywhere and would have falsely rejected cleanly-completed worktrees whose last task shipped via skip_pr=True.
 
 ```bash
 
-f=plugins/cloglog/skills/reconcile/SKILL.md
-grep -q "pr_merged=True" "$f" \
-  && echo "OK predicate-3 (pr_merged=True) referenced" \
-  || { echo "FAIL predicate-3 reference missing"; exit 1; }
+python3 - plugins/cloglog/skills/reconcile/SKILL.md <<'PY'
+import pathlib, sys
+body = pathlib.Path(sys.argv[1]).read_text()
+expected = [
+    "`status == \"done\"`",
+    "`status == \"review\"` AND `pr_merged == True`",
+    "`status == \"review\"` AND `pr_url is None`",
+]
+missing = [e for e in expected if e not in body]
+if missing:
+    print("FAIL predicate-3 missing:", missing)
+    sys.exit(1)
+print("OK predicate-3 accepts all three terminal states")
+PY
 
 ```
 
 ```output
-OK predicate-3 (pr_merged=True) referenced
+OK predicate-3 accepts all three terminal states
 ```
 
 Proof 3 — reconcile SKILL.md still carries Cases A/B/C as the dirty-path fallback for agents that crashed, wedged, or never wrote shutdown-artifacts. The T-270 change is additive, not a rewrite.
@@ -104,13 +115,14 @@ f=plugins/cloglog/skills/close-wave/SKILL.md
 grep -q "Invocation modes" "$f" \
   && grep -q "Reconcile delegation" "$f" \
   && grep -q "Skip Step 1.5" "$f" \
-  && echo "OK close-wave reconcile-callable entry point documented" \
-  || { echo "FAIL close-wave Invocation modes / Reconcile delegation / Step 1.5 skip missing"; exit 1; }
+  && grep -qF "reconcile-<wt-name>" "$f" \
+  && echo "OK close-wave reconcile-callable entry point documented with correct <wave-name> shape" \
+  || { echo "FAIL close-wave Invocation modes / Reconcile delegation / Step 1.5 skip / <wave-name> shape missing"; exit 1; }
 
 ```
 
 ```output
-OK close-wave reconcile-callable entry point documented
+OK close-wave reconcile-callable entry point documented with correct <wave-name> shape
 ```
 
 Proof 6 — pin test tests/plugins/test_reconcile_skill_structure.py has 5 assertions covering the delegation branch, three predicate components, fallback cases, and the unified-flow doc. Import-direct (not pytest) so this block survives showboat verify on a clean host without a live Postgres DB (conftest.py has a session-autouse DB fixture).

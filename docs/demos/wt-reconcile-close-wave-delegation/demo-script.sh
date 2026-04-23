@@ -38,23 +38,34 @@ grep -q "shutdown-artifacts/work-log.md" "$f" \
 '
 
 uvx showboat note "$DEMO_FILE" \
-  "Proof 2b — predicate component 2 (close-off task in backlog) is referenced in reconcile Step 5.0."
+  "Proof 2b — predicate component 2 (close-off task in backlog) is referenced in reconcile Step 5.0 AND pins the title-equality match pattern (not worktree_id match). Codex round 1 on this PR caught an earlier version that filtered by worktree_id; close-off tasks carry the main agent worktree_id not the target, so the wrong filter never matched."
 
 uvx showboat exec "$DEMO_FILE" bash '
 f=plugins/cloglog/skills/reconcile/SKILL.md
 grep -qi "close-off task" "$f" \
-  && echo "OK predicate-2 (close-off task) referenced" \
-  || { echo "FAIL predicate-2 reference missing"; exit 1; }
+  && grep -qF "title == f\"Close worktree {wt_name}\"" "$f" \
+  && echo "OK predicate-2 (close-off task by title equality) referenced" \
+  || { echo "FAIL predicate-2 title-match pattern missing or uses wrong filter"; exit 1; }
 '
 
 uvx showboat note "$DEMO_FILE" \
-  "Proof 2c — predicate component 3 (every assigned task has pr_merged=True) is referenced in reconcile Step 5.0."
+  "Proof 2c — predicate component 3 accepts all three project-completion terminal states per agent-lifecycle §1 and close_worktree_template (done, OR review+pr_merged=True, OR review+pr_url=None for skip_pr no-PR tasks). Codex round 2 on this PR caught a stricter earlier version that required pr_merged=True everywhere and would have falsely rejected cleanly-completed worktrees whose last task shipped via skip_pr=True."
 
 uvx showboat exec "$DEMO_FILE" bash '
-f=plugins/cloglog/skills/reconcile/SKILL.md
-grep -q "pr_merged=True" "$f" \
-  && echo "OK predicate-3 (pr_merged=True) referenced" \
-  || { echo "FAIL predicate-3 reference missing"; exit 1; }
+python3 - plugins/cloglog/skills/reconcile/SKILL.md <<'"'"'PY'"'"'
+import pathlib, sys
+body = pathlib.Path(sys.argv[1]).read_text()
+expected = [
+    "`status == \"done\"`",
+    "`status == \"review\"` AND `pr_merged == True`",
+    "`status == \"review\"` AND `pr_url is None`",
+]
+missing = [e for e in expected if e not in body]
+if missing:
+    print("FAIL predicate-3 missing:", missing)
+    sys.exit(1)
+print("OK predicate-3 accepts all three terminal states")
+PY
 '
 
 uvx showboat note "$DEMO_FILE" \
@@ -88,8 +99,9 @@ f=plugins/cloglog/skills/close-wave/SKILL.md
 grep -q "Invocation modes" "$f" \
   && grep -q "Reconcile delegation" "$f" \
   && grep -q "Skip Step 1.5" "$f" \
-  && echo "OK close-wave reconcile-callable entry point documented" \
-  || { echo "FAIL close-wave Invocation modes / Reconcile delegation / Step 1.5 skip missing"; exit 1; }
+  && grep -qF "reconcile-<wt-name>" "$f" \
+  && echo "OK close-wave reconcile-callable entry point documented with correct <wave-name> shape" \
+  || { echo "FAIL close-wave Invocation modes / Reconcile delegation / Step 1.5 skip / <wave-name> shape missing"; exit 1; }
 '
 
 uvx showboat note "$DEMO_FILE" \

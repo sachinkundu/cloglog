@@ -50,11 +50,16 @@ places and runs Steps 2–14 unchanged otherwise:
 - **Single-worktree scope.** Reconcile passes exactly one `wt-*` name.
   Treat it as a single-worktree wave — no multi-worktree fan-out, no
   auto-detection pass against `git worktree list`.
-- **Override wave-name derivation (Step 4).** Use
-  `reconcile-<date>-<wt-name>.md` instead of `wave-N.md`. Reconcile
-  invocations are orphan cleanups, not natural waves, so wave numbering
-  would falsely advance the counter and break the next user-driven
-  `/cloglog close-wave` numbering logic.
+- **Override wave-name derivation (Step 4).** Set the `<wave-name>`
+  variable to `reconcile-<wt-name>`; Step 4's file-shape contract
+  (`docs/work-logs/<date>-<wave-name>.md`) is preserved, and close-wave
+  emits `docs/work-logs/<date>-reconcile-<wt-name>.md`. Reconcile
+  invocations are orphan cleanups, not natural waves, so the normal
+  `wave-N` counter derivation is skipped (using it would falsely
+  advance the counter and break the next user-driven `/cloglog
+  close-wave` numbering). The `<date>` prefix and `.md` suffix are
+  still produced by Step 4 itself, not by the override — the override
+  is a `<wave-name>` substitution, not a full filename replacement.
 
 **Callable from reconcile** — everything else (Steps 2, 3, 5, 5a–5d, 6,
 7, 8, 9, 9.5, 10, 11, 12, 13, 14) is identical to the user-driven mode.

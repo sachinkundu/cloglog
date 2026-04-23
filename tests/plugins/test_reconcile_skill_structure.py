@@ -69,11 +69,35 @@ def test_reconcile_skill_references_all_three_predicate_components() -> None:
         "it reconcile would delegate before the close-off task has been "
         "filed, leaving close-wave with no task to close."
     )
-    assert "pr_merged=True" in body or "pr_merged == True" in body or "`pr_merged`" in body, (
-        "predicate component 3 (every assigned task has `pr_merged=True`) "
-        "must be referenced in reconcile Step 5.0. Without it reconcile "
-        "would delegate for worktrees whose PRs have not actually merged."
+    assert 'title == f"Close worktree {wt_name}"' in body, (
+        "predicate component 2 must pin the title-equality match pattern. "
+        "Codex PR #194 round 1 caught an earlier version that filtered "
+        "`get_board` by `worktree_id == <target_wt_id>`; close-off tasks "
+        "carry the main agent's worktree_id, not the target's, so that "
+        "filter would never match and cleanly-completed worktrees would "
+        "fall through to Cases A/C and get torn down directly."
     )
+    assert "pr_merged" in body, (
+        "predicate component 3 (task resolution state across `pr_merged`, "
+        "`status`, and `pr_url`) must be referenced in reconcile Step 5.0. "
+        "Without it reconcile would delegate for worktrees whose PRs have "
+        "not actually merged."
+    )
+    for accepted_terminal_state in (
+        '`status == "done"`',
+        '`status == "review"` AND `pr_merged == True`',
+        '`status == "review"` AND `pr_url is None`',
+    ):
+        assert accepted_terminal_state in body, (
+            "predicate component 3 must accept all three project-completion "
+            "terminal states per docs/design/agent-lifecycle.md §1 and "
+            f"src/board/templates.py:24-25 — missing: {accepted_terminal_state}. "
+            "A stricter `pr_merged=True`-everywhere check (codex PR #194 "
+            "round 2 MEDIUM) falsely rejects cleanly-completed worktrees "
+            "whose last task was no-PR (skip_pr=True) or whose user already "
+            "moved one card to `done`, re-creating the T-270 artifact-loss "
+            "bug the delegation was written to prevent."
+        )
 
 
 def test_reconcile_skill_keeps_cases_a_b_c_as_fallbacks() -> None:
@@ -114,6 +138,14 @@ def test_close_wave_skill_documents_reconcile_delegation() -> None:
         "close-wave reconcile-mode must state that user confirmation "
         "(Step 1.5) is skipped. Otherwise reconcile's auto-fix flow "
         "stalls waiting for a prompt that will never be answered."
+    )
+    assert "reconcile-<wt-name>" in body, (
+        "close-wave reconcile-mode must override the `<wave-name>` "
+        "variable to `reconcile-<wt-name>` — NOT a full filename. Codex "
+        "PR #194 round 2 HIGH caught an earlier version that set the "
+        "override to `reconcile-<date>-<wt-name>.md`, which would nest "
+        "into Step 4's `docs/work-logs/<date>-<wave-name>.md` template "
+        "and produce `<date>-reconcile-<date>-<wt-name>.md.md`."
     )
 
 

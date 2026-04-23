@@ -588,18 +588,31 @@ async def latest_codex_review_is_approval(
     repo_full_name: str,
     pr_number: int,
     token: str,
+    head_sha: str,
     *,
     client: httpx.AsyncClient | None = None,
 ) -> bool:
-    """Return whether the latest codex bot review emitted ``:pass:`` (approve).
+    """Return whether the latest codex review of ``head_sha`` emitted ``:pass:``.
 
-    GitHub's /reviews endpoint returns rows oldest-first by id, so the last
-    codex row is the most recent one. We read its body and test the
-    ``_APPROVE_BODY_PREFIX`` — the canonical approval marker because
-    ``post_review`` pins ``event="COMMENT"`` (bot never flips GitHub's merge
-    state; only the human does). When there are no codex rows at all, return
-    False — no prior review cannot be an approval.
+    Scoped to a single commit on purpose: an approval of commit A must NOT
+    suppress review of a newly-pushed commit B. This aligns with the rest of
+    the review pipeline, whose consensus and turn accounting are keyed on
+    ``(pr_url, head_sha, stage)`` (``src/review/repository.py`` unique index;
+    ``src/gateway/review_loop.py`` turn sequencer; ``docs/design/two-stage-pr-review.md``
+    §3 "new push starts both stages from turn 1"). A PR-wide scope here would
+    let an older commit's ``:pass:`` mask regressions introduced on a later push.
+
+    Approval is encoded as the ``_APPROVE_BODY_PREFIX`` (``:pass:``) on the
+    review body because ``post_review`` pins ``event="COMMENT"`` (bot never
+    flips GitHub's merge state). Rows are filtered by ``commit_id == head_sha``
+    — legacy rows without ``commit_id`` are deliberately excluded; they cannot
+    prove an approval of *this* commit. GitHub's /reviews endpoint returns
+    rows oldest-first by id, so the last matching row is the most recent.
+    Returns False when ``head_sha`` is empty (caller couldn't resolve a
+    commit to scope to) or when no codex review matches ``head_sha``.
     """
+    if not head_sha:
+        return False
     url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}/reviews"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -615,7 +628,11 @@ async def latest_codex_review_is_approval(
     finally:
         if close_when_done:
             await http.aclose()
-    codex_rows = [r for r in reviews if (r.get("user") or {}).get("login") == _CODEX_BOT]
+    codex_rows = [
+        r
+        for r in reviews
+        if (r.get("user") or {}).get("login") == _CODEX_BOT and r.get("commit_id") == head_sha
+    ]
     if not codex_rows:
         return False
     body = (codex_rows[-1].get("body") or "").lstrip()
@@ -875,13 +892,21 @@ class ReviewEngineConsumer:
         # Claude bot token for reading diffs (has contents:read).
         claude_token = await get_github_app_token()
 
+        # Head SHA that triggered this webhook — needed up-front because the
+        # T-227 approval check is per-commit (an approval of commit A must
+        # not suppress review of a newly-pushed commit B). Falls through to
+        # the degraded path further down if empty.
+        head_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
+
         # Per-PR session cap (spec §6.3, T-227): verdict-based with a backstop.
-        # Skip further review when the latest codex review emitted ``:pass:``
-        # (bot is satisfied — author has the signal). The count-based backstop
-        # at ``MAX_REVIEWS_PER_PR`` only fires when no approval has been reached
-        # yet. Only applies when codex is runnable — opencode-only hosts (spec
-        # §5.4 registration matrix row 3) skip the cap check; an unconditional
-        # codex token fetch would blow up before stage A runs (PR #187 round 1).
+        # Skip further review when the latest codex review OF THE CURRENT head_sha
+        # emitted ``:pass:`` (bot satisfied with THIS commit — author has the
+        # signal). The count-based backstop at ``MAX_REVIEWS_PER_PR`` counts
+        # PR-wide sessions and only fires when no approval has been reached on
+        # the current head. Only applies when codex is runnable — opencode-only
+        # hosts (spec §5.4 registration matrix row 3) skip the cap check; an
+        # unconditional codex token fetch would blow up before stage A runs
+        # (PR #187 round 1).
         if self._codex_available:
             codex_token_for_cap = await get_codex_reviewer_token()
             prior = await count_bot_reviews(
@@ -891,7 +916,10 @@ class ReviewEngineConsumer:
             # no need for the extra HTTP call. Keeps existing tests with
             # ``count_bot_reviews = 0`` stubs working unchanged.
             latest_is_approval = prior > 0 and await latest_codex_review_is_approval(
-                event.repo_full_name, event.pr_number, codex_token_for_cap
+                event.repo_full_name,
+                event.pr_number,
+                codex_token_for_cap,
+                head_sha,
             )
             skip, is_backstop = _should_skip_for_cap(prior, latest_is_approval)
             if skip and not is_backstop:
@@ -953,7 +981,7 @@ class ReviewEngineConsumer:
         # Resolve the turn registry + project_id. The sequencer writes turn-
         # accounting rows into ``pr_review_turns``; idempotency + reset rules
         # (spec §3.3/§3.4) depend on the registry being consulted every turn.
-        head_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
+        # ``head_sha`` was resolved up-front for the T-227 cap check.
         if self._session_factory is None or not head_sha:
             logger.warning(
                 "Review sequencer fell back to single-turn codex path for PR #%d "

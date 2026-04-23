@@ -1,7 +1,7 @@
 # Replace the pure count-based review cap with a verdict-based stop (skip when the latest codex review emitted :pass:) and raise the safety backstop to 5 sessions. Matches T-227 Option B.
 
-*2026-04-23T17:10:39Z by Showboat 0.6.1*
-<!-- showboat-id: d1b114a9-65d8-44dc-a8f4-cdb28f44b663 -->
+*2026-04-23T17:25:02Z by Showboat 0.6.1*
+<!-- showboat-id: 4976d8cb-eab8-46c1-acf5-ca119104fbf3 -->
 
 ### T-227 acceptance evidence — file-level
 
@@ -29,12 +29,17 @@ F=src/gateway/review_engine.py
    grep -q "_should_skip_for_cap" "$F" && echo "pure_decision_helper_used=yes" || echo "pure_decision_helper_used=no"
    grep -q "latest_codex_review_is_approval" "$F" && echo "approval_helper_used=yes" || echo "approval_helper_used=no"
    grep -q "_APPROVE_BODY_PREFIX" "$F" && echo "approve_body_prefix_defined=yes" || echo "approve_body_prefix_defined=no"
+   # Regression guard for codex round 1 MEDIUM: the approval check must be
+   # per-head_sha so an approval of commit A cannot suppress review of
+   # commit B. Aligns with review_loop consensus scope.
+   grep -q "commit_id\") == head_sha" "$F" && echo "approval_filter_by_head_sha=yes" || echo "approval_filter_by_head_sha=no"
 ```
 
 ```output
 pure_decision_helper_used=yes
 approval_helper_used=yes
 approve_body_prefix_defined=yes
+approval_filter_by_head_sha=yes
 ```
 
 ```bash
@@ -151,6 +156,7 @@ T=tests/gateway/test_review_engine.py
    grep -q "test_proceeds_when_under_backstop_and_no_approval" "$T" && echo "proceed_case_covered=yes" || echo "proceed_case_covered=no"
    grep -q "test_skips_silently_when_latest_bot_review_is_approval" "$T" && echo "approval_skip_case_covered=yes" || echo "approval_skip_case_covered=no"
    grep -q "test_backstop_triggers_at_max_without_approval" "$T" && echo "backstop_case_covered=yes" || echo "backstop_case_covered=no"
+   grep -q "test_approval_on_older_sha_does_not_apply_to_new_sha" "$T" && echo "head_sha_scoping_case_covered=yes" || echo "head_sha_scoping_case_covered=no"
 ```
 
 ```output
@@ -160,6 +166,7 @@ test_class_verdict_based_cap=yes
 proceed_case_covered=yes
 approval_skip_case_covered=yes
 backstop_case_covered=yes
+head_sha_scoping_case_covered=yes
 ```
 
 ### Scope — Gateway-only

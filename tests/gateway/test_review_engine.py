@@ -1241,32 +1241,60 @@ class TestLatestCodexReviewIsApproval:
     returns ``verdict="approve"``. The bot never posts with
     ``event="APPROVE"`` (pinned by ``test_verdict_never_becomes_approve_or_request_changes``),
     so body-prefix detection is the canonical approval signal on GitHub.
+
+    Scoping is per-``head_sha``: an approval of commit A must not suppress
+    review of a newly-pushed commit B. Rows are filtered by
+    ``commit_id == head_sha`` before the latest-row check.
     """
+
+    _SHA_A = "a" * 40
+    _SHA_B = "b" * 40
 
     @pytest.mark.asyncio
     async def test_returns_true_when_latest_codex_body_starts_with_pass(self) -> None:
         url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
         reviews_json = [
-            {"user": {"login": _CODEX_BOT}, "body": ":warning: found an issue"},
-            {"user": {"login": _CODEX_BOT}, "body": ":pass: looks good, all addressed"},
+            {
+                "user": {"login": _CODEX_BOT},
+                "commit_id": self._SHA_A,
+                "body": ":warning: found an issue",
+            },
+            {
+                "user": {"login": _CODEX_BOT},
+                "commit_id": self._SHA_A,
+                "body": ":pass: looks good, all addressed",
+            },
         ]
         with respx.mock() as mock:
             mock.get(url).mock(return_value=httpx.Response(200, json=reviews_json))
-            result = await latest_codex_review_is_approval("sachinkundu/cloglog", 42, "t")
+            result = await latest_codex_review_is_approval(
+                "sachinkundu/cloglog", 42, "t", self._SHA_A
+            )
         assert result is True
 
     @pytest.mark.asyncio
     async def test_returns_false_when_latest_codex_body_is_warning(self) -> None:
         url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
         reviews_json = [
-            {"user": {"login": _CODEX_BOT}, "body": ":pass: earlier commit was clean"},
-            {"user": {"login": _CODEX_BOT}, "body": ":warning: new change broke X"},
+            {
+                "user": {"login": _CODEX_BOT},
+                "commit_id": self._SHA_A,
+                "body": ":pass: earlier turn looked clean",
+            },
+            {
+                "user": {"login": _CODEX_BOT},
+                "commit_id": self._SHA_A,
+                "body": ":warning: but this turn spotted X",
+            },
         ]
         with respx.mock() as mock:
             mock.get(url).mock(return_value=httpx.Response(200, json=reviews_json))
-            result = await latest_codex_review_is_approval("sachinkundu/cloglog", 42, "t")
-        # Latest is `:warning:`, so the earlier `:pass:` does NOT count — a
-        # newer commit with regressions must re-open the review window.
+            result = await latest_codex_review_is_approval(
+                "sachinkundu/cloglog", 42, "t", self._SHA_A
+            )
+        # Latest turn on this head is `:warning:`, so the earlier `:pass:` does
+        # NOT count — a later turn on the same commit that flipped verdict
+        # reopens the review window.
         assert result is False
 
     @pytest.mark.asyncio
@@ -1274,7 +1302,9 @@ class TestLatestCodexReviewIsApproval:
         url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
         with respx.mock() as mock:
             mock.get(url).mock(return_value=httpx.Response(200, json=[]))
-            result = await latest_codex_review_is_approval("sachinkundu/cloglog", 42, "t")
+            result = await latest_codex_review_is_approval(
+                "sachinkundu/cloglog", 42, "t", self._SHA_A
+            )
         assert result is False
 
     @pytest.mark.asyncio
@@ -1282,13 +1312,27 @@ class TestLatestCodexReviewIsApproval:
         """Human or claude-bot ``:pass:``-looking bodies must not count as bot approval."""
         url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
         reviews_json = [
-            {"user": {"login": "sachinkundu"}, "body": ":pass: LGTM"},
-            {"user": {"login": _CLAUDE_BOT}, "body": ":pass: pushed fix"},
-            {"user": {"login": _CODEX_BOT}, "body": ":warning: still has issues"},
+            {
+                "user": {"login": "sachinkundu"},
+                "commit_id": self._SHA_A,
+                "body": ":pass: LGTM",
+            },
+            {
+                "user": {"login": _CLAUDE_BOT},
+                "commit_id": self._SHA_A,
+                "body": ":pass: pushed fix",
+            },
+            {
+                "user": {"login": _CODEX_BOT},
+                "commit_id": self._SHA_A,
+                "body": ":warning: still has issues",
+            },
         ]
         with respx.mock() as mock:
             mock.get(url).mock(return_value=httpx.Response(200, json=reviews_json))
-            result = await latest_codex_review_is_approval("sachinkundu/cloglog", 42, "t")
+            result = await latest_codex_review_is_approval(
+                "sachinkundu/cloglog", 42, "t", self._SHA_A
+            )
         assert result is False
 
     @pytest.mark.asyncio
@@ -1296,13 +1340,71 @@ class TestLatestCodexReviewIsApproval:
         """Dismissed/malformed rows never crash — missing body just fails the prefix test."""
         url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
         reviews_json = [
-            {"state": "DISMISSED"},  # no user, no body
+            {"state": "DISMISSED"},  # no user, no body, no commit_id
             {"user": None, "state": "DISMISSED"},
-            {"user": {"login": _CODEX_BOT}},  # no body key
+            {"user": {"login": _CODEX_BOT}, "commit_id": self._SHA_A},  # no body
         ]
         with respx.mock() as mock:
             mock.get(url).mock(return_value=httpx.Response(200, json=reviews_json))
-            result = await latest_codex_review_is_approval("sachinkundu/cloglog", 42, "t")
+            result = await latest_codex_review_is_approval(
+                "sachinkundu/cloglog", 42, "t", self._SHA_A
+            )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_approval_on_older_sha_does_not_apply_to_new_sha(self) -> None:
+        """Regression guard (codex PR #201 round 1 MEDIUM): approval of commit
+        A must NOT suppress review of a newly-pushed commit B. Aligns with the
+        review pipeline's per-(pr_url, head_sha, stage) consensus scope."""
+        url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
+        reviews_json = [
+            # Prior turns on commit A, concluding with :pass:
+            {
+                "user": {"login": _CODEX_BOT},
+                "commit_id": self._SHA_A,
+                "body": ":warning: found an issue",
+            },
+            {
+                "user": {"login": _CODEX_BOT},
+                "commit_id": self._SHA_A,
+                "body": ":pass: looks good",
+            },
+            # No reviews yet on commit B.
+        ]
+        with respx.mock() as mock:
+            mock.get(url).mock(return_value=httpx.Response(200, json=reviews_json))
+            # The webhook is asking about head_sha=B. A's approval must not leak.
+            result = await latest_codex_review_is_approval(
+                "sachinkundu/cloglog", 42, "t", self._SHA_B
+            )
+        assert result is False, (
+            "Approval of an earlier commit must not suppress review of a newer "
+            "commit — per-head_sha semantics align with review_loop consensus scope."
+        )
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_head_sha_is_empty(self) -> None:
+        """No HTTP call is made when head_sha is empty — caller couldn't scope."""
+        url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
+        with respx.mock(assert_all_called=False) as mock:
+            route = mock.get(url).mock(return_value=httpx.Response(200, json=[]))
+            result = await latest_codex_review_is_approval("sachinkundu/cloglog", 42, "t", "")
+        assert result is False
+        assert route.call_count == 0, "Empty head_sha must short-circuit before any HTTP"
+
+    @pytest.mark.asyncio
+    async def test_legacy_rows_without_commit_id_are_excluded(self) -> None:
+        """Rows missing ``commit_id`` cannot prove approval of a specific commit."""
+        url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
+        reviews_json = [
+            # Legacy row without commit_id, body says :pass:
+            {"user": {"login": _CODEX_BOT}, "body": ":pass: legacy approval"},
+        ]
+        with respx.mock() as mock:
+            mock.get(url).mock(return_value=httpx.Response(200, json=reviews_json))
+            result = await latest_codex_review_is_approval(
+                "sachinkundu/cloglog", 42, "t", self._SHA_A
+            )
         assert result is False
 
 

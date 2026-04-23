@@ -47,7 +47,11 @@ uvx showboat exec "$DEMO_FILE" bash \
   'F=src/gateway/review_engine.py
    grep -q "_should_skip_for_cap" "$F" && echo "pure_decision_helper_used=yes" || echo "pure_decision_helper_used=no"
    grep -q "latest_codex_review_is_approval" "$F" && echo "approval_helper_used=yes" || echo "approval_helper_used=no"
-   grep -q "_APPROVE_BODY_PREFIX" "$F" && echo "approve_body_prefix_defined=yes" || echo "approve_body_prefix_defined=no"'
+   grep -q "_APPROVE_BODY_PREFIX" "$F" && echo "approve_body_prefix_defined=yes" || echo "approve_body_prefix_defined=no"
+   # Regression guard for codex round 1 MEDIUM: the approval check must be
+   # per-head_sha so an approval of commit A cannot suppress review of
+   # commit B. Aligns with review_loop consensus scope.
+   grep -q "commit_id\") == head_sha" "$F" && echo "approval_filter_by_head_sha=yes" || echo "approval_filter_by_head_sha=no"'
 
 # ----- 3. Backstop value bumped to 5 -----
 uvx showboat exec "$DEMO_FILE" bash \
@@ -137,7 +141,8 @@ uvx showboat exec "$DEMO_FILE" bash \
    grep -q "^class TestVerdictBasedCap:" "$T" && echo "test_class_verdict_based_cap=yes" || echo "test_class_verdict_based_cap=no"
    grep -q "test_proceeds_when_under_backstop_and_no_approval" "$T" && echo "proceed_case_covered=yes" || echo "proceed_case_covered=no"
    grep -q "test_skips_silently_when_latest_bot_review_is_approval" "$T" && echo "approval_skip_case_covered=yes" || echo "approval_skip_case_covered=no"
-   grep -q "test_backstop_triggers_at_max_without_approval" "$T" && echo "backstop_case_covered=yes" || echo "backstop_case_covered=no"'
+   grep -q "test_backstop_triggers_at_max_without_approval" "$T" && echo "backstop_case_covered=yes" || echo "backstop_case_covered=no"
+   grep -q "test_approval_on_older_sha_does_not_apply_to_new_sha" "$T" && echo "head_sha_scoping_case_covered=yes" || echo "head_sha_scoping_case_covered=no"'
 
 # ===================================================================
 uvx showboat note "$DEMO_FILE" "### Scope — Gateway-only

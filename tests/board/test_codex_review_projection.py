@@ -143,6 +143,44 @@ async def test_codex_turn_on_other_pr_does_not_leak(
     assert card_b["codex_review_picked_up"] is False
 
 
+async def test_codex_turn_does_not_leak_across_projects_with_same_pr_url(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Cross-project isolation — codex MEDIUM fix from PR #198 round 1.
+
+    Two cloglog projects can track the same GitHub PR URL today because
+    the pr_url uniqueness guard is feature-scoped, not project-scoped
+    (see the xfailed ``test_pr_url_reuse_blocked_cross_feature``). If
+    project A persists a codex turn, project B's board MUST NOT render
+    the badge on its own task that happens to share the same pr_url.
+    """
+    pr_url = "https://github.com/o/r/pull/500"
+    ctx_a = await _make_task_with_pr(client, pr_url)
+    ctx_b = await _make_task_with_pr(client, pr_url)
+    # Both projects now have a task with the same pr_url. Sanity-check:
+    assert ctx_a["project_id"] != ctx_b["project_id"]
+
+    db_session.add(
+        PrReviewTurn(
+            project_id=ctx_a["project_id"],
+            pr_url=pr_url,
+            pr_number=500,
+            head_sha="d" * 40,
+            stage="codex",
+            turn_number=1,
+            status="running",
+        )
+    )
+    await db_session.commit()
+
+    card_a = await _find_task_card(client, ctx_a["project_id"], ctx_a["task_id"])
+    card_b = await _find_task_card(client, ctx_b["project_id"], ctx_b["task_id"])
+    assert card_a["codex_review_picked_up"] is True, "project A owns the turn row"
+    assert card_b["codex_review_picked_up"] is False, (
+        "project B must not see A's codex badge even with the same pr_url"
+    )
+
+
 async def test_task_without_pr_url_stays_false(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:

@@ -599,10 +599,17 @@ async def get_board(
 
     # Single batched query across all pr_urls on the board (T-260). One
     # round-trip per board load, not one per card. Empty input → empty set
-    # short-circuits in the repository.
+    # short-circuits in the repository. ``project_id`` is passed through
+    # so two cloglog projects tracking the same GitHub repo/PR URL never
+    # leak codex badges across each other's boards — pr_url uniqueness
+    # is feature-scoped today (see xfailed
+    # ``test_pr_url_reuse_blocked_cross_feature``), so cross-project
+    # collision is a real concern. PR #198 round 1 codex MEDIUM fix.
     pr_urls = [t.pr_url for t in tasks if t.pr_url]
     review_registry = make_review_turn_registry(session)
-    codex_touched = await review_registry.codex_touched_pr_urls(pr_urls)
+    codex_touched = await review_registry.codex_touched_pr_urls(
+        project_id=project_id, pr_urls=pr_urls
+    )
 
     columns: dict[str, list[TaskCard]] = {col: [] for col in BOARD_COLUMNS}
     done_count = 0

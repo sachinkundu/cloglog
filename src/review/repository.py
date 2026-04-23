@@ -153,12 +153,13 @@ class ReviewTurnRepository:
         rowcount = getattr(result, "rowcount", 0) or 0
         return rowcount > 0
 
-    async def codex_touched_pr_urls(self, pr_urls: list[str]) -> set[str]:
+    async def codex_touched_pr_urls(self, *, project_id: UUID, pr_urls: list[str]) -> set[str]:
         if not pr_urls:
             return set()
         stmt = (
             select(PrReviewTurn.pr_url)
             .where(
+                PrReviewTurn.project_id == project_id,
                 PrReviewTurn.stage == "codex",
                 PrReviewTurn.pr_url.in_(pr_urls),
             )

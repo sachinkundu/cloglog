@@ -193,11 +193,14 @@ close-wave(worktree="<wt-name>", invoked_from="reconcile")
 ```
 
 The reconcile-invoked entry point skips user confirmation (Step 1.5),
-overrides the work-log naming to `reconcile-<date>-<wt-name>.md`, and
-otherwise runs Steps 2–14 unchanged. Reconcile performs no teardown
-steps itself for a delegated worktree — close-wave owns the full
-sequence (cooperative shutdown → shutdown-artifact consolidation →
-worktree/branch/tab removal → quality gate → learnings extraction).
+overrides close-wave Step 4's `<wave-name>` substitution to
+`reconcile-<wt-name>` (NOT a full filename — Step 4 still emits
+`docs/work-logs/<date>-<wave-name>.md`, producing
+`docs/work-logs/<date>-reconcile-<wt-name>.md`), and otherwise runs
+Steps 2–14 unchanged. Reconcile performs no teardown steps itself for
+a delegated worktree — close-wave owns the full sequence (cooperative
+shutdown → shutdown-artifact consolidation → worktree/branch/tab
+removal → quality gate → learnings extraction).
 
 Record in the reconciliation report: `path: close-wave delegated
 (predicate: all three components held)`. Continue to the next worktree.

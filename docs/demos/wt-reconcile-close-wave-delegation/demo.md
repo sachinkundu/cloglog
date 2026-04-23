@@ -1,7 +1,7 @@
 # T-270 — reconcile delegates to close-wave for cleanly-completed worktrees so shutdown-artifacts survive archive; Cases A/B/C remain as the dirty-path fallback.
 
-*2026-04-23T10:17:50Z by Showboat 0.6.1*
-<!-- showboat-id: d1e0202a-b359-4230-9582-579574d9fff2 -->
+*2026-04-23T10:25:23Z by Showboat 0.6.1*
+<!-- showboat-id: a069c395-9996-4297-b938-05845c2c9f44 -->
 
 Proof 1 — reconcile SKILL.md introduces Step 5.0 delegation branch with the verbatim 'delegate to close-wave' phrasing. Grep targets the skill file only so unrelated future docs mentioning the phrase cannot mask a regression.
 
@@ -135,4 +135,42 @@ python3 -c "import sys; sys.path.insert(0, \"tests/plugins\"); import test_recon
 
 ```output
 5 assertions passed
+```
+
+Proof 7 — no doc across reconcile/close-wave/agent-lifecycle retains the stricter 'every assigned task has pr_merged=True' wording. Codex round 3 MEDIUM caught that fixing the predicate inline left three stale summaries in reconcile Delegation, close-wave Invocation modes, and agent-lifecycle §5.5. All three would have collapsed the three-terminal-state contract back to the wrong stricter form.
+
+```bash
+
+miss=0
+for f in plugins/cloglog/skills/reconcile/SKILL.md plugins/cloglog/skills/close-wave/SKILL.md docs/design/agent-lifecycle.md; do
+  if grep -qF "every assigned task has \`pr_merged=True\`." "$f"; then
+    echo "FAIL $f retains stricter pr_merged=True wording"
+    miss=1
+  fi
+done
+if [ "$miss" -eq 0 ]; then echo "OK no doc retains the stricter pr_merged-only predicate"; else exit 1; fi
+
+```
+
+```output
+OK no doc retains the stricter pr_merged-only predicate
+```
+
+Proof 8 — no doc across reconcile/close-wave retains the full-filename shape reconcile-<date>-<wt-name>.md. Codex round 3 HIGH caught that the reconcile Delegation summary still said 'overrides work-log naming to reconcile-<date>-<wt-name>.md' even after close-wave was fixed — the two docs disagreed. Now both use the <wave-name>-substitution shape reconcile-<wt-name>.
+
+```bash
+
+miss=0
+for f in plugins/cloglog/skills/reconcile/SKILL.md plugins/cloglog/skills/close-wave/SKILL.md; do
+  if grep -qF "reconcile-<date>-<wt-name>.md" "$f"; then
+    echo "FAIL $f retains full-filename shape"
+    miss=1
+  fi
+done
+if [ "$miss" -eq 0 ]; then echo "OK no doc retains the full-filename wave-name override"; else exit 1; fi
+
+```
+
+```output
+OK no doc retains the full-filename wave-name override
 ```

@@ -164,3 +164,56 @@ def test_agent_lifecycle_documents_unified_teardown_flow() -> None:
         "task that introduced the unified teardown flow. Tracking the "
         "origin lets future maintainers locate the incident analysis."
     )
+    assert "every assigned task has `pr_merged=True`." not in body, (
+        "docs/design/agent-lifecycle.md §5.5 must NOT restate predicate "
+        "component 3 as the stricter 'every assigned task has "
+        "`pr_merged=True`' — that was the codex PR #194 round 3 MEDIUM "
+        "regression. The §5.5 restatement has to list all three accepted "
+        "terminal states (done; review+pr_merged; review+pr_url=None) "
+        "OR defer to reconcile Step 5.0 instead of collapsing to the "
+        "overly-strict form."
+    )
+
+
+def test_no_doc_retains_the_stricter_pr_merged_only_predicate() -> None:
+    """The 'pr_merged=True everywhere' wording was wrong in three places
+    that all pointed at the same spec: reconcile's Delegation summary,
+    close-wave's Invocation modes summary, and agent-lifecycle §5.5.
+    Codex PR #194 round 3 MEDIUM found that fixing one and leaving the
+    other two still regressed the predicate. Pin all three."""
+    for path in (RECONCILE_SKILL, CLOSE_WAVE_SKILL, AGENT_LIFECYCLE):
+        body = _read(path)
+        assert "every assigned task has `pr_merged=True`." not in body, (
+            f"{path.relative_to(REPO_ROOT)} retains the stricter "
+            "'every assigned task has `pr_merged=True`.' wording. A "
+            "cleanly-completed worktree whose last task shipped no-PR "
+            "(skip_pr=True per agent-lifecycle §1 Trigger B) would be "
+            "misclassified as dirty-path and have its shutdown-artifacts "
+            "deleted before close-wave could archive them — the exact "
+            "T-270 regression the delegation was written to prevent."
+        )
+        assert "every assigned task `pr_merged=True`" not in body, (
+            f"{path.relative_to(REPO_ROOT)} retains the stricter summary "
+            "phrasing. Same reasoning as above — the summary must not "
+            "collapse the three accepted terminal states back to the "
+            "strict pr_merged=True form."
+        )
+
+
+def test_no_doc_retains_full_filename_wave_name_override() -> None:
+    """The close-wave reconcile-mode override is a `<wave-name>`
+    substitution (`reconcile-<wt-name>`), NOT a full filename. Codex PR
+    #194 round 3 HIGH found that reconcile's Delegation summary still
+    said 'overrides the work-log naming to reconcile-<date>-<wt-name>.md'
+    even after close-wave was fixed — the two docs disagreed. Pin the
+    full-filename shape out of both."""
+    for path in (RECONCILE_SKILL, CLOSE_WAVE_SKILL):
+        body = _read(path)
+        assert "reconcile-<date>-<wt-name>.md" not in body, (
+            f"{path.relative_to(REPO_ROOT)} retains the full-filename "
+            "shape `reconcile-<date>-<wt-name>.md`. Close-wave Step 4's "
+            "template is `docs/work-logs/<date>-<wave-name>.md`; the "
+            "reconcile override must set `<wave-name>` = "
+            "`reconcile-<wt-name>`, not a full filename that nests into "
+            "the template and produces `<date>-reconcile-<date>-<wt-name>.md.md`."
+        )

@@ -498,7 +498,14 @@ not complete its archive steps. T-270 resolves the split-brain:
 1. **Reconcile's Step 5.0 now gates Case A / Case C on a
    "completed-cleanly" predicate** — `shutdown-artifacts/work-log.md`
    exists, a `Close worktree <wt-name>` task exists in `backlog`, and
-   every assigned task has `pr_merged=True`.
+   every assigned task is resolved from the agent's side. "Resolved"
+   means `status == "done"`, OR `status == "review"` with
+   `pr_merged == True`, OR `status == "review"` with `pr_url is None`
+   (the no-PR task path via `skip_pr=True` per §1 Trigger B) — the
+   same set `close_worktree_template` uses at `src/board/templates.py:24-25`.
+   A stricter "`pr_merged=True` everywhere" reading would falsely
+   reject cleanly-completed worktrees whose last task shipped no-PR
+   and recreate the artifact-loss bug T-270 avoids.
 2. **When the predicate holds, reconcile delegates the entire teardown
    to close-wave** via close-wave's "Invocation modes — Reconcile
    delegation" entry point. Close-wave then runs its full archive →

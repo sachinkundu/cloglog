@@ -105,10 +105,38 @@ grep -q "Invocation modes" "$f" \
 '
 
 uvx showboat note "$DEMO_FILE" \
-  "Proof 6 — pin test tests/plugins/test_reconcile_skill_structure.py has 5 assertions covering the delegation branch, three predicate components, fallback cases, and the unified-flow doc. Import-direct (not pytest) so this block survives showboat verify on a clean host without a live Postgres DB (conftest.py has a session-autouse DB fixture)."
+  "Proof 6 — pin test tests/plugins/test_reconcile_skill_structure.py has 7 assertions covering the delegation branch, three predicate components, fallback cases, the unified-flow doc, and the two round-3 backstops (no doc retains stricter pr_merged-only wording; no doc retains full-filename override shape). Import-direct (not pytest) so this block survives showboat verify on a clean host without a live Postgres DB (conftest.py has a session-autouse DB fixture)."
 
 uvx showboat exec "$DEMO_FILE" bash '
-python3 -c "import sys; sys.path.insert(0, \"tests/plugins\"); import test_reconcile_skill_structure as t; t.test_reconcile_skill_has_close_wave_delegation_branch(); t.test_reconcile_skill_references_all_three_predicate_components(); t.test_reconcile_skill_keeps_cases_a_b_c_as_fallbacks(); t.test_close_wave_skill_documents_reconcile_delegation(); t.test_agent_lifecycle_documents_unified_teardown_flow(); print(\"5 assertions passed\")"
+python3 -c "import sys; sys.path.insert(0, \"tests/plugins\"); import test_reconcile_skill_structure as t; t.test_reconcile_skill_has_close_wave_delegation_branch(); t.test_reconcile_skill_references_all_three_predicate_components(); t.test_reconcile_skill_keeps_cases_a_b_c_as_fallbacks(); t.test_close_wave_skill_documents_reconcile_delegation(); t.test_agent_lifecycle_documents_unified_teardown_flow(); t.test_no_doc_retains_the_stricter_pr_merged_only_predicate(); t.test_no_doc_retains_full_filename_wave_name_override(); print(\"7 assertions passed\")"
+'
+
+uvx showboat note "$DEMO_FILE" \
+  "Proof 7 — no doc across reconcile/close-wave/agent-lifecycle retains the stricter 'every assigned task has pr_merged=True' wording. Codex round 3 MEDIUM caught that fixing the predicate inline left three stale summaries in reconcile Delegation, close-wave Invocation modes, and agent-lifecycle §5.5. All three would have collapsed the three-terminal-state contract back to the wrong stricter form."
+
+uvx showboat exec "$DEMO_FILE" bash '
+miss=0
+for f in plugins/cloglog/skills/reconcile/SKILL.md plugins/cloglog/skills/close-wave/SKILL.md docs/design/agent-lifecycle.md; do
+  if grep -qF "every assigned task has \`pr_merged=True\`." "$f"; then
+    echo "FAIL $f retains stricter pr_merged=True wording"
+    miss=1
+  fi
+done
+if [ "$miss" -eq 0 ]; then echo "OK no doc retains the stricter pr_merged-only predicate"; else exit 1; fi
+'
+
+uvx showboat note "$DEMO_FILE" \
+  "Proof 8 — no doc across reconcile/close-wave retains the full-filename shape reconcile-<date>-<wt-name>.md. Codex round 3 HIGH caught that the reconcile Delegation summary still said 'overrides work-log naming to reconcile-<date>-<wt-name>.md' even after close-wave was fixed — the two docs disagreed. Now both use the <wave-name>-substitution shape reconcile-<wt-name>."
+
+uvx showboat exec "$DEMO_FILE" bash '
+miss=0
+for f in plugins/cloglog/skills/reconcile/SKILL.md plugins/cloglog/skills/close-wave/SKILL.md; do
+  if grep -qF "reconcile-<date>-<wt-name>.md" "$f"; then
+    echo "FAIL $f retains full-filename shape"
+    miss=1
+  fi
+done
+if [ "$miss" -eq 0 ]; then echo "OK no doc retains the full-filename wave-name override"; else exit 1; fi
 '
 
 uvx showboat verify "$DEMO_FILE"

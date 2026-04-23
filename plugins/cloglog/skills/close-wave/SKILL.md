@@ -27,11 +27,19 @@ This skill runs in one of two modes:
    existing work logs (`wave-N.md`).
 2. **Reconcile delegation** — `plugins/cloglog/skills/reconcile/SKILL.md`
    Step 5.0 hands off a single cleanly-completed worktree after verifying
-   the three-part predicate (shutdown-artifacts present, close-off task in
-   backlog, every assigned task `pr_merged=True`). Reconcile is the system's
-   arbiter: close-wave is the clean path, `force_unregister` is the dirty
-   path, and delegation ensures the two stop fighting over teardown (T-270;
-   see `docs/design/agent-lifecycle.md` §5 for the unified-flow spec).
+   the three-part predicate: (a) `shutdown-artifacts/work-log.md` exists,
+   (b) a `Close worktree <wt-name>` task exists in `backlog`, and (c)
+   every assigned task is resolved from the agent's side — i.e.
+   `status == "done"`, OR `status == "review"` with `pr_merged == True`,
+   OR `status == "review"` with `pr_url is None` (no-PR task via
+   `skip_pr=True` per `docs/design/agent-lifecycle.md` §1 Trigger B).
+   See reconcile SKILL.md Step 5.0 for the full predicate specification;
+   a stricter "`pr_merged=True` everywhere" reading would falsely reject
+   cleanly-completed worktrees whose last task shipped no-PR. Reconcile
+   is the system's arbiter: close-wave is the clean path,
+   `force_unregister` is the dirty path, and delegation ensures the two
+   stop fighting over teardown (T-270; see
+   `docs/design/agent-lifecycle.md` §5 for the unified-flow spec).
 
 ### When invoked from reconcile
 

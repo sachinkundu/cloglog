@@ -1,7 +1,7 @@
 # A review-column task card shows a 'codex reviewed' pill the moment codex engages with the PR. The badge is boolean and read-only — projected from `pr_review_turns` via the Review context's Open Host Service.
 
-*2026-04-23T13:44:13Z by Showboat 0.6.1*
-<!-- showboat-id: 72e4daf2-a5a5-4cc5-93d1-440c383c6264 -->
+*2026-04-23T13:51:30Z by Showboat 0.6.1*
+<!-- showboat-id: 4b4ea1b3-0018-42f0-b2c5-a5410def304d -->
 
 ### Visual proof — live dashboard, two cards side by side
 

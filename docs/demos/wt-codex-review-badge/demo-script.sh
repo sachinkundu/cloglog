@@ -137,7 +137,15 @@ curl -s -X PATCH "${DASH[@]}" "${JSON[@]}" "$BACKEND_URL/tasks/$TASK_B_ID" \
 # only way — T-260 keeps Review as the writer; there is no write-side API
 # that accepts a turn row. This mirrors what the real webhook pipeline does
 # from `ReviewTurnRepository.claim_turn` once codex engages.
-DB_URL_PSYCO="postgresql://cloglog:cloglog_dev@127.0.0.1:5432/$WORKTREE_DB_NAME"
+# Compose the psql URL from the same env vars `scripts/worktree-ports.sh`
+# uses to build DATABASE_URL. Do NOT hardcode 127.0.0.1:5432 — the tooling
+# supports overridden PG_HOST/PG_PORT and hardcoding would break any
+# worktree on a non-default port (PR #198 round 2 codex HIGH fix).
+_PG_USER="${PG_USER:-cloglog}"
+_PG_PASS="${PG_PASSWORD:-cloglog_dev}"
+_PG_HOST="${PG_HOST:-127.0.0.1}"
+_PG_PORT="${PG_PORT:-5432}"
+DB_URL_PSYCO="postgresql://${_PG_USER}:${_PG_PASS}@${_PG_HOST}:${_PG_PORT}/${WORKTREE_DB_NAME}"
 # Re-runnable: previous demo runs may have already persisted a row with the
 # same (pr_url, head_sha, stage, turn_number) unique key but pointing at
 # a deleted project_id. Delete first so the INSERT below always lands with

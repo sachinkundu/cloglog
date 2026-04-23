@@ -36,8 +36,18 @@ if [[ "$WORKTREE_NAME" == wt-frontend* ]] && [[ -d "frontend" ]]; then
   cd frontend && npm install && cd ..
 fi
 
-# MCP server deps (if worktree touches mcp-server)
-if [[ "$WORKTREE_NAME" == wt-mcp* ]] && [[ -d "mcp-server" ]]; then
+# T-257: MCP server deps — install whenever mcp-server/package.json exists
+# on this worktree, regardless of WORKTREE_NAME. The previous guard fired
+# only on wt-mcp* branches, so any other worktree that happened to touch
+# mcp-server/ (e.g. T-244 wt-c2-mcp-rebuild) landed without node_modules
+# and the very first `make quality` failed on `npx tsc` with "This is not
+# the tsc command you are looking for" because the compiler was missing.
+# The install is ~1-2 s with a warm cache; unconditional trigger trades
+# that for zero foot-guns. The package.json guard lets downstream
+# projects that use this plugin but have no mcp-server/ skip the install
+# cleanly — we need the manifest for `npm install` to do anything useful
+# anyway.
+if [[ -f "mcp-server/package.json" ]]; then
   cd mcp-server && npm install && cd ..
 fi
 

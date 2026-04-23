@@ -37,7 +37,7 @@ a052e0e fix(f47): codex review round 1 — settings→hard-coded, opencode-only 
 
 New bounded context: `src/review/` (models, interfaces, repository, services, schemas). New Alembic migration `32bcc4c15715_add_pr_review_turns.py`. New `src/gateway/review_loop.py`. Significant additions to `src/gateway/review_engine.py`, `src/gateway/app.py`, `src/gateway/github_token.py`, `src/shared/config.py`. 60 new tests across `tests/review/` and `tests/gateway/`.
 
-Docs: `docs/ddd-context-map.md` (Review subgraph), `docs/setup-credentials.md` (reviewer-bot onboarding + VRAM caveat), `.env.example` (opencode tuning knobs), `.github/opencode/prompts/review.md` (new), `.github/codex/review-schema.json` (optional `status` enum).
+Docs: `docs/ddd-context-map.md` (Review subgraph), `docs/setup-credentials.md` (reviewer-bot onboarding + VRAM caveat), `.env.example` (opencode tuning knobs), `.github/opencode/prompts/review.md` (new), `.github/codex/review-schema.json` — `status` enum is **required** per OpenAI Structured Outputs (every property in `properties` must be in `required`) and **nullable** via `"type": ["string", "null"]` with `null` in the enum. T-264 fixed a pre-deployment shape (`status` in `properties` only, not in `required`) that OpenAI 400'd silently; `tests/gateway/test_codex_review_schema.py` now pins the required-and-nullable invariant so a future edit that makes `status` truly optional again fails at `make quality` time instead of at prod webhook time.
 
 Design artifact (from T-261): `docs/design/two-stage-pr-review.md` (~650 lines, answers all 8 spec questions plus 16-item "What changes in T-248" list).
 

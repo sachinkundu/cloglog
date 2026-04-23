@@ -1,7 +1,7 @@
 # docs/demos/wt-c2-mcp-rebuild/demo-script.sh now binds its mock HTTP server to an OS-assigned ephemeral port (port 0) — no more hardcoded :61244 that could collide with any other process on the host or with a second make demo run (T-256).
 
-*2026-04-23T04:35:04Z by Showboat 0.6.1*
-<!-- showboat-id: eef49408-a66c-4b96-aa56-94b4bfd98e00 -->
+*2026-04-23T04:43:33Z by Showboat 0.6.1*
+<!-- showboat-id: 5b523fce-09f1-4e5c-b692-275b2ab69df8 -->
 
 Before: docs/demos/wt-c2-mcp-rebuild/demo-script.sh called http.server.HTTPServer((127.0.0.1, 61244), H). Two concurrent make-demo runs on the same host would race for the same port; the second would crash with EADDRINUSE and showboat verify would fail non-deterministically. Codex flagged this during PR #172 round 2 review.
 

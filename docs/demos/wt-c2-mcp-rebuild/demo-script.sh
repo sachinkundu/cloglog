@@ -141,7 +141,11 @@ DIST_NEW
 uv run python - "\$WORK" <<'PY'
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path("${REPO_ROOT}") / "scripts"))
+# T-256 codex round 1: use a relative path so the captured demo.md
+# doesn't bake in the capture-time absolute REPO_ROOT. showboat verify
+# re-runs exec blocks with CWD=repo_root (via check-demo.sh), so
+# `scripts` resolves correctly on any checkout.
+sys.path.insert(0, "scripts")
 import sync_mcp_dist as m
 
 root = Path(sys.argv[1])

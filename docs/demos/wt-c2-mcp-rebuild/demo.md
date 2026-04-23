@@ -1,7 +1,7 @@
 # After a merge touches mcp-server/src/, the main agent rebuilds mcp-server/dist/ and broadcasts mcp_tools_updated to every online worktree's inbox — the next worktree agent knows the MCP tool surface changed instead of silently missing new tools.
 
-*2026-04-23T04:34:00Z by Showboat 0.6.1*
-<!-- showboat-id: bfca989d-342c-4143-88ea-3f64d4685105 -->
+*2026-04-23T04:43:13Z by Showboat 0.6.1*
+<!-- showboat-id: 2e999df0-9650-4a41-8b02-11957ce0db3a -->
 
 Setup: build a synthetic project tree with a stale mcp-server/dist/ and two worktrees under .claude/worktrees/. No real backend, no npm install — the demo proves the broadcast mechanism end-to-end without depending on environment state.
 
@@ -131,7 +131,11 @@ DIST_NEW
 uv run python - "$WORK" <<'PY'
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path("/home/sachin/code/cloglog/.claude/worktrees/wt-f48-wave-f") / "scripts"))
+# T-256 codex round 1: use a relative path so the captured demo.md
+# doesn't bake in the capture-time absolute REPO_ROOT. showboat verify
+# re-runs exec blocks with CWD=repo_root (via check-demo.sh), so
+#  resolves correctly on any checkout.
+sys.path.insert(0, "scripts")
 import sync_mcp_dist as m
 
 root = Path(sys.argv[1])

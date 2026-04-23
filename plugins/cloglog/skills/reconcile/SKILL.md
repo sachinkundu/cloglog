@@ -112,6 +112,109 @@ found, follow the rule that matches its class. **Worktree teardown goes
 through the cooperative path first; `force_unregister` is only for the
 cooperative-timeout fallback.**
 
+### Step 5.0 — Close-wave delegation for cleanly-completed worktrees
+
+BEFORE executing Case A / Case C teardown on any worktree in the drift set,
+check the **completed-cleanly predicate** for that worktree. When it holds,
+**delegate the entire teardown to close-wave** instead of running reconcile's
+own teardown path. If reconcile tore down the worktree first, `git worktree
+remove --force` would vaporize `<worktree_path>/shutdown-artifacts/` before
+close-wave gets a chance to archive them to `docs/work-logs/` and fold the
+learnings into CLAUDE.md — the exact split-brain observed on 2026-04-23
+during the T-268 close-out (T-270).
+
+Reconcile is the arbiter: close-wave is the clean path (cleanly-completed
+worktrees with artifacts), `force_unregister` is the dirty path (everything
+else). See `docs/design/agent-lifecycle.md` §5 for the unified-flow spec.
+
+#### Completed-cleanly predicate
+
+All three must hold for a worktree to be eligible for close-wave delegation:
+
+1. **Shutdown artifact present.** `<worktree_path>/shutdown-artifacts/work-log.md`
+   exists on disk. (Check with a plain `[ -f "<path>/shutdown-artifacts/work-log.md" ]`.)
+2. **Close-off task queued.** A close-off task whose title equals
+   `Close worktree <wt-name>` exists in `backlog` status. Match on the
+   title string — NOT on `worktree_id`. The close-off task is created by
+   `src/board/services.py::create_close_off_task` with two relevant
+   fields: (a) `close_off_worktree_id` is the target worktree's UUID
+   (the one reconcile is closing), and (b) `worktree_id` is the **main
+   agent's** worktree_id — deliberately, so `get_my_tasks` surfaces the
+   card in the main agent session that will execute the close-off.
+   The `get_board` payload's `TaskCard` schema exposes `worktree_id`
+   but NOT `close_off_worktree_id` (see
+   `src/board/schemas.py::TaskResponse`), so filtering by
+   `worktree_id == <target_wt_id>` would never match and filtering by
+   `close_off_worktree_id` is not possible from the board payload. The
+   deterministic match is title equality against the
+   `close_worktree_template` output (`src/board/templates.py:20`):
+   `title == f"Close worktree {wt_name}"` AND `status == "backlog"`.
+3. **Every assigned task is resolved from the agent's side.** This is
+   the project completion contract from `docs/design/agent-lifecycle.md`
+   §1 and the close-off template in `src/board/templates.py:24-25`
+   ("all assigned tasks are done (or in review with pr_merged=true)"),
+   not a stricter `pr_merged=True` everywhere check. The predicate is
+   satisfied when, for every task whose `worktree_id` matches this
+   worktree, at least one of the following holds:
+   - `status == "done"` — user has moved it across (the board's
+     post-agent terminal state), OR
+   - `status == "review"` AND `pr_merged == True` — the PR merged and
+     the task is awaiting the user's drag to `done` (T-218 / §1), OR
+   - `status == "review"` AND `pr_url is None` — a no-PR task (plan,
+     docs-only) that shipped via `update_task_status(..., skip_pr=True)`
+     per §1 Trigger B; the task has no PR to merge so `pr_merged` stays
+     `False` by design.
+
+   Equivalently: **no task assigned to this worktree is in `backlog` or
+   `in_progress`, and no task is in `review` with a `pr_url` whose
+   `pr_merged == False`.** A stricter "every task has `pr_merged=True`"
+   check would falsely reject cleanly-completed worktrees whose last
+   task was no-PR, or whose user already dragged one task to `done`,
+   recreating the T-270 artifact-loss bug on the very shutdown path the
+   delegation was written to protect. The close-off task itself is
+   excluded from this check because its `worktree_id` is the main
+   agent's, not the target worktree's — predicate component 2 covers
+   that task separately via the title match.
+
+If ALL three hold, proceed to the delegation step below. If ANY component
+fails, skip delegation and fall through to Cases A/B/C — agents that
+crashed, wedged, or never produced shutdown-artifacts have nothing to
+archive.
+
+#### Delegation
+
+Invoke the close-wave skill on this single worktree per
+`plugins/cloglog/skills/close-wave/SKILL.md` **Invocation modes — Reconcile
+delegation**. Close-wave accepts a worktree-name argument today, so the
+call shape is:
+
+```
+close-wave(worktree="<wt-name>", invoked_from="reconcile")
+```
+
+The reconcile-invoked entry point skips user confirmation (Step 1.5),
+overrides close-wave Step 4's `<wave-name>` substitution to
+`reconcile-<wt-name>` (NOT a full filename — Step 4 still emits
+`docs/work-logs/<date>-<wave-name>.md`, producing
+`docs/work-logs/<date>-reconcile-<wt-name>.md`), and otherwise runs
+Steps 2–14 unchanged. Reconcile performs no teardown steps itself for
+a delegated worktree — close-wave owns the full sequence (cooperative
+shutdown → shutdown-artifact consolidation → worktree/branch/tab
+removal → quality gate → learnings extraction).
+
+Record in the reconciliation report: `path: close-wave delegated
+(predicate: all three components held)`. Continue to the next worktree.
+
+#### When the predicate unexpectedly fails
+
+A worktree that looks like Case A (`pr_merged=True`, `status=online`)
+but whose predicate fails — usually because `shutdown-artifacts/work-log.md`
+is missing (agent died after `mark_pr_merged` but before writing the
+log) — falls through to Case A's cooperative shutdown path below. Log
+each failed predicate component in the reconciliation report (e.g.
+`predicate-false: missing shutdown-artifacts/work-log.md`) so we can
+diagnose what broke the flow.
+
 ### Case A — PR merged, agent still registered
 
 Same tier-1 → tier-2 path as close-wave Step 5. Snapshot the inbox offset

@@ -91,7 +91,7 @@ request_changes → \`:warning:\`, comment → \`:info:\`."
 
 uvx showboat exec "$DEMO_FILE" bash \
   'uv run python -c "
-from src.gateway.review_engine import _APPROVE_BODY_PREFIX, ReviewResult, _format_review_body
+from src.gateway.review_engine import _APPROVE_BODY_PREFIX, ReviewResult, ReviewFinding, _format_review_body
 approve_body = _format_review_body(ReviewResult(verdict=\"approve\", summary=\"ok\", findings=[]), [])
 warn_body    = _format_review_body(ReviewResult(verdict=\"request_changes\", summary=\"nope\", findings=[]), [])
 info_body    = _format_review_body(ReviewResult(verdict=\"comment\", summary=\"fyi\", findings=[]), [])
@@ -99,6 +99,43 @@ print(\"approve_prefix_token=\", repr(_APPROVE_BODY_PREFIX))
 print(\"approve_body_starts_with_pass=\", approve_body.startswith(_APPROVE_BODY_PREFIX))
 print(\"request_changes_body_starts_with_pass=\", warn_body.startswith(_APPROVE_BODY_PREFIX))
 print(\"comment_body_starts_with_pass=\", info_body.startswith(_APPROVE_BODY_PREFIX))
+"'
+
+# ===================================================================
+uvx showboat note "$DEMO_FILE" "### Contradictory approve demotion — PR #201 round 2 fix
+
+\`ReviewLoop._reached_consensus\` treats \`verdict=\"approve\"\` + any
+\`critical\`/\`high\` finding as a self-contradiction and refuses to
+short-circuit. Before this round, \`_format_review_body\` still emitted
+\`:pass:\` for that body — and on a webhook replay the T-227 approval
+helper would have silently skipped further review, even though the
+loop logic said the output was not a real approval. Fix: demote the
+body prefix to \`:warning:\` when the approve verdict is contradicted by
+a severe finding. The helper then correctly returns False.
+
+Below: verdict=approve + critical → :warning:; verdict=approve + high
+→ :warning:; verdict=approve + only low/medium/info findings → still
+:pass: (those severities are compatible with approval)."
+
+uvx showboat exec "$DEMO_FILE" bash \
+  'uv run python -c "
+from src.gateway.review_engine import ReviewResult, ReviewFinding, _format_review_body
+def prefix(body):
+    return body.split(\":\", 2)[1] if body.startswith(\":\") else \"?\"
+critical = _format_review_body(ReviewResult(verdict=\"approve\", summary=\"oops\", findings=[
+    ReviewFinding(file=\"a.py\", line=1, severity=\"critical\", body=\"bad\"),
+]), [])
+high = _format_review_body(ReviewResult(verdict=\"approve\", summary=\"oops\", findings=[
+    ReviewFinding(file=\"a.py\", line=1, severity=\"high\", body=\"risky\"),
+]), [])
+low_only = _format_review_body(ReviewResult(verdict=\"approve\", summary=\"nit\", findings=[
+    ReviewFinding(file=\"a.py\", line=1, severity=\"low\", body=\"style\"),
+    ReviewFinding(file=\"a.py\", line=2, severity=\"medium\", body=\"trivial\"),
+    ReviewFinding(file=\"a.py\", line=3, severity=\"info\", body=\"fyi\"),
+]), [])
+print(\"approve_with_critical_prefix=\", prefix(critical))
+print(\"approve_with_high_prefix=\", prefix(high))
+print(\"approve_with_low_medium_info_only_prefix=\", prefix(low_only))
 "'
 
 # ===================================================================
@@ -142,7 +179,9 @@ uvx showboat exec "$DEMO_FILE" bash \
    grep -q "test_proceeds_when_under_backstop_and_no_approval" "$T" && echo "proceed_case_covered=yes" || echo "proceed_case_covered=no"
    grep -q "test_skips_silently_when_latest_bot_review_is_approval" "$T" && echo "approval_skip_case_covered=yes" || echo "approval_skip_case_covered=no"
    grep -q "test_backstop_triggers_at_max_without_approval" "$T" && echo "backstop_case_covered=yes" || echo "backstop_case_covered=no"
-   grep -q "test_approval_on_older_sha_does_not_apply_to_new_sha" "$T" && echo "head_sha_scoping_case_covered=yes" || echo "head_sha_scoping_case_covered=no"'
+   grep -q "test_approval_on_older_sha_does_not_apply_to_new_sha" "$T" && echo "head_sha_scoping_case_covered=yes" || echo "head_sha_scoping_case_covered=no"
+   grep -q "test_contradictory_approve_body_is_not_detected_as_approval" "$T" && echo "contradictory_approve_case_covered=yes" || echo "contradictory_approve_case_covered=no"
+   grep -q "test_approve_with_critical_finding_is_demoted_to_warning" "$T" && echo "format_body_demotion_pin_test=yes" || echo "format_body_demotion_pin_test=no"'
 
 # ===================================================================
 uvx showboat note "$DEMO_FILE" "### Scope — Gateway-only

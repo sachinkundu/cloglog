@@ -72,11 +72,14 @@ REVIEW_REQUEST_TIMEOUT_SECONDS: Final = 30.0
 # bounded; raise it only if a real PR hits the backstop without convergence.
 MAX_REVIEWS_PER_PR: Final = 5
 # Prefix that ``_format_review_body`` emits when ``result.verdict == "approve"``
-# (see verdict_icon mapping in ``_format_review_body``). The cap check reads
-# the latest codex review's body and treats this prefix as the approval signal
-# on GitHub — the bot deliberately never posts with ``event="APPROVE"`` (see
-# ``post_review``, which pins event to ``COMMENT``), so body content is the
-# canonical approval marker.
+# AND the review contains no ``critical``/``high`` findings (see the demotion
+# rule in ``_format_review_body``). The cap check reads the latest codex review's
+# body and treats this prefix as the approval signal on GitHub — the bot
+# deliberately never posts with ``event="APPROVE"`` (see ``post_review``, which
+# pins event to ``COMMENT``), so body content is the canonical approval marker.
+# A contradictory approve (verdict="approve" + severe finding) is demoted to
+# ``:warning:`` so this helper does not treat it as a real approval — matching
+# the loop's consensus predicate (PR #201 round 2 HIGH).
 _APPROVE_BODY_PREFIX: Final = ":pass:"
 # When the codex subprocess times out we kill it, then best-effort drain any
 # stderr the kernel has already flushed into the pipe. 1s is enough for the
@@ -518,13 +521,31 @@ def _partition_findings(
     return inline, orphans
 
 
+_SEVERE_SEVERITIES: Final = frozenset({"critical", "high"})
+
+
 def _format_review_body(result: ReviewResult, orphans: list[ReviewFinding]) -> str:
-    """Assemble the top-level review body with the summary and any orphan findings."""
+    """Assemble the top-level review body with the summary and any orphan findings.
+
+    When ``verdict == "approve"`` is contradicted by any ``critical``/``high``
+    severity finding, the body prefix is demoted from ``:pass:`` to ``:warning:``
+    so the GitHub review body reflects the real consensus state. This mirrors
+    ``ReviewLoop._reached_consensus`` (``src/gateway/review_loop.py:124-149``),
+    which refuses to short-circuit a contradictory approve — the two must stay
+    aligned so the T-227 ``latest_codex_review_is_approval`` helper cannot treat
+    a contradictory row as a real approval on webhook replay. Observed on
+    PR #190 with gemma4-e4b-32k emitting ``:pass:`` + ``[CRITICAL]`` in the
+    same turn (codex flagged the gap on PR #201 round 2 HIGH).
+    """
+    has_severe_finding = any(f.severity in _SEVERE_SEVERITIES for f in result.findings)
+    effective_verdict = (
+        "request_changes" if result.verdict == "approve" and has_severe_finding else result.verdict
+    )
     verdict_icon = {
         "approve": "pass",
         "request_changes": "warning",
         "comment": "info",
-    }.get(result.verdict, "info")
+    }.get(effective_verdict, "info")
     lines = [
         f":{verdict_icon}: {result.summary}",
     ]

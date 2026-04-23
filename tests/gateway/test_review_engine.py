@@ -942,6 +942,52 @@ class TestFormatReviewBody:
         assert "`a.py:99`" in body
         assert "[HIGH]" in body
 
+    def test_approve_with_critical_finding_is_demoted_to_warning(self) -> None:
+        """Contradictory approve (verdict=approve + [CRITICAL] finding) must NOT
+        emit `:pass:`. Mirrors ``ReviewLoop._reached_consensus``'s refusal to
+        short-circuit; aligns the GitHub body with real consensus state so the
+        T-227 approval helper can't be fooled (PR #201 round 2 HIGH)."""
+        result = ReviewResult(
+            verdict="approve",
+            summary="patch is correct",
+            findings=[
+                ReviewFinding(file="a.py", line=1, severity="critical", body="oops"),
+            ],
+        )
+        body = _format_review_body(result, [])
+        assert not body.startswith(":pass:"), (
+            "verdict=approve + severe finding must not emit :pass: — "
+            "latest_codex_review_is_approval would treat it as a real approval."
+        )
+        assert body.startswith(":warning:")
+
+    def test_approve_with_high_finding_is_demoted_to_warning(self) -> None:
+        """Same rule for [HIGH] as for [CRITICAL]; both are in _SEVERE_SEVERITIES."""
+        result = ReviewResult(
+            verdict="approve",
+            summary="patch is correct",
+            findings=[
+                ReviewFinding(file="a.py", line=1, severity="high", body="oops"),
+            ],
+        )
+        body = _format_review_body(result, [])
+        assert not body.startswith(":pass:")
+        assert body.startswith(":warning:")
+
+    def test_approve_with_low_finding_still_emits_pass(self) -> None:
+        """Only critical/high demote — low/medium/info are compatible with approval."""
+        result = ReviewResult(
+            verdict="approve",
+            summary="nitpick",
+            findings=[
+                ReviewFinding(file="a.py", line=1, severity="low", body="style"),
+                ReviewFinding(file="a.py", line=2, severity="medium", body="trivial"),
+                ReviewFinding(file="a.py", line=3, severity="info", body="fyi"),
+            ],
+        )
+        body = _format_review_body(result, [])
+        assert body.startswith(":pass:")
+
 
 # ---------------------------------------------------------------------------
 # post_review (T-193)
@@ -1406,6 +1452,43 @@ class TestLatestCodexReviewIsApproval:
                 "sachinkundu/cloglog", 42, "t", self._SHA_A
             )
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_contradictory_approve_body_is_not_detected_as_approval(self) -> None:
+        """Full-path regression guard (PR #201 round 2 HIGH): an approve verdict
+        contradicted by a severe finding must reach GitHub with a non-``:pass:``
+        body thanks to ``_format_review_body``'s demotion, so this helper
+        correctly returns False on webhook replay of that row."""
+        # Build the body the way post_review actually builds it — format the
+        # ReviewResult through _format_review_body so we exercise the demotion.
+        contradictory = ReviewResult(
+            verdict="approve",
+            summary="patch looks correct",
+            findings=[
+                ReviewFinding(file="a.py", line=1, severity="critical", body="bad"),
+            ],
+        )
+        body_as_published = _format_review_body(contradictory, [])
+        # Sanity: the demotion rule is the reason this works.
+        assert not body_as_published.startswith(":pass:")
+
+        url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
+        reviews_json = [
+            {
+                "user": {"login": _CODEX_BOT},
+                "commit_id": self._SHA_A,
+                "body": body_as_published,
+            },
+        ]
+        with respx.mock() as mock:
+            mock.get(url).mock(return_value=httpx.Response(200, json=reviews_json))
+            result = await latest_codex_review_is_approval(
+                "sachinkundu/cloglog", 42, "t", self._SHA_A
+            )
+        assert result is False, (
+            "A contradictory approve must not trigger the approval skip — "
+            "ReviewLoop._reached_consensus refuses to short-circuit the same case."
+        )
 
 
 class TestVerdictBasedCap:

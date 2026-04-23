@@ -1,7 +1,7 @@
 # Replace the pure count-based review cap with a verdict-based stop (skip when the latest codex review emitted :pass:) and raise the safety backstop to 5 sessions. Matches T-227 Option B.
 
-*2026-04-23T17:25:02Z by Showboat 0.6.1*
-<!-- showboat-id: 4976d8cb-eab8-46c1-acf5-ca119104fbf3 -->
+*2026-04-23T17:35:12Z by Showboat 0.6.1*
+<!-- showboat-id: 9f2382b0-b633-43d1-8c8c-f70fb1646676 -->
 
 ### T-227 acceptance evidence — file-level
 
@@ -91,7 +91,7 @@ request_changes → `:warning:`, comment → `:info:`.
 
 ```bash
 uv run python -c "
-from src.gateway.review_engine import _APPROVE_BODY_PREFIX, ReviewResult, _format_review_body
+from src.gateway.review_engine import _APPROVE_BODY_PREFIX, ReviewResult, ReviewFinding, _format_review_body
 approve_body = _format_review_body(ReviewResult(verdict=\"approve\", summary=\"ok\", findings=[]), [])
 warn_body    = _format_review_body(ReviewResult(verdict=\"request_changes\", summary=\"nope\", findings=[]), [])
 info_body    = _format_review_body(ReviewResult(verdict=\"comment\", summary=\"fyi\", findings=[]), [])
@@ -107,6 +107,49 @@ approve_prefix_token= ':pass:'
 approve_body_starts_with_pass= True
 request_changes_body_starts_with_pass= False
 comment_body_starts_with_pass= False
+```
+
+### Contradictory approve demotion — PR #201 round 2 fix
+
+`ReviewLoop._reached_consensus` treats `verdict="approve"` + any
+`critical`/`high` finding as a self-contradiction and refuses to
+short-circuit. Before this round, `_format_review_body` still emitted
+`:pass:` for that body — and on a webhook replay the T-227 approval
+helper would have silently skipped further review, even though the
+loop logic said the output was not a real approval. Fix: demote the
+body prefix to `:warning:` when the approve verdict is contradicted by
+a severe finding. The helper then correctly returns False.
+
+Below: verdict=approve + critical → :warning:; verdict=approve + high
+→ :warning:; verdict=approve + only low/medium/info findings → still
+:pass: (those severities are compatible with approval).
+
+```bash
+uv run python -c "
+from src.gateway.review_engine import ReviewResult, ReviewFinding, _format_review_body
+def prefix(body):
+    return body.split(\":\", 2)[1] if body.startswith(\":\") else \"?\"
+critical = _format_review_body(ReviewResult(verdict=\"approve\", summary=\"oops\", findings=[
+    ReviewFinding(file=\"a.py\", line=1, severity=\"critical\", body=\"bad\"),
+]), [])
+high = _format_review_body(ReviewResult(verdict=\"approve\", summary=\"oops\", findings=[
+    ReviewFinding(file=\"a.py\", line=1, severity=\"high\", body=\"risky\"),
+]), [])
+low_only = _format_review_body(ReviewResult(verdict=\"approve\", summary=\"nit\", findings=[
+    ReviewFinding(file=\"a.py\", line=1, severity=\"low\", body=\"style\"),
+    ReviewFinding(file=\"a.py\", line=2, severity=\"medium\", body=\"trivial\"),
+    ReviewFinding(file=\"a.py\", line=3, severity=\"info\", body=\"fyi\"),
+]), [])
+print(\"approve_with_critical_prefix=\", prefix(critical))
+print(\"approve_with_high_prefix=\", prefix(high))
+print(\"approve_with_low_medium_info_only_prefix=\", prefix(low_only))
+"
+```
+
+```output
+approve_with_critical_prefix= warning
+approve_with_high_prefix= warning
+approve_with_low_medium_info_only_prefix= pass
 ```
 
 ### Backstop skip-comment copy — regression guard
@@ -157,6 +200,8 @@ T=tests/gateway/test_review_engine.py
    grep -q "test_skips_silently_when_latest_bot_review_is_approval" "$T" && echo "approval_skip_case_covered=yes" || echo "approval_skip_case_covered=no"
    grep -q "test_backstop_triggers_at_max_without_approval" "$T" && echo "backstop_case_covered=yes" || echo "backstop_case_covered=no"
    grep -q "test_approval_on_older_sha_does_not_apply_to_new_sha" "$T" && echo "head_sha_scoping_case_covered=yes" || echo "head_sha_scoping_case_covered=no"
+   grep -q "test_contradictory_approve_body_is_not_detected_as_approval" "$T" && echo "contradictory_approve_case_covered=yes" || echo "contradictory_approve_case_covered=no"
+   grep -q "test_approve_with_critical_finding_is_demoted_to_warning" "$T" && echo "format_body_demotion_pin_test=yes" || echo "format_body_demotion_pin_test=no"
 ```
 
 ```output
@@ -167,6 +212,8 @@ proceed_case_covered=yes
 approval_skip_case_covered=yes
 backstop_case_covered=yes
 head_sha_scoping_case_covered=yes
+contradictory_approve_case_covered=yes
+format_body_demotion_pin_test=yes
 ```
 
 ### Scope — Gateway-only

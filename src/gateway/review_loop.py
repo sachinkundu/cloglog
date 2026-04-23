@@ -499,6 +499,21 @@ class OpencodeReviewer:
         # run SOMETHING than to fail silently.
         return _load_project_prompt(project_root)
 
+    def _build_args(self, full_prompt: str) -> list[str]:
+        return [
+            settings.opencode_cmd,
+            "run",
+            "--model",
+            settings.opencode_model,
+            "--log-level",
+            "ERROR",
+            "--dangerously-skip-permissions",
+            "--dir",
+            str(self._project_root),
+            "--",
+            full_prompt,
+        ]
+
     async def run(
         self,
         *,
@@ -509,20 +524,7 @@ class OpencodeReviewer:
     ) -> tuple[ReviewResult | None, float, bool]:
         prompt = self._load_prompt(self._project_root)
         full_prompt = f"{prompt}\n\nCurrent turn: {turn}/{max_turns}.\n\nDIFF:\n{diff}"
-        args = [
-            settings.opencode_cmd,
-            "run",
-            "--model",
-            settings.opencode_model,
-            "--log-level",
-            "ERROR",
-            "--pure",
-            "--dangerously-skip-permissions",
-            "--dir",
-            str(self._project_root),
-            "--",
-            full_prompt,
-        ]
+        args = self._build_args(full_prompt)
         proc = await _create_subprocess(
             *args,
             stdout=asyncio.subprocess.PIPE,

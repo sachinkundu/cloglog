@@ -26,7 +26,9 @@ Rationale:
 - Gateway already has the `event_bus` integration for SSE fan-out
 - The webhook endpoint is analogous to the existing SSE stream endpoint — both are Gateway responsibilities
 
-**The review engine is a new module within Gateway**, not a new bounded context. It is a consumer of webhook events and a caller of external APIs (Claude, GitHub). It does not own any domain models. If it grows complex enough to warrant its own context, it can be extracted later, but starting with a new bounded context for a single consumer function is over-engineering.
+**Update 2026-04-23 (T-248):** The review engine WAS a Gateway module at this spec's original writing; when T-248 added persistence for per-turn idempotency (`pr_review_turns`), that state was extracted into its own bounded context `src/review/` — because Gateway owns no tables (see `docs/ddd-context-map.md § Bounded Contexts`). The webhook infrastructure (endpoint, dispatcher, consumers) still lives in Gateway; `review_engine.py` and `review_loop.py` remain Gateway modules that talk to the Review context through `src.review.services.make_review_turn_registry(session)` — an Open Host Service factory returning `IReviewTurnRegistry`. Do NOT import `src.review.models` or `src.review.repository` from Gateway; lazy imports inside functions also count as DDD violations (PR #187 round 2 CRITICAL).
+
+Original paragraph kept for historical context: "The review engine is a new module within Gateway, not a new bounded context. It is a consumer of webhook events and a caller of external APIs (Claude, GitHub). It does not own any domain models. If it grows complex enough to warrant its own context, it can be extracted later, but starting with a new bounded context for a single consumer function is over-engineering." That decision was reversed once persistence was added.
 
 **File structure:**
 ```
@@ -34,8 +36,15 @@ src/gateway/
   webhook.py             # F-47: Webhook endpoint, HMAC validation, event parsing
   webhook_dispatcher.py  # F-47: In-process event dispatcher
   webhook_consumers.py   # F-46: Agent notification consumer
-  review_engine.py       # F-36: Claude-powered review consumer
-  github_token.py        # Shared: async GitHub App token generation
+  review_engine.py       # F-36: webhook → diff → per-stage ReviewLoop plumbing
+  review_loop.py         # T-248: shared per-reviewer loop + CodexReviewer / OpencodeReviewer adapters
+  github_token.py        # Shared: async GitHub App token generation (claude, codex, opencode)
+src/review/
+  models.py              # T-248: PrReviewTurn SQLAlchemy model + PrReviewTurnStatus
+  interfaces.py          # T-248: IReviewTurnRegistry Protocol + ReviewTurnSnapshot
+  repository.py          # T-248: ReviewTurnRepository (ON CONFLICT DO NOTHING claim)
+  services.py            # T-248: make_review_turn_registry(session) — Open Host Service
+  schemas.py             # T-248: Pydantic shapes for API surface
 ```
 
 ### Event Flow Overview

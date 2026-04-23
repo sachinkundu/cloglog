@@ -107,11 +107,15 @@ under `~/.agent-vm/credentials/`:
 |-----|----------|--------------------------|
 | `sakundu-claude-assistant[bot]` (code-push bot) | `~/.agent-vm/credentials/github-app.pem` | hard-coded in `src/gateway/github_token.py` |
 | `cloglog-codex-reviewer[bot]` | `~/.agent-vm/credentials/codex-reviewer.pem` | hard-coded in `src/gateway/github_token.py` |
-| `cloglog-opencode-reviewer[bot]` (**T-248**) | `~/.agent-vm/credentials/opencode-reviewer.pem` | read from `OPENCODE_APP_ID` / `OPENCODE_INSTALLATION_ID` env vars |
+| `cloglog-opencode-reviewer[bot]` (**T-248**) | `~/.agent-vm/credentials/opencode-reviewer.pem` | hard-coded in `src/gateway/github_token.py` (`_OPENCODE_APP_ID`, `_OPENCODE_INSTALLATION_ID`) |
 
-The App ID and installation ID for `cloglog-opencode-reviewer[bot]` are
-hard-coded in `src/gateway/github_token.py` (same precedent as
-`_CLAUDE_APP_ID` and `_CODEX_APP_ID`). Only the PEM is per-host.
+App IDs and installation IDs are **not secrets** — they are public
+identifiers and live as module-level constants in
+`src/gateway/github_token.py` alongside `_CLAUDE_APP_ID` and
+`_CODEX_APP_ID`. Do NOT set `OPENCODE_APP_ID` / `OPENCODE_INSTALLATION_ID`
+as env vars expecting the backend to read them; `github_token.py` never
+consults env for reviewer App IDs, so env-based tweaks are silently
+ignored. Only the PEM is per-host.
 
 Onboarding a new host:
 

@@ -367,6 +367,11 @@ def test_tasks_assign_success() -> None:
             "wt-assign",
             "--url",
             BASE,
+            # T-258: `tasks assign` hits /worktrees to resolve the
+            # worktree id; the CLI guards the dashboard key at the call
+            # site, so tests pass a dummy key to clear the local guard.
+            "--api-key",
+            "test-key",
         ],
     )
     assert result.exit_code == 0
@@ -526,7 +531,11 @@ def test_agents_list_table_output() -> None:
         return_value=Response(200, json=MOCK_WORKTREES_FULL)
     )
 
-    result = runner.invoke(app, ["agents", "list", "--project", "testproj", "--url", BASE])
+    # T-258: /worktrees requires the dashboard key; the CLI guards it
+    # at the call site. Tests pass a dummy key to clear the local guard.
+    result = runner.invoke(
+        app, ["agents", "list", "--project", "testproj", "--url", BASE, "--api-key", "test-key"]
+    )
     assert result.exit_code == 0
     assert "wt-assign" in result.output
     assert "wt-board" in result.output
@@ -544,7 +553,18 @@ def test_agents_list_json_output() -> None:
     )
 
     result = runner.invoke(
-        app, ["agents", "list", "--project", "testproj", "--url", BASE, "--json"]
+        app,
+        [
+            "agents",
+            "list",
+            "--project",
+            "testproj",
+            "--url",
+            BASE,
+            "--json",
+            "--api-key",
+            "test-key",
+        ],
     )
     assert result.exit_code == 0
     data = json.loads(result.output)
@@ -563,7 +583,18 @@ def test_agents_list_status_filter() -> None:
 
     result = runner.invoke(
         app,
-        ["agents", "list", "--project", "testproj", "--url", BASE, "--status", "active"],
+        [
+            "agents",
+            "list",
+            "--project",
+            "testproj",
+            "--url",
+            BASE,
+            "--status",
+            "active",
+            "--api-key",
+            "test-key",
+        ],
     )
     assert result.exit_code == 0
     assert "wt-assign" in result.output
@@ -578,7 +609,11 @@ def test_agents_list_empty() -> None:
         return_value=Response(200, json=[])
     )
 
-    result = runner.invoke(app, ["agents", "list", "--project", "testproj", "--url", BASE])
+    # T-258: /worktrees requires the dashboard key; the CLI guards it
+    # at the call site. Tests pass a dummy key to clear the local guard.
+    result = runner.invoke(
+        app, ["agents", "list", "--project", "testproj", "--url", BASE, "--api-key", "test-key"]
+    )
     assert result.exit_code == 0
     assert "No agents registered" in result.output
 
@@ -588,7 +623,10 @@ def test_agents_list_unknown_project() -> None:
     """agents list with unknown project exits 1."""
     respx.get(f"{BASE}/api/v1/projects").mock(return_value=Response(200, json=[]))
 
-    result = runner.invoke(app, ["agents", "list", "--project", "nonexistent", "--url", BASE])
+    result = runner.invoke(
+        app,
+        ["agents", "list", "--project", "nonexistent", "--url", BASE, "--api-key", "test-key"],
+    )
     assert result.exit_code == 1
     assert "not found" in result.output.lower()
 
@@ -601,7 +639,11 @@ def test_agents_list_shows_heartbeat() -> None:
         return_value=Response(200, json=MOCK_WORKTREES_FULL)
     )
 
-    result = runner.invoke(app, ["agents", "list", "--project", "testproj", "--url", BASE])
+    # T-258: /worktrees requires the dashboard key; the CLI guards it
+    # at the call site. Tests pass a dummy key to clear the local guard.
+    result = runner.invoke(
+        app, ["agents", "list", "--project", "testproj", "--url", BASE, "--api-key", "test-key"]
+    )
     assert result.exit_code == 0
     assert "heartbeat:" in result.output
     assert "2026-04-07T12:00:00" in result.output
@@ -615,7 +657,11 @@ def test_agents_list_shows_current_task() -> None:
         return_value=Response(200, json=MOCK_WORKTREES_FULL)
     )
 
-    result = runner.invoke(app, ["agents", "list", "--project", "testproj", "--url", BASE])
+    # T-258: /worktrees requires the dashboard key; the CLI guards it
+    # at the call site. Tests pass a dummy key to clear the local guard.
+    result = runner.invoke(
+        app, ["agents", "list", "--project", "testproj", "--url", BASE, "--api-key", "test-key"]
+    )
     assert result.exit_code == 0
     assert "task:" in result.output
     assert "none" in result.output  # wt-board has no task

@@ -130,6 +130,90 @@ async def test_health_endpoint_no_auth(bare_client: AsyncClient) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════
+# T-258 — /api/v1/projects/{id}/worktrees is NOT a public route
+# ═══════════════════════════════════════════════════════════════
+#
+# Regression suite for the auth contract flagged in PR #172 review. The
+# Option-B fix keeps the route authed and makes the requirement loud
+# (docstring + docs/ddd-context-map.md § Auth Contract + explicit
+# dashboard-key guards in src/gateway/cli.py and scripts/sync_mcp_dist.py).
+# If a future PR adds /api/v1/projects/{id}/worktrees to the middleware
+# allowlist, `test_worktrees_without_auth_is_rejected` fails — the route
+# stops being authed.
+
+
+async def test_worktrees_without_auth_is_rejected(
+    client: AsyncClient, bare_client: AsyncClient
+) -> None:
+    """GET /api/v1/projects/{id}/worktrees with no credentials at all
+    returns 401. This is the regression guard T-258 locks in: the route
+    is NOT public; the middleware rejects the request before the handler
+    runs."""
+    proj = await create_project_with_tasks(client, n_tasks=0)
+    resp = await bare_client.get(f"/api/v1/projects/{proj.id}/worktrees")
+    assert resp.status_code == 401, (
+        f"expected 401 Authentication required, got {resp.status_code}; "
+        f"body: {resp.text}. If this is now 200, the route has been "
+        "promoted to public — that is Option A of T-258 and would require "
+        "updating docs/ddd-context-map.md § Auth Contract in the same PR."
+    )
+    assert "Authentication required" in resp.json()["detail"]
+
+
+async def test_worktrees_with_wrong_dashboard_key_is_rejected(
+    client: AsyncClient, bare_client: AsyncClient
+) -> None:
+    """GET /worktrees with an invalid X-Dashboard-Key returns 403.
+    Pins the middleware's distinction between "no credential" (401) and
+    "wrong credential" (403)."""
+    proj = await create_project_with_tasks(client, n_tasks=0)
+    resp = await bare_client.get(
+        f"/api/v1/projects/{proj.id}/worktrees",
+        headers={"X-Dashboard-Key": "definitely-not-the-real-secret"},
+    )
+    assert resp.status_code == 403, resp.text
+    assert "Invalid dashboard key" in resp.json()["detail"]
+
+
+async def test_worktrees_with_dashboard_key_succeeds(
+    client: AsyncClient, bare_client: AsyncClient
+) -> None:
+    """GET /worktrees with the correct X-Dashboard-Key returns 200.
+    This is the positive case the CLI and sync_mcp_dist.py exercise —
+    if it breaks, every dashboard-ish caller breaks with it."""
+    proj = await create_project_with_tasks(client, n_tasks=0)
+    await register_agent(client, proj.api_key)
+
+    resp = await bare_client.get(
+        f"/api/v1/projects/{proj.id}/worktrees",
+        headers=dashboard_headers(),
+    )
+    assert resp.status_code == 200, resp.text
+    worktrees = resp.json()
+    assert isinstance(worktrees, list)
+    assert len(worktrees) == 1
+
+
+async def test_worktrees_with_agent_token_is_rejected(
+    client: AsyncClient, bare_client: AsyncClient
+) -> None:
+    """GET /worktrees with an agent-scoped token returns 403. Agent
+    tokens are specifically NOT allowed on non-agent routes — the
+    /worktrees listing is a dashboard operation, not an agent one.
+    Guards against a tempting shortcut where an agent tries to read
+    its sibling worktrees using its own token."""
+    proj = await create_project_with_tasks(client, n_tasks=0)
+    agent = await register_agent(client, proj.api_key)
+
+    resp = await bare_client.get(
+        f"/api/v1/projects/{proj.id}/worktrees",
+        headers=agent_auth(agent.agent_token),
+    )
+    assert resp.status_code == 403, resp.text
+    assert "Agents can only access" in resp.json()["detail"]
+
+
+# ═══════════════════════════════════════════════════════════════
 # Scenario 9 — Key resolution, rotation, fallbacks
 # ═══════════════════════════════════════════════════════════════
 

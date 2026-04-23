@@ -262,6 +262,30 @@ async def unregister_agent(worktree_id: UUID, service: ServiceDep, agent: Curren
 
 @router.get("/projects/{project_id}/worktrees", response_model=list[WorktreeResponse])
 async def list_worktrees(project_id: UUID, service: ServiceDep) -> list[dict[str, object]]:
+    """List worktrees for a project.
+
+    AUTH: NOT a public route. The gateway's ``ApiAccessControlMiddleware``
+    gates ALL requests before this handler runs and requires ONE of:
+
+    - ``X-MCP-Request: true`` + ``Authorization: Bearer <project-api-key>``
+      — for MCP clients on behalf of an agent.
+    - ``X-Dashboard-Key: <DASHBOARD_SECRET>`` — for dashboard clients,
+      CLI callers (``src/gateway/cli.py``), and in-tree scripts
+      (``scripts/sync_mcp_dist.py``). The matching ``dashboard_secret``
+      comes from ``src.shared.config.settings``.
+
+    An unauthenticated request returns ``401 Authentication required``; a
+    wrong dashboard key returns ``403 Invalid dashboard key``; an agent
+    token on this (non-agent) route returns ``403 Agents can only access
+    /api/v1/agents/* routes``.
+
+    Do NOT add this route to the middleware allowlist — T-244 reviewers
+    flagged the ambiguity precisely because callers were silently relying
+    on env-passthrough of the dashboard key; Option B of T-258 keeps the
+    auth required and makes callers pass the header explicitly. See
+    ``docs/ddd-context-map.md § Auth Contract`` and ``docs/design.md §
+    Authentication Flow`` for the full route-to-credential mapping.
+    """
     return await service.get_worktrees_for_project(project_id)
 
 

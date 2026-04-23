@@ -382,6 +382,27 @@ The **`ApiAccessControlMiddleware`** enforces routing before any auth dependency
 
 Agents receive a per-agent token (`agent_token`) from the registration response. The MCP server stores this token and uses it for heartbeat calls. For board operations (tasks, documents), the MCP server uses its own service key with `X-MCP-Request: true`. A dashboard client implemented without `X-Dashboard-Key` would receive `403 Agents can only access /api/v1/agents/* routes`.
 
+#### Auth Contract — per-route visibility (T-258)
+
+The table above lists credential SHAPES. This table lists specific routes
+whose auth contract is load-bearing and has been flagged for CLI/script
+callers that silently relied on env-passthrough:
+
+| Route | Public? | Required credential | Callers that must pass it explicitly |
+|---|---|---|---|
+| `GET /api/v1/projects/{id}/worktrees` | **No** | `X-Dashboard-Key` (or MCP-Request + Bearer) | `src/gateway/cli.py` (`_resolve_worktree`, `agents_list`) and `scripts/sync_mcp_dist.py::fetch_online_worktree_paths`. Both guard the key explicitly and raise a clear error when `CLOGLOG_API_KEY` / `DASHBOARD_SECRET` is unset, instead of letting an empty header hit the wire and produce a cryptic 401. |
+
+T-244 review flagged this route specifically because a new in-tree script
+(`sync_mcp_dist.py`) hit it with bare `httpx.get` and got a silent 403 —
+the first cut did not call `raise_for_status()`. T-258 made the auth
+contract loud: route docstring names the requirement, CLI callers guard
+the key at the call site, and `tests/e2e/test_access_control.py` pins
+the unauthenticated-request status code so future callers that forget
+the header fail in CI, not in production.
+
+See `docs/ddd-context-map.md § Auth Contract` for the canonical
+route-to-credential mapping.
+
 ### MCP Tool Reference
 
 The MCP server exposes 28 tools organized by function:

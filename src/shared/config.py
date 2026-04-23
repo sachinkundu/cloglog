@@ -16,18 +16,18 @@ class Settings(BaseSettings):
     review_max_per_hour: int = 10
     review_enabled: bool = True
     opencode_cmd: str = "opencode"
-    opencode_model: str = "ollama/gemma4:e4b"
+    # Default: 32K-context variant created from a Modelfile in this repo
+    # (see ``ops/opencode/Modelfile.gemma4-e4b-32k``). The stock gemma4:e4b
+    # model ships with num_ctx=131072, whose KV cache will not fit on a 24 GB
+    # GPU alongside other workloads (ComfyUI etc.) — the 32K variant keeps
+    # the model fully on GPU, giving ~30–60 s per turn instead of 10+ min of
+    # CPU-offloaded inference. See docs/setup-credentials.md for the
+    # one-time ``ollama create`` step. 32K covers a near-cap PR (50K-token
+    # diff cap / ``MAX_DIFF_CHARS=200_000``) — larger PRs already skip review.
+    opencode_model: str = "ollama/gemma4-e4b-32k"
     opencode_max_turns: int = 5
     codex_max_turns: int = 2
-    opencode_turn_timeout_seconds: float = 180.0
-    # GitHub App identity for the opencode reviewer bot. Empty defaults mean
-    # "not onboarded on this host" — the sequencer catches
-    # ``OpencodeBotNotConfiguredError`` and skips stage A with a single log
-    # line per session. Read through ``Settings`` (not ``os.environ.get``) so
-    # values in the backend's ``.env`` actually land here — see
-    # ``docs/setup-credentials.md``. PR #187 round 1 HIGH fix.
-    opencode_app_id: str = ""
-    opencode_installation_id: str = ""
+    opencode_turn_timeout_seconds: float = 240.0
     review_source_root: Path | None = Field(
         default=None,
         description=(

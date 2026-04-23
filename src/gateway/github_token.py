@@ -15,8 +15,6 @@ from typing import Final
 import httpx
 import jwt
 
-from src.shared.config import settings
-
 _CACHE_TTL_SECONDS: Final = 3000.0  # 50 minutes; GitHub tokens expire at 60
 
 # ---------------------------------------------------------------------------
@@ -44,13 +42,14 @@ _CODEX_PERMISSIONS: Final = {
 }
 
 # ---------------------------------------------------------------------------
-# Opencode reviewer bot (posts reviews only) — operational onboarding:
-# install the GitHub App, download its private key, and place it at
-# ~/.agent-vm/credentials/opencode-reviewer.pem (mode 0600). App-id and
-# installation-id are read from ``Settings`` (not ``os.environ.get`` — see
-# PR #187 round 1 HIGH) so they honour the backend's ``.env`` file alongside
-# every other operator-facing setting.
+# Opencode reviewer bot (posts reviews only). Public identifiers are
+# hard-coded to match the _CLAUDE/_CODEX precedent above — the PEM at
+# ~/.agent-vm/credentials/opencode-reviewer.pem (mode 0600) is the only
+# per-host secret. Operators don't touch .env for this bot; provisioning
+# is one `chmod 600` on the PEM. See docs/setup-credentials.md.
 # ---------------------------------------------------------------------------
+_OPENCODE_APP_ID: Final = "3473952"
+_OPENCODE_INSTALLATION_ID: Final = "126333517"
 _OPENCODE_PEM: Final = Path.home() / ".agent-vm" / "credentials" / "opencode-reviewer.pem"
 _OPENCODE_PERMISSIONS: Final = {
     "contents": "read",
@@ -130,31 +129,16 @@ async def get_codex_reviewer_token() -> str:
     )
 
 
-class OpencodeBotNotConfiguredError(RuntimeError):
-    """Raised when OPENCODE_APP_ID / OPENCODE_INSTALLATION_ID are unset.
-
-    Callers in the sequencer treat this as the same class of failure as a
-    missing PEM — stage A is skipped with a single structured log line.
-    """
-
-
 async def get_opencode_reviewer_token() -> str:
     """Opencode reviewer bot token — for posting PR reviews.
 
-    Raises ``OpencodeBotNotConfiguredError`` if the app-id/installation-id env
-    vars are not set; the sequencer catches this and degrades gracefully.
+    Raises ``FileNotFoundError`` on a host where the PEM hasn't been
+    provisioned. Unlike codex (which has no fallback), the two-stage
+    sequencer catches this in ``_review_pr`` and degrades to codex-only.
     """
-    app_id = settings.opencode_app_id
-    installation_id = settings.opencode_installation_id
-    if not app_id or not installation_id:
-        raise OpencodeBotNotConfiguredError(
-            "settings.opencode_app_id and settings.opencode_installation_id must "
-            "be set (place them in backend .env or export OPENCODE_APP_ID / "
-            "OPENCODE_INSTALLATION_ID — see docs/setup-credentials.md)"
-        )
     return await _get_token(
-        app_id,
-        installation_id,
+        _OPENCODE_APP_ID,
+        _OPENCODE_INSTALLATION_ID,
         _OPENCODE_PEM,
         _OPENCODE_PERMISSIONS,
         _opencode_cache,

@@ -109,17 +109,74 @@ under `~/.agent-vm/credentials/`:
 | `cloglog-codex-reviewer[bot]` | `~/.agent-vm/credentials/codex-reviewer.pem` | hard-coded in `src/gateway/github_token.py` |
 | `cloglog-opencode-reviewer[bot]` (**T-248**) | `~/.agent-vm/credentials/opencode-reviewer.pem` | read from `OPENCODE_APP_ID` / `OPENCODE_INSTALLATION_ID` env vars |
 
-Onboarding the opencode reviewer bot on a new host:
+The App ID and installation ID for `cloglog-opencode-reviewer[bot]` are
+hard-coded in `src/gateway/github_token.py` (same precedent as
+`_CLAUDE_APP_ID` and `_CODEX_APP_ID`). Only the PEM is per-host.
 
-1. Install the GitHub App on the target repo(s).
-2. Download the App's private key (a `.pem` file).
-3. Place it at `~/.agent-vm/credentials/opencode-reviewer.pem` and
-   `chmod 600` it.
-4. Export `OPENCODE_APP_ID` and `OPENCODE_INSTALLATION_ID` in the backend's
-   environment (the backend's `.env` is fine) with the values from the
-   GitHub App settings.
+Onboarding a new host:
 
-If either env var is empty the sequencer logs one INFO line per session and
-falls through to codex-only — the backend still boots healthy.
-`~/.cloglog/credentials` is NOT consulted for reviewer tokens; do not place
-PEM contents there.
+1. Download the App's private key (`.pem`) from the GitHub App settings.
+2. `chmod 600` it and place it at
+   `~/.agent-vm/credentials/opencode-reviewer.pem`.
+
+If the PEM is missing, the sequencer catches `FileNotFoundError`, logs one
+INFO line per session, and falls through to codex-only — the backend still
+boots healthy. `~/.cloglog/credentials` is NOT consulted for reviewer
+tokens; do not place PEM contents there.
+
+## Opencode reviewer — ollama model + VRAM setup
+
+Default model: **`ollama/gemma4-e4b-32k`** (see
+`src/shared/config.py::Settings.opencode_model`). This is a 32K-context
+variant of `gemma4:e4b` that keeps the whole model + KV cache under 12 GB
+so it runs **100% on GPU** on a 24 GB card. Measured latency on an RTX
+4090 with no other VRAM tenants: **~15 s / turn** for a typical PR.
+
+The 32K variant is a **per-host setup step**, not a repo artifact — each
+review host rebuilds it once via `ollama create`:
+
+```bash
+# One-time: build the 32K-context variant from stock gemma4:e4b.
+cat <<'MODELFILE' | ollama create gemma4-e4b-32k -f /dev/stdin
+FROM gemma4:e4b
+PARAMETER num_ctx 32768
+MODELFILE
+
+# Register with opencode so `--model ollama/gemma4-e4b-32k` resolves.
+# Edit ~/.config/opencode/opencode.json, add under provider.ollama.models:
+#   "gemma4-e4b-32k": { "name": "Gemma 4 E4B (32K, reviewer)" }
+```
+
+To use a different model or context size, override `OPENCODE_MODEL` in
+`.env` and create the corresponding ollama variant.
+
+### VRAM pressure — competing tenants
+
+The stock `gemma4:e4b` ships with `num_ctx=131072`. At that context, the
+KV cache balloons to ~16 GB and the model spills to CPU — one review turn
+stretches past 10 minutes of CPU-offloaded inference, unusable for the
+5-turn stage-A loop. The 32K variant above caps the KV cache at ~2 GB.
+
+**On the development host, do not run ComfyUI (or any ~16 GB VRAM tenant)
+concurrently with the review engine.** ComfyUI holds loaded diffusion
+models in VRAM between workflow runs; if it's active, the reviewer model
+CPU-offloads despite the 32K cap. Observed behaviour: with ComfyUI active
+and only ~4 GB free VRAM, `ollama ps` reports ~66% CPU / ~34% GPU and the
+turn exceeds the 240 s timeout.
+
+The `nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv`
+command at boot time identifies who's holding VRAM.
+
+### Tuning the turn timeout
+
+`opencode_turn_timeout_seconds` defaults to **240 s** — a ~16× headroom
+over the measured ~15 s/turn. If your host consistently sees GPU-only
+latencies under 60 s, you can lower it in `.env`:
+
+```
+OPENCODE_TURN_TIMEOUT_SECONDS=60
+```
+
+If you see timeouts in the per-turn log lines, check `ollama ps` — any
+`CPU/GPU` split is a sign of VRAM pressure; fix the environment rather
+than raising the timeout.

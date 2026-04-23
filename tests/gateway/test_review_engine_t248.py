@@ -328,78 +328,73 @@ class TestCountBotReviews:
 
 
 # ---------------------------------------------------------------------------
-# PR #187 round 1 HIGH-1 — opencode_app_id / installation_id via Settings
+# Opencode bot identity — hard-coded constants (matches _CLAUDE/_CODEX pattern)
 # ---------------------------------------------------------------------------
 
 
-class TestOpencodeSettingsBased:
-    """The two opencode GitHub App identifiers must be read through
-    ``src.shared.config.settings`` so operator values in ``.env`` take effect.
-    Regression guard for PR #187 round 1 HIGH-1 (previously os.environ.get at
-    module import time, invisible to the Settings path)."""
+class TestOpencodeTokenPath:
+    """The opencode App ID and installation ID live as hard-coded constants
+    in ``src.gateway.github_token`` — same precedent as the claude and codex
+    reviewer bots. Only the PEM is per-host. Regression guard: these tests
+    pin that the token path uses the hard-coded constants and that a missing
+    PEM raises ``FileNotFoundError`` (which the sequencer catches to degrade
+    to codex-only)."""
+
+    def test_app_id_and_installation_id_are_constants(self) -> None:
+        from src.gateway import github_token as gt
+
+        assert gt._OPENCODE_APP_ID, "App ID must be a non-empty constant"
+        assert gt._OPENCODE_INSTALLATION_ID, "Installation ID must be a non-empty constant"
+        # Paired PEM path shape — per-host, not per-environment.
+        assert gt._OPENCODE_PEM.name == "opencode-reviewer.pem"
+        assert gt._OPENCODE_PEM.parent.name == "credentials"
+        assert gt._OPENCODE_PEM.parent.parent.name == ".agent-vm"
 
     @pytest.mark.asyncio
-    async def test_not_configured_error_when_settings_empty(self) -> None:
-        from src.gateway.github_token import (
-            OpencodeBotNotConfiguredError,
-            get_opencode_reviewer_token,
-            reset_token_cache,
-        )
-        from src.shared.config import settings
+    async def test_missing_pem_raises_file_not_found(self) -> None:
+        """On a host that hasn't provisioned the PEM, token fetch raises
+        FileNotFoundError (which ``_review_pr`` catches to skip stage A)."""
+        from pathlib import Path
+        from unittest.mock import patch
 
-        reset_token_cache()
-        original_app_id = settings.opencode_app_id
-        original_installation_id = settings.opencode_installation_id
-        settings.opencode_app_id = ""
-        settings.opencode_installation_id = ""
-        try:
-            with pytest.raises(OpencodeBotNotConfiguredError):
-                await get_opencode_reviewer_token()
-        finally:
-            settings.opencode_app_id = original_app_id
-            settings.opencode_installation_id = original_installation_id
-            reset_token_cache()
+        from src.gateway import github_token as gt
+
+        gt.reset_token_cache()
+        with (
+            patch.object(gt, "_OPENCODE_PEM", Path("/nonexistent/opencode-reviewer.pem")),
+            pytest.raises(FileNotFoundError),
+        ):
+            await gt.get_opencode_reviewer_token()
+        gt.reset_token_cache()
 
     @pytest.mark.asyncio
-    async def test_settings_values_drive_token_request(self) -> None:
-        """Set settings fields, then assert the JWT path uses those values.
-
-        Patches ``_get_token`` (the shared helper that calls ``_build_jwt`` +
-        HTTPX). We only need to confirm the app_id and installation_id
-        propagated — we do NOT hit the real PEM or GitHub API.
-        """
+    async def test_constants_drive_token_request(self) -> None:
+        """Patches the shared ``_get_token`` and asserts the hard-coded
+        App ID + installation ID are passed through (no env / Settings lookup)."""
         from unittest.mock import AsyncMock, patch
 
         from src.gateway import github_token as gt
-        from src.shared.config import settings
 
         gt.reset_token_cache()
-        original_app_id = settings.opencode_app_id
-        original_installation_id = settings.opencode_installation_id
-        settings.opencode_app_id = "app-12345"
-        settings.opencode_installation_id = "install-67890"
+        captured: dict[str, str] = {}
+
+        async def fake_get(
+            app_id: str,
+            installation_id: str,
+            *args: object,
+            **kwargs: object,
+        ) -> str:
+            captured["app_id"] = app_id
+            captured["installation_id"] = installation_id
+            return "fake-token"
+
         try:
-            captured: dict[str, str] = {}
-
-            async def fake_get(
-                app_id: str,
-                installation_id: str,
-                *args: object,
-                **kwargs: object,
-            ) -> str:
-                captured["app_id"] = app_id
-                captured["installation_id"] = installation_id
-                return "fake-token"
-
             with patch.object(gt, "_get_token", new=AsyncMock(side_effect=fake_get)):
                 token = await gt.get_opencode_reviewer_token()
-
             assert token == "fake-token"
-            assert captured["app_id"] == "app-12345"
-            assert captured["installation_id"] == "install-67890"
+            assert captured["app_id"] == gt._OPENCODE_APP_ID
+            assert captured["installation_id"] == gt._OPENCODE_INSTALLATION_ID
         finally:
-            settings.opencode_app_id = original_app_id
-            settings.opencode_installation_id = original_installation_id
             gt.reset_token_cache()
 
 

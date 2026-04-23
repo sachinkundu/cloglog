@@ -654,7 +654,6 @@ class ReviewEngineConsumer:
 
     async def _review_pr(self, event: WebhookEvent) -> None:
         from src.gateway.github_token import (
-            OpencodeBotNotConfiguredError,
             get_codex_reviewer_token,
             get_github_app_token,
             get_opencode_reviewer_token,
@@ -771,9 +770,12 @@ class ReviewEngineConsumer:
         if self._opencode_available:
             try:
                 opencode_token = await get_opencode_reviewer_token()
-            except OpencodeBotNotConfiguredError as err:
+            except FileNotFoundError as err:
+                # Host has the opencode binary but no PEM at
+                # ~/.agent-vm/credentials/opencode-reviewer.pem. Stage A is
+                # skipped; codex still runs. See docs/setup-credentials.md.
                 logger.info(
-                    "Opencode bot not configured — skipping stage A for PR #%d (%s)",
+                    "Opencode reviewer PEM missing — skipping stage A for PR #%d (%s)",
                     event.pr_number,
                     err,
                 )

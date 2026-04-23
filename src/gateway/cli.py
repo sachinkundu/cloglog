@@ -95,10 +95,40 @@ def projects_create(
 
 
 def _auth_headers(api_key: str) -> dict[str, str]:
-    """Build auth headers from an API key (used as dashboard key)."""
+    """Build auth headers from an API key (used as dashboard key).
+
+    Returns the ``X-Dashboard-Key`` header when the key is non-empty;
+    otherwise returns an empty dict. The gateway's
+    ``ApiAccessControlMiddleware`` rejects empty-header requests with
+    401 on all non-agent, non-``/health`` routes — callers that hit a
+    route requiring auth should validate the key BEFORE the HTTP call
+    via ``_require_dashboard_key`` so the user gets a clear local
+    error instead of a cryptic remote 401.
+    """
     if not api_key:
         return {}
     return {"X-Dashboard-Key": api_key}
+
+
+def _require_dashboard_key(api_key: str, operation: str) -> None:
+    """Exit with a clear error if the dashboard key is missing (T-258).
+
+    Call this at the top of any CLI function that hits a non-agent route
+    (e.g. ``/api/v1/projects/{id}/worktrees``). Before T-258, callers
+    relied on implicit ``CLOGLOG_API_KEY`` env-passthrough through
+    ``_auth_headers`` — unset env produced empty headers, which the
+    middleware rejected with a bare ``401 Authentication required`` the
+    user had to decode. This guard surfaces the requirement at the call
+    site with a message that names the operation and the env var.
+    """
+    if not api_key:
+        typer.echo(
+            f"Error: {operation} requires the dashboard key. Set "
+            "CLOGLOG_API_KEY in env or pass --api-key. The endpoint is "
+            "NOT public — see docs/ddd-context-map.md § Auth Contract.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
 
 
 def _api_get(url: str, path: str, api_key: str = "") -> dict[str, Any] | list[Any]:
@@ -178,7 +208,14 @@ def _resolve_task(
 
 
 def _resolve_worktree(url: str, project_id: str, name: str, api_key: str = "") -> tuple[str, str]:
-    """Resolve worktree name to (id, path)."""
+    """Resolve worktree name to (id, path).
+
+    Hits ``/api/v1/projects/{id}/worktrees`` which is NOT a public route
+    (see ``src/agent/routes.py::list_worktrees``). T-258 guards the
+    dashboard-key requirement explicitly here instead of letting the
+    ``_auth_headers`` fallback land an empty header on the wire.
+    """
+    _require_dashboard_key(api_key, "worktree resolution")
     worktrees = _api_get(url, f"/api/v1/projects/{project_id}/worktrees", api_key=api_key)
     if isinstance(worktrees, list):
         for wt in worktrees:
@@ -236,10 +273,24 @@ def tasks_list(
     worktree: Annotated[str | None, typer.Option(help="Filter by worktree name")] = None,
     all_tasks: Annotated[bool, typer.Option("--all", help="Include done tasks")] = False,
     json_output: Annotated[bool, typer.Option("--json", help="JSON output")] = False,
+    api_key: Annotated[str, typer.Option(help="Dashboard API key", envvar="CLOGLOG_API_KEY")] = "",
 ) -> None:
-    """List tasks grouped by status."""
-    project_id, _ = _resolve_project(url, project)
-    backlog = _api_get(url, f"/api/v1/projects/{project_id}/backlog")
+    """List tasks grouped by status.
+
+    T-258 / codex round 1 correction: the dashboard key is required on
+    EVERY invocation, not just when the ``--worktree`` filter is used.
+    ``/api/v1/projects`` and ``/api/v1/projects/{id}/backlog`` are both
+    non-agent routes and ``ApiAccessControlMiddleware`` rejects
+    unauthenticated requests with 401 regardless of the filter flags.
+    Guard the key up front so an unset ``CLOGLOG_API_KEY`` surfaces as a
+    clear local error instead of a remote 401 from the first backend
+    call. (The worktree filter hits an additional non-agent route
+    ``/api/v1/projects/{id}/worktrees`` — still non-public — and is
+    covered by the same guard.)
+    """
+    _require_dashboard_key(api_key, "tasks list")
+    project_id, _ = _resolve_project(url, project, api_key=api_key)
+    backlog = _api_get(url, f"/api/v1/projects/{project_id}/backlog", api_key=api_key)
     if not isinstance(backlog, list):
         typer.echo("Error: unexpected response", err=True)
         raise typer.Exit(code=1)
@@ -258,7 +309,7 @@ def tasks_list(
         if feat_num is not None:
             tasks = [t for t in tasks if t["feature_number"] == feat_num]
     if worktree:
-        wt_id, _ = _resolve_worktree(url, project_id, worktree)
+        wt_id, _ = _resolve_worktree(url, project_id, worktree, api_key=api_key)
         tasks = [t for t in tasks if t.get("worktree_id") == wt_id]
 
     if json_output:
@@ -351,12 +402,24 @@ def tasks_assign(
     url: Annotated[
         str, typer.Option(help="Base URL", envvar="CLOGLOG_URL")
     ] = "http://localhost:8000",
+    api_key: Annotated[str, typer.Option(help="Dashboard API key", envvar="CLOGLOG_API_KEY")] = "",
 ) -> None:
-    """Assign a task to a worktree."""
-    project_id, _ = _resolve_project(url, project)
-    task_id, task_num, _ = _resolve_task(url, project_id, task)
-    wt_id, _ = _resolve_worktree(url, project_id, worktree)
-    _api_patch(url, f"/api/v1/tasks/{task_id}", {"worktree_id": wt_id})
+    """Assign a task to a worktree.
+
+    T-258 / codex round 2: guard the dashboard key up front. Every step
+    of this command hits a non-agent route — /api/v1/projects for the
+    project resolver, /api/v1/projects/{id}/search for the task
+    resolver, /api/v1/projects/{id}/worktrees for the worktree
+    resolver, and /api/v1/tasks/{id} for the PATCH — and
+    ApiAccessControlMiddleware rejects every one of them without the
+    dashboard key. Guarding in `_resolve_worktree` only was too late:
+    `_resolve_project` fires first and would still surface a remote 401.
+    """
+    _require_dashboard_key(api_key, "tasks assign")
+    project_id, _ = _resolve_project(url, project, api_key=api_key)
+    task_id, task_num, _ = _resolve_task(url, project_id, task, api_key=api_key)
+    wt_id, _ = _resolve_worktree(url, project_id, worktree, api_key=api_key)
+    _api_patch(url, f"/api/v1/tasks/{task_id}", {"worktree_id": wt_id}, api_key=api_key)
     typer.echo(f"Assigned T-{task_num} to worktree {worktree}")
 
 
@@ -421,7 +484,14 @@ def agents_list(
     status: Annotated[str | None, typer.Option(help="Filter by status")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="JSON output")] = False,
 ) -> None:
-    """List registered agents (worktrees) for a project."""
+    """List registered agents (worktrees) for a project.
+
+    T-258: ``/api/v1/projects/{id}/worktrees`` is NOT a public route;
+    the dashboard key is required. Guard explicitly so users without
+    ``CLOGLOG_API_KEY`` set get a clear local error naming the operation
+    and env var, not a cryptic remote 401.
+    """
+    _require_dashboard_key(api_key, "agents list")
     project_id, project_name = _resolve_project(url, project, api_key=api_key)
     worktrees = _api_get(url, f"/api/v1/projects/{project_id}/worktrees", api_key=api_key)
     if not isinstance(worktrees, list):

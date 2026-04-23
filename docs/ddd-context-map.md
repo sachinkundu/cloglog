@@ -118,3 +118,31 @@ graph TB
 | **Bounded Context (DDD)** | In the target project (the one agents are building), a Bounded Context maps to an Epic on the cloglog board. This is optional — not every Epic represents a Bounded Context. |
 | **agent-vm** | The local tooling bundle for agents — credentials, runtime scripts, and helpers mounted at `~/.agent-vm/`. Not a virtual machine and not a separate filesystem; agents, the MCP server, and cloglog all run on the same host. |
 | **cloglog-mcp** | The MCP server that exposes Claude Code tools (`register_agent`, `start_task`, `complete_task`, etc.) which translate to HTTP calls to the cloglog API. Runs on the same host as the agent and the backend. |
+
+## Auth Contract
+
+Every HTTP route on the gateway passes through `ApiAccessControlMiddleware`
+(`src/gateway/app.py`) BEFORE the per-route `Depends(...)` resolver runs.
+The middleware accepts ONE of three credential shapes and rejects anything
+else with `401 Authentication required` (no credential at all) or `403`
+(present but invalid, or agent-scoped token on a non-agent route).
+
+| Route prefix | Public? | Required credential |
+|---|---|---|
+| `/health` | Yes (no auth) | — (bypassed by middleware) |
+| `/api/v1/agents/*` | No | `Authorization: Bearer <project-api-key>` OR a valid agent token; per-route `Depends(...)` narrows further (agent token for heartbeat/unregister, supervisor key for destructive ops — see `src/gateway/auth.py`). |
+| `/api/v1/projects/{id}/worktrees` | **No — T-258** | `X-Dashboard-Key: <DASHBOARD_SECRET>` OR `X-MCP-Request: true` + `Authorization: Bearer <project-api-key>`. T-244 review flagged that CLI and in-tree callers (`src/gateway/cli.py`, `scripts/sync_mcp_dist.py`) silently relied on env-passthrough of the dashboard key. The route stays authed; callers pass the header explicitly and a local guard short-circuits with a clear error when the env var is missing (`_require_dashboard_key` in `src/gateway/cli.py`). |
+| All other `/api/v1/*` routes | No | `X-Dashboard-Key: <DASHBOARD_SECRET>` OR `X-MCP-Request: true` + `Authorization: Bearer <project-api-key>` (MCP client acting on behalf of an agent). |
+
+Status codes surfaced by the middleware:
+
+| Failure mode | Status | Detail |
+|---|---|---|
+| No `Authorization`, no `X-MCP-Request`, no `X-Dashboard-Key` | `401` | `Authentication required` |
+| `X-Dashboard-Key` present but does not match `settings.dashboard_secret` | `403` | `Invalid dashboard key` |
+| Agent-scoped token on a non-`/api/v1/agents/*` route | `403` | `Agents can only access /api/v1/agents/* routes` |
+
+`docs/design.md § Authentication Flow` mirrors this table; keep the two
+in sync when the middleware changes. The E2E regression suite in
+`tests/e2e/test_access_control.py` pins every row here, including the
+T-258 regression tests for `/api/v1/projects/{id}/worktrees`.

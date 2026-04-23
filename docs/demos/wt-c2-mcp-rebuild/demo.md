@@ -1,7 +1,7 @@
 # After a merge touches mcp-server/src/, the main agent rebuilds mcp-server/dist/ and broadcasts mcp_tools_updated to every online worktree's inbox — the next worktree agent knows the MCP tool surface changed instead of silently missing new tools.
 
-*2026-04-21T06:03:43Z by Showboat 0.6.1*
-<!-- showboat-id: 9ada5b08-22fe-483d-9eb3-8c8d743af831 -->
+*2026-04-23T04:34:00Z by Showboat 0.6.1*
+<!-- showboat-id: bfca989d-342c-4143-88ea-3f64d4685105 -->
 
 Setup: build a synthetic project tree with a stale mcp-server/dist/ and two worktrees under .claude/worktrees/. No real backend, no npm install — the demo proves the broadcast mechanism end-to-end without depending on environment state.
 
@@ -21,11 +21,12 @@ server.tool('get_my_tasks', 'doc', {}, () => {});
 server.tool('start_task', 'doc', {}, () => {});
 DIST_OLD
 
-# Seed cloglog config.
+# Seed cloglog config (backend_url is overridden at runtime with the
+# mock server's OS-assigned port — no hardcoded port collisions).
 cat > "$WORK/.cloglog/config.yaml" <<'CFG'
 project: demo
 project_id: 00000000-0000-0000-0000-000000000001
-backend_url: http://127.0.0.1:61244
+backend_url: http://127.0.0.1:0
 CFG
 
 # Pre-create inbox files so they are visible as empty, matching what
@@ -80,17 +81,30 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
-srv = http.server.HTTPServer(("127.0.0.1", 61244), H)
+# Bind to port 0 so the kernel picks a free ephemeral port — avoids the
+# hardcoded-port collision that flagged in review. The port is written
+# back through a well-known file the shell polls for below.
+srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+Path(sys.argv[1], "mock-port").write_text(str(srv.server_address[1]))
 srv.serve_forever()
 PY
 MOCK_PID=$!
 trap "kill $MOCK_PID 2>/dev/null || true" EXIT
-# Wait until the mock is listening (send the auth header the real backend
-# would require — otherwise the mock returns 403 like the real gateway).
-for _ in $(seq 1 40); do
-    if curl -sf -H "X-Dashboard-Key: cloglog-dashboard-dev"         "http://127.0.0.1:61244/api/v1/projects/00000000-0000-0000-0000-000000000001/worktrees"         > /dev/null; then break; fi
+# Wait for the mock to publish its port, then wait for it to start serving.
+for _ in $(seq 1 100); do
+    [ -f "$WORK/mock-port" ] && break
     sleep 0.05
 done
+MOCK_PORT="$(cat "$WORK/mock-port")"
+MOCK_URL="http://127.0.0.1:${MOCK_PORT}"
+# Auth header matches the real backend — mock returns 403 without it.
+for _ in $(seq 1 40); do
+    if curl -sf -H "X-Dashboard-Key: cloglog-dashboard-dev"         "${MOCK_URL}/api/v1/projects/00000000-0000-0000-0000-000000000001/worktrees"         > /dev/null; then break; fi
+    sleep 0.05
+done
+# Intentionally do not echo $MOCK_PORT — it is ephemeral and would break
+# showboat's byte-exact verify on the next run. The subsequent "online
+# worktrees" line is deterministic.
 
 # Simulate the npm build side-effect by rewriting dist/server.js directly
 # (the real build produces equivalent output). sync_mcp_dist.py's
@@ -117,7 +131,7 @@ DIST_NEW
 uv run python - "$WORK" <<'PY'
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path("/home/sachin/code/cloglog/.claude/worktrees/wt-c2-mcp-rebuild") / "scripts"))
+sys.path.insert(0, str(Path("/home/sachin/code/cloglog/.claude/worktrees/wt-f48-wave-f") / "scripts"))
 import sync_mcp_dist as m
 
 root = Path(sys.argv[1])
@@ -133,8 +147,9 @@ removed = old_tools - new_tools
 print(f"tools added:   {sorted(added)}")
 print(f"tools removed: {sorted(removed)}")
 
+mock_port = (root / "mock-port").read_text().strip()
 paths = m.fetch_online_worktree_paths(
-    "http://127.0.0.1:61244",
+    f"http://127.0.0.1:{mock_port}",
     "00000000-0000-0000-0000-000000000001",
     dashboard_secret="cloglog-dashboard-dev",
 )
@@ -188,13 +203,13 @@ grep -n "mcp_tools_updated\|need_session_restart\|sync-mcp-dist" docs/design/age
 ```
 
 ```output
-204:| `mcp_tools_updated` | main agent (T-244) | Inspect the `added`/`removed` list. If the currently active task depends on the change, emit `need_session_restart` to the main inbox, pause, wait for the main agent to close and relaunch the tab (Section 6). Otherwise continue — the current session's MCP tool list is frozen at start and cannot hot-reload. |
-217:| `need_session_restart` | On `mcp_tools_updated` when the new tools are load-bearing for the active task. |
-370:   `mcp_tools_updated` broadcast (T-244): an agent that needs new MCP tools
-375:1. After a merge, the main agent runs `make sync-mcp-dist` (wraps
-383:   `mcp_tools_updated` event to every online worktree's `.cloglog/inbox`
-387:   {"type":"mcp_tools_updated","added":["new_tool_a"],"removed":[],"ts":"..."}
-397:3. A worktree agent that needs the new tools emits `need_session_restart` to
-404:An agent that receives `mcp_tools_updated` but does NOT need the change keeps
-450:- **T-244** — Post-merge mcp-server dist rebuild + `mcp_tools_updated`
+234:| `mcp_tools_updated` | main agent (T-244) | Inspect the `added`/`removed` list. If the currently active task depends on the change, emit `need_session_restart` to the main inbox, pause, wait for the main agent to close and relaunch the tab (Section 6). Otherwise continue — the current session's MCP tool list is frozen at start and cannot hot-reload. |
+248:| `need_session_restart` | On `mcp_tools_updated` when the new tools are load-bearing for the active task. |
+494:   `mcp_tools_updated` broadcast (T-244): an agent that needs new MCP tools
+499:1. After a merge, the main agent runs `make sync-mcp-dist` (wraps
+507:   `mcp_tools_updated` event to every online worktree's `.cloglog/inbox`
+511:   {"type":"mcp_tools_updated","added":["new_tool_a"],"removed":[],"ts":"..."}
+521:3. A worktree agent that needs the new tools emits `need_session_restart` to
+528:An agent that receives `mcp_tools_updated` but does NOT need the change keeps
+575:- **T-244** — Post-merge mcp-server dist rebuild + `mcp_tools_updated`
 ```

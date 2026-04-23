@@ -33,11 +33,12 @@ server.tool('get_my_tasks', 'doc', {}, () => {});
 server.tool('start_task', 'doc', {}, () => {});
 DIST_OLD
 
-# Seed cloglog config.
+# Seed cloglog config (backend_url is overridden at runtime with the
+# mock server's OS-assigned port — no hardcoded port collisions).
 cat > "$WORK/.cloglog/config.yaml" <<'CFG'
 project: demo
 project_id: 00000000-0000-0000-0000-000000000001
-backend_url: http://127.0.0.1:61244
+backend_url: http://127.0.0.1:0
 CFG
 
 # Pre-create inbox files so they are visible as empty, matching what
@@ -88,19 +89,32 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
-srv = http.server.HTTPServer(("127.0.0.1", 61244), H)
+# Bind to port 0 so the kernel picks a free ephemeral port — avoids the
+# hardcoded-port collision that flagged in review. The port is written
+# back through a well-known file the shell polls for below.
+srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+Path(sys.argv[1], "mock-port").write_text(str(srv.server_address[1]))
 srv.serve_forever()
 PY
 MOCK_PID=\$!
 trap "kill \$MOCK_PID 2>/dev/null || true" EXIT
-# Wait until the mock is listening (send the auth header the real backend
-# would require — otherwise the mock returns 403 like the real gateway).
+# Wait for the mock to publish its port, then wait for it to start serving.
+for _ in \$(seq 1 100); do
+    [ -f "\$WORK/mock-port" ] && break
+    sleep 0.05
+done
+MOCK_PORT="\$(cat "\$WORK/mock-port")"
+MOCK_URL="http://127.0.0.1:\${MOCK_PORT}"
+# Auth header matches the real backend — mock returns 403 without it.
 for _ in \$(seq 1 40); do
     if curl -sf -H "X-Dashboard-Key: cloglog-dashboard-dev" \
-        "http://127.0.0.1:61244/api/v1/projects/00000000-0000-0000-0000-000000000001/worktrees" \
+        "\${MOCK_URL}/api/v1/projects/00000000-0000-0000-0000-000000000001/worktrees" \
         > /dev/null; then break; fi
     sleep 0.05
 done
+# Intentionally do not echo \$MOCK_PORT — it is ephemeral and would break
+# showboat's byte-exact verify on the next run. The subsequent "online
+# worktrees" line is deterministic.
 
 # Simulate the npm build side-effect by rewriting dist/server.js directly
 # (the real build produces equivalent output). sync_mcp_dist.py's
@@ -143,8 +157,9 @@ removed = old_tools - new_tools
 print(f"tools added:   {sorted(added)}")
 print(f"tools removed: {sorted(removed)}")
 
+mock_port = (root / "mock-port").read_text().strip()
 paths = m.fetch_online_worktree_paths(
-    "http://127.0.0.1:61244",
+    f"http://127.0.0.1:{mock_port}",
     "00000000-0000-0000-0000-000000000001",
     dashboard_secret="cloglog-dashboard-dev",
 )

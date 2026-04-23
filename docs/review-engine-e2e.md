@@ -26,12 +26,18 @@ CLI invocation.
    ```bash
    which "$(uv run python -c 'from src.shared.config import settings; print(settings.review_agent_cmd)')"
    ```
-3. Confirm the PEM private key is present at `~/.agent-vm/credentials/github-app.pem`.
-4. Start the backend (picks up `review_enabled` and registers the consumer).
+3. **Opencode-only hosts only:** set `OPENCODE_ENABLED=true` in `.env` (T-275).
+   The flag defaults to `false` because the stock reviewer model
+   (`gemma4-e4b-32k`) rubber-stamps `:pass:`; on a codex + opencode host that
+   default is fine ("codex-only review"), but on a codex-absent host it
+   disables the review pipeline entirely at boot. Verify at startup log:
+   `review_binary_probe codex_available=... opencode_available=... opencode_enabled=...`.
+4. Confirm the PEM private key is present at `~/.agent-vm/credentials/github-app.pem`.
+5. Start the backend (picks up `review_enabled` and registers the consumer).
    The startup log should contain either:
-   - `ReviewEngineConsumer registered (agent=codex)` — consumer is live, OR
-   - `Review agent 'codex' not on PATH — ReviewEngineConsumer disabled` —
-     install or re-point `REVIEW_AGENT_CMD` before continuing.
+   - `ReviewEngineConsumer registered (mode=<two-stage|codex-only|opencode-only>, ...)` — consumer is live, OR
+   - `Opencode binary at <cmd> is available but disabled via settings.opencode_enabled — stage A will be skipped.` — stage A deliberately off (flag), OR
+   - `Review pipeline disabled — no runnable stage (codex_available=..., opencode_available=..., opencode_enabled=...). ...` — install codex, or flip `OPENCODE_ENABLED=true`, then restart.
 
 ## Trigger path
 

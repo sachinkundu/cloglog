@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     review_max_per_hour: int = 10
     review_enabled: bool = True
     opencode_cmd: str = "opencode"
+    # T-275: default OFF. gemma4-e4b-32k (the cheapest runnable local model)
+    # rubber-stamps :pass: on every diff, producing no useful signal — so
+    # stage A is disabled even when the binary and PEM are both present.
+    # Flip to True once T-274's agentic-mode work lands a reviewer model
+    # that defends severity. No code change needed then.
+    opencode_enabled: bool = False
     # Default: 32K-context variant created from a Modelfile in this repo
     # (see ``ops/opencode/Modelfile.gemma4-e4b-32k``). The stock gemma4:e4b
     # model ships with num_ctx=131072, whose KV cache will not fit on a 24 GB

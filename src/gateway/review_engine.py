@@ -102,6 +102,15 @@ _DIFF_SKIP_PATTERNS: Final = tuple(
         r"\.pem$",
         r"\.key$",
         r"(^|/)credentials/",
+        # T-275: ONLY the showboat-rendered ``demo.md`` under ``docs/demos/`` is
+        # noise — it is byte-exact captured output, not code. The sibling
+        # ``demo-script.sh`` + ``proof_*.py`` / ``probe.py`` files under the
+        # same tree ARE executed by ``scripts/run-demo.sh`` and re-run by
+        # ``scripts/check-demo.sh`` on every ``make quality``, so they MUST
+        # still reach codex. A broader ``docs/demos/`` regex (the shape
+        # shipped in PR #197 round 1) was flagged HIGH — it hid real code
+        # from review.
+        r"(^|/)docs/demos/.*/demo\.md$",
     )
 )
 
@@ -767,7 +776,10 @@ class ReviewEngineConsumer:
         project_root = settings.review_source_root or Path.cwd()
 
         # ----- Stage A: opencode (gemma4:e4b) — up to opencode_max_turns -----
-        if self._opencode_available:
+        # T-275: gated on settings.opencode_enabled so the stage can be silenced
+        # globally without removing the code paths T-274 still needs. When the
+        # flag is False, stage A is skipped exactly as if the binary were absent.
+        if self._opencode_available and settings.opencode_enabled:
             try:
                 opencode_token = await get_opencode_reviewer_token()
             except FileNotFoundError as err:

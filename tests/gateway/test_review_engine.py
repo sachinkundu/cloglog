@@ -232,6 +232,36 @@ class TestFilterDiff:
         out = filter_diff(diff)
         assert out == diff
 
+    def test_drops_docs_demos_demo_md_only(self) -> None:
+        """T-275: ONLY the showboat-rendered ``demo.md`` is filtered; helper
+        scripts (``demo-script.sh``, ``proof_*.py``) still reach codex because
+        they ARE code that ``make demo`` / ``make quality`` actually execute.
+
+        The original T-275 shipped a broader ``docs/demos/`` filter; codex on
+        PR #197 round 2 flagged it HIGH because it hid real executable code
+        from review. This test pins the narrower regex.
+        """
+        diff = (
+            self._section("docs/demos/wt-foo/demo.md")
+            + "\n"
+            + self._section("docs/demos/wt-foo/demo-script.sh")
+            + "\n"
+            + self._section("docs/demos/wt-foo/proof_filter_diff.py")
+            + "\n"
+            + self._section("docs/demos/wt-foo/T-123/demo.md")
+            + "\n"
+            + self._section("src/gateway/review_engine.py")
+        )
+        out = filter_diff(diff)
+        # Byte-exact proof outputs — filtered.
+        assert "docs/demos/wt-foo/demo.md" not in out
+        assert "docs/demos/wt-foo/T-123/demo.md" not in out
+        # Helper scripts under docs/demos/ — MUST survive for codex review.
+        assert "docs/demos/wt-foo/demo-script.sh" in out
+        assert "docs/demos/wt-foo/proof_filter_diff.py" in out
+        # Unrelated source file survives.
+        assert "src/gateway/review_engine.py" in out
+
 
 # ---------------------------------------------------------------------------
 # is_review_agent_available
@@ -2169,3 +2199,271 @@ class TestNotifySkipErrorPaths:
             await consumer.handle(_event())
 
         assert any("Cannot fetch Codex token" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# T-275 — settings.opencode_enabled gates stage A
+# ---------------------------------------------------------------------------
+
+
+class TestOpencodeEnabledFlag:
+    """Stage A (opencode) must be skipped globally when ``settings.opencode_enabled``
+    is False, even when the binary IS on PATH and the PEM exists. Stage B (codex)
+    must still run so the PR receives a review.
+
+    Motivation — see CLAUDE.md "Review Engine — opencode & codex invocation":
+    gemma4-e4b-32k rubber-stamps :pass: regardless of prompt framing, so running
+    stage A under the default model produces only noise. The flag is globally off
+    by default until T-274 lands an agentic-mode reviewer that defends severity.
+    """
+
+    @staticmethod
+    def _event_with_sha() -> WebhookEvent:
+        return WebhookEvent(
+            type=WebhookEventType.PR_OPENED,
+            delivery_id="d-275",
+            repo_full_name="sachinkundu/cloglog",
+            pr_number=275,
+            pr_url="https://github.com/sachinkundu/cloglog/pull/275",
+            head_branch="wt-disable-opencode-skip-demos",
+            base_branch="main",
+            sender="sachinkundu",
+            raw={"pull_request": {"head": {"sha": "f" * 40}}},
+        )
+
+    class _NoopRegistryCtx:
+        async def __aenter__(self) -> object:
+            from unittest.mock import MagicMock
+
+            return MagicMock()
+
+        async def __aexit__(self, *exc: object) -> bool:
+            return False
+
+    @staticmethod
+    def _fake_outcome() -> Any:
+        return type("Outcome", (), {"turns_used": 1, "errors": []})()
+
+    async def _run_sequencer(
+        self,
+        *,
+        opencode_enabled: bool,
+        sample_diff: str,
+    ) -> tuple[list[str], list[str]]:
+        """Run ``_review_pr`` with stub reviewers and return (stage_a_runs, stage_b_runs).
+
+        Each list element is a stage label recorded by the stub ReviewLoop.
+        """
+        import uuid
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        stage_runs: dict[str, list[str]] = {"opencode": [], "codex": []}
+
+        class _StubLoop:
+            def __init__(self, _reviewer: object, **kwargs: object) -> None:
+                self._stage = str(kwargs.get("stage", "?"))
+
+            async def run(self, *, diff: str) -> object:
+                stage_runs.setdefault(self._stage, []).append(self._stage)
+                return TestOpencodeEnabledFlag._fake_outcome()
+
+        consumer = ReviewEngineConsumer(
+            codex_available=True,
+            opencode_available=True,
+            session_factory=MagicMock(),
+        )
+        project_id = uuid.uuid4()
+        event = self._event_with_sha()
+
+        with (
+            patch(
+                "src.gateway.review_engine.settings.opencode_enabled",
+                opencode_enabled,
+            ),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="claude-tok"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="codex-tok"),
+            ),
+            patch(
+                "src.gateway.github_token.get_opencode_reviewer_token",
+                new=AsyncMock(return_value="opencode-tok"),
+            ),
+            patch(
+                "src.gateway.review_engine.count_bot_reviews",
+                new=AsyncMock(return_value=0),
+            ),
+            patch("src.gateway.review_loop.OpencodeReviewer", new=MagicMock()),
+            patch("src.gateway.review_loop.CodexReviewer", new=MagicMock()),
+            patch("src.gateway.review_loop.ReviewLoop", new=_StubLoop),
+            patch.object(consumer, "_fetch_pr_diff", new=AsyncMock(return_value=sample_diff)),
+            patch.object(
+                consumer,
+                "_resolve_project_id",
+                new=AsyncMock(return_value=project_id),
+            ),
+            patch.object(
+                consumer,
+                "_registry",
+                new=lambda: TestOpencodeEnabledFlag._NoopRegistryCtx(),
+            ),
+        ):
+            await consumer._review_pr(event)
+
+        return stage_runs["opencode"], stage_runs["codex"]
+
+    @pytest.mark.asyncio
+    async def test_opencode_disabled_skips_stage_a(self, sample_diff: str) -> None:
+        """Flag off → opencode stage never runs; codex stage still runs."""
+        stage_a_runs, stage_b_runs = await self._run_sequencer(
+            opencode_enabled=False,
+            sample_diff=sample_diff,
+        )
+        assert stage_a_runs == [], (
+            f"Stage A must NOT run when settings.opencode_enabled=False, "
+            f"but it ran {len(stage_a_runs)} time(s)."
+        )
+        assert stage_b_runs == ["codex"], f"Stage B (codex) must still run; got {stage_b_runs!r}."
+
+    @pytest.mark.asyncio
+    async def test_opencode_enabled_runs_stage_a(self, sample_diff: str) -> None:
+        """Flag on + binary + PEM → opencode stage runs; codex stage also runs.
+
+        Guards against a future refactor accidentally stranding opencode in the
+        disabled state.
+        """
+        stage_a_runs, stage_b_runs = await self._run_sequencer(
+            opencode_enabled=True,
+            sample_diff=sample_diff,
+        )
+        assert stage_a_runs == ["opencode"], (
+            f"Stage A must run when settings.opencode_enabled=True; got {stage_a_runs!r}."
+        )
+        assert stage_b_runs == ["codex"], f"Stage B (codex) must also run; got {stage_b_runs!r}."
+
+
+# ---------------------------------------------------------------------------
+# T-275 round 2 — app lifespan must treat opencode-disabled as opencode-absent
+# for registration/mode selection. Otherwise an opencode-only host would
+# register the consumer, skip stage A (flag off) AND stage B (codex missing),
+# leaving PRs with neither a review nor a skip comment.
+# Codex review PR #197 MEDIUM.
+# ---------------------------------------------------------------------------
+
+
+class TestAppRegistrationGateT275:
+    """Regression guard for the PR #197 codex-MEDIUM finding."""
+
+    @staticmethod
+    async def _run_lifespan(
+        *,
+        codex_ok: bool,
+        opencode_ok: bool,
+        opencode_enabled: bool,
+    ) -> tuple[list[str], list[str]]:
+        """Exercise ``lifespan()`` with the given binary/flag triple.
+
+        Returns ``(registered_consumer_type_names, error_log_messages)``.
+        """
+        from fastapi import FastAPI
+
+        from src.gateway.app import lifespan
+        from src.gateway.webhook_dispatcher import webhook_dispatcher
+
+        registrations: list[type] = []
+
+        def _capture(consumer: object) -> None:
+            registrations.append(type(consumer))
+
+        logger_name = "src.gateway.app"
+        errors: list[str] = []
+
+        class _ErrorCapture:
+            def filter(self, record: Any) -> bool:
+                if record.name == logger_name and record.levelname == "ERROR":
+                    errors.append(record.getMessage())
+                return True
+
+        import logging as _logging
+
+        handler = _ErrorCapture()
+        _logging.getLogger(logger_name).addFilter(handler)
+        try:
+            with (
+                patch.object(webhook_dispatcher, "register", side_effect=_capture),
+                patch(
+                    "src.gateway.review_engine.is_review_agent_available",
+                    return_value=codex_ok,
+                ),
+                patch(
+                    "src.gateway.review_engine.is_opencode_available",
+                    return_value=opencode_ok,
+                ),
+                patch(
+                    "src.shared.config.settings.opencode_enabled",
+                    opencode_enabled,
+                ),
+                # Suppress the DB-listening background task so the test does
+                # not require a live Postgres NOTIFY channel.
+                patch(
+                    "src.gateway.notification_listener.run_notification_listener",
+                    new=AsyncMock(),
+                ),
+            ):
+                app = FastAPI()
+                async with lifespan(app):
+                    pass
+        finally:
+            _logging.getLogger(logger_name).removeFilter(handler)
+
+        return [t.__name__ for t in registrations], errors
+
+    @pytest.mark.asyncio
+    async def test_codex_missing_plus_opencode_disabled_skips_registration(
+        self,
+    ) -> None:
+        """Silent-regression guard: no runnable stage → consumer NOT registered."""
+        registered, errors = await self._run_lifespan(
+            codex_ok=False,
+            opencode_ok=True,
+            opencode_enabled=False,
+        )
+        assert "ReviewEngineConsumer" not in registered, (
+            f"Consumer must NOT be registered when codex is missing AND "
+            f"opencode is disabled — otherwise PRs get neither a review nor "
+            f"a skip comment. registered={registered!r}"
+        )
+        assert any("Review pipeline disabled" in msg for msg in errors), (
+            f"A loud ERROR log must explain why review is disabled; got {errors!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_codex_missing_plus_opencode_enabled_still_registers(self) -> None:
+        """Flag ON + binary + no codex → opencode-only mode still works."""
+        registered, _errors = await self._run_lifespan(
+            codex_ok=False,
+            opencode_ok=True,
+            opencode_enabled=True,
+        )
+        assert "ReviewEngineConsumer" in registered, (
+            "When opencode is enabled and the binary is present, the consumer "
+            "must register for opencode-only mode even if codex is missing."
+        )
+
+    @pytest.mark.asyncio
+    async def test_codex_present_plus_opencode_disabled_registers_codex_only(
+        self,
+    ) -> None:
+        """Codex present, opencode disabled → codex-only mode (the dev default)."""
+        registered, _errors = await self._run_lifespan(
+            codex_ok=True,
+            opencode_ok=True,
+            opencode_enabled=False,
+        )
+        assert "ReviewEngineConsumer" in registered, (
+            "Consumer must register whenever at least one effective stage is "
+            "runnable; codex alone is enough."
+        )

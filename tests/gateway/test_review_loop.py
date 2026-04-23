@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -19,6 +20,7 @@ import pytest
 
 from src.gateway.review_engine import ReviewFinding, ReviewResult
 from src.gateway.review_loop import (
+    OpencodeReviewer,
     ReviewLoop,
     _finding_key,
     _reached_consensus,
@@ -699,3 +701,59 @@ class TestConsensusShortCircuitOnRefire:
         mock_post.assert_not_awaited()
         assert outcome.consensus_reached is True
         assert outcome.turns_used == 2
+
+
+# ---------------------------------------------------------------------------
+# Opencode invocation + prompt pin (T-268)
+# ---------------------------------------------------------------------------
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_OPENCODE_PROMPT_FILE = _REPO_ROOT / ".github" / "opencode" / "prompts" / "review.md"
+
+
+class TestOpencodeArgv:
+    """The opencode CLI argv must not include --pure (T-268).
+
+    --pure disables tool/file access, which contradicts the prompt's
+    instruction to read files outside the diff. --dangerously-skip-permissions
+    stays so opencode doesn't prompt interactively.
+    """
+
+    def test_opencode_argv_does_not_pass_pure(self) -> None:
+        reviewer = OpencodeReviewer(_REPO_ROOT)
+        args = reviewer._build_args("full prompt body")
+        assert "--pure" not in args
+        assert "--dangerously-skip-permissions" in args
+
+
+class TestOpencodePromptPin:
+    """Pin the opencode prompt to the deep-verification framing (T-268).
+
+    The prior "first-pass" framing biased gemma4-e4b-32k toward pass-everything
+    verdicts (see PR #190). These assertions prevent that regression.
+    """
+
+    def _prompt(self) -> str:
+        return _OPENCODE_PROMPT_FILE.read_text()
+
+    def test_opencode_prompt_has_deep_review_framing(self) -> None:
+        text = self._prompt()
+        assert "deep verification review" in text
+        assert "FULL ACCESS to the project filesystem" in text
+        assert "evidence from a file you read outside the diff" in text
+
+    def test_opencode_prompt_drops_first_pass_framing(self) -> None:
+        text = self._prompt().lower()
+        assert "first-pass" not in text
+        assert "cheap checks" not in text
+        assert "leave deep architectural judgement for the cloud reviewer" not in text
+        # The "turn 1" pass-bias instruction must not return.
+        assert "on turn 1 specifically" not in text
+
+    def test_opencode_prompt_retains_json_schema_block(self) -> None:
+        text = self._prompt()
+        # The sequencer's parser depends on this exact shape.
+        assert '"overall_correctness"' in text
+        assert '"no_further_concerns"' in text
+        assert '"review_in_progress"' in text

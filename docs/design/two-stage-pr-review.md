@@ -564,6 +564,126 @@ Items explicitly **out of scope** for T-248 (will be separate tasks if pursued):
 - Swapping `gemma4:e4b` for a different local model.
 - Opinion arbitration / dedup between the two reviewers.
 
+## 9. Per-PR review root resolution (T-278)
+
+**Added 2026-04-23 as part of T-278.** Authoritative — supersedes the pre-T-278
+behaviour where `project_root` was computed once per backend process from
+`settings.review_source_root or Path.cwd()`.
+
+### 9.1 Problem statement
+
+T-255 hardened the host-level fallback (`settings.review_source_root` env var
++ boot log) so prod no longer silently read prod's stale `main` checkout via
+`Path.cwd()`. What T-255 did **not** fix: a single `REVIEW_SOURCE_ROOT` value
+per host means every PR's codex review reads the same tree — typically the
+`main` branch at whatever SHA prod was last promoted from. Every finding
+phrased "file X currently does Y" referred to `main`'s pre-PR state, not the
+PR's actual state, producing systematic false positives.
+
+CLAUDE.md's load-bearing rule remains: *"`Path.cwd()` in backend code is a
+filesystem fingerprint of the launcher, not an invariant. Any subprocess
+that reads files via `-C`/`cwd=` must take its root from `Settings`, not
+`Path.cwd()`."* T-255 honoured that rule per host. T-278 honours it per PR.
+
+### 9.2 Resolver contract — `resolve_pr_review_root(event)`
+
+Lives in `src/gateway/review_engine.py`. Invoked by `_review_pr` **per
+review**, immediately before constructing `OpencodeReviewer` / `CodexReviewer`.
+Signature:
+
+```python
+async def resolve_pr_review_root(
+    event: WebhookEvent,
+    *,
+    project_id: UUID,
+    worktree_query: IWorktreeQuery,
+) -> Path: ...
+```
+
+Preference order:
+
+1. **Worktree path (primary).** If there is a `Worktree` row in this project
+   whose `branch_name == event.head_branch`, and its `worktree_path` exists on
+   disk, return that path. A brief `git -C <path> rev-parse HEAD` probe logs
+   a `review_source_drift` warning when the worktree's HEAD disagrees with
+   `event.head_sha` — but the worktree path is still preferred, because the
+   mismatch is almost always a mid-rebase or unpushed commit, and a
+   slightly-stale worktree is a far better codex review root than prod's
+   `main`.
+
+2. **Host-level fallback.** `settings.review_source_root or Path.cwd()` —
+   the same value `resolve_review_source_root()` returns. Used for PRs
+   whose owning worktree is not on this host (external contributors,
+   closed worktrees, an agent that unregistered before the webhook fired).
+   Falling back emits a single structured WARNING: `review_source=fallback
+   reason=<no_matching_worktree|path_missing> pr_branch=<head>`.
+
+The resolver **never mutates the worktree** — no `git fetch`, no
+`checkout`, no `reset`. The owning agent is live in that checkout and those
+operations would corrupt its in-progress work.
+
+### 9.3 DDD boundary — Agent context Open Host Service
+
+Gateway must NOT import `src.agent.models` or `src.agent.repository` (priority-3
+DDD violation per `docs/ddd-context-map.md` — Gateway owns no tables). T-278
+exposes the lookup through an Open Host Service, mirroring the Review context
+precedent (PR #187 round 2 CRITICAL fix that created `IReviewTurnRegistry` +
+`make_review_turn_registry`).
+
+- `src/agent/interfaces.py::IWorktreeQuery` — Protocol with one method:
+  `find_by_branch(project_id, branch_name) -> WorktreeRow | None`.
+- `src/agent/interfaces.py::WorktreeRow` — frozen dataclass DTO carried
+  across the boundary so Gateway never sees the ORM row.
+- `src/agent/services.py::make_worktree_query(session) -> IWorktreeQuery` —
+  factory returning a Protocol-typed implementation. The concrete adapter
+  is hidden inside the module.
+- `src/gateway/review_engine.py` imports **only** `IWorktreeQuery` (under
+  `TYPE_CHECKING`) and `make_worktree_query` (inside a context-manager
+  helper). A pin test (`TestReviewEngineDDDBoundary`) asserts the absence
+  of any other `src.agent.*` import — the "asserting absence beats
+  presence" pattern from CLAUDE.md's "Leak-after-fix" rule.
+
+### 9.4 Shared-filesystem invariant
+
+This resolver relies on CLAUDE.md's *"cloglog, the MCP server, and every
+worktree agent share one host filesystem. There is no host/VM filesystem
+split."* If that ever changes (Railway, cloud VMs, agent-vm sandboxes), the
+resolver needs rethinking — likely a temp-dir checkout of `event.head_sha`.
+Explicitly **out of scope for T-278**; noted at the resolver call-site so a
+future migration knows where to look.
+
+### 9.5 Drift policy — warn, don't block
+
+When the worktree's HEAD differs from `event.head_sha`, log:
+
+```
+review_source_drift worktree_head=<short> pr_head=<short>
+  pr_branch=<head_branch> worktree_path=<path> pr=#<N>
+```
+
+…and proceed with the worktree path. Rationale: the drift is mostly
+noise-free signal (rebase, local amend, push not yet landed), and even a
+stale worktree tree yields better reviews than prod `main`. If the drift
+turns out to be harmful in practice, the replacement is a temp-dir
+checkout of `event.head_sha` — a separate, larger task.
+
+### 9.6 Out of scope for T-278
+
+- External / no-worktree PRs do **not** get a temp-dir checkout of the
+  PR's HEAD SHA. They fall back to the host-level root. File a follow-up
+  if codex quality on external PRs becomes a pressing concern.
+- `_fetch_pr_diff` is unchanged — diff-fetch from GitHub is already
+  per-PR and correct.
+- `pr_review_turns`, the consensus predicate, and turn-level persistence
+  are untouched.
+- Opencode (currently disabled via `settings.opencode_enabled=False` per
+  T-275) is unchanged; when re-enabled it will share the same per-PR
+  `project_root` via the single resolver call in `_review_pr`.
+- `settings.review_source_root` and `resolve_review_source_root()` remain
+  in place — they are the host-level fallback + the startup-log path,
+  and deleting them would silently re-break T-255 on hosts that have no
+  matching worktree for a given PR.
+
 ## Open escalations
 
 None. Every one of the 8 T-261 questions has a pinned answer above. If a question **re-opens** during T-248 (e.g., gemma4:e4b turns out not to respect the JSON instruction on 30% of runs), the impl agent MUST escalate via the main-agent inbox, **not** silently invent a decision. This is the "spec is authoritative" rule in the prompt for this worktree.

@@ -8,8 +8,10 @@ import uuid as _uuid
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from src.agent.exceptions import TaskBlockedError
-from src.agent.interfaces import BlockerDTO, PipelineBlocker
+from src.agent.interfaces import BlockerDTO, IWorktreeQuery, PipelineBlocker, WorktreeRow
 from src.agent.repository import AgentRepository
 from src.board.interfaces import BoardBlockerQueryPort
 from src.board.models import Task
@@ -18,6 +20,40 @@ from src.shared.config import settings
 from src.shared.events import Event, EventType, event_bus
 
 logger = logging.getLogger(__name__)
+
+
+def make_worktree_query(session: AsyncSession) -> IWorktreeQuery:
+    """Build an ``IWorktreeQuery`` bound to an open async session.
+
+    Open Host Service boundary between Agent and Gateway: callers get the
+    Protocol-typed instance and never see ``AgentRepository`` or
+    ``src.agent.models``. Mirrors ``make_review_turn_registry`` in the
+    Review context. T-278.
+    """
+    return _WorktreeQueryAdapter(AgentRepository(session))
+
+
+class _WorktreeQueryAdapter:
+    """Thin ORM-to-DTO adapter implementing ``IWorktreeQuery``.
+
+    Keeps the ORM row inside the Agent context — callers receive a frozen
+    ``WorktreeRow`` with just the fields Gateway consumers need.
+    """
+
+    def __init__(self, repo: AgentRepository) -> None:
+        self._repo = repo
+
+    async def find_by_branch(self, project_id: UUID, branch_name: str) -> WorktreeRow | None:
+        worktree = await self._repo.find_worktree_by_branch_any_status(project_id, branch_name)
+        if worktree is None:
+            return None
+        return WorktreeRow(
+            id=worktree.id,
+            project_id=worktree.project_id,
+            worktree_path=worktree.worktree_path,
+            branch_name=worktree.branch_name,
+            status=worktree.status,
+        )
 
 
 class AgentService:

@@ -176,6 +176,104 @@ class TestAgentRepository:
         assert await repo.get_worktree(wt.id) is None
 
 
+# --- T-278 per-PR review root resolver DB primitives ---
+
+
+class TestFindWorktreeByBranchAnyStatus:
+    """T-278: the per-PR review-root resolver needs a lookup that does NOT
+    filter by ``status='online'`` — a recently-offline worktree still points
+    at a valid checkout on disk, which beats prod main.
+    """
+
+    async def test_returns_online_row(self, db_session: AsyncSession) -> None:
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+
+        created, _ = await repo.upsert_worktree(project.id, "/repo/wt-t278", "wt-t278")
+        found = await repo.find_worktree_by_branch_any_status(project.id, "wt-t278")
+
+        assert found is not None
+        assert found.id == created.id
+        assert found.status == "online"
+
+    async def test_returns_offline_row(self, db_session: AsyncSession) -> None:
+        """``get_worktree_by_branch`` would return None here; the any-status
+        variant must NOT — T-278's resolver prefers a stale worktree path
+        over prod main.
+        """
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+
+        created, _ = await repo.upsert_worktree(project.id, "/repo/wt-t278", "wt-t278")
+        await repo.set_worktree_offline(created.id)
+
+        via_online = await repo.get_worktree_by_branch(project.id, "wt-t278")
+        assert via_online is None, (
+            "Online-gated lookup must reject offline rows — that is its contract."
+        )
+
+        via_any = await repo.find_worktree_by_branch_any_status(project.id, "wt-t278")
+        assert via_any is not None
+        assert via_any.id == created.id
+        assert via_any.status == "offline"
+
+    async def test_empty_branch_returns_none(self, db_session: AsyncSession) -> None:
+        """Empty branch is the historical data-trap; must short-circuit to
+        None regardless of row count (same rule as the online-gated lookup).
+        """
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+
+        assert await repo.find_worktree_by_branch_any_status(project.id, "") is None
+
+    async def test_no_match_returns_none(self, db_session: AsyncSession) -> None:
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+
+        await repo.upsert_worktree(project.id, "/repo/wt-a", "wt-a")
+        assert (
+            await repo.find_worktree_by_branch_any_status(project.id, "wt-does-not-exist") is None
+        )
+
+
+class TestMakeWorktreeQueryFactory:
+    """T-278 OHS boundary: ``make_worktree_query`` returns an object that
+    implements ``IWorktreeQuery`` and delegates to ``AgentRepository``
+    without leaking the ORM row across the seam.
+    """
+
+    async def test_factory_returns_protocol_implementation(self, db_session: AsyncSession) -> None:
+        from src.agent.interfaces import IWorktreeQuery, WorktreeRow
+        from src.agent.services import make_worktree_query
+
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+        created, _ = await repo.upsert_worktree(project.id, "/repo/wt-t278", "wt-t278")
+
+        query = make_worktree_query(db_session)
+        # Runtime-check the Protocol surface. We do not use ``isinstance``
+        # against a non-runtime-checkable Protocol; instead we assert the
+        # behaviour the Protocol requires.
+        assert hasattr(query, "find_by_branch")
+        _ = IWorktreeQuery  # import used only for the type annotation above
+
+        row = await query.find_by_branch(project.id, "wt-t278")
+        assert row is not None
+        assert isinstance(row, WorktreeRow), (
+            f"Factory must return a WorktreeRow DTO, got {type(row).__name__}"
+        )
+        assert row.id == created.id
+        assert row.worktree_path == "/repo/wt-t278"
+        assert row.branch_name == "wt-t278"
+
+    async def test_factory_returns_none_for_missing(self, db_session: AsyncSession) -> None:
+        from src.agent.services import make_worktree_query
+
+        project = await _create_project(db_session)
+        query = make_worktree_query(db_session)
+        assert await query.find_by_branch(project.id, "wt-missing") is None
+
+
 # --- Service Tests ---
 
 

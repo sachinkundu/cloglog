@@ -1,11 +1,13 @@
-# docs/demos/wt-c2-mcp-rebuild/demo-script.sh now binds its mock HTTP server to an OS-assigned ephemeral port (port 0) — no more hardcoded :61244 that could collide with any other process on the host or with a second make demo run (T-256).
+# docs/demos/wt-c2-mcp-rebuild/demo-script.sh no longer binds its mock HTTP server to the hardcoded :61244 port flagged in PR #172 review — the kernel picks a free ephemeral port instead (T-256).
 
-*2026-04-23T04:43:33Z by Showboat 0.6.1*
-<!-- showboat-id: 5b523fce-09f1-4e5c-b692-275b2ab69df8 -->
+*2026-04-23T04:50:32Z by Showboat 0.6.1*
+<!-- showboat-id: a5cbadc6-0eeb-458a-9353-cbba6e944d28 -->
 
-Before: docs/demos/wt-c2-mcp-rebuild/demo-script.sh called http.server.HTTPServer((127.0.0.1, 61244), H). Two concurrent make-demo runs on the same host would race for the same port; the second would crash with EADDRINUSE and showboat verify would fail non-deterministically. Codex flagged this during PR #172 round 2 review.
+Before: docs/demos/wt-c2-mcp-rebuild/demo-script.sh called http.server.HTTPServer((127.0.0.1, 61244), H). Any other process that happened to already own :61244 — or a sibling that bound it first — would cause the bind() to fail with EADDRINUSE and showboat verify would error non-deterministically. Codex flagged this during PR #172 round 2 review.
 
 After: bind to port 0, let the kernel pick a free port, write it to a mock-port file, then have the shell poll the file and substitute the port into subsequent URLs. The ephemeral port is intentionally NOT echoed to the demo output so showboat verify remains byte-exact.
+
+Scope note: this PR fixes the specific port-61244 hazard flagged in PR #172. The c2 demo still uses a shared WORK=/tmp/t244-demo root across runs (setup, mock-port handshake, inboxes all live there), so two strictly concurrent make-demo invocations on the same host could still clobber each other at the filesystem level. That is a separate co-residual concern that T-256 does NOT close — see codex round 2 note on this PR.
 
 Proof 1 — the script source. Hardcoded port :61244 is gone; the bind is now to port 0 and the mock-port handshake is in place.
 

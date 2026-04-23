@@ -19,9 +19,15 @@ if [[ "$BRANCH" == "main" || "$BRANCH" == "master" ]]; then
   exit 0
 fi
 
-# Skip if this branch only has doc/spec changes (no code to demo)
-# Use merge-base so rebased branches don't show phantom diffs from already-merged work
-MERGE_BASE=$(git merge-base main HEAD 2>/dev/null || echo "main")
+# Skip if this branch only has doc/spec changes (no code to demo).
+# Use merge-base so rebased branches don't show phantom diffs from
+# already-merged work. Prefer origin/main over local main — local main is
+# often behind origin (e.g., held by a prod worktree that only pulls on
+# `make promote`), which would surface already-merged PRs as phantom
+# code changes and block docs-only close-off PRs.
+MERGE_BASE=$(git merge-base origin/main HEAD 2>/dev/null \
+  || git merge-base main HEAD 2>/dev/null \
+  || echo "main")
 CODE_CHANGES=$(git diff "$MERGE_BASE" --name-only 2>/dev/null | grep -vE '^docs/|^CLAUDE\.md|^\.claude/|^scripts/|^\.github/|^tests/e2e/|package-lock\.json$' | head -1 || true)
 if [[ -z "$CODE_CHANGES" ]]; then
   echo "  Docs-only branch — no demo required."

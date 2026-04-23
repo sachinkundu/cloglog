@@ -232,6 +232,18 @@ class TestFilterDiff:
         out = filter_diff(diff)
         assert out == diff
 
+    def test_drops_docs_demos_sections(self) -> None:
+        """T-275: ``docs/demos/<branch>/<task>/demo.md`` is showboat-rendered
+        proof-of-work, not code — codex should not spend a turn on it."""
+        diff = (
+            self._section("docs/demos/wt-disable-opencode-skip-demos/T-275/demo.md")
+            + "\n"
+            + self._section("src/gateway/review_engine.py")
+        )
+        out = filter_diff(diff)
+        assert "docs/demos/" not in out
+        assert "src/gateway/review_engine.py" in out
+
 
 # ---------------------------------------------------------------------------
 # is_review_agent_available
@@ -2169,3 +2181,147 @@ class TestNotifySkipErrorPaths:
             await consumer.handle(_event())
 
         assert any("Cannot fetch Codex token" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# T-275 — settings.opencode_enabled gates stage A
+# ---------------------------------------------------------------------------
+
+
+class TestOpencodeEnabledFlag:
+    """Stage A (opencode) must be skipped globally when ``settings.opencode_enabled``
+    is False, even when the binary IS on PATH and the PEM exists. Stage B (codex)
+    must still run so the PR receives a review.
+
+    Motivation — see CLAUDE.md "Review Engine — opencode & codex invocation":
+    gemma4-e4b-32k rubber-stamps :pass: regardless of prompt framing, so running
+    stage A under the default model produces only noise. The flag is globally off
+    by default until T-274 lands an agentic-mode reviewer that defends severity.
+    """
+
+    @staticmethod
+    def _event_with_sha() -> WebhookEvent:
+        return WebhookEvent(
+            type=WebhookEventType.PR_OPENED,
+            delivery_id="d-275",
+            repo_full_name="sachinkundu/cloglog",
+            pr_number=275,
+            pr_url="https://github.com/sachinkundu/cloglog/pull/275",
+            head_branch="wt-disable-opencode-skip-demos",
+            base_branch="main",
+            sender="sachinkundu",
+            raw={"pull_request": {"head": {"sha": "f" * 40}}},
+        )
+
+    class _NoopRegistryCtx:
+        async def __aenter__(self) -> object:
+            from unittest.mock import MagicMock
+
+            return MagicMock()
+
+        async def __aexit__(self, *exc: object) -> bool:
+            return False
+
+    @staticmethod
+    def _fake_outcome() -> Any:
+        return type("Outcome", (), {"turns_used": 1, "errors": []})()
+
+    async def _run_sequencer(
+        self,
+        *,
+        opencode_enabled: bool,
+        sample_diff: str,
+    ) -> tuple[list[str], list[str]]:
+        """Run ``_review_pr`` with stub reviewers and return (stage_a_runs, stage_b_runs).
+
+        Each list element is a stage label recorded by the stub ReviewLoop.
+        """
+        import uuid
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        stage_runs: dict[str, list[str]] = {"opencode": [], "codex": []}
+
+        class _StubLoop:
+            def __init__(self, _reviewer: object, **kwargs: object) -> None:
+                self._stage = str(kwargs.get("stage", "?"))
+
+            async def run(self, *, diff: str) -> object:
+                stage_runs.setdefault(self._stage, []).append(self._stage)
+                return TestOpencodeEnabledFlag._fake_outcome()
+
+        consumer = ReviewEngineConsumer(
+            codex_available=True,
+            opencode_available=True,
+            session_factory=MagicMock(),
+        )
+        project_id = uuid.uuid4()
+        event = self._event_with_sha()
+
+        with (
+            patch(
+                "src.gateway.review_engine.settings.opencode_enabled",
+                opencode_enabled,
+            ),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="claude-tok"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="codex-tok"),
+            ),
+            patch(
+                "src.gateway.github_token.get_opencode_reviewer_token",
+                new=AsyncMock(return_value="opencode-tok"),
+            ),
+            patch(
+                "src.gateway.review_engine.count_bot_reviews",
+                new=AsyncMock(return_value=0),
+            ),
+            patch("src.gateway.review_loop.OpencodeReviewer", new=MagicMock()),
+            patch("src.gateway.review_loop.CodexReviewer", new=MagicMock()),
+            patch("src.gateway.review_loop.ReviewLoop", new=_StubLoop),
+            patch.object(consumer, "_fetch_pr_diff", new=AsyncMock(return_value=sample_diff)),
+            patch.object(
+                consumer,
+                "_resolve_project_id",
+                new=AsyncMock(return_value=project_id),
+            ),
+            patch.object(
+                consumer,
+                "_registry",
+                new=lambda: TestOpencodeEnabledFlag._NoopRegistryCtx(),
+            ),
+        ):
+            await consumer._review_pr(event)
+
+        return stage_runs["opencode"], stage_runs["codex"]
+
+    @pytest.mark.asyncio
+    async def test_opencode_disabled_skips_stage_a(self, sample_diff: str) -> None:
+        """Flag off → opencode stage never runs; codex stage still runs."""
+        stage_a_runs, stage_b_runs = await self._run_sequencer(
+            opencode_enabled=False,
+            sample_diff=sample_diff,
+        )
+        assert stage_a_runs == [], (
+            f"Stage A must NOT run when settings.opencode_enabled=False, "
+            f"but it ran {len(stage_a_runs)} time(s)."
+        )
+        assert stage_b_runs == ["codex"], f"Stage B (codex) must still run; got {stage_b_runs!r}."
+
+    @pytest.mark.asyncio
+    async def test_opencode_enabled_runs_stage_a(self, sample_diff: str) -> None:
+        """Flag on + binary + PEM → opencode stage runs; codex stage also runs.
+
+        Guards against a future refactor accidentally stranding opencode in the
+        disabled state.
+        """
+        stage_a_runs, stage_b_runs = await self._run_sequencer(
+            opencode_enabled=True,
+            sample_diff=sample_diff,
+        )
+        assert stage_a_runs == ["opencode"], (
+            f"Stage A must run when settings.opencode_enabled=True; got {stage_a_runs!r}."
+        )
+        assert stage_b_runs == ["codex"], f"Stage B (codex) must also run; got {stage_b_runs!r}."

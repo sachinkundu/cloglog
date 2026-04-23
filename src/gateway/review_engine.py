@@ -102,6 +102,10 @@ _DIFF_SKIP_PATTERNS: Final = tuple(
         r"\.pem$",
         r"\.key$",
         r"(^|/)credentials/",
+        # T-275: proof-of-work demos are Showboat-rendered booleans plus
+        # captured tool output, not code. Feeding them to codex wastes a
+        # stage-B turn on artifacts the author already verified locally.
+        r"(^|/)docs/demos/",
     )
 )
 
@@ -767,7 +771,10 @@ class ReviewEngineConsumer:
         project_root = settings.review_source_root or Path.cwd()
 
         # ----- Stage A: opencode (gemma4:e4b) — up to opencode_max_turns -----
-        if self._opencode_available:
+        # T-275: gated on settings.opencode_enabled so the stage can be silenced
+        # globally without removing the code paths T-274 still needs. When the
+        # flag is False, stage A is skipped exactly as if the binary were absent.
+        if self._opencode_available and settings.opencode_enabled:
             try:
                 opencode_token = await get_opencode_reviewer_token()
             except FileNotFoundError as err:

@@ -40,23 +40,33 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if settings.review_enabled:
         # Dual-binary probe — §5.4 of docs/design/two-stage-pr-review.md.
         # The sequencer registers when AT LEAST ONE stage can run; both-missing
-        # logs a loud ERROR and leaves the consumer out.
+        # (or missing-codex + opencode-disabled-via-flag) logs a loud ERROR and
+        # leaves the consumer out.
         codex_ok = is_review_agent_available()
         opencode_ok = is_opencode_available()
+        # T-275: settings.opencode_enabled gates stage A globally. When the
+        # binary is present but the flag is off, treat opencode as effectively
+        # unavailable for registration/mode selection — otherwise an
+        # opencode-only host would register the consumer, skip stage A on
+        # every PR (flag off), and skip stage B too (codex missing), producing
+        # neither a review nor a skip comment. Keep the raw ``opencode_ok``
+        # around for diagnostic logging.
+        opencode_effective = opencode_ok and settings.opencode_enabled
         logger.info(
-            "review_binary_probe codex_available=%s opencode_available=%s",
+            "review_binary_probe codex_available=%s opencode_available=%s opencode_enabled=%s",
             codex_ok,
             opencode_ok,
+            settings.opencode_enabled,
         )
-        if codex_ok or opencode_ok:
+        if codex_ok or opencode_effective:
             webhook_dispatcher.register(
                 ReviewEngineConsumer(
                     codex_available=codex_ok,
-                    opencode_available=opencode_ok,
+                    opencode_available=opencode_effective,
                     session_factory=async_session_factory,
                 )
             )
-            if codex_ok and opencode_ok:
+            if codex_ok and opencode_effective:
                 mode = "two-stage"
             elif codex_ok:
                 mode = "codex-only"
@@ -68,11 +78,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 settings.review_agent_cmd,
                 settings.opencode_cmd,
             )
+            if opencode_ok and not settings.opencode_enabled:
+                # Operator needs to see WHY stage A is silent even though the
+                # binary is installed. Paired with the registration-gate log
+                # above, this surfaces the disabled-by-config state at boot.
+                logger.info(
+                    "Opencode binary at %s is available but disabled via "
+                    "settings.opencode_enabled — stage A will be skipped.",
+                    settings.opencode_cmd,
+                )
             if codex_ok:
                 log_review_source_root(logger)
         else:
             logger.error(
-                "Both reviewer binaries missing (%s, %s) — review disabled.",
+                "Review pipeline disabled — no runnable stage "
+                "(codex_available=%s, opencode_available=%s, opencode_enabled=%s). "
+                "Install %s, or set opencode_enabled=true with %s on PATH.",
+                codex_ok,
+                opencode_ok,
+                settings.opencode_enabled,
                 settings.review_agent_cmd,
                 settings.opencode_cmd,
             )

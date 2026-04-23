@@ -2325,3 +2325,127 @@ class TestOpencodeEnabledFlag:
             f"Stage A must run when settings.opencode_enabled=True; got {stage_a_runs!r}."
         )
         assert stage_b_runs == ["codex"], f"Stage B (codex) must also run; got {stage_b_runs!r}."
+
+
+# ---------------------------------------------------------------------------
+# T-275 round 2 — app lifespan must treat opencode-disabled as opencode-absent
+# for registration/mode selection. Otherwise an opencode-only host would
+# register the consumer, skip stage A (flag off) AND stage B (codex missing),
+# leaving PRs with neither a review nor a skip comment.
+# Codex review PR #197 MEDIUM.
+# ---------------------------------------------------------------------------
+
+
+class TestAppRegistrationGateT275:
+    """Regression guard for the PR #197 codex-MEDIUM finding."""
+
+    @staticmethod
+    async def _run_lifespan(
+        *,
+        codex_ok: bool,
+        opencode_ok: bool,
+        opencode_enabled: bool,
+    ) -> tuple[list[str], list[str]]:
+        """Exercise ``lifespan()`` with the given binary/flag triple.
+
+        Returns ``(registered_consumer_type_names, error_log_messages)``.
+        """
+        from fastapi import FastAPI
+
+        from src.gateway.app import lifespan
+        from src.gateway.webhook_dispatcher import webhook_dispatcher
+
+        registrations: list[type] = []
+
+        def _capture(consumer: object) -> None:
+            registrations.append(type(consumer))
+
+        logger_name = "src.gateway.app"
+        errors: list[str] = []
+
+        class _ErrorCapture:
+            def filter(self, record: Any) -> bool:
+                if record.name == logger_name and record.levelname == "ERROR":
+                    errors.append(record.getMessage())
+                return True
+
+        import logging as _logging
+
+        handler = _ErrorCapture()
+        _logging.getLogger(logger_name).addFilter(handler)
+        try:
+            with (
+                patch.object(webhook_dispatcher, "register", side_effect=_capture),
+                patch(
+                    "src.gateway.review_engine.is_review_agent_available",
+                    return_value=codex_ok,
+                ),
+                patch(
+                    "src.gateway.review_engine.is_opencode_available",
+                    return_value=opencode_ok,
+                ),
+                patch(
+                    "src.shared.config.settings.opencode_enabled",
+                    opencode_enabled,
+                ),
+                # Suppress the DB-listening background task so the test does
+                # not require a live Postgres NOTIFY channel.
+                patch(
+                    "src.gateway.notification_listener.run_notification_listener",
+                    new=AsyncMock(),
+                ),
+            ):
+                app = FastAPI()
+                async with lifespan(app):
+                    pass
+        finally:
+            _logging.getLogger(logger_name).removeFilter(handler)
+
+        return [t.__name__ for t in registrations], errors
+
+    @pytest.mark.asyncio
+    async def test_codex_missing_plus_opencode_disabled_skips_registration(
+        self,
+    ) -> None:
+        """Silent-regression guard: no runnable stage → consumer NOT registered."""
+        registered, errors = await self._run_lifespan(
+            codex_ok=False,
+            opencode_ok=True,
+            opencode_enabled=False,
+        )
+        assert "ReviewEngineConsumer" not in registered, (
+            f"Consumer must NOT be registered when codex is missing AND "
+            f"opencode is disabled — otherwise PRs get neither a review nor "
+            f"a skip comment. registered={registered!r}"
+        )
+        assert any("Review pipeline disabled" in msg for msg in errors), (
+            f"A loud ERROR log must explain why review is disabled; got {errors!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_codex_missing_plus_opencode_enabled_still_registers(self) -> None:
+        """Flag ON + binary + no codex → opencode-only mode still works."""
+        registered, _errors = await self._run_lifespan(
+            codex_ok=False,
+            opencode_ok=True,
+            opencode_enabled=True,
+        )
+        assert "ReviewEngineConsumer" in registered, (
+            "When opencode is enabled and the binary is present, the consumer "
+            "must register for opencode-only mode even if codex is missing."
+        )
+
+    @pytest.mark.asyncio
+    async def test_codex_present_plus_opencode_disabled_registers_codex_only(
+        self,
+    ) -> None:
+        """Codex present, opencode disabled → codex-only mode (the dev default)."""
+        registered, _errors = await self._run_lifespan(
+            codex_ok=True,
+            opencode_ok=True,
+            opencode_enabled=False,
+        )
+        assert "ReviewEngineConsumer" in registered, (
+            "Consumer must register whenever at least one effective stage is "
+            "runnable; codex alone is enough."
+        )

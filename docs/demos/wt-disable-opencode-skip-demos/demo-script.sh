@@ -72,6 +72,23 @@ uvx showboat exec "$DEMO_FILE" bash \
   'uv run python docs/demos/wt-disable-opencode-skip-demos/proof_sequencer.py'
 
 # ------------------------------------------------------------------
+uvx showboat note "$DEMO_FILE" "### Round 2 — registration gate closes opencode-only + flag-off regression
+
+Codex MEDIUM on PR #197 round 1: on an opencode-only host (codex binary
+absent) with \`opencode_enabled=False\`, the consumer still registered but
+neither stage ran, leaving PRs with no review and no skip comment.
+
+Fix: \`app.py\` now computes \`opencode_effective = opencode_ok AND
+settings.opencode_enabled\` and treats that as the registration input.
+When codex is missing AND opencode is disabled, the consumer is NOT
+registered; an ERROR log names the three inputs that produced the decision."
+
+uvx showboat exec "$DEMO_FILE" bash \
+  'grep -q "opencode_effective = opencode_ok and settings.opencode_enabled" src/gateway/app.py && echo "effective_availability_computed=yes" || echo "effective_availability_computed=MISSING"
+   grep -q "if codex_ok or opencode_effective:" src/gateway/app.py && echo "registration_gate_on_effective=yes" || echo "registration_gate_on_effective=MISSING"
+   grep -q "Review pipeline disabled" src/gateway/app.py && echo "loud_error_on_no_runnable_stage=yes" || echo "loud_error_on_no_runnable_stage=MISSING"'
+
+# ------------------------------------------------------------------
 uvx showboat note "$DEMO_FILE" "### Pin tests still green
 
 T-272's \`test_opencode_argv_passes_pure\` pin test must survive — T-275

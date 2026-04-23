@@ -1,7 +1,7 @@
 # Stage A (opencode) is disabled by default via settings.opencode_enabled=False, and codex stops reviewing docs/demos/ proof-of-work artifacts.
 
-*2026-04-23T11:42:50Z by Showboat 0.6.1*
-<!-- showboat-id: b1c01393-a073-4df1-b2d7-edb92921b7ae -->
+*2026-04-23T11:54:12Z by Showboat 0.6.1*
+<!-- showboat-id: 3e059c48-a508-42b9-85ff-757cf30a5690 -->
 
 ### Change 1 — `settings.opencode_enabled` flag (default OFF)
 
@@ -74,6 +74,29 @@ stage_b_runs_when_disabled=1
 stage_a_runs_when_enabled=1
 stage_b_runs_when_enabled=1
 sequencer_proof=PASS
+```
+
+### Round 2 — registration gate closes opencode-only + flag-off regression
+
+Codex MEDIUM on PR #197 round 1: on an opencode-only host (codex binary
+absent) with `opencode_enabled=False`, the consumer still registered but
+neither stage ran, leaving PRs with no review and no skip comment.
+
+Fix: `app.py` now computes `opencode_effective = opencode_ok AND
+settings.opencode_enabled` and treats that as the registration input.
+When codex is missing AND opencode is disabled, the consumer is NOT
+registered; an ERROR log names the three inputs that produced the decision.
+
+```bash
+grep -q "opencode_effective = opencode_ok and settings.opencode_enabled" src/gateway/app.py && echo "effective_availability_computed=yes" || echo "effective_availability_computed=MISSING"
+   grep -q "if codex_ok or opencode_effective:" src/gateway/app.py && echo "registration_gate_on_effective=yes" || echo "registration_gate_on_effective=MISSING"
+   grep -q "Review pipeline disabled" src/gateway/app.py && echo "loud_error_on_no_runnable_stage=yes" || echo "loud_error_on_no_runnable_stage=MISSING"
+```
+
+```output
+effective_availability_computed=yes
+registration_gate_on_effective=yes
+loud_error_on_no_runnable_stage=yes
 ```
 
 ### Pin tests still green

@@ -500,6 +500,13 @@ class OpencodeReviewer:
         return _load_project_prompt(project_root)
 
     def _build_args(self, full_prompt: str) -> list[str]:
+        # T-272 hotfix: `--pure` means "no external plugins" — it gates the
+        # default agentic plugin set that otherwise gives the model tool
+        # access. Without it, gemma4-e4b-32k narrates tool calls ("calling
+        # multiple tools to gather context...") instead of emitting the
+        # review JSON, parse_reviewer_output fails, and every PR since
+        # T-268 landed has had zero opencode coverage. Restoring `--pure`
+        # forces single-shot text emission.
         return [
             settings.opencode_cmd,
             "run",
@@ -507,6 +514,7 @@ class OpencodeReviewer:
             settings.opencode_model,
             "--log-level",
             "ERROR",
+            "--pure",
             "--dangerously-skip-permissions",
             "--dir",
             str(self._project_root),

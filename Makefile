@@ -43,6 +43,7 @@ invariants: ## Run silent-failure pin tests (see docs/invariants.md)
 	  tests/test_on_worktree_create_backend_url.py::test_hook_does_not_invoke_python_yaml \
 	  tests/test_mcp_json_no_secret.py \
 	  tests/test_no_destructive_migrations.py \
+	  tests/test_check_demo_allowlist.py \
 	  tests/agent/test_integration.py::TestForceUnregisterAPI::test_force_unregister_rejects_agent_token \
 	  tests/agent/test_unit.py::TestAgentService::test_register_reconnect_preserves_branch_when_caller_sends_empty \
 	  tests/e2e/test_access_control.py::test_worktrees_with_invalid_mcp_bearer_is_rejected \

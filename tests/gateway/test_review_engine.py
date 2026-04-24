@@ -2622,10 +2622,11 @@ class TestOpencodeEnabledFlag:
             return False
 
     class _NoopWorktreeQueryCtx:
-        """Yields a stub ``IWorktreeQuery`` whose ``find_by_branch`` returns None,
-        so ``resolve_pr_review_root`` falls through to the host-level root
-        (``settings.review_source_root or Path.cwd()``) — the behaviour the
-        pre-T-278 tests assumed.
+        """Yields a stub ``IWorktreeQuery`` whose both ``find_by_branch`` and
+        ``find_by_pr_url`` return None, so ``resolve_pr_review_root`` falls
+        through to the host-level root (``settings.review_source_root or
+        Path.cwd()``) — the behaviour the pre-T-278 tests assumed, extended
+        for the T-281 Path 0 lookup.
         """
 
         async def __aenter__(self) -> object:
@@ -2633,6 +2634,7 @@ class TestOpencodeEnabledFlag:
 
             stub = MagicMock()
             stub.find_by_branch = AsyncMock(return_value=None)
+            stub.find_by_pr_url = AsyncMock(return_value=None)
             return stub
 
         async def __aexit__(self, *exc: object) -> bool:
@@ -2693,6 +2695,15 @@ class TestOpencodeEnabledFlag:
             patch(
                 "src.gateway.review_engine.count_bot_reviews",
                 new=AsyncMock(return_value=0),
+            ),
+            # T-281: event.head_sha (f*40) won't match the host fallback's
+            # real HEAD, so the resolver would attempt a temp-dir checkout.
+            # Stub the creator to return None — the resolver then falls
+            # through to the fallback with a drift warning, which is what
+            # the pre-T-281 tests implicitly exercised.
+            patch(
+                "src.gateway.review_engine._create_review_checkout",
+                new=AsyncMock(return_value=None),
             ),
             patch("src.gateway.review_loop.OpencodeReviewer", new=MagicMock()),
             patch("src.gateway.review_loop.CodexReviewer", new=MagicMock()),
@@ -2880,23 +2891,39 @@ class TestAppRegistrationGateT275:
 class _StubWorktreeQuery:
     """In-memory ``IWorktreeQuery`` for unit-testing ``resolve_pr_review_root``.
 
-    Holds one optional ``WorktreeRow`` and returns it for matching
-    ``(project_id, branch_name)`` lookups. Lets the resolver tests run
-    without a database — the DB path is covered independently in
-    ``tests/agent/test_integration.py`` and the DDD pin test below.
+    ``by_branch`` / ``by_pr_url`` each hold one optional ``WorktreeRow`` and
+    return it on a matching lookup. The two fields are independent because
+    T-281 Path 0 (pr_url) and Path 1 (branch) can disagree — the close-out
+    PR case explicitly has a pr_url hit but no branch hit. Lets the
+    resolver tests run without a database; the DB path is covered
+    independently in ``tests/agent/test_unit.py::TestFindWorktreeByPrUrl``
+    and the DDD pin test below.
     """
 
-    def __init__(self, row: Any | None = None) -> None:
-        self._row = row
+    def __init__(
+        self,
+        row: Any | None = None,
+        *,
+        by_pr_url: Any | None = None,
+    ) -> None:
+        self._by_branch = row
+        self._by_pr_url = by_pr_url
 
     async def find_by_branch(self, project_id: Any, branch_name: str) -> Any:
-        if self._row is None:
+        if self._by_branch is None:
             return None
-        if self._row.project_id != project_id:
+        if self._by_branch.project_id != project_id:
             return None
-        if self._row.branch_name != branch_name:
+        if self._by_branch.branch_name != branch_name:
             return None
-        return self._row
+        return self._by_branch
+
+    async def find_by_pr_url(self, project_id: Any, pr_url: str) -> Any:
+        if not pr_url or self._by_pr_url is None:
+            return None
+        if self._by_pr_url.project_id != project_id:
+            return None
+        return self._by_pr_url
 
 
 def _init_git_repo_at(path: Path) -> str:
@@ -2934,24 +2961,31 @@ def _init_git_repo_at(path: Path) -> str:
 
 
 class TestResolvePrReviewRoot:
-    """Per-PR review-root resolution — the worktree owning the PR wins over
-    the host-level fallback. T-278.
+    """Per-PR review-root resolution — pr_url lookup wins over branch lookup,
+    branch lookup wins over the host-level fallback, and a candidate whose
+    HEAD disagrees with ``event.head_sha`` is overridden by a disposable
+    temp-dir checkout at the PR's SHA. T-278 (branch + fallback) plus T-281
+    (Path 0 pr_url + SHA-check temp-dir).
 
     CLAUDE.md "``Path.cwd()`` in backend code is a filesystem fingerprint of
-    the launcher, not an invariant" (T-255) is host-level; this test class
-    pins the per-PR half of the same rule.
+    the launcher, not an invariant" has two halves: T-255 fixed the host
+    level, T-278 fixed the per-PR worktree choice, and T-281 closes the
+    SHA gap between them.
     """
 
     @staticmethod
     def _event_for_branch(
-        head_branch: str, head_sha: str = "a" * 40, pr_number: int = 278
+        head_branch: str,
+        head_sha: str = "a" * 40,
+        pr_number: int = 278,
+        pr_url: str | None = None,
     ) -> WebhookEvent:
         return WebhookEvent(
             type=WebhookEventType.PR_OPENED,
             delivery_id=f"d-{pr_number}",
             repo_full_name="sachinkundu/cloglog",
             pr_number=pr_number,
-            pr_url=f"https://github.com/sachinkundu/cloglog/pull/{pr_number}",
+            pr_url=pr_url or f"https://github.com/sachinkundu/cloglog/pull/{pr_number}",
             head_branch=head_branch,
             base_branch="main",
             sender="sachinkundu",
@@ -2974,7 +3008,9 @@ class TestResolvePrReviewRoot:
     async def test_happy_path_returns_worktree_path(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Matching worktree row + path exists → helper returns the worktree path."""
+        """Matching worktree row + path exists + SHA matches → helper returns
+        the worktree path with ``is_temp=False``. No drift, no fallback.
+        """
         import logging as _logging
 
         project_id = uuid.uuid4()
@@ -2989,15 +3025,16 @@ class TestResolvePrReviewRoot:
                 event, project_id=project_id, worktree_query=query
             )
 
-        assert result == worktree_dir, f"Expected worktree path {worktree_dir}, got {result}"
-        # No fallback warning should fire on the happy path.
+        assert result.path == worktree_dir, (
+            f"Expected worktree path {worktree_dir}, got {result.path}"
+        )
+        assert result.is_temp is False
         fallback_warnings = [
             r for r in caplog.records if "review_source=fallback" in r.getMessage()
         ]
         assert fallback_warnings == [], (
             f"Happy path must not emit fallback warning; got {fallback_warnings}"
         )
-        # No drift warning when SHAs match.
         drift_warnings = [r for r in caplog.records if "review_source_drift" in r.getMessage()]
         assert drift_warnings == [], (
             f"Matching SHAs must not emit drift warning; got {drift_warnings}"
@@ -3010,8 +3047,11 @@ class TestResolvePrReviewRoot:
         tmp_path: Path,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """No worktree row → fallback to ``settings.review_source_root``; WARNING
-        names ``reason=no_matching_worktree``.
+        """Neither Path 0 nor Path 1 hits → fallback to
+        ``settings.review_source_root``; WARNING names
+        ``reason=no_matching_worktree``. SHA-check is skipped because the
+        event carries an all-``f`` SHA against a fallback with no HEAD —
+        we force that path by clearing head_sha instead.
         """
         import logging as _logging
 
@@ -3019,16 +3059,17 @@ class TestResolvePrReviewRoot:
         fallback_root.mkdir()
         monkeypatch.setattr("src.gateway.review_engine.settings.review_source_root", fallback_root)
         query = _StubWorktreeQuery(None)
-        event = self._event_for_branch("wt-unknown")
+        event = self._event_for_branch("wt-unknown", head_sha="")
 
         with caplog.at_level(_logging.WARNING, logger="src.gateway.review_engine"):
             result = await resolve_pr_review_root(
                 event, project_id=uuid.uuid4(), worktree_query=query
             )
 
-        assert result == fallback_root, (
-            f"No-match must fall back to settings.review_source_root; got {result}"
+        assert result.path == fallback_root, (
+            f"No-match must fall back to settings.review_source_root; got {result.path}"
         )
+        assert result.is_temp is False
         messages = [r.getMessage() for r in caplog.records]
         assert any(
             "review_source=fallback" in m and "reason=no_matching_worktree" in m for m in messages
@@ -3055,59 +3096,62 @@ class TestResolvePrReviewRoot:
         gone_path = tmp_path / "this-directory-does-not-exist"
         row = self._row(project_id, "wt-foo", str(gone_path))
         query = _StubWorktreeQuery(row)
-        event = self._event_for_branch("wt-foo")
+        event = self._event_for_branch("wt-foo", head_sha="")
 
         with caplog.at_level(_logging.WARNING, logger="src.gateway.review_engine"):
             result = await resolve_pr_review_root(
                 event, project_id=project_id, worktree_query=query
             )
 
-        assert result == fallback_root, f"Expected fallback; got {result}"
+        assert result.path == fallback_root, f"Expected fallback; got {result.path}"
+        assert result.is_temp is False
         messages = [r.getMessage() for r in caplog.records]
-        assert any(
-            "review_source=fallback" in m and "reason=path_missing" in m for m in messages
-        ), f"Missing path_missing WARNING; got {messages}"
+        assert any("reason=path_missing" in m for m in messages), (
+            f"Missing path_missing WARNING; got {messages}"
+        )
 
     @pytest.mark.asyncio
-    async def test_drift_warning_but_still_returns_worktree(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    async def test_drift_falls_through_when_temp_dir_unavailable(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Worktree HEAD != event.head_sha → drift WARNING, worktree path still
-        preferred. Per T-278: mid-rebase / unpushed commits are normal; a
-        slightly-stale worktree still beats prod's main checkout.
+        """SHA mismatch + temp-dir creation fails → drift WARNING, stale
+        worktree path still returned. "Stale worktree is better than no
+        review" — the T-281 graceful-degradation path.
         """
         import logging as _logging
 
         project_id = uuid.uuid4()
         worktree_dir = tmp_path / "wt-drift"
         worktree_sha = _init_git_repo_at(worktree_dir)
-        # Build an event with a DIFFERENT SHA. Generate a fully-independent
-        # hex string so the "different SHA" claim never collides with the
-        # worktree's real SHA (per CLAUDE.md "Test Determinism" rule).
         event_sha = "b" * 40 if not worktree_sha.startswith("b") else "c" * 40
         assert worktree_sha != event_sha, "Test setup error: generated SHAs accidentally matched"
         row = self._row(project_id, "wt-drift", str(worktree_dir))
         query = _StubWorktreeQuery(row)
         event = self._event_for_branch("wt-drift", head_sha=event_sha)
 
+        # Force temp-dir creation to fail so the resolver falls through.
+        monkeypatch.setattr(
+            "src.gateway.review_engine._create_review_checkout",
+            AsyncMock(return_value=None),
+        )
+
         with caplog.at_level(_logging.WARNING, logger="src.gateway.review_engine"):
             result = await resolve_pr_review_root(
                 event, project_id=project_id, worktree_query=query
             )
 
-        assert result == worktree_dir, f"Drift must NOT demote to fallback; got {result}"
-        drift_messages = [
-            r.getMessage() for r in caplog.records if "review_source_drift" in r.getMessage()
-        ]
-        assert drift_messages, (
-            f"Expected drift WARNING; got log records: {[r.getMessage() for r in caplog.records]}"
+        assert result.path == worktree_dir, (
+            f"Temp-dir failure must fall through to stale worktree; got {result.path}"
         )
-        assert worktree_sha[:7] in drift_messages[0], (
-            f"Drift log missing worktree short SHA; got {drift_messages[0]!r}"
-        )
-        assert event_sha[:7] in drift_messages[0], (
-            f"Drift log missing event short SHA; got {drift_messages[0]!r}"
-        )
+        assert result.is_temp is False
+        all_messages = [r.getMessage() for r in caplog.records]
+        drift_messages = [m for m in all_messages if "review_source_drift" in m]
+        assert drift_messages, f"Expected drift WARNING on temp-dir failure; got {all_messages}"
+        assert worktree_sha[:7] in drift_messages[0]
+        assert event_sha[:7] in drift_messages[0]
 
     @pytest.mark.asyncio
     async def test_empty_head_branch_uses_fallback(
@@ -3116,28 +3160,168 @@ class TestResolvePrReviewRoot:
         tmp_path: Path,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """``event.head_branch == ''`` is pathological but not fatal; the
-        helper must short-circuit to the fallback without querying the DB,
-        mirroring the empty-branch guard in ``AgentRepository``."""
+        """``event.head_branch == ''`` with no pr_url hit — the helper must
+        still terminate on the host-level fallback (mirrors the empty-branch
+        short-circuit in ``AgentRepository``).
+        """
         import logging as _logging
 
         fallback_root = tmp_path / "host-fallback"
         fallback_root.mkdir()
         monkeypatch.setattr("src.gateway.review_engine.settings.review_source_root", fallback_root)
-        # If ``find_by_branch`` is called, raise — proving the short-circuit.
         query = _StubWorktreeQuery(None)
-        event = self._event_for_branch("")
+        event = self._event_for_branch("", head_sha="")
 
         with caplog.at_level(_logging.WARNING, logger="src.gateway.review_engine"):
             result = await resolve_pr_review_root(
                 event, project_id=uuid.uuid4(), worktree_query=query
             )
 
-        assert result == fallback_root
+        assert result.path == fallback_root
+        assert result.is_temp is False
         messages = [r.getMessage() for r in caplog.records]
         assert any(
             "review_source=fallback" in m and "reason=no_matching_worktree" in m for m in messages
         ), f"Empty head_branch must emit no_matching_worktree; got {messages}"
+
+    # ----- T-281 parameterised cells (a)-(d) + pin tests -----
+
+    @pytest.mark.asyncio
+    async def test_path_0_pr_url_hit_returns_task_bound_worktree(self, tmp_path: Path) -> None:
+        """Cell (a) / pin 1: a task exists with ``pr_url == event.pr_url`` and
+        ``worktree_id`` pointing at a worktree → resolver returns that
+        worktree's path via Path 0, without consulting the branch lookup.
+        Also covers the main-agent close-out PR shape — the close-out's
+        head_branch has no worktree row, so only the pr_url chain succeeds.
+        """
+        project_id = uuid.uuid4()
+        main_clone = tmp_path / "main-clone"
+        sha = _init_git_repo_at(main_clone)
+
+        # Main agent's worktree — bound to the close-out task, NOT to the
+        # close-out branch (the main agent has no worktree for that branch).
+        main_row = self._row(project_id, "main", str(main_clone))
+
+        # No row answers find_by_branch for the close-out head_branch.
+        # Only find_by_pr_url returns the main-agent row.
+        query = _StubWorktreeQuery(by_pr_url=main_row)
+        event = self._event_for_branch(
+            "wt-close-2026-04-24-foo",
+            head_sha=sha,
+            pr_number=281,
+            pr_url="https://github.com/sachinkundu/cloglog/pull/281",
+        )
+
+        result = await resolve_pr_review_root(event, project_id=project_id, worktree_query=query)
+
+        assert result.path == main_clone, (
+            f"Main-agent close-out PR must resolve via Path 0, got {result.path}"
+        )
+        assert result.is_temp is False
+
+    @pytest.mark.asyncio
+    async def test_path_0_miss_then_branch_hit_returns_branch_path(self, tmp_path: Path) -> None:
+        """Cell (b): no pr_url binding → fall through to branch lookup,
+        return that worktree path. Typical agent PR before the close-out
+        task pr_url is wired up.
+        """
+        project_id = uuid.uuid4()
+        worktree_dir = tmp_path / "wt-agent"
+        sha = _init_git_repo_at(worktree_dir)
+        row = self._row(project_id, "wt-agent", str(worktree_dir))
+        # Path 0 explicitly miss; Path 1 hits.
+        query = _StubWorktreeQuery(by_pr_url=None, row=row)
+        event = self._event_for_branch("wt-agent", head_sha=sha, pr_number=282)
+
+        result = await resolve_pr_review_root(event, project_id=project_id, worktree_query=query)
+
+        assert result.path == worktree_dir
+        assert result.is_temp is False
+
+    @pytest.mark.asyncio
+    async def test_path_0_and_branch_miss_falls_to_host_fallback(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Cell (c): both paths miss → host-level fallback, no temp dir
+        (head_sha empty to skip SHA check). No warnings about
+        ``review_source_drift``.
+        """
+        fallback_root = tmp_path / "host-fallback"
+        fallback_root.mkdir()
+        monkeypatch.setattr("src.gateway.review_engine.settings.review_source_root", fallback_root)
+        query = _StubWorktreeQuery(None)
+        event = self._event_for_branch("wt-nothing", head_sha="", pr_number=283)
+
+        result = await resolve_pr_review_root(event, project_id=uuid.uuid4(), worktree_query=query)
+
+        assert result.path == fallback_root
+        assert result.is_temp is False
+
+    @pytest.mark.asyncio
+    async def test_sha_mismatch_triggers_temp_dir_checkout(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Cell (d) / pin 2: Path 0 or Path 1 yields a candidate whose HEAD
+        differs from ``event.head_sha`` → resolver calls
+        ``_create_review_checkout`` and returns the temp path with
+        ``is_temp=True``. Captures the webhook-race + close-out scenarios
+        the T-281 docstring calls out.
+        """
+        project_id = uuid.uuid4()
+        worktree_dir = tmp_path / "wt-stale"
+        worktree_sha = _init_git_repo_at(worktree_dir)
+        event_sha = "b" * 40 if not worktree_sha.startswith("b") else "c" * 40
+        assert worktree_sha != event_sha
+        row = self._row(project_id, "wt-stale", str(worktree_dir))
+        query = _StubWorktreeQuery(row)
+        event = self._event_for_branch("wt-stale", head_sha=event_sha, pr_number=284)
+
+        fake_temp = tmp_path / "temp-checkout"
+        fake_temp.mkdir()
+        create_mock = AsyncMock(return_value=fake_temp)
+        monkeypatch.setattr("src.gateway.review_engine._create_review_checkout", create_mock)
+
+        result = await resolve_pr_review_root(event, project_id=project_id, worktree_query=query)
+
+        assert result.path == fake_temp, (
+            f"SHA mismatch must route to temp checkout, got {result.path}"
+        )
+        assert result.is_temp is True
+        create_mock.assert_awaited_once()
+        # Verify the helper was called with the PR's head_sha, not the worktree's.
+        args, kwargs = create_mock.call_args
+        call_sha = kwargs.get("head_sha") or (args[1] if len(args) > 1 else None)
+        assert call_sha == event_sha, (
+            f"Temp checkout must be materialized at event.head_sha; got {call_sha!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_pr_url_binding_preferred_over_branch_when_both_hit(self, tmp_path: Path) -> None:
+        """If both Path 0 and Path 1 would return a viable candidate,
+        Path 0 wins. Typically they point at the same worktree; this test
+        pins the *order* by making them point at different paths and
+        asserting Path 0's wins.
+        """
+        project_id = uuid.uuid4()
+        by_pr_url_dir = tmp_path / "wt-canonical"
+        sha = _init_git_repo_at(by_pr_url_dir)
+        by_branch_dir = tmp_path / "wt-branch-only"
+        _init_git_repo_at(by_branch_dir)
+
+        pr_url_row = self._row(project_id, "wt-canonical", str(by_pr_url_dir))
+        branch_row = self._row(project_id, "wt-branch-only", str(by_branch_dir))
+        query = _StubWorktreeQuery(by_pr_url=pr_url_row, row=branch_row)
+        event = self._event_for_branch("wt-branch-only", head_sha=sha, pr_number=285)
+
+        result = await resolve_pr_review_root(event, project_id=project_id, worktree_query=query)
+
+        assert result.path == by_pr_url_dir, (
+            "Path 0 (pr_url) must win over Path 1 (branch) when both match"
+        )
 
 
 class TestReviewEngineDDDBoundary:
@@ -3231,7 +3415,7 @@ class TestReviewPrUsesWorktreeProjectRoot:
 
         project_id = uuid.uuid4()
         worktree_dir = tmp_path / "wt-t278"
-        _init_git_repo_at(worktree_dir)
+        worktree_sha = _init_git_repo_at(worktree_dir)
 
         from src.agent.interfaces import WorktreeRow
 
@@ -3247,6 +3431,7 @@ class TestReviewPrUsesWorktreeProjectRoot:
             async def __aenter__(self) -> object:
                 stub = MagicMock()
                 stub.find_by_branch = AsyncMock(return_value=row)
+                stub.find_by_pr_url = AsyncMock(return_value=None)
                 return stub
 
             async def __aexit__(self, *exc: object) -> bool:
@@ -3264,6 +3449,9 @@ class TestReviewPrUsesWorktreeProjectRoot:
             async def run(self, *, diff: str) -> object:
                 return type("Outcome", (), {"turns_used": 1, "errors": []})()
 
+        # SHA matches the worktree HEAD so the resolver returns the worktree
+        # directly, not a temp checkout. Mismatch would be the T-281 temp-dir
+        # path which is covered by ``test_review_pr_cleans_up_temp_checkout``.
         event = WebhookEvent(
             type=WebhookEventType.PR_OPENED,
             delivery_id="d-t278",
@@ -3273,7 +3461,7 @@ class TestReviewPrUsesWorktreeProjectRoot:
             head_branch="wt-t278",
             base_branch="main",
             sender="sachinkundu",
-            raw={"pull_request": {"head": {"sha": "e" * 40}}},
+            raw={"pull_request": {"head": {"sha": worktree_sha}}},
         )
 
         consumer = ReviewEngineConsumer(
@@ -3325,3 +3513,213 @@ class TestReviewPrUsesWorktreeProjectRoot:
             f"{reviewer_init_args[0]!r}. Regression: _review_pr bypassed "
             "resolve_pr_review_root. T-278."
         )
+
+    @pytest.mark.asyncio
+    async def test_review_pr_cleans_up_temp_checkout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pin 3 / cell (e): when the resolver returns a temp-dir checkout
+        (``is_temp=True``), ``_review_pr`` MUST remove it after review,
+        even if the review stage raises. The cleanup runs from a ``finally``
+        block in the caller — otherwise a flaky reviewer leaks the checkout
+        and ``.cloglog/review-checkouts/`` grows unbounded on prod.
+        """
+        from unittest.mock import AsyncMock, MagicMock
+
+        project_id = uuid.uuid4()
+        fake_temp = tmp_path / "temp-checkout-285"
+        fake_temp.mkdir()
+        main_clone = tmp_path / "main-clone"
+        _init_git_repo_at(main_clone)
+
+        from src.gateway.review_engine import PrReviewRoot
+
+        class _TempRootQueryCtx:
+            async def __aenter__(self) -> object:
+                # The resolver call is patched below; this stub just exists
+                # so ``_worktree_query`` returns something that implements
+                # the Protocol surface.
+                stub = MagicMock()
+                stub.find_by_branch = AsyncMock(return_value=None)
+                stub.find_by_pr_url = AsyncMock(return_value=None)
+                return stub
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        class _StubLoop:
+            def __init__(self, reviewer: object, **kwargs: object) -> None:
+                self._stage = str(kwargs.get("stage", "?"))
+
+            async def run(self, *, diff: str) -> object:
+                return type("Outcome", (), {"turns_used": 1, "errors": []})()
+
+        event = WebhookEvent(
+            type=WebhookEventType.PR_OPENED,
+            delivery_id="d-t281-e",
+            repo_full_name="sachinkundu/cloglog",
+            pr_number=285,
+            pr_url="https://github.com/sachinkundu/cloglog/pull/285",
+            head_branch="wt-t281-temp",
+            base_branch="main",
+            sender="sachinkundu",
+            raw={"pull_request": {"head": {"sha": "d" * 40}}},
+        )
+
+        consumer = ReviewEngineConsumer(
+            codex_available=True,
+            opencode_available=False,
+            session_factory=MagicMock(),
+        )
+
+        # Force the resolver to return a temp-rooted PrReviewRoot so the
+        # cleanup branch fires. ``_remove_review_checkout`` is then asserted
+        # to have been awaited.
+        temp_root = PrReviewRoot(path=fake_temp, is_temp=True, main_clone=main_clone)
+        remove_mock = AsyncMock()
+        monkeypatch.setattr("src.gateway.review_engine._remove_review_checkout", remove_mock)
+        monkeypatch.setattr(
+            "src.gateway.review_engine.resolve_pr_review_root",
+            AsyncMock(return_value=temp_root),
+        )
+
+        with (
+            patch(
+                "src.gateway.review_engine.settings.opencode_enabled",
+                False,
+            ),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="claude-tok"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="codex-tok"),
+            ),
+            patch(
+                "src.gateway.review_engine.count_bot_reviews",
+                new=AsyncMock(return_value=0),
+            ),
+            patch("src.gateway.review_loop.CodexReviewer", new=MagicMock()),
+            patch("src.gateway.review_loop.ReviewLoop", new=_StubLoop),
+            patch.object(consumer, "_fetch_pr_diff", new=AsyncMock(return_value="diff")),
+            patch.object(
+                consumer,
+                "_resolve_project_id",
+                new=AsyncMock(return_value=project_id),
+            ),
+            patch.object(
+                consumer,
+                "_registry",
+                new=lambda: TestReviewPrUsesWorktreeProjectRoot._RecordingRegistryCtx(),
+            ),
+            patch.object(consumer, "_worktree_query", new=lambda: _TempRootQueryCtx()),
+        ):
+            await consumer._review_pr(event)
+
+        remove_mock.assert_awaited_once()
+        args, _ = remove_mock.call_args
+        # Cleanup must be called with (main_clone, temp_path) so `git
+        # worktree remove --force` runs from the repo that owns the
+        # disposable worktree.
+        assert args[0] == main_clone, (
+            f"Cleanup must target main_clone={main_clone}, got {args[0]!r}"
+        )
+        assert args[1] == fake_temp, f"Cleanup must target fake_temp={fake_temp}, got {args[1]!r}"
+
+    @pytest.mark.asyncio
+    async def test_review_pr_cleans_up_temp_checkout_on_reviewer_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pin 3 / cell (e) — error-path variant: if the reviewer raises,
+        cleanup still fires via the caller's ``finally`` block.
+        """
+        from unittest.mock import AsyncMock, MagicMock
+
+        project_id = uuid.uuid4()
+        fake_temp = tmp_path / "temp-checkout-286"
+        fake_temp.mkdir()
+        main_clone = tmp_path / "main-clone-286"
+        _init_git_repo_at(main_clone)
+
+        from src.gateway.review_engine import PrReviewRoot
+
+        class _TempRootQueryCtx:
+            async def __aenter__(self) -> object:
+                stub = MagicMock()
+                stub.find_by_branch = AsyncMock(return_value=None)
+                stub.find_by_pr_url = AsyncMock(return_value=None)
+                return stub
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        class _FailingLoop:
+            def __init__(self, reviewer: object, **kwargs: object) -> None:
+                self._stage = str(kwargs.get("stage", "?"))
+
+            async def run(self, *, diff: str) -> object:
+                raise RuntimeError("simulated reviewer crash")
+
+        event = WebhookEvent(
+            type=WebhookEventType.PR_OPENED,
+            delivery_id="d-t281-e2",
+            repo_full_name="sachinkundu/cloglog",
+            pr_number=286,
+            pr_url="https://github.com/sachinkundu/cloglog/pull/286",
+            head_branch="wt-t281-temp",
+            base_branch="main",
+            sender="sachinkundu",
+            raw={"pull_request": {"head": {"sha": "e" * 40}}},
+        )
+
+        consumer = ReviewEngineConsumer(
+            codex_available=True,
+            opencode_available=False,
+            session_factory=MagicMock(),
+        )
+
+        temp_root = PrReviewRoot(path=fake_temp, is_temp=True, main_clone=main_clone)
+        remove_mock = AsyncMock()
+        monkeypatch.setattr("src.gateway.review_engine._remove_review_checkout", remove_mock)
+        monkeypatch.setattr(
+            "src.gateway.review_engine.resolve_pr_review_root",
+            AsyncMock(return_value=temp_root),
+        )
+
+        with (
+            patch(
+                "src.gateway.review_engine.settings.opencode_enabled",
+                False,
+            ),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="claude-tok"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="codex-tok"),
+            ),
+            patch(
+                "src.gateway.review_engine.count_bot_reviews",
+                new=AsyncMock(return_value=0),
+            ),
+            patch("src.gateway.review_loop.CodexReviewer", new=MagicMock()),
+            patch("src.gateway.review_loop.ReviewLoop", new=_FailingLoop),
+            patch.object(consumer, "_fetch_pr_diff", new=AsyncMock(return_value="diff")),
+            patch.object(
+                consumer,
+                "_resolve_project_id",
+                new=AsyncMock(return_value=project_id),
+            ),
+            patch.object(
+                consumer,
+                "_registry",
+                new=lambda: TestReviewPrUsesWorktreeProjectRoot._RecordingRegistryCtx(),
+            ),
+            patch.object(consumer, "_worktree_query", new=lambda: _TempRootQueryCtx()),
+            pytest.raises(RuntimeError, match="simulated reviewer crash"),
+        ):
+            await consumer._review_pr(event)
+
+        remove_mock.assert_awaited_once()

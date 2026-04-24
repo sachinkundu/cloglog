@@ -28,23 +28,47 @@ def make_worktree_query(session: AsyncSession) -> IWorktreeQuery:
     Open Host Service boundary between Agent and Gateway: callers get the
     Protocol-typed instance and never see ``AgentRepository`` or
     ``src.agent.models``. Mirrors ``make_review_turn_registry`` in the
-    Review context. T-278.
+    Review context. T-278 shipped ``find_by_branch``; T-281 adds
+    ``find_by_pr_url`` which composes Board + Agent repositories inside
+    the adapter so neither layer learns about the other's models.
     """
-    return _WorktreeQueryAdapter(AgentRepository(session))
+    return _WorktreeQueryAdapter(AgentRepository(session), BoardRepository(session))
 
 
 class _WorktreeQueryAdapter:
     """Thin ORM-to-DTO adapter implementing ``IWorktreeQuery``.
 
     Keeps the ORM row inside the Agent context — callers receive a frozen
-    ``WorktreeRow`` with just the fields Gateway consumers need.
+    ``WorktreeRow`` with just the fields Gateway consumers need. The
+    ``find_by_pr_url`` path composes ``BoardRepository`` (for the
+    ``tasks.pr_url → task.worktree_id`` lookup) and ``AgentRepository``
+    (for the final ``worktrees.id`` row) so neither repository has to
+    import the other's models — the join lives at the adapter seam.
     """
 
-    def __init__(self, repo: AgentRepository) -> None:
+    def __init__(self, repo: AgentRepository, board_repo: BoardRepository) -> None:
         self._repo = repo
+        self._board_repo = board_repo
 
     async def find_by_branch(self, project_id: UUID, branch_name: str) -> WorktreeRow | None:
         worktree = await self._repo.find_worktree_by_branch_any_status(project_id, branch_name)
+        if worktree is None:
+            return None
+        return WorktreeRow(
+            id=worktree.id,
+            project_id=worktree.project_id,
+            worktree_path=worktree.worktree_path,
+            branch_name=worktree.branch_name,
+            status=worktree.status,
+        )
+
+    async def find_by_pr_url(self, project_id: UUID, pr_url: str) -> WorktreeRow | None:
+        if not pr_url:
+            return None
+        task = await self._board_repo.find_task_by_pr_url_for_project(pr_url, project_id)
+        if task is None or task.worktree_id is None:
+            return None
+        worktree = await self._repo.get_worktree(task.worktree_id)
         if worktree is None:
             return None
         return WorktreeRow(

@@ -274,6 +274,107 @@ class TestMakeWorktreeQueryFactory:
         assert await query.find_by_branch(project.id, "wt-missing") is None
 
 
+class TestFindWorktreeByPrUrl:
+    """T-281 Path 0: resolver follows the canonical ``tasks.pr_url →
+    task.worktree_id → worktrees.id`` chain — the same join webhook routing
+    uses in ``_resolve_agent`` (``src/gateway/webhook_consumers.py``).
+
+    Exists because ``find_by_branch`` misses on main-agent close-out PRs:
+    the main agent never registers a worktree row for the close-out branch
+    (spawning one would cause infinite recursion — each close-out would
+    itself need a close-out). The task-binding chain does the right thing
+    for both close-out PRs (returns the main agent's worktree) AND regular
+    agent PRs (returns the same physical path as branch lookup would).
+    """
+
+    async def test_empty_pr_url_short_circuits_to_none(self, db_session: AsyncSession) -> None:
+        """Empty pr_url must short-circuit without a DB round-trip — mirror
+        of the empty-branch guard on ``find_by_branch``.
+        """
+        from src.agent.services import make_worktree_query
+
+        project = await _create_project(db_session)
+        query = make_worktree_query(db_session)
+        assert await query.find_by_pr_url(project.id, "") is None
+
+    async def test_hit_returns_task_bound_worktree_row(self, db_session: AsyncSession) -> None:
+        """Task with ``pr_url`` set and ``worktree_id`` pointing at a
+        worktree → resolver returns that worktree's row via the join.
+        """
+        from src.agent.interfaces import WorktreeRow
+        from src.agent.services import make_worktree_query
+
+        project = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+        created, _ = await repo.upsert_worktree(project.id, "/repo/wt-t281", "wt-t281")
+
+        task = await _create_task_chain(db_session, project)
+        task.pr_url = "https://github.com/foo/bar/pull/281"
+        task.status = "review"
+        task.worktree_id = created.id
+        await db_session.commit()
+
+        query = make_worktree_query(db_session)
+        row = await query.find_by_pr_url(project.id, "https://github.com/foo/bar/pull/281")
+
+        assert row is not None
+        assert isinstance(row, WorktreeRow), (
+            f"Factory must return a WorktreeRow DTO, got {type(row).__name__}"
+        )
+        assert row.id == created.id
+        assert row.worktree_path == "/repo/wt-t281"
+        assert row.branch_name == "wt-t281"
+
+    async def test_unknown_pr_url_returns_none(self, db_session: AsyncSession) -> None:
+        """No task matches → None."""
+        from src.agent.services import make_worktree_query
+
+        project = await _create_project(db_session)
+        query = make_worktree_query(db_session)
+        assert (
+            await query.find_by_pr_url(project.id, "https://github.com/foo/bar/pull/9999") is None
+        )
+
+    async def test_task_without_worktree_id_returns_none(self, db_session: AsyncSession) -> None:
+        """Task exists with pr_url but has no ``worktree_id`` binding yet —
+        chain cannot complete, so the resolver must fall through.
+        """
+        from src.agent.services import make_worktree_query
+
+        project = await _create_project(db_session)
+        task = await _create_task_chain(db_session, project)
+        task.pr_url = "https://github.com/foo/bar/pull/281"
+        task.status = "review"
+        # Leave task.worktree_id = None
+        await db_session.commit()
+
+        query = make_worktree_query(db_session)
+        assert await query.find_by_pr_url(project.id, "https://github.com/foo/bar/pull/281") is None
+
+    async def test_cross_project_returns_none(self, db_session: AsyncSession) -> None:
+        """Project-scoped join — a pr_url bound to project A is invisible
+        when the resolver asks about project B. Mirrors the scoping in
+        ``find_task_by_pr_url_for_project`` (``src/board/repository.py``).
+        """
+        from src.agent.services import make_worktree_query
+
+        project_a = await _create_project(db_session)
+        project_b = await _create_project(db_session)
+        repo = AgentRepository(db_session)
+        created, _ = await repo.upsert_worktree(project_a.id, "/repo/wt-a", "wt-a")
+
+        task = await _create_task_chain(db_session, project_a)
+        task.pr_url = "https://github.com/foo/bar/pull/281"
+        task.status = "review"
+        task.worktree_id = created.id
+        await db_session.commit()
+
+        query = make_worktree_query(db_session)
+        assert (
+            await query.find_by_pr_url(project_b.id, "https://github.com/foo/bar/pull/281") is None
+        )
+
+
 # --- Service Tests ---
 
 

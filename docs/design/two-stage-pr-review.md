@@ -564,125 +564,189 @@ Items explicitly **out of scope** for T-248 (will be separate tasks if pursued):
 - Swapping `gemma4:e4b` for a different local model.
 - Opinion arbitration / dedup between the two reviewers.
 
-## 9. Per-PR review root resolution (T-278)
+## 9. Per-PR review root resolution (T-278, extended in T-281)
 
-**Added 2026-04-23 as part of T-278.** Authoritative — supersedes the pre-T-278
-behaviour where `project_root` was computed once per backend process from
+**Originally added 2026-04-23 as part of T-278; extended 2026-04-24 in
+T-281 to ship Path 0 (`find_by_pr_url`) and the SHA-check + temp-dir
+checkout fallback.** Authoritative — supersedes the pre-T-278 behaviour
+where `project_root` was computed once per backend process from
 `settings.review_source_root or Path.cwd()`.
 
 ### 9.1 Problem statement
 
-T-255 hardened the host-level fallback (`settings.review_source_root` env var
-+ boot log) so prod no longer silently read prod's stale `main` checkout via
-`Path.cwd()`. What T-255 did **not** fix: a single `REVIEW_SOURCE_ROOT` value
-per host means every PR's codex review reads the same tree — typically the
-`main` branch at whatever SHA prod was last promoted from. Every finding
-phrased "file X currently does Y" referred to `main`'s pre-PR state, not the
-PR's actual state, producing systematic false positives.
+T-255 hardened the host-level fallback (`settings.review_source_root` env
+var + boot log) so prod no longer silently read prod's stale `main`
+checkout via `Path.cwd()`. T-278 made the choice per-PR via a worktree
+branch lookup. Two gaps survived into T-281:
 
-CLAUDE.md's load-bearing rule remains: *"`Path.cwd()` in backend code is a
-filesystem fingerprint of the launcher, not an invariant. Any subprocess
-that reads files via `-C`/`cwd=` must take its root from `Settings`, not
-`Path.cwd()`."* T-255 honoured that rule per host. T-278 honours it per PR.
+1. **Main-agent close-out PRs don't have a worktree keyed by their
+   branch.** `/cloglog reconcile` and `/cloglog close-wave` open close-out
+   PRs from the main clone. The main agent does NOT spawn a worktree for
+   itself — that would cause infinite recursion (each close-out would
+   itself need a close-out). T-278's `find_by_branch(project_id,
+   head_branch)` returns `None`, the resolver falls back to the host-
+   level root, and codex reviews prod's stale `main` tree. Observed as
+   false-positive findings on PR #200 and PR #202; both required `make
+   promote` as an out-of-band unstick.
+2. **SHA drift between any candidate and `event.head_sha` silently
+   reviewed the wrong code.** The T-278 "drift warning but still use the
+   worktree" policy let codex emit findings referencing files as they
+   were on the worktree's HEAD, not as they were on the PR commit GitHub
+   is actually asking us to review. Race between push and webhook
+   arrival, mid-rebase agent worktree, and prod main-clone lag all
+   manifested as the same symptom.
+
+CLAUDE.md's load-bearing rule has two halves: T-255 fixed the host-level
+half, T-278 fixed the per-PR choice, T-281 closes the SHA gap between
+them.
 
 ### 9.2 Resolver contract — `resolve_pr_review_root(event)`
 
 Lives in `src/gateway/review_engine.py`. Invoked by `_review_pr` **per
-review**, immediately before constructing `OpencodeReviewer` / `CodexReviewer`.
-Signature:
+review**, immediately before constructing `OpencodeReviewer` /
+`CodexReviewer`. Signature:
 
 ```python
+@dataclass(frozen=True)
+class PrReviewRoot:
+    path: Path
+    is_temp: bool = False
+    main_clone: Path | None = None  # set when is_temp=True; cleanup anchor
+
+
 async def resolve_pr_review_root(
     event: WebhookEvent,
     *,
     project_id: UUID,
     worktree_query: IWorktreeQuery,
-) -> Path: ...
+) -> PrReviewRoot: ...
 ```
 
 Preference order:
 
-1. **Worktree path (primary).** If there is a `Worktree` row in this project
-   whose `branch_name == event.head_branch`, and its `worktree_path` exists on
-   disk, return that path. A brief `git -C <path> rev-parse HEAD` probe logs
-   a `review_source_drift` warning when the worktree's HEAD disagrees with
-   `event.head_sha` — but the worktree path is still preferred, because the
-   mismatch is almost always a mid-rebase or unpushed commit, and a
-   slightly-stale worktree is a far better codex review root than prod's
-   `main`.
+0. **Task pr_url binding (T-281 Path 0).** If there is a `Task` in this
+   project whose `pr_url == event.pr_url` and whose `worktree_id` points
+   at a known worktree row, return that worktree's path. This follows
+   the canonical `tasks.pr_url → task.worktree_id → worktrees.id` join
+   — the same chain `webhook_consumers._resolve_agent` uses for routing.
+   For main-agent close-out PRs this is the ONLY path that succeeds:
+   the close-out task's `worktree_id` is the main agent's own worktree
+   row (set by the `start_task` call in the close-out flow), so the
+   chain lands on the main clone. For regular agent PRs it resolves to
+   the same worktree Path 1 would — same answer, more direct route.
 
-2. **Host-level fallback.** `settings.review_source_root or Path.cwd()` —
-   the same value `resolve_review_source_root()` returns. Used for PRs
-   whose owning worktree is not on this host (external contributors,
-   closed worktrees, an agent that unregistered before the webhook fired).
-   Falling back emits a single structured WARNING: `review_source=fallback
-   reason=<no_matching_worktree|path_missing> pr_branch=<head>`.
+1. **Branch lookup (T-278 Path 1).** Fall through to
+   `worktrees.branch_name == event.head_branch` within the project, any
+   status. Preserves the T-278 behaviour for the interval between PR
+   open and the moment `update_task_status(..., pr_url=...)` is called
+   on the task (for both agent and close-out flows).
 
-The resolver **never mutates the worktree** — no `git fetch`, no
-`checkout`, no `reset`. The owning agent is live in that checkout and those
-operations would corrupt its in-progress work.
+2. **Host-level fallback (T-255 Path 2).** `settings.review_source_root
+   or Path.cwd()`. Used for PRs whose owning worktree is not on this
+   host (external contributors, closed worktrees, closed agents).
+
+**SHA-check + temp-dir fallback (T-281).** Whichever candidate the chain
+above yields, we probe `git -C <candidate> rev-parse HEAD`. If the
+candidate's HEAD disagrees with `event.head_sha`, we attempt
+`git worktree add --detach
+<main_clone>/.cloglog/review-checkouts/<head_sha[:8]>-<pr_number>
+<head_sha>` and return that disposable checkout with `is_temp=True`.
+The caller cleans it up via `_remove_review_checkout(main_clone, path)`
+in a `finally` block. If the SHA isn't reachable from the main clone
+yet, we retry once after `git fetch origin <head_branch>`. If creation
+still fails, we fall through to the stale candidate with a
+`review_source_drift` warning — a stale worktree reviews better than no
+review.
+
+The resolver **never mutates the owning worktree** — no `git fetch` on
+it, no `checkout`, no `reset`. The owning agent controls its own
+working tree. The temp-dir checkout lives under the main clone's
+`.cloglog/review-checkouts/` which is never an agent's worktree.
 
 ### 9.3 DDD boundary — Agent context Open Host Service
 
-Gateway must NOT import `src.agent.models` or `src.agent.repository` (priority-3
-DDD violation per `docs/ddd-context-map.md` — Gateway owns no tables). T-278
-exposes the lookup through an Open Host Service, mirroring the Review context
-precedent (PR #187 round 2 CRITICAL fix that created `IReviewTurnRegistry` +
-`make_review_turn_registry`).
+Gateway must NOT import `src.agent.models` or `src.agent.repository`
+(priority-3 DDD violation per `docs/ddd-context-map.md` — Gateway owns
+no tables). T-281 extends the T-278 Open Host Service with a second
+method; both land inside the same adapter, and Gateway still imports
+only the Protocol + factory.
 
-- `src/agent/interfaces.py::IWorktreeQuery` — Protocol with one method:
-  `find_by_branch(project_id, branch_name) -> WorktreeRow | None`.
+- `src/agent/interfaces.py::IWorktreeQuery` — Protocol with two methods:
+  `find_by_branch(project_id, branch_name) -> WorktreeRow | None`
+  (T-278) and `find_by_pr_url(project_id, pr_url) -> WorktreeRow | None`
+  (T-281).
 - `src/agent/interfaces.py::WorktreeRow` — frozen dataclass DTO carried
   across the boundary so Gateway never sees the ORM row.
-- `src/agent/services.py::make_worktree_query(session) -> IWorktreeQuery` —
-  factory returning a Protocol-typed implementation. The concrete adapter
-  is hidden inside the module.
-- `src/gateway/review_engine.py` imports **only** `IWorktreeQuery` (under
-  `TYPE_CHECKING`) and `make_worktree_query` (inside a context-manager
-  helper). A pin test (`TestReviewEngineDDDBoundary`) asserts the absence
-  of any other `src.agent.*` import — the "asserting absence beats
-  presence" pattern from CLAUDE.md's "Leak-after-fix" rule.
+- `src/agent/services.py::make_worktree_query(session) -> IWorktreeQuery`
+  — factory returning a Protocol-typed implementation. The concrete
+  adapter is hidden inside the module and composes `AgentRepository`
+  + `BoardRepository` internally; Gateway gets one Protocol surface.
+- `src/gateway/review_engine.py` imports **only** `IWorktreeQuery`
+  (under `TYPE_CHECKING`) and `make_worktree_query` (inside a context-
+  manager helper). The `TestReviewEngineDDDBoundary` pin test asserts
+  the absence of any other `src.agent.*` import — the "asserting absence
+  beats presence" pattern from CLAUDE.md's "Leak-after-fix" rule.
 
 ### 9.4 Shared-filesystem invariant
 
-This resolver relies on CLAUDE.md's *"cloglog, the MCP server, and every
-worktree agent share one host filesystem. There is no host/VM filesystem
-split."* If that ever changes (Railway, cloud VMs, agent-vm sandboxes), the
-resolver needs rethinking — likely a temp-dir checkout of `event.head_sha`.
-Explicitly **out of scope for T-278**; noted at the resolver call-site so a
-future migration knows where to look.
+The resolver relies on CLAUDE.md's *"cloglog, the MCP server, and every
+worktree agent share one host filesystem. There is no host/VM
+filesystem split."* T-281's SHA-check temp-dir fallback extends the
+invariant: `<main_clone>/.cloglog/review-checkouts/` is on the same
+filesystem as every agent worktree, so `git worktree add --detach` can
+materialize the disposable checkout without network I/O for the common
+case (SHA already fetched). External-fork PRs are still out of scope
+because their HEAD SHA is not reachable from origin of the main clone;
+the fetch-retry step fails and the resolver falls through to the stale
+candidate.
 
-### 9.5 Drift policy — warn, don't block
+### 9.5 SHA-check + temp-dir policy
 
-When the worktree's HEAD differs from `event.head_sha`, log:
+T-281 replaces T-278's "drift warning but proceed" policy with:
+*attempt a temp-dir checkout at `event.head_sha`; if that fails, fall
+through to the stale candidate with a drift warning*. The failure-
+fallback path preserves T-278's "review is better than no review"
+invariant while the happy path guarantees codex reads exactly the PR
+commit GitHub is asking about. Observable state transitions:
 
-```
-review_source_drift worktree_head=<short> pr_head=<short>
-  pr_branch=<head_branch> worktree_path=<path> pr=#<N>
-```
+| Condition | Result path | `is_temp` | Log line |
+|---|---|---|---|
+| pr_url hit + path on disk + SHA matches | Path 0 | False | `review_source=worktree_pr_url …` |
+| pr_url hit + path on disk + SHA differs + temp-dir OK | Path 0 → temp | True | `review_source=temp_checkout …` |
+| branch hit + SHA matches | Path 1 | False | `review_source=worktree …` |
+| branch hit + SHA differs + temp-dir OK | Path 1 → temp | True | `review_source=temp_checkout …` |
+| no pr_url, no branch, SHA differs + temp-dir OK | Path 2 → temp | True | `review_source=temp_checkout …` |
+| any candidate + SHA differs + temp-dir fails | stale fallthrough | False | `review_source_drift … (temp-dir checkout unavailable)` |
 
-…and proceed with the worktree path. Rationale: the drift is mostly
-noise-free signal (rebase, local amend, push not yet landed), and even a
-stale worktree tree yields better reviews than prod `main`. If the drift
-turns out to be harmful in practice, the replacement is a temp-dir
-checkout of `event.head_sha` — a separate, larger task.
+Cleanup is the caller's job: `_review_pr` wraps stages A/B in a
+`try/finally` that calls `_remove_review_checkout(main_clone, path)`
+when `is_temp=True`. Exceptions in either stage DO NOT skip cleanup —
+pinned by `test_review_pr_cleans_up_temp_checkout_on_reviewer_error`.
 
-### 9.6 Out of scope for T-278
+### 9.6 Out of scope for T-281
 
-- External / no-worktree PRs do **not** get a temp-dir checkout of the
-  PR's HEAD SHA. They fall back to the host-level root. File a follow-up
-  if codex quality on external PRs becomes a pressing concern.
+- External-fork PRs. Their HEAD SHA is not fetchable via
+  `git fetch origin <head_branch>` (branch lives on the fork's remote,
+  not origin). Rather than plumb per-PR `refs/pull/<N>/head` fetching,
+  T-281 deliberately falls through to the host fallback + drift
+  warning. File a follow-up if external-fork review quality becomes a
+  pressing concern; `uploadpack.allowAnySHA1InWant` +
+  `fetch <fork-url> <sha>` is the known direction.
+- Full cloud-VM mode (Railway, containerised agents with their own
+  filesystem). T-281 still assumes the host-shared-filesystem invariant
+  for the main clone's `.cloglog/review-checkouts/` path.
 - `_fetch_pr_diff` is unchanged — diff-fetch from GitHub is already
   per-PR and correct.
-- `pr_review_turns`, the consensus predicate, and turn-level persistence
-  are untouched.
-- Opencode (currently disabled via `settings.opencode_enabled=False` per
-  T-275) is unchanged; when re-enabled it will share the same per-PR
-  `project_root` via the single resolver call in `_review_pr`.
-- `settings.review_source_root` and `resolve_review_source_root()` remain
-  in place — they are the host-level fallback + the startup-log path,
-  and deleting them would silently re-break T-255 on hosts that have no
-  matching worktree for a given PR.
+- `pr_review_turns`, the consensus predicate, and turn-level
+  persistence are untouched.
+- Opencode (currently disabled via `settings.opencode_enabled=False`
+  per T-275) is unchanged; when re-enabled it will share the same
+  per-PR `project_root` via the single resolver call in `_review_pr`.
+- `settings.review_source_root` and `resolve_review_source_root()`
+  remain in place — they are the host-level fallback + the startup-log
+  path, AND the parent path for the temp-dir checkout directory in
+  T-281. Deleting them would silently re-break T-255 on hosts that
+  have no matching worktree for a given PR.
 
 ## Open escalations
 

@@ -32,9 +32,18 @@ If either is missing, assume `origin/main` → `HEAD`.
 
 ```bash
 BASE="${BASE:-origin/main}"
-git diff --name-only "$BASE" HEAD -- . ':(exclude)docs/demos/'
-git diff "$BASE" HEAD -- . ':(exclude)docs/demos/'
+git diff --name-only "$BASE"...HEAD -- . ':(exclude)docs/demos/'
+git diff "$BASE"...HEAD -- . ':(exclude)docs/demos/'
 ```
+
+Three-dot `A...B` is deliberate here and **must not** be converted to
+two-dot `A B`. Three-dot always resolves to the merge-base of A and B
+before diffing, so the classifier works correctly whether the caller
+passes a resolved merge-base SHA (the skill's normal flow) or a raw
+ref like `origin/main` (the fallback default above). With two-dot
+against `origin/main`, a branch that's fallen behind main would see
+main's new commits as "removed" changes and produce a different hash
+than the gate. Pin: `tests/test_check_demo_exemption_hash.py`.
 
 The first command gives you the file list, the second gives you the
 actual changes. Read both in full — don't truncate. The pathspec
@@ -108,20 +117,27 @@ stakeholders find out at release time.
 ### 3. Compute the diff hash
 
 ```bash
-git diff "$BASE" HEAD -- . ':(exclude)docs/demos/' | sha256sum | awk '{print $1}'
+git diff "$BASE"...HEAD -- . ':(exclude)docs/demos/' | sha256sum | awk '{print $1}'
 ```
 
-Note the pathspec exclude — `docs/demos/` is stripped from the diff
-before hashing. Without the exclude, committing `exemption.md` would
-change the diff bytes and invalidate its own pin. Everyone who
-computes this hash (this classifier, `scripts/check-demo.sh`, the
-`cloglog:demo` skill) uses the same exclude so all three bytes
-match.
+Two things about this command are load-bearing:
 
-The two-dot `git diff A B -- pathspec` form is used here (rather than
-three-dot) because `$BASE` is a resolved merge-base SHA — `A B` and
-`A...B` are bit-identical once `A` is already the merge-base of `A`
-and `B`.
+1. **Three-dot `A...B`** — always resolves to the merge-base of A
+   and B before diffing. Safe whether `$BASE` is a resolved
+   merge-base SHA (skill's normal flow) or a raw ref like
+   `origin/main` (fallback default). With two-dot against a raw ref,
+   a branch that has fallen behind main would produce a different
+   hash than the gate.
+2. **`':(exclude)docs/demos/'` pathspec** — strips the demo artifact
+   subtree from the diff before hashing. Without it, committing
+   `exemption.md` would change the diff bytes and invalidate its own
+   pin.
+
+Everyone who computes this hash (this classifier, `scripts/check-demo.sh`,
+the `cloglog:demo` skill) uses the same exclude so all three sets of
+bytes match. `check-demo.sh` uses two-dot with an already-resolved
+merge-base SHA, which is bit-identical to three-dot once `$MERGE_BASE`
+is the merge-base.
 
 This hash seals the classification to the exact code the classifier
 reviewed. The demo skill writes it into `exemption.md`'s frontmatter;
@@ -151,7 +167,7 @@ fencing, no trailing text. Schema:
 {
   "verdict": "needs_demo",
   "reasoning": "Two parts: (a) signal/counter-signal from the diff — cite specific files or symbols; (b) counterfactual — what would have flipped the verdict and why it wasn't present.",
-  "diff_hash": "<sha256 of git diff $BASE HEAD -- . ':(exclude)docs/demos/'>",
+  "diff_hash": "<sha256 of git diff $BASE...HEAD -- . ':(exclude)docs/demos/'>",
   "suggested_demo_shape": "backend-curl"
 }
 ```

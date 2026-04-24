@@ -1,4 +1,4 @@
-.PHONY: help install test test-board test-agent test-document test-gateway test-e2e test-e2e-browser test-e2e-browser-ui test-e2e-browser-headed test-e2e-browser-report lint typecheck coverage contract-check demo demo-check quality run-backend prod prod-bg promote prod-logs prod-stop db-up db-down db-migrate db-revision db-refresh-from-prod sync-mcp-dist
+.PHONY: help install test test-board test-agent test-document test-gateway test-e2e test-e2e-browser test-e2e-browser-ui test-e2e-browser-headed test-e2e-browser-report invariants lint typecheck coverage contract-check demo demo-check quality run-backend prod prod-bg promote prod-logs prod-stop db-up db-down db-migrate db-revision db-refresh-from-prod sync-mcp-dist
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -37,6 +37,17 @@ test-e2e-browser-headed: ## Run Playwright E2E tests in headed browser
 
 test-e2e-browser-report: ## Run Playwright E2E tests and open HTML report
 	cd tests/e2e/playwright && npx playwright test --reporter=html && npx playwright show-report
+
+invariants: ## Run silent-failure pin tests (see docs/invariants.md)
+	uv run pytest --tb=short -q \
+	  tests/test_on_worktree_create_backend_url.py::test_hook_does_not_invoke_python_yaml \
+	  tests/test_mcp_json_no_secret.py \
+	  tests/test_no_destructive_migrations.py \
+	  tests/agent/test_integration.py::TestForceUnregisterAPI::test_force_unregister_rejects_agent_token \
+	  tests/agent/test_unit.py::TestAgentService::test_register_reconnect_preserves_branch_when_caller_sends_empty \
+	  tests/e2e/test_access_control.py::test_worktrees_with_invalid_mcp_bearer_is_rejected \
+	  tests/gateway/test_review_engine.py::TestResolvePrReviewRoot \
+	  tests/gateway/test_review_engine.py::TestLatestCodexReviewIsApproval
 
 # ── Quality ───────────────────────────────────
 

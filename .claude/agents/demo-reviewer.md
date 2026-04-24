@@ -145,12 +145,14 @@ Rate: **acceptable** or **needs revision** (e.g., "shows only test output", "sho
 
 #### Dimension D — Exemption audit (fires when `exemption.md` exists, not `demo.md`)
 
-Read the exemption's `## Why no demo` reasoning, then independently read the diff against main:
+Read the exemption's `## Why no demo` reasoning, then independently read the **code-only** diff against main — the same slice the classifier evaluated, with the exemption artifact itself excluded:
 
 ```bash
-git diff "$MERGE_BASE" HEAD
-git diff --name-only "$MERGE_BASE" HEAD
+git diff "$MERGE_BASE" HEAD -- . ':(exclude)docs/demos/'
+git diff --name-only "$MERGE_BASE" HEAD -- . ':(exclude)docs/demos/'
 ```
+
+The `':(exclude)docs/demos/'` pathspec mirrors the gate's hash computation: the classifier pinned its verdict to the code minus the demo artifacts, so the reviewer audits exactly what the classifier saw.
 
 Test the classifier's `no_demo` verdict against what you see in the diff. The red flags that make an exemption **invalid** regardless of reasoning:
 
@@ -164,7 +166,7 @@ Otherwise, if your independent read agrees with the classifier's reasoning (sign
 Also verify the exemption's mechanical well-formedness:
 
 - Frontmatter contains `verdict: no_demo`, `diff_hash: <64-char sha256>`, `classifier: demo-classifier`, `generated_at: <iso8601>`.
-- The `diff_hash` matches `sha256(git diff $MERGE_BASE HEAD)` at the current HEAD — `bash scripts/check-demo.sh` running `Exemption verified` already confirms this, but if the script is outdated on your checkout, recompute manually with `git diff "$MERGE_BASE" HEAD | sha256sum`.
+- The `diff_hash` matches `sha256(git diff $MERGE_BASE HEAD -- . ':(exclude)docs/demos/')` at the current HEAD — `bash scripts/check-demo.sh` running `Exemption verified` already confirms this, but if the script is outdated on your checkout, recompute manually with `git diff "$MERGE_BASE" HEAD -- . ':(exclude)docs/demos/' | sha256sum`. The pathspec exclude is load-bearing — without it the exemption.md commit itself invalidates the hash (see `docs/invariants.md` § "Exemption acceptance requires a matching diff hash").
 
 Rate: **valid exemption** or **invalid exemption — demo required**, with the specific demand above.
 

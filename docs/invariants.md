@@ -140,18 +140,23 @@ is unparsed data, and the behaviour is only observable at PR time.
 
 When a branch ships `docs/demos/<branch>/exemption.md` instead of a
 real `demo.md`, `scripts/check-demo.sh` hashes the current
-`git diff origin/main...HEAD` (mirrored as `git diff $MERGE_BASE HEAD`,
-bit-identical to the three-dot form when `MERGE_BASE` is already the
-merge-base SHA) and compares against the `diff_hash` stored in the
-exemption's YAML frontmatter. A mismatch means the agent classified
-an older diff and kept coding — the exemption no longer covers
-what's shipping, so the gate must fail. Silent-failure shapes the
-pin guards: a frontmatter parser that picks up a `diff_hash:` line
-outside the YAML fence (e.g., in the reasoning body) and silently
-accepts a stale exemption; a hash computation that diverges from the
-classifier's convention so every stored hash either always matches
-or never does; a missing `diff_hash:` silently treated as match. If
-both `demo.md` and `exemption.md` exist, `demo.md` wins — the spec
-is explicit on this precedence and the test locks it in.
+`git diff $MERGE_BASE HEAD -- . ':(exclude)docs/demos/'` and compares
+against the `diff_hash` stored in the exemption's YAML frontmatter.
+The pathspec exclude of `docs/demos/` is load-bearing — without it,
+committing the exemption.md itself shifts the diff bytes and
+invalidates its own pin. All three hash-computation sites (the
+`demo-classifier` subagent, the `cloglog:demo` skill's Step 1, and
+this gate script) must use the same exclude or the hashes won't
+match. A mismatch means the agent classified an older diff and kept
+coding — the exemption no longer covers what's shipping, so the gate
+must fail. Silent-failure shapes the pin guards: a frontmatter parser
+that picks up a `diff_hash:` line outside the YAML fence (e.g., in
+the reasoning body) and silently accepts a stale exemption; a hash
+computation that drops the `docs/demos/` exclude so every exemption
+fails its own pin on first commit; a hash computation that diverges
+from the classifier's convention so every stored hash either always
+matches or never does; a missing `diff_hash:` silently treated as
+match. If both `demo.md` and `exemption.md` exist, `demo.md` wins —
+the spec is explicit on this precedence and the test locks it in.
 
 **Pin:** `tests/test_check_demo_exemption_hash.py`

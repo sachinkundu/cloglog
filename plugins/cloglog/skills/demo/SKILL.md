@@ -84,8 +84,17 @@ Agent(
 
 Using a resolved SHA (rather than `origin/main`) makes the command
 bit-identical to what `scripts/check-demo.sh` runs at gate time:
-`git diff $MERGE_BASE HEAD | sha256sum`. The three-dot and two-dot
-forms yield the same bytes when `$BASE` is already the merge-base.
+`git diff $MERGE_BASE HEAD -- . ':(exclude)docs/demos/' | sha256sum`.
+The three-dot and two-dot forms yield the same bytes when `$BASE` is
+already the merge-base.
+
+The pathspec exclude (`-- . ':(exclude)docs/demos/'`) is load-bearing:
+it keeps the hash pinned to the code the classifier evaluated,
+without the exemption.md file (which the agent is about to write)
+poisoning its own pin once committed. All three hash-computation
+sites — this skill's Step 1, the classifier subagent, and
+`scripts/check-demo.sh` — must use the same exclude or the hashes
+won't match.
 
 The subagent emits exactly one JSON object on stdout:
 
@@ -93,7 +102,7 @@ The subagent emits exactly one JSON object on stdout:
 {
   "verdict": "needs_demo" | "no_demo",
   "reasoning": "signal/counter-signal + counterfactual",
-  "diff_hash": "<sha256 of git diff origin/main...HEAD>",
+  "diff_hash": "<sha256 of git diff $MERGE_BASE HEAD -- . ':(exclude)docs/demos/'>",
   "suggested_demo_shape": "backend-curl" | "frontend-screenshot" | "mcp-tool-exec" | "cli-exec" | null
 }
 ```
@@ -398,7 +407,7 @@ This calls `scripts/check-demo.sh` which tries three acceptance paths in order:
 
 1. **Static allowlist** — every changed file matches the widened regex. Exit 0.
 2. **`demo.md` present** — run `uvx showboat verify`. Pass → exit 0.
-3. **`exemption.md` present** — parse frontmatter, recompute `sha256(git diff $MERGE_BASE HEAD)`, compare against stored `diff_hash`. Match → exit 0. Mismatch → exit 1 with "exemption is stale for current diff".
+3. **`exemption.md` present** — parse frontmatter, recompute `sha256(git diff $MERGE_BASE HEAD -- . ':(exclude)docs/demos/')`, compare against stored `diff_hash`. Match → exit 0. Mismatch → exit 1 with "exemption is stale for current diff". The pathspec exclude is mandatory (see Step 1 above) — without it, committing exemption.md invalidates its own pin.
 
 If both `demo.md` and `exemption.md` exist, `demo.md` wins.
 

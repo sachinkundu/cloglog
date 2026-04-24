@@ -98,9 +98,16 @@ When you receive a message, read it and act on the instruction. The main agent m
 7. Run existing tests first to establish a green baseline
 8. Implement the feature or fix
 9. Run the project quality gate
-10. Produce proof-of-work demo — invoke the demo skill (`cloglog:demo`) to
-    capture the feature working and generate `docs/demos/<branch>/demo.md`
-11. Create PR using the github-bot skill with the demo document at the top
+10. Produce proof-of-work demo — invoke the demo skill (`cloglog:demo`).
+    The skill classifies the diff and terminates in one of three states:
+    a real `docs/demos/<branch>/demo.md` for user-observable changes; a
+    committed `docs/demos/<branch>/exemption.md` when the classifier
+    returns `no_demo`; or a static auto-exempt (no file written) when
+    every changed file is on the developer-infrastructure allowlist. Do
+    not pre-decide — let the skill decide.
+11. Create PR using the github-bot skill, with the `## Demo` section
+    reflecting whichever terminal state the skill reached (the skill's
+    own Step 6 prints the matching PR-body template).
 12. Move task to review with PR URL via `mcp__cloglog__update_task_status`
 13. Your `.cloglog/inbox` Monitor delivers review/merge/CI events automatically — do NOT start a `/loop`. On `pr_merged`: call `mcp__cloglog__mark_pr_merged(task_id, worktree_id)`, then for `spec`/`plan` tasks call `mcp__cloglog__report_artifact(task_id, worktree_id, artifact_path)`, then `mcp__cloglog__get_my_tasks` and start the next `backlog` task. See the `github-bot` skill's PR Event Inbox section for each event's shape.
 14. Exit condition — `get_my_tasks` returns no task in `backlog` status. Then run the shutdown sequence:

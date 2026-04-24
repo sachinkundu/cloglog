@@ -57,7 +57,8 @@
 
 ### Proof-of-Work Demos
 
-- **Every PR must include a `demo.md` that RUNS what you built, not describes it.** A demo is proof that your code works, not a summary of what you changed.
+- **Every PR with user-observable behaviour change must include a `demo.md` that RUNS what you built, not describes it.** A demo is proof that your code works, not a summary of what you changed.
+- **PRs without user-observable behaviour change — pure refactor, test-only, plugin/infra, dependency bumps — exempt through the `cloglog:demo` skill instead.** The skill invokes the `demo-classifier` subagent; when it returns `no_demo` the skill writes `docs/demos/<branch>/exemption.md` with a hash of the diff, which `scripts/check-demo.sh` accepts as a first-class artifact. Do not hand-write an "exemption declaration" paragraph in the PR body; the gate only reads committed `exemption.md` files.
 - **A demo is NOT:** test output, a list of files changed, a description of what was implemented, or grep of source code.
 - **A demo IS:** executing the actual feature and showing the output. Think "if I were showing this to a colleague, what would I type in the terminal or click in the browser?"
 - **Backend PRs:** Curl each new/changed endpoint. Show the request AND the response.

@@ -1193,6 +1193,15 @@ class ReviewEngineConsumer:
         # hosts (spec §5.4 registration matrix row 3) skip the cap check; an
         # unconditional codex token fetch would blow up before stage A runs
         # (PR #187 round 1).
+        #
+        # ``prior`` also feeds the review-body header counter (T-290): the
+        # per-turn header renders ``session {prior + 1}/{MAX_REVIEWS_PER_PR}``
+        # so a reader can tell one codex comment on a PR from another
+        # (before T-290 every session's first comment said ``turn 1/2``, which
+        # looked identical across sessions). Opencode-only hosts have no
+        # session count and fall back to ``1`` — the cap is not enforced there
+        # either.
+        prior = 0
         if self._codex_available:
             codex_token_for_cap = await get_codex_reviewer_token()
             prior = await count_bot_reviews(
@@ -1315,6 +1324,12 @@ class ReviewEngineConsumer:
             )
         project_root = review_root.path
 
+        # Session counter for the review-body header (T-290). ``prior`` counts
+        # sessions already posted on earlier webhook firings; this firing is
+        # session ``prior + 1``. Both stages use the same counter so Stage A
+        # and Stage B reviews are labelled consistently within a session.
+        session_index = prior + 1
+
         try:
             # ----- Stage A: opencode (gemma4:e4b) — up to opencode_max_turns -----
             # T-275: gated on settings.opencode_enabled so the stage can be silenced
@@ -1349,6 +1364,8 @@ class ReviewEngineConsumer:
                         head_sha=head_sha,
                         stage="opencode",
                         reviewer_token=opencode_token,
+                        session_index=session_index,
+                        max_sessions=MAX_REVIEWS_PER_PR,
                     )
                     outcome_a = await loop_a.run(diff=filtered)
                 if outcome_a.turns_used == 0 and outcome_a.errors:
@@ -1379,6 +1396,8 @@ class ReviewEngineConsumer:
                         head_sha=head_sha,
                         stage="codex",
                         reviewer_token=review_token,
+                        session_index=session_index,
+                        max_sessions=MAX_REVIEWS_PER_PR,
                     )
                     await loop_b.run(diff=filtered)
             logger.info(

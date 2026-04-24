@@ -180,6 +180,8 @@ def _make_loop(
     registry: FakeRegistry | None = None,
     head_sha: str = _SHA,
     stage: str = "codex",
+    session_index: int = 1,
+    max_sessions: int = 5,
 ) -> ReviewLoop:
     reg = registry or FakeRegistry()
     return ReviewLoop(
@@ -193,6 +195,8 @@ def _make_loop(
         head_sha=head_sha,
         stage=stage,
         reviewer_token="fake-token",
+        session_index=session_index,
+        max_sessions=max_sessions,
     )
 
 
@@ -360,9 +364,23 @@ class TestReachedConsensus:
 
 class TestBuildBodyHeader:
     def test_format(self) -> None:
+        """T-290: header shows cross-session counter, not intra-session turn.
+
+        Before T-290 every webhook firing rendered ``turn 1/2`` regardless of
+        which PR session it was (a new session starts from turn 1, so the
+        label was identical across sessions). Now it renders
+        ``session N/M`` where N is the 1-based session index and M is
+        ``MAX_REVIEWS_PER_PR``.
+        """
+        stub = StubReviewer(display_label="codex", responses=[])
+        header = ReviewLoop._build_body_header(stub, session_index=2, max_sessions=5)
+        assert header == "**codex — session 2/5**"
+
+    def test_format_with_model_suffix(self) -> None:
+        """Opencode display_label carries its model suffix through unchanged."""
         stub = StubReviewer(display_label="opencode (gemma4:e4b)", responses=[])
-        header = ReviewLoop._build_body_header(stub, turn=3, max_turns=5)
-        assert header == "**opencode (gemma4:e4b) — turn 3/5**"
+        header = ReviewLoop._build_body_header(stub, session_index=1, max_sessions=5)
+        assert header == "**opencode (gemma4:e4b) — session 1/5**"
 
 
 # ---------------------------------------------------------------------------
@@ -370,6 +388,40 @@ class TestBuildBodyHeader:
 # ---------------------------------------------------------------------------
 
 _PATCH_POST_REVIEW = "src.gateway.review_loop.post_review"
+
+
+class TestSessionHeaderInPostedBody:
+    """T-290: the header prepended to each posted review must use the
+    cross-session counter, not the per-session turn index. A second webhook
+    firing on the same PR renders ``session 2/5``; a reader can tell it
+    apart from session 1 (before T-290 both said ``turn 1/2``).
+    """
+
+    @pytest.mark.asyncio
+    async def test_posted_body_uses_session_counter(self) -> None:
+        stub = StubReviewer(
+            display_label="codex",
+            responses=[(_ok_result(status="no_further_concerns"), 1.0, False)],
+        )
+        registry = FakeRegistry()
+        loop = _make_loop(
+            stub,
+            max_turns=2,
+            registry=registry,
+            session_index=2,
+            max_sessions=5,
+        )
+
+        mock_post = AsyncMock(return_value=True)
+        with patch(_PATCH_POST_REVIEW, new=mock_post):
+            await loop.run(diff="some diff")
+
+        assert mock_post.await_count == 1
+        posted_result = mock_post.await_args.args[2]
+        # First line of the summary is the session header — no ``turn N/M``.
+        first_line = posted_result.summary.splitlines()[0]
+        assert first_line == "**codex — session 2/5**"
+        assert "turn " not in first_line
 
 
 class TestReviewLoopRun:

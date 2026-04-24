@@ -69,24 +69,68 @@ if [[ -z "$DEMO_DIR" ]]; then
 fi
 
 DEMO_FILE="${DEMO_DIR}demo.md"
-if [[ ! -f "$DEMO_FILE" ]]; then
-  echo "  ERROR: Demo directory exists but demo.md is missing: $DEMO_FILE"
-  echo "  Run 'make demo' to generate the demo document."
+EXEMPTION_FILE="${DEMO_DIR}exemption.md"
+
+# Acceptance path 1 — demo.md wins over exemption.md if both present.
+if [[ -f "$DEMO_FILE" ]]; then
+  # Verify with showboat if available
+  if command -v showboat &>/dev/null || uvx showboat --version &>/dev/null 2>&1; then
+    echo "  Verifying $DEMO_FILE..."
+    if uvx showboat verify "$DEMO_FILE" 2>&1; then
+      echo "  Demo verified successfully."
+    else
+      echo "  ERROR: showboat verify failed for $DEMO_FILE"
+      echo "  Re-run 'make demo' to update the demo document."
+      exit 1
+    fi
+  else
+    echo "  showboat not available — skipping verification (demo.md exists)"
+  fi
+  exit 0
+fi
+
+# Acceptance path 2 — exemption.md with a matching diff_hash.
+if [[ -f "$EXEMPTION_FILE" ]]; then
+  # Extract diff_hash from the YAML frontmatter. Using grep+sed per the
+  # project rule in docs/invariants.md § "Hook scripts parse config with
+  # grep+sed" — no Python YAML dependency, and anchoring to the first
+  # `---` block avoids picking up a `diff_hash:` line that happens to
+  # appear in the prose body.
+  STORED_HASH=$(awk '
+    /^---[[:space:]]*$/ { fence++; next }
+    fence == 1 && /^diff_hash:[[:space:]]+/ {
+      sub(/^diff_hash:[[:space:]]+/, "")
+      gsub(/[[:space:]]+$/, "")
+      print
+      exit
+    }
+  ' "$EXEMPTION_FILE")
+
+  if [[ -z "$STORED_HASH" ]]; then
+    echo "  ERROR: $EXEMPTION_FILE is missing a diff_hash in its frontmatter."
+    echo "  Re-run the 'cloglog:demo' skill to regenerate the exemption."
+    exit 1
+  fi
+
+  # Hash MUST be computed with the same command the classifier uses so
+  # bytes match exactly. The classifier emits sha256 of
+  # `git diff origin/main...HEAD`; because MERGE_BASE is already the
+  # resolved merge-base of origin/main and HEAD, `git diff $MERGE_BASE HEAD`
+  # is bit-identical to the three-dot form.
+  CURRENT_HASH=$(git diff "$MERGE_BASE" HEAD 2>/dev/null | sha256sum | awk '{print $1}')
+
+  if [[ "$STORED_HASH" == "$CURRENT_HASH" ]]; then
+    echo "  Exemption verified (diff_hash matches): $EXEMPTION_FILE"
+    exit 0
+  fi
+
+  echo "  ERROR: exemption is stale for current diff — re-run 'cloglog:demo' skill to reclassify."
+  echo "    stored  diff_hash: $STORED_HASH"
+  echo "    current diff_hash: $CURRENT_HASH"
   exit 1
 fi
 
-# Verify with showboat if available
-if command -v showboat &>/dev/null || uvx showboat --version &>/dev/null 2>&1; then
-  echo "  Verifying $DEMO_FILE..."
-  if uvx showboat verify "$DEMO_FILE" 2>&1; then
-    echo "  Demo verified successfully."
-  else
-    echo "  ERROR: showboat verify failed for $DEMO_FILE"
-    echo "  Re-run 'make demo' to update the demo document."
-    exit 1
-  fi
-else
-  echo "  showboat not available — skipping verification (demo.md exists)"
-fi
-
-exit 0
+# Neither demo.md nor exemption.md exists — real failure.
+echo "  ERROR: Demo directory exists but neither demo.md nor exemption.md is present: $DEMO_DIR"
+echo "  Run 'make demo' (or the 'cloglog:demo' skill) to generate one."
+exit 1

@@ -156,10 +156,11 @@ Call `mcp__cloglog__register_agent` with the worktree name and path. This is don
 
 ### 4c. Run project-specific worktree setup
 
-If the project has `.cloglog/on-worktree-create.sh`, run it:
+If the project has `.cloglog/on-worktree-create.sh`, run it. **Use absolute paths and pass `WORKTREE_PATH` as an env var — never `cd` into the new worktree.** The Bash tool's shell persists `cwd` between calls, so a `cd` into the new worktree leaks into every subsequent main-agent command and the main agent ends up looking like it's working inside the worktree it just spawned.
+
 ```bash
-if [[ -x ".cloglog/on-worktree-create.sh" ]]; then
-  WORKTREE_PATH="${WORKTREE_PATH}" WORKTREE_NAME="${WORKTREE_NAME}" .cloglog/on-worktree-create.sh
+if [[ -x "${WORKTREE_PATH}/.cloglog/on-worktree-create.sh" ]]; then
+  WORKTREE_PATH="${WORKTREE_PATH}" WORKTREE_NAME="${WORKTREE_NAME}" "${WORKTREE_PATH}/.cloglog/on-worktree-create.sh"
 fi
 ```
 

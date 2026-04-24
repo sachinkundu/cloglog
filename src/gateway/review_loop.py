@@ -9,7 +9,10 @@ owns:
   across the union of all prior turns);
 - the turn-accounting handshake against ``IReviewTurnRegistry``;
 - the per-turn GitHub review POST and the review-body header that tags the
-  reviewer, model, and turn (``**codex (Claude 4.x) — turn 1/2**``).
+  reviewer, model, and cross-session counter
+  (``**codex (Claude 4.x) — session 2/5**``). The intra-session turn index
+  is an implementation detail not exposed in the body — readers only act on
+  the session counter (T-227 approval-based stop + 5-session backstop).
 
 Keeping the loop in its own module keeps ``review_engine.py``'s
 ``ReviewEngineConsumer`` focused on webhook plumbing and lets real-DB tests
@@ -165,6 +168,8 @@ class ReviewLoop:
         head_sha: str,
         stage: str,
         reviewer_token: str,
+        session_index: int,
+        max_sessions: int,
     ) -> None:
         self._reviewer = reviewer
         self._max_turns = max_turns
@@ -176,16 +181,22 @@ class ReviewLoop:
         self._head_sha = head_sha
         self._stage = stage
         self._token = reviewer_token
+        self._session_index = session_index
+        self._max_sessions = max_sessions
 
     @staticmethod
-    def _build_body_header(reviewer: Reviewer, turn: int, max_turns: int) -> str:
-        """Per-turn review-body header (spec §4.3).
+    def _build_body_header(reviewer: Reviewer, session_index: int, max_sessions: int) -> str:
+        """Per-session review-body header.
 
-        Example: ``**opencode (gemma4:e4b) — turn 3/5**``. Always the first
-        line of the review summary so both GitHub readers and the dashboard
-        can parse the turn label without extra metadata.
+        Example: ``**codex (Claude 4.x) — session 2/5**``. Always the first
+        line of the review summary. The counter is cross-session (T-227
+        approval-based stop + 5-session backstop): every webhook firing
+        starts a fresh session, so a reader needs to see which of the five
+        per-PR sessions they are looking at. The intra-session turn index
+        (``opencode_max_turns``/``codex_max_turns``) is an implementation
+        detail no reader acts on and is deliberately not shown.
         """
-        return f"**{reviewer.display_label} — turn {turn}/{max_turns}**"
+        return f"**{reviewer.display_label} — session {session_index}/{max_sessions}**"
 
     async def run(self, *, diff: str) -> LoopOutcome:
         start_all = time.monotonic()
@@ -312,9 +323,11 @@ class ReviewLoop:
                     # care of that.
                     continue
 
-                # Prepend the per-turn header to the review summary so the
-                # GitHub review body shows `**<bot> — turn N/M**` at the top.
-                header = self._build_body_header(self._reviewer, turn, self._max_turns)
+                # Prepend the per-session header to the review summary so the
+                # GitHub review body shows `**<bot> — session N/M**` at the top.
+                header = self._build_body_header(
+                    self._reviewer, self._session_index, self._max_sessions
+                )
                 annotated = ReviewResult(
                     verdict=result.verdict,
                     summary=f"{header}\n\n{result.summary}",

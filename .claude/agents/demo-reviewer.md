@@ -77,24 +77,35 @@ CHANGED=$(git diff --name-only "$MERGE_BASE" HEAD)
 NONALLOWLIST=$(echo "$CHANGED" | grep -vE '^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates)/|^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$' || true)
 ```
 
-Five observable shapes, matching `scripts/check-demo.sh` line-for-line:
+Six observable shapes, matching `scripts/check-demo.sh` line-for-line.
+The first two short-circuit the gate with exit 0 BEFORE any
+`docs/demos/*/` lookup happens — miss either and the reviewer
+reports missing-demo where the gate accepts the branch:
 
 1. **Static auto-exempt.** `NONALLOWLIST` is empty — every changed file
    is on the allowlist. `DEMO_DIR` may or may not exist; neither matters.
    Post a single-line comment confirming the static path and stop.
-2. **`demo.md` present** (under the matched `DEMO_DIR`). Shape 1 — run
-   Dimensions A, B, C, E. If `exemption.md` also exists, `demo.md`
-   wins — ignore the exemption.
-3. **`exemption.md` only** (under the matched `DEMO_DIR`, no `demo.md`).
-   Shape 2 — run Dimension D.
-4. **`DEMO_DIR` matched but empty of both artifacts** — the gate also
+2. **Bootstrap — no `docs/demos/` directory at all.** `scripts/check-demo.sh`
+   lines 44-47 exit 0 with `docs/demos/ not found — demo system not yet
+   initialized` regardless of whether the diff has code changes. Pinned
+   behaviour per `tests/test_check_demo_allowlist.py::test_src_change_is_not_allowlisted`
+   (which creates `docs/demos/` explicitly to force the error path). When
+   `docs/demos/` is missing as a whole, post a single-line comment
+   confirming the bootstrap short-circuit and stop — do not flag missing
+   demo.
+3. **`demo.md` present** (under the matched `DEMO_DIR`). Run Dimensions
+   A, B, C, E. If `exemption.md` also exists, `demo.md` wins — ignore
+   the exemption.
+4. **`exemption.md` only** (under the matched `DEMO_DIR`, no `demo.md`).
+   Run Dimension D.
+5. **`DEMO_DIR` matched but empty of both artifacts** — the gate also
    fails this case (`scripts/check-demo.sh` exits non-zero at its
    "Demo directory exists but neither demo.md nor exemption.md is
    present" branch). Post a needs-revision comment citing the empty
    directory; do not proceed into the dimensions.
-5. **No `DEMO_DIR` match at all AND `NONALLOWLIST` is non-empty** —
-   the branch has user-observable changes but no artifact. Post a
-   missing-demo finding.
+6. **`docs/demos/` exists but no `DEMO_DIR` match AND `NONALLOWLIST`
+   is non-empty** — the branch has user-observable changes but no
+   artifact directory for it. Post a missing-demo finding.
 
 ### 3. Evaluate dimensions
 

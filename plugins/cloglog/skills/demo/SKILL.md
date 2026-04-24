@@ -127,7 +127,7 @@ generated_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 ## Changed files
 
-$(git diff --name-only "$BASE" HEAD | sed 's/^/- /')
+$(git diff --name-only "$MERGE_BASE" HEAD | sed 's/^/- /')
 MD
 ```
 

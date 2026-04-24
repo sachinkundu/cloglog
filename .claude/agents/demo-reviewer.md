@@ -37,26 +37,59 @@ GH_TOKEN="$BOT_TOKEN" gh pr checkout <PR_NUM>
 
 ### 2. Find the demo artifact
 
+Use the **same substring lookup** that `scripts/check-demo.sh` and
+`scripts/run-demo.sh` use — not an exact branch match — so feature-name
+demos (`docs/demos/f51-demo-classifier/`) match feature-prefix branches
+(`wt-f51-demo-classifier`) just like the gate does.
+
 ```bash
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
-# Normalize slashes to hyphens so branches like feat/foo → feat-foo match
-# the demo-skill's `scripts/check-demo.sh` convention.
-BRANCH_NORM="${BRANCH//\//-}"
-DEMO_DIR="docs/demos/${BRANCH_NORM}"
-DEMO_FILE="${DEMO_DIR}/demo.md"
-EXEMPTION_FILE="${DEMO_DIR}/exemption.md"
-```
+# Match scripts/run-demo.sh feature-detection: fN-* branch prefix wins,
+# otherwise full branch name. Slash→hyphen normalisation matches
+# check-demo.sh.
+case "$BRANCH" in
+  f[0-9]*-*) FEATURE=$(echo "$BRANCH" | grep -oP '^f\d+') ;;
+  *)         FEATURE="$BRANCH" ;;
+esac
+FEATURE_NORM="${FEATURE//\//-}"
 
-If `DEMO_DIR` does not exist and neither file is present, run the allowlist short-circuit check:
+# Substring search docs/demos/*/ — same convention as the scripts.
+DEMO_DIR=""
+if compgen -G "docs/demos/*/" > /dev/null 2>&1; then
+  for dir in docs/demos/*/; do
+    [[ -d "$dir" ]] || continue
+    if echo "$dir" | grep -qi "$FEATURE_NORM"; then
+      DEMO_DIR="$dir"
+      break
+    fi
+  done
+fi
+DEMO_FILE="${DEMO_DIR}demo.md"
+EXEMPTION_FILE="${DEMO_DIR}exemption.md"
 
-```bash
 MERGE_BASE=$(git merge-base origin/main HEAD 2>/dev/null || git merge-base main HEAD)
 CHANGED=$(git diff --name-only "$MERGE_BASE" HEAD)
 NONALLOWLIST=$(echo "$CHANGED" | grep -vE '^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates)/|^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$' || true)
 ```
 
-- If `NONALLOWLIST` is empty, every changed file is on the static allowlist. Post a single-line comment confirming static auto-exempt and stop.
-- If `NONALLOWLIST` is non-empty but neither `demo.md` nor `exemption.md` exists, that is a missing-demo finding — post a needs-revision comment.
+Five observable shapes, matching `scripts/check-demo.sh` line-for-line:
+
+1. **Static auto-exempt.** `NONALLOWLIST` is empty — every changed file
+   is on the allowlist. `DEMO_DIR` may or may not exist; neither matters.
+   Post a single-line comment confirming the static path and stop.
+2. **`demo.md` present** (under the matched `DEMO_DIR`). Shape 1 — run
+   Dimensions A, B, C, E. If `exemption.md` also exists, `demo.md`
+   wins — ignore the exemption.
+3. **`exemption.md` only** (under the matched `DEMO_DIR`, no `demo.md`).
+   Shape 2 — run Dimension D.
+4. **`DEMO_DIR` matched but empty of both artifacts** — the gate also
+   fails this case (`scripts/check-demo.sh` exits non-zero at its
+   "Demo directory exists but neither demo.md nor exemption.md is
+   present" branch). Post a needs-revision comment citing the empty
+   directory; do not proceed into the dimensions.
+5. **No `DEMO_DIR` match at all AND `NONALLOWLIST` is non-empty** —
+   the branch has user-observable changes but no artifact. Post a
+   missing-demo finding.
 
 ### 3. Evaluate dimensions
 
@@ -108,7 +141,7 @@ Test the classifier's `no_demo` verdict against what you see in the diff. The re
 - **Diff touches `frontend/src/**` with new render logic** (new `<Component>` JSX, new routed view, changed conditional render, changed user-visible copy) → **invalid exemption, demand Rodney screenshots.**
 - **Diff adds or changes any `@<name>_router.{get,post,patch,put,delete}(` decorator anywhere under `src/**`** (not just `src/gateway/` — routers live in each bounded context: `src/board/routes.py`, `src/agent/routes.py`, `src/document/routes.py`, `src/gateway/routes.py`, plus `src/gateway/sse.py`, `src/gateway/webhook.py`; `src/gateway/app.py` composes them) → **invalid exemption, demand curl demo.**
 - **Diff adds or changes a `server.tool(...)` registration in `mcp-server/src/server.ts` or a handler in `mcp-server/src/tools.ts`** (there is no `mcp-server/src/tools/` directory in this repo — do not look for one) → **invalid exemption, demand MCP tool-exec demo.**
-- **Diff contains a user-observable migration** (backfill of a column shown on the dashboard, new enum value appearing in status dots, renamed column returned by an API) → **invalid exemption, demand a migration-output demo.**
+- **Diff contains a user-observable migration** (backfill of a column shown on the dashboard, new enum value appearing in status dots, renamed column returned by an API) → **invalid exemption, demand a real demo.** The demo itself is a `backend-curl` (API response before/after the migration) or `frontend-screenshot` (UI before/after) — whichever surface exposes the migrated data to the user. Migration output (`alembic upgrade head` log lines) is **not** a demo; `plugins/cloglog/skills/demo/SKILL.md` rejects that shape and the classifier's `suggested_demo_shape` field never emits a migration-specific type.
 
 Otherwise, if your independent read agrees with the classifier's reasoning (signal + counter-signal + counterfactual all check out), rate the exemption **valid**.
 

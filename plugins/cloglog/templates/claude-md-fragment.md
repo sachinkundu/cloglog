@@ -11,8 +11,8 @@
 
 ### PR Quality
 
-- **PR body structure:** Summary (1-3 bullets) → Demo (inline proof it works) → Test Report (delta, strategy, results).
-- **The demo is the most important thing after the summary.** Embed output directly — curl responses, screenshots, state machine transitions. The reviewer should see proof before reading code.
+- **PR body structure:** `## Demo` (stakeholder sentence + demo document link, OR exemption one-liner, OR static auto-exempt note) → `## Tests` (delta, strategy, results) → `## Changes` (what changed and why). Exactly these three sections, in this order — matches what `plugins/cloglog/skills/github-bot` and `plugins/cloglog/agents/worktree-agent.md` require, and what `plugins/cloglog/skills/demo` produces.
+- **The demo is the most important section and comes first.** Embed output directly — curl responses, screenshots, state machine transitions. The reviewer should see proof before reading code.
 - **Proactive rebase:** When other PRs merge to main while yours is open, rebase before the reviewer has to ask.
 - **Conflict marker check:** After resolving merge conflicts, grep for `^<<<<<<` across source dirs to catch leftover markers.
 - Run the full quality gate before pushing. Don't assume it passes.
@@ -57,7 +57,8 @@
 
 ### Proof-of-Work Demos
 
-- **Every PR must include a `demo.md` that RUNS what you built, not describes it.** A demo is proof that your code works, not a summary of what you changed.
+- **Every PR with user-observable behaviour change must include a `demo.md` that RUNS what you built, not describes it.** A demo is proof that your code works, not a summary of what you changed.
+- **PRs without user-observable behaviour change — pure refactor, test-only, plugin/infra, dependency bumps — exempt through the `cloglog:demo` skill instead.** The skill runs two checks in order: Step 0 is a static allowlist short-circuit — when every changed file matches developer-infrastructure paths (`docs/`, `tests/`, `scripts/`, `.claude/`, `.cloglog/`, `.github/`, `Makefile`, `plugins/*/{hooks,skills,agents,templates}/`, `pyproject.toml`, `ruff.toml`, `package-lock.json`, `*.lock`), both the skill and `scripts/check-demo.sh` exit 0 with **no artifact written**. Step 1 invokes the `demo-classifier` subagent; when it returns `no_demo` the skill writes `docs/demos/<branch>/exemption.md` with a hash of the diff, which the gate accepts as a first-class artifact. Do not hand-write an "exemption declaration" paragraph in the PR body; the gate only recognises the committed `exemption.md` shape or the static auto-exempt path — never inline prose.
 - **A demo is NOT:** test output, a list of files changed, a description of what was implemented, or grep of source code.
 - **A demo IS:** executing the actual feature and showing the output. Think "if I were showing this to a colleague, what would I type in the terminal or click in the browser?"
 - **Backend PRs:** Curl each new/changed endpoint. Show the request AND the response.

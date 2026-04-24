@@ -65,7 +65,18 @@ Your work follows a strict pipeline. Call `mcp__cloglog__get_my_tasks` to get yo
    Do not skip this step even if you believe the change is minor.
 
 4. Create a PR using the github-bot skill with sections in this order:
-   - **## Demo** — stakeholder sentence + link to demo.md + re-verify command + screenshots
+   - **## Demo** — one of three shapes, matching what the `cloglog:demo` skill
+     produced for this branch:
+     - **Real demo** (the skill reached Steps 2–6): stakeholder sentence
+       + link to `docs/demos/<branch>/demo.md` + `uvx showboat verify` re-run
+       command + screenshots if frontend.
+     - **Classifier exemption** (the skill's Step 1 emitted `no_demo` and
+       committed `docs/demos/<branch>/exemption.md`): one-line paraphrase of
+       the classifier's reasoning + `bash scripts/check-demo.sh` as the
+       re-verify command.
+     - **Static auto-exempt** (the skill's Step 0 matched the allowlist
+       and wrote nothing): one-line statement that every changed file is
+       developer infrastructure, with the allowlisted paths enumerated.
    - **## Tests** — what tests were added, delta from baseline, strategy reasoning
    - **## Changes** — what changed and why
 5. Call `mcp__cloglog__update_task_status` to move the task to `review` with the PR URL
@@ -152,8 +163,15 @@ For ALL GitHub operations (push, PR creation, PR comments, status checks), use t
 
 Every impl PR must use this section order: `## Demo`, `## Tests`, `## Changes`
 
-The demo is produced by invoking the demo skill before creating the PR.
-Do not write the PR body until the demo is produced and verified.
+The `## Demo` section is produced by invoking the `cloglog:demo` skill
+before creating the PR. The skill has three terminal states — static
+auto-exempt (Step 0), classifier exemption writing `exemption.md`
+(Step 1 `no_demo`), or real Showboat/Rodney `demo.md` (Steps 2–6).
+Use the PR body variant that matches the terminal state the skill
+reached; the skill itself prints the correct template in Step 6. Do
+not write the PR body until the skill has run to completion — the
+demo, the exemption, or the static-allowlist check must be settled
+first.
 
 ## Shutdown
 

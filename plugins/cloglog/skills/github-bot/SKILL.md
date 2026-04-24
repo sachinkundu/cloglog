@@ -63,10 +63,29 @@ git push -u origin HEAD
 GH_TOKEN="$BOT_TOKEN" gh pr create --title "feat: ..." --body "$(cat <<'EOF'
 ## Demo
 
+<Choose ONE of the three variants below, matching what the cloglog:demo skill produced:>
+
+<!-- Variant A — real demo (skill reached Steps 2–6) -->
 <One-sentence feature description from the stakeholder's view>
 
 Demo document: [`docs/demos/<branch>/demo.md`](docs/demos/<branch>/demo.md)
 Re-verify: `uvx showboat verify docs/demos/<branch>/demo.md`
+
+<!-- Variant B — classifier exemption (skill's Step 1 wrote docs/demos/<branch>/exemption.md) -->
+<!--
+**No demo — classifier exemption (`docs/demos/<branch>/exemption.md`).**
+
+<one-line paraphrase of the classifier's reasoning>
+
+Re-verify: `bash scripts/check-demo.sh` (recomputes the diff_hash; passes while the exemption is fresh).
+-->
+
+<!-- Variant C — static auto-exempt (skill's Step 0 matched the allowlist and wrote nothing) -->
+<!--
+**No demo — static allowlist auto-exempt.**
+
+Every changed file is developer infrastructure (e.g., `docs/`, `tests/`, `scripts/`, `.claude/`, `plugins/*/skills/`). `bash scripts/check-demo.sh` prints `Docs-only branch — no demo required.`
+-->
 
 ## Tests
 

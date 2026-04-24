@@ -27,13 +27,19 @@ open to any bearer under `X-MCP-Request: true`.
 
 **Pin:** `tests/e2e/test_access_control.py::test_worktrees_with_invalid_mcp_bearer_is_rejected`
 
-### Supervisor/destructive endpoints must reject agent tokens
+### Destructive endpoints that must reject self-initiation need `McpOrProject`, not `SupervisorAuth`
 
-`SupervisorAuth` accepts project + MCP service keys. `CurrentAgent` accepts
-agent tokens. An endpoint that reuses `CurrentAgent` for a destructive
-operation lets the wedged agent take the action against itself, defeating
-the point. Use `McpOrProject` and ship a regression named
-`test_*_rejects_agent_token`.
+`SupervisorAuth` (`src/gateway/auth.py::get_supervisor_auth`) accepts three
+credential paths: (1) MCP service key, (2) project API key, and (3) **the
+target agent's own token when it matches the URL's `worktree_id`**. Path 3
+is deliberate for routes like `request_shutdown` — an agent may gracefully
+end itself. Path 3 is **not** acceptable for a nuclear path like
+`force_unregister`: a wedged or malicious agent must not be able to
+force-unregister itself. For that class of route, use `McpOrProject` (which
+has no agent-token path) and ship a regression named
+`test_*_rejects_agent_token`. Reviewing only for "does this route use
+`CurrentAgent`" misses the hole; review for "can the agent's own token
+pass this Depends."
 
 **Pin:** `tests/agent/test_integration.py::TestForceUnregisterAPI::test_force_unregister_rejects_agent_token`
 

@@ -1,7 +1,7 @@
 # CLAUDE.md is smaller and every silent-failure gotcha now points at a pin test runnable via `make invariants`.
 
-*2026-04-24T11:06:44Z by Showboat 0.6.1*
-<!-- showboat-id: d329e156-f0bd-4af6-9938-7082e25975a2 -->
+*2026-04-24T11:27:57Z by Showboat 0.6.1*
+<!-- showboat-id: cf9a4497-0406-4c51-9a75-2cbcd0e6affd -->
 
 ### CLAUDE.md is no longer a dumping ground
 
@@ -129,7 +129,7 @@ implementation PRs for these silent boundary violations.
 DDD=.claude/agents/ddd-reviewer.md
    grep -q "Gateway owns no tables" "$DDD" && echo "ddd_gateway_no_tables=yes" || echo "ddd_gateway_no_tables=MISSING"
    grep -q "Routers must be registered in \`src/gateway/app.py\`" "$DDD" && echo "ddd_router_registration=yes" || echo "ddd_router_registration=MISSING"
-   grep -q "Supervisor/destructive endpoints must reject agent tokens" "$DDD" && echo "ddd_reject_agent_tokens=yes" || echo "ddd_reject_agent_tokens=MISSING"
+   grep -q "Destructive endpoints that must reject self-initiation need \`McpOrProject\`, not \`SupervisorAuth\`" "$DDD" && echo "ddd_reject_agent_tokens=yes" || echo "ddd_reject_agent_tokens=MISSING"
    grep -q "CurrentMcpService" "$DDD" && echo "ddd_mcp_depends=yes" || echo "ddd_mcp_depends=MISSING"
 ```
 

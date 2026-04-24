@@ -104,7 +104,7 @@ uvx showboat exec "$DEMO_FILE" bash \
   'DDD=.claude/agents/ddd-reviewer.md
    grep -q "Gateway owns no tables" "$DDD" && echo "ddd_gateway_no_tables=yes" || echo "ddd_gateway_no_tables=MISSING"
    grep -q "Routers must be registered in \`src/gateway/app.py\`" "$DDD" && echo "ddd_router_registration=yes" || echo "ddd_router_registration=MISSING"
-   grep -q "Supervisor/destructive endpoints must reject agent tokens" "$DDD" && echo "ddd_reject_agent_tokens=yes" || echo "ddd_reject_agent_tokens=MISSING"
+   grep -q "Destructive endpoints that must reject self-initiation need \`McpOrProject\`, not \`SupervisorAuth\`" "$DDD" && echo "ddd_reject_agent_tokens=yes" || echo "ddd_reject_agent_tokens=MISSING"
    grep -q "CurrentMcpService" "$DDD" && echo "ddd_mcp_depends=yes" || echo "ddd_mcp_depends=MISSING"'
 
 # ==================================================================

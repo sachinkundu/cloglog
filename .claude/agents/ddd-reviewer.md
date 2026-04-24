@@ -68,6 +68,22 @@ For each frontend view described in the plan:
 - Session statuses: `active`, `ended`, `timed_out`
 - Document types: `spec`, `plan`, `design`, `other`
 
+### 7. Structural Rules (also check on implementation PRs, not only contracts)
+
+Beyond contract shape, review the implementation for these boundary rules:
+
+- **Gateway owns no tables.** `docs/ddd-context-map.md` is explicit about this, and `docs/contracts/webhook-pipeline-spec.md:29` restates it for the review engine. If a new pipeline artifact needs persistence, it gets its own bounded context under `src/<context>/` with `models.py`, `interfaces.py` (Protocol), `repository.py`, and `services.py`. Gateway imports ONLY `src.<context>.interfaces` and `services` (for factory functions) — never `models.py` or `repository.py`, and lazy imports inside function bodies count as violations too. The factory function returns the Protocol; the concrete class stays hidden.
+
+- **Routers must be registered in `src/gateway/app.py`.** A new `routes.py` in a bounded context does nothing until `app.include_router(...)` picks it up. If the PR adds a router without registering it, the endpoints return 404.
+
+- **Agent-facing routes need explicit auth Depends.** The middleware lets any `Authorization` header through for `/api/v1/agents/*` and defers the real check to per-route `Depends(...)`. A new agent route without `SupervisorAuth` / `CurrentProject` / `CurrentAgent` / `McpOrProject` is silently open. Pin: `tests/agent/test_integration.py::TestForceUnregisterAPI::test_force_unregister_rejects_agent_token` — every new agent endpoint needs a sibling regression.
+
+- **Supervisor/destructive endpoints must reject agent tokens.** `SupervisorAuth` and `McpOrProject` accept project/MCP service keys; `CurrentAgent` accepts agent tokens. An endpoint that lets the wedged agent take a destructive action against itself defeats the guard. Flag any new destructive route that uses `CurrentAgent`.
+
+- **Non-agent routes accepting MCP credentials need `CurrentMcpService` / `CurrentMcpOrDashboard` Depends.** `ApiAccessControlMiddleware` only presence-checks headers; without the per-route Depends the route is silently open to any bearer that sets `X-MCP-Request: true`. Pin: `tests/e2e/test_access_control.py::test_worktrees_with_invalid_mcp_bearer_is_rejected`.
+
+See `docs/invariants.md` for the full silent-failure register with pin tests.
+
 ## Output Format
 
 If approved:

@@ -1,0 +1,108 @@
+# Silent-Failure Invariants
+
+Rules whose breakage does not fail a test, lint, or build on its own — they
+ship broken, and production catches them. Each entry names the invariant and
+the pin test that guards it. Adding a new entry requires a pin test.
+
+Run the full set with `make invariants`.
+
+## Gateway / auth
+
+### `/api/v1/agents/*` permissive bucket
+
+The gateway middleware (`src/gateway/app.py`) lets any `Authorization` header
+through for `/api/v1/agents/*` and defers the real check to each route's
+`Depends(...)`. A new agent route added without an explicit auth dep
+(`SupervisorAuth`, `CurrentProject`, `CurrentAgent`, or `McpOrProject`) is
+**silently open** — a bogus bearer returns 200.
+
+**Pin:** `tests/agent/test_integration.py::TestForceUnregisterAPI::test_force_unregister_rejects_agent_token`
+
+### Non-agent routes accepting MCP credentials
+
+`ApiAccessControlMiddleware` only presence-checks credential headers on
+non-agent routes; it does not validate the bearer value. A new route added
+without `CurrentMcpService` / `CurrentMcpOrDashboard` Depends is silently
+open to any bearer under `X-MCP-Request: true`.
+
+**Pin:** `tests/e2e/test_access_control.py::test_worktrees_with_invalid_mcp_bearer_is_rejected`
+
+### Supervisor/destructive endpoints must reject agent tokens
+
+`SupervisorAuth` accepts project + MCP service keys. `CurrentAgent` accepts
+agent tokens. An endpoint that reuses `CurrentAgent` for a destructive
+operation lets the wedged agent take the action against itself, defeating
+the point. Use `McpOrProject` and ship a regression named
+`test_*_rejects_agent_token`.
+
+**Pin:** `tests/agent/test_integration.py::TestForceUnregisterAPI::test_force_unregister_rejects_agent_token`
+
+## Review engine
+
+### `resolve_pr_review_root` — three strategies + SHA drift
+
+Per-PR review root resolver has three strategies in order: `find_by_pr_url`
+(PR → task → worktree, covers main-agent close-out PRs), `find_by_branch`
+(agent worktree PRs), then host-level fallback (`REVIEW_SOURCE_ROOT` /
+`Path.cwd()`). After any strategy hits, a SHA mismatch against
+`event.head_sha` materialises a disposable checkout under
+`<main>/.cloglog/review-checkouts/<sha8>-<pr>`. Return type is
+`PrReviewRoot(path, is_temp, main_clone)` — callers must inspect `is_temp`
+for cleanup. External-fork PRs fall through to a `review_source_drift`
+warning by design (see `docs/design/two-stage-pr-review.md` §9.6).
+
+**Pin:** `tests/gateway/test_review_engine.py::TestResolvePrReviewRoot`
+
+### Review body `_SEVERE_SEVERITIES` writer/reader parity
+
+`ReviewLoop._reached_consensus` refuses to short-circuit an `approve`
+verdict that carries a `critical`/`high` finding. `_format_review_body`
+must key on the same predicate so the body's icon prefix matches the
+consensus state. The shared severity set is `review_loop._SEVERE_SEVERITIES`;
+`review_engine._SEVERE_SEVERITIES` mirrors it. When a new reader of any
+structured output another module writes is added, lift the shared
+predicate — don't re-derive it.
+
+**Pin:** `tests/gateway/test_review_engine.py::TestLatestCodexReviewIsApproval`
+
+## Hooks / infra
+
+### Hook scripts parse `.cloglog/config.yaml` with `grep`+`sed`
+
+Hook scripts run under the system `python3`, which has no PyYAML. A
+`python3 -c 'import yaml'` snippet silently swallows `ImportError` and
+returns the default `http://localhost:8000`, sending POSTs to the wrong
+port with every caller appearing to succeed. Use `grep '^key:'` + `sed`
+(precedent: `plugins/cloglog/hooks/agent-shutdown.sh:64-68`).
+
+**Pin:** `tests/test_on_worktree_create_backend_url.py::test_hook_does_not_invoke_python_yaml`
+
+### `CLOGLOG_API_KEY` never in `.mcp.json`
+
+Project API keys live in `~/.cloglog/credentials` (0600). The MCP server
+resolves them from env first, then the credentials file; missing →
+`process.exit(78)`. `.mcp.json` is checked into git and must not carry
+a secret.
+
+**Pin:** `tests/test_mcp_json_no_secret.py`
+
+## Persistence
+
+### Upsert preserves existing columns on empty input
+
+When an upsert accepts partial data (e.g., `upsert_worktree(branch_name=...)`),
+empty-string / null from the caller means "preserve existing," not
+"overwrite with empty." A transient probe failure or reconnect must not
+clobber a populated column.
+
+**Pin:** `tests/agent/test_unit.py::TestAgentService::test_register_reconnect_preserves_branch_when_caller_sends_empty`
+
+### Migrations do not mark live data offline or soft-delete
+
+Alembic migrations in `src/alembic/versions/` must be additive against
+live state. Destructive cleanup (marking agents offline, soft-deleting
+rows based on transient probes, rewriting status columns) belongs in
+`/cloglog reconcile`, not in migrations that run on every deploy.
+Backfilling a newly-added column is the one allowed data write.
+
+**Pin:** `tests/test_no_destructive_migrations.py::test_no_destructive_migrations`

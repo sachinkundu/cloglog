@@ -38,9 +38,21 @@ GH_TOKEN="$BOT_TOKEN" gh pr checkout <PR_NUM>
 ### 2. Find the demo artifact
 
 Use the **same substring lookup** that `scripts/check-demo.sh` and
-`scripts/run-demo.sh` use — not an exact branch match — so feature-name
-demos (`docs/demos/f51-demo-classifier/`) match feature-prefix branches
-(`wt-f51-demo-classifier`) just like the gate does.
+`scripts/run-demo.sh` use — not an exact branch-name match. The
+scripts derive `FEATURE` from the branch in one specific way: when
+the branch itself starts with `fN-*` (e.g. `f51-demo-classifier`),
+FEATURE collapses to the `fN` prefix; every other branch shape
+(including the common `wt-*` worktree-branch prefix) keeps the full
+branch name. FEATURE is then normalised (slash → hyphen) and
+substring-searched through `docs/demos/*/` case-insensitively. Mirror
+the scripts exactly — diverging from their algorithm is the only way
+the reviewer can be right while the gate is wrong, or vice versa.
+
+A `wt-f51-demo-classifier` branch will not match
+`docs/demos/f51-demo-classifier/` — the scripts don't strip the `wt-`
+prefix before matching, so the reviewer shouldn't either. The
+authoritative rule is "whatever `scripts/run-demo.sh` finds is what
+this reviewer reviews."
 
 ```bash
 BRANCH=$(git rev-parse --abbrev-ref HEAD)

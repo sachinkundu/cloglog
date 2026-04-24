@@ -2,10 +2,13 @@
 
 > When a branch ships a ``docs/demos/<branch>/exemption.md`` instead of
 > a ``demo.md``, ``scripts/check-demo.sh`` MUST hash the current
-> ``git diff origin/main...HEAD`` and refuse the exemption if the
-> stored ``diff_hash`` does not match. A mismatch means the agent
-> classified an older diff and then kept coding — the exemption no
-> longer covers what is being shipped.
+> ``git diff $MERGE_BASE HEAD -- . ':(exclude)docs/demos/'`` and
+> refuse the exemption if the stored ``diff_hash`` does not match. A
+> mismatch means the agent classified an older diff and then kept
+> coding — the exemption no longer covers what is being shipped. The
+> pathspec exclude is load-bearing: without it the exemption.md commit
+> itself invalidates its own pin (see
+> ``test_exemption_commit_does_not_invalidate_its_own_hash`` below).
 
 The rule lives in ``docs/invariants.md`` § Demo gate — exemption diff-hash.
 
@@ -14,11 +17,12 @@ Failure modes this pins:
    YAML fence (e.g., the reasoning body mentions the word) and silently
    accepts a stale exemption.
 2. Hash computation that diverges from the classifier's convention
-   (``git diff origin/main...HEAD``) — two-dot vs three-dot, staged vs
-   committed, different diff flags — any of which would produce
-   ``"valid exemption"`` on every commit because the stored hash can
-   never match the recomputed one, OR the reverse, where any stored
-   hash matches by accident.
+   (``git diff $MERGE_BASE HEAD -- . ':(exclude)docs/demos/'``) — two-
+   dot vs three-dot, staged vs committed, dropped pathspec exclude,
+   different diff flags — any of which would produce ``"valid
+   exemption"`` on every commit because the stored hash can never
+   match the recomputed one, OR the reverse, where any stored hash
+   matches by accident.
 3. Missing ``diff_hash`` in frontmatter silently treated as match.
 
 The test fabricates a temp git repo, creates a code change, stores the

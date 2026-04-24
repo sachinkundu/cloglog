@@ -32,12 +32,15 @@ If either is missing, assume `origin/main` → `HEAD`.
 
 ```bash
 BASE="${BASE:-origin/main}"
-git diff --name-only "$BASE"...HEAD
-git diff "$BASE"...HEAD
+git diff --name-only "$BASE" HEAD -- . ':(exclude)docs/demos/'
+git diff "$BASE" HEAD -- . ':(exclude)docs/demos/'
 ```
 
-The first command gives you the file list, the second gives you the actual
-changes. Read both in full — don't truncate.
+The first command gives you the file list, the second gives you the
+actual changes. Read both in full — don't truncate. The pathspec
+exclude of `docs/demos/` aligns these commands with the hash
+computation below; the classifier audits the code slice, not any
+pre-existing demo artifacts in the tree.
 
 ### 2. Apply the rules
 
@@ -148,7 +151,7 @@ fencing, no trailing text. Schema:
 {
   "verdict": "needs_demo",
   "reasoning": "Two parts: (a) signal/counter-signal from the diff — cite specific files or symbols; (b) counterfactual — what would have flipped the verdict and why it wasn't present.",
-  "diff_hash": "<sha256 of git diff $BASE...HEAD>",
+  "diff_hash": "<sha256 of git diff $BASE HEAD -- . ':(exclude)docs/demos/'>",
   "suggested_demo_shape": "backend-curl"
 }
 ```

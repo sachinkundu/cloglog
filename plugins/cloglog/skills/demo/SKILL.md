@@ -102,7 +102,7 @@ The subagent emits exactly one JSON object on stdout:
 {
   "verdict": "needs_demo" | "no_demo",
   "reasoning": "signal/counter-signal + counterfactual",
-  "diff_hash": "<sha256 of git diff origin/main...HEAD>",
+  "diff_hash": "<sha256 of git diff $MERGE_BASE HEAD -- . ':(exclude)docs/demos/'>",
   "suggested_demo_shape": "backend-curl" | "frontend-screenshot" | "mcp-tool-exec" | "cli-exec" | null
 }
 ```
@@ -407,7 +407,7 @@ This calls `scripts/check-demo.sh` which tries three acceptance paths in order:
 
 1. **Static allowlist** — every changed file matches the widened regex. Exit 0.
 2. **`demo.md` present** — run `uvx showboat verify`. Pass → exit 0.
-3. **`exemption.md` present** — parse frontmatter, recompute `sha256(git diff $MERGE_BASE HEAD)`, compare against stored `diff_hash`. Match → exit 0. Mismatch → exit 1 with "exemption is stale for current diff".
+3. **`exemption.md` present** — parse frontmatter, recompute `sha256(git diff $MERGE_BASE HEAD -- . ':(exclude)docs/demos/')`, compare against stored `diff_hash`. Match → exit 0. Mismatch → exit 1 with "exemption is stale for current diff". The pathspec exclude is mandatory (see Step 1 above) — without it, committing exemption.md invalidates its own pin.
 
 If both `demo.md` and `exemption.md` exist, `demo.md` wins.
 

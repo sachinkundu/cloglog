@@ -90,6 +90,16 @@ _STDERR_POSTMORTEM_READ_SECONDS: Final = 1.0
 _HEALTH_PROBE_TIMEOUT_SECONDS: Final = 3.0
 # How many trailing stderr lines to carry into logs and PR comments.
 _STDERR_TAIL_LINES: Final = 30
+# T-281 git-subprocess deadlines. The short one covers local-only calls
+# (``rev-parse``, ``worktree add``, ``worktree remove``); the longer one
+# covers ``fetch`` which may need to reach origin.
+_GIT_SUBPROC_TIMEOUT_SECONDS: Final = 30.0
+_GIT_FETCH_TIMEOUT_SECONDS: Final = 60.0
+# Where temp-dir review checkouts live inside the main clone. Relative
+# to ``fallback`` (``settings.review_source_root or Path.cwd()``) because
+# that is always a real git repo on this host — the place ``git worktree
+# add --detach`` runs from and the place cleanup points back at.
+_REVIEW_CHECKOUT_SUBDIR: Final = Path(".cloglog") / "review-checkouts"
 
 _HUNK_HEADER_RE: Final = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
@@ -306,103 +316,358 @@ def resolve_review_source_root() -> Path:
     return settings.review_source_root or Path.cwd()
 
 
+@dataclass(frozen=True)
+class PrReviewRoot:
+    """Resolved filesystem root codex should read for this PR.
+
+    ``path`` is always valid for the caller to hand to ``CodexReviewer`` /
+    ``OpencodeReviewer``. When ``is_temp`` is True, ``path`` is a disposable
+    ``git worktree add --detach`` checkout materialized at the PR's
+    ``head_sha``; the caller MUST remove it via
+    ``_remove_review_checkout(main_clone, path)`` (typically in a
+    ``finally`` block) after the review finishes, otherwise
+    ``.cloglog/review-checkouts/`` grows without bound. ``main_clone`` is
+    the repository that owns the disposable worktree — the ``git -C
+    <main_clone> worktree remove --force <path>`` anchor point. T-281.
+    """
+
+    path: Path
+    is_temp: bool = False
+    main_clone: Path | None = None
+
+
 async def resolve_pr_review_root(
     event: WebhookEvent,
     *,
     project_id: UUID,
     worktree_query: IWorktreeQuery,
-) -> Path:
-    """Resolve the filesystem root codex should read **for this PR**.
+) -> PrReviewRoot:
+    """Resolve the filesystem root codex should read for this PR.
 
     Preference order:
 
-    1. The worktree whose ``branch_name == event.head_branch`` within
-       ``project_id`` — provided the row exists AND the path is on disk.
-       This is the PR's actual working tree, so codex sees the exact files
-       the author is iterating on. A brief SHA drift probe (``git -C <path>
-       rev-parse HEAD``) logs a warning when the worktree's HEAD disagrees
-       with ``event.head_sha``, but the worktree is still preferred because
-       the mismatch is typically a mid-rebase or unpushed commit — and even
-       a slightly-stale worktree beats prod's ``main`` checkout.
+    **Path 0 — task pr_url binding (T-281).** If there is a ``Task`` in
+    this project whose ``pr_url == event.pr_url`` and whose ``worktree_id``
+    points at a known worktree, return that worktree's path. This is the
+    ONLY path that resolves main-agent close-out PRs: the main agent has
+    no worktree row keyed by the close-out branch (spawning one would
+    cause infinite recursion), so ``find_by_branch`` misses.
+    ``update_task_status(close_off_task_id, "review", pr_url=...)`` is the
+    act that binds the PR to the main agent's worktree row; this path
+    unwinds that binding. For typical agent PRs it resolves to the same
+    worktree ``find_by_branch`` would — same answer, more direct route.
 
-    2. The host-level fallback — ``settings.review_source_root or
-       Path.cwd()`` — for PRs whose owning worktree is not on this host
-       (external contributors, closed worktrees, etc.).
+    **Path 1 — branch lookup (T-278).** Fall through to
+    ``worktrees.branch_name == event.head_branch`` within the project.
 
-    This resolver assumes the filesystem invariant stated in
-    ``CLAUDE.md``: "cloglog, the MCP server, and every worktree agent
-    share one host filesystem." A future split (Railway, cloud VMs) would
-    need a different mechanism — likely a temp-dir checkout of
-    ``event.head_sha`` — which is explicitly out of scope for T-278.
+    **Path 2 — host-level fallback (T-255).**
+    ``settings.review_source_root or Path.cwd()`` for PRs whose owning
+    worktree is not on this host.
 
-    This function never mutates the worktree: no ``git fetch``, no
-    ``checkout``, no ``reset``. The owning agent controls its own working
-    tree.
+    **SHA-check + temp-dir fallback (T-281).** Whichever candidate the
+    chain yields, we probe ``git -C <candidate> rev-parse HEAD``. If the
+    candidate's HEAD disagrees with ``event.head_sha`` (race between push
+    and webhook arrival; main clone trailing main; mid-rebase worktree),
+    we materialize a disposable checkout at ``head_sha`` under
+    ``<main_clone>/.cloglog/review-checkouts/<head_sha[:8]>-<pr_number>``
+    and return that path with ``is_temp=True``. The caller cleans it up.
+    If the temp-dir creation fails (SHA not fetchable, fs error), we fall
+    through to the stale candidate with a ``review_source_drift`` warning.
+
+    This resolver never mutates the OWNING worktree: no ``git fetch`` on
+    it, no ``checkout``, no ``reset``. The owning agent controls its own
+    working tree. The optional temp-dir checkout lives under the main
+    clone's ``.cloglog/review-checkouts/`` — never an agent's worktree.
+    """
+    fallback = resolve_review_source_root()
+    head_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "") or ""
+    head_branch = event.head_branch
+
+    candidate: Path | None = None
+
+    # Path 0 — pr_url binding chain
+    try:
+        row = await worktree_query.find_by_pr_url(project_id, event.pr_url)
+    except Exception as err:  # noqa: BLE001 - defensive; a malformed event must not block review
+        logger.warning(
+            "find_by_pr_url failed for PR #%d: %s — falling through to branch lookup",
+            event.pr_number,
+            err,
+        )
+        row = None
+    if row is not None:
+        cand = Path(row.worktree_path)
+        if cand.is_dir():
+            candidate = cand
+            logger.info(
+                "review_source=worktree_pr_url path=%s pr=#%d",
+                candidate,
+                event.pr_number,
+            )
+        else:
+            logger.warning(
+                "review_source=fallback reason=path_missing source=worktree_pr_url "
+                "worktree_path=%s pr=#%d",
+                row.worktree_path,
+                event.pr_number,
+            )
+
+    # Path 1 — branch lookup
+    if candidate is None and head_branch:
+        row = await worktree_query.find_by_branch(project_id, head_branch)
+        if row is not None:
+            cand = Path(row.worktree_path)
+            if cand.is_dir():
+                candidate = cand
+                logger.info(
+                    "review_source=worktree path=%s branch=%s pr=#%d",
+                    candidate,
+                    head_branch,
+                    event.pr_number,
+                )
+            else:
+                logger.warning(
+                    "review_source=fallback reason=path_missing pr_branch=%s "
+                    "worktree_path=%s pr=#%d",
+                    head_branch,
+                    row.worktree_path,
+                    event.pr_number,
+                )
+
+    # Path 2 — host-level fallback
+    if candidate is None:
+        logger.warning(
+            "review_source=fallback reason=no_matching_worktree pr_branch=%s pr=#%d",
+            head_branch or "<empty>",
+            event.pr_number,
+        )
+        candidate = fallback
+
+    # SHA-check + temp-dir fallback
+    if head_sha:
+        worktree_sha = _probe_git_head(candidate)
+        if worktree_sha is not None and worktree_sha != head_sha:
+            temp = await _create_review_checkout(
+                fallback,
+                head_sha=head_sha,
+                pr_number=event.pr_number,
+                head_branch=head_branch,
+            )
+            if temp is not None:
+                logger.info(
+                    "review_source=temp_checkout path=%s pr_head=%s pr=#%d (candidate_sha=%s)",
+                    temp,
+                    head_sha[:7],
+                    event.pr_number,
+                    worktree_sha[:7],
+                )
+                return PrReviewRoot(path=temp, is_temp=True, main_clone=fallback)
+            logger.warning(
+                "review_source_drift worktree_head=%s pr_head=%s pr_branch=%s "
+                "worktree_path=%s pr=#%d (temp-dir checkout unavailable; "
+                "reviewing stale candidate)",
+                worktree_sha[:7],
+                head_sha[:7],
+                head_branch or "<empty>",
+                candidate,
+                event.pr_number,
+            )
+
+    return PrReviewRoot(path=candidate)
+
+
+def _probe_git_head(path: Path) -> str | None:
+    """Probe ``git -C <path> rev-parse HEAD``. Return the SHA or ``None``.
+
+    ``None`` on any failure — probe errors never block the resolver.
     """
     import subprocess  # local: keep top-level imports lean
 
-    fallback = resolve_review_source_root()
-    head_branch = event.head_branch
-    if not head_branch:
-        logger.warning(
-            "review_source=fallback reason=no_matching_worktree pr_branch=<empty> pr=#%d",
-            event.pr_number,
-        )
-        return fallback
-
-    row = await worktree_query.find_by_branch(project_id, head_branch)
-    if row is None:
-        logger.warning(
-            "review_source=fallback reason=no_matching_worktree pr_branch=%s pr=#%d",
-            head_branch,
-            event.pr_number,
-        )
-        return fallback
-
-    candidate = Path(row.worktree_path)
-    if not candidate.is_dir():
-        logger.warning(
-            "review_source=fallback reason=path_missing pr_branch=%s worktree_path=%s pr=#%d",
-            head_branch,
-            row.worktree_path,
-            event.pr_number,
-        )
-        return fallback
-
-    worktree_sha = "unknown"
     try:
-        probe = subprocess.run(  # noqa: S603 -- fixed argv, path from trusted DB row
-            ["git", "-C", str(candidate), "rev-parse", "HEAD"],
+        proc = subprocess.run(  # noqa: S603 -- fixed argv, path from trusted source
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
             timeout=5,
             check=False,
         )
-        if probe.returncode == 0:
-            worktree_sha = probe.stdout.strip() or "unknown"
     except (OSError, subprocess.SubprocessError) as err:  # pragma: no cover - rare
-        logger.warning("Worktree review-root git probe failed: %s", err)
+        logger.warning("git rev-parse HEAD probe failed for %s: %s", path, err)
+        return None
+    if proc.returncode != 0:
+        return None
+    sha = proc.stdout.strip()
+    return sha or None
 
-    head_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
-    short_worktree = worktree_sha[:7] if worktree_sha != "unknown" else worktree_sha
-    if head_sha and worktree_sha != "unknown" and worktree_sha != head_sha:
+
+async def _create_review_checkout(
+    main_clone: Path,
+    *,
+    head_sha: str,
+    pr_number: int,
+    head_branch: str | None = None,
+) -> Path | None:
+    """Materialize a detached-HEAD git worktree at ``head_sha``.
+
+    Creates ``<main_clone>/.cloglog/review-checkouts/<head_sha[:8]>-<pr_number>``
+    via ``git worktree add --detach``. If ``main_clone`` hasn't fetched
+    the SHA yet (webhook race with ``make promote``), retries once after
+    ``git fetch origin <head_branch>``.
+
+    Returns ``None`` on any failure — the caller treats that as "fall
+    through to the stale candidate with a drift warning." Safe to call
+    concurrently on different SHAs because the target directory name is
+    keyed by ``head_sha[:8]`` + ``pr_number``; a stale same-path reuse is
+    cleaned before the retry. Never raises.
+    """
+    checkout_dir = main_clone / _REVIEW_CHECKOUT_SUBDIR / f"{head_sha[:8]}-{pr_number}"
+    if checkout_dir.exists():
+        current = _probe_git_head(checkout_dir)
+        if current == head_sha:
+            # A prior review on the same commit already materialized the
+            # same SHA — reuse it. The caller cleans up either way.
+            return checkout_dir
+        if not await _git_worktree_remove(main_clone, checkout_dir):
+            logger.warning(
+                "review_source=temp_checkout_unavailable reason=stale_cleanup_failed "
+                "path=%s pr=#%d",
+                checkout_dir,
+                pr_number,
+            )
+            return None
+    try:
+        checkout_dir.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as err:
         logger.warning(
-            "review_source_drift worktree_head=%s pr_head=%s pr_branch=%s worktree_path=%s pr=#%d",
-            short_worktree,
-            head_sha[:7],
-            head_branch,
-            candidate,
-            event.pr_number,
+            "Cannot create review-checkouts parent for PR #%d: %s",
+            pr_number,
+            err,
         )
+        return None
 
-    logger.info(
-        "review_source=worktree path=%s branch=%s worktree_head=%s pr=#%d",
-        candidate,
-        head_branch,
-        short_worktree,
-        event.pr_number,
+    if await _git_worktree_add(main_clone, checkout_dir, head_sha):
+        return checkout_dir
+
+    # Retry after fetching — webhook may have raced ahead of the main
+    # clone's fetch cadence.
+    if (
+        head_branch
+        and await _git_fetch_branch(main_clone, head_branch)
+        and await _git_worktree_add(main_clone, checkout_dir, head_sha)
+    ):
+        return checkout_dir
+
+    return None
+
+
+async def _remove_review_checkout(main_clone: Path, checkout_dir: Path) -> None:
+    """Remove a disposable review checkout via ``git worktree remove --force``.
+
+    Best-effort — never raises; failures are logged. A stuck temp
+    worktree is eventually reclaimed by ``git worktree prune`` (or the
+    next call's ``stale_cleanup`` branch if the same PR SHA recurs).
+    """
+    await _git_worktree_remove(main_clone, checkout_dir)
+
+
+async def _git_worktree_add(main_clone: Path, target: Path, sha: str) -> bool:
+    """Run ``git -C <main_clone> worktree add --detach <target> <sha>``."""
+    proc = await asyncio.create_subprocess_exec(
+        "git",
+        "-C",
+        str(main_clone),
+        "worktree",
+        "add",
+        "--detach",
+        str(target),
+        sha,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
-    return candidate
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=_GIT_SUBPROC_TIMEOUT_SECONDS)
+    except TimeoutError:
+        proc.kill()
+        with contextlib.suppress(ProcessLookupError):
+            await proc.wait()
+        logger.warning("git worktree add timed out for SHA %s", sha[:7])
+        return False
+    if proc.returncode != 0:
+        logger.warning(
+            "git worktree add failed (rc=%s) for SHA %s: %s",
+            proc.returncode,
+            sha[:7],
+            stderr.decode(errors="replace")[:200],
+        )
+        return False
+    return True
+
+
+async def _git_fetch_branch(main_clone: Path, head_branch: str) -> bool:
+    """Run ``git -C <main_clone> fetch origin <head_branch>`` to warm up
+    the object database when the webhook races ahead of the main clone.
+    """
+    if not head_branch:
+        return False
+    proc = await asyncio.create_subprocess_exec(
+        "git",
+        "-C",
+        str(main_clone),
+        "fetch",
+        "origin",
+        head_branch,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=_GIT_FETCH_TIMEOUT_SECONDS)
+    except TimeoutError:
+        proc.kill()
+        with contextlib.suppress(ProcessLookupError):
+            await proc.wait()
+        logger.warning("git fetch origin %s timed out", head_branch)
+        return False
+    if proc.returncode != 0:
+        logger.warning(
+            "git fetch origin %s failed (rc=%s): %s",
+            head_branch,
+            proc.returncode,
+            stderr.decode(errors="replace")[:200],
+        )
+        return False
+    return True
+
+
+async def _git_worktree_remove(main_clone: Path, target: Path) -> bool:
+    """Run ``git -C <main_clone> worktree remove --force <target>``."""
+    proc = await asyncio.create_subprocess_exec(
+        "git",
+        "-C",
+        str(main_clone),
+        "worktree",
+        "remove",
+        "--force",
+        str(target),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=_GIT_SUBPROC_TIMEOUT_SECONDS)
+    except TimeoutError:
+        proc.kill()
+        with contextlib.suppress(ProcessLookupError):
+            await proc.wait()
+        logger.warning("git worktree remove timed out for %s", target)
+        return False
+    if proc.returncode != 0:
+        logger.warning(
+            "git worktree remove failed (rc=%s) for %s: %s",
+            proc.returncode,
+            target,
+            stderr.decode(errors="replace")[:200],
+        )
+        return False
+    return True
 
 
 def log_review_source_root(logger_: logging.Logger) -> None:
@@ -1037,89 +1302,93 @@ class ReviewEngineConsumer:
             )
             return
 
-        # T-278: resolve the PR's owning worktree per review, not once per
-        # backend process. The fallback inside ``resolve_pr_review_root`` is
-        # the old ``settings.review_source_root or Path.cwd()`` path — used
-        # when no worktree row matches ``event.head_branch``. Relies on the
-        # shared-filesystem invariant documented in CLAUDE.md ("cloglog, the
-        # MCP server, and every worktree agent share one host filesystem").
-        # If that ever splits (Railway, cloud VMs), this resolver needs
-        # rethinking — see T-278 scope notes.
+        # T-278 / T-281: resolve the PR's owning worktree per review, not
+        # once per backend process. The chain is Path 0 (tasks.pr_url →
+        # task.worktree_id) → Path 1 (branch) → host-level fallback →
+        # SHA-check + temp-dir checkout. When the resolver returns
+        # ``is_temp=True``, the caller MUST clean up via
+        # ``_remove_review_checkout`` — the ``finally`` block below does
+        # that, including when stage A or B raises.
         async with self._worktree_query() as wq:
-            project_root = await resolve_pr_review_root(
+            review_root = await resolve_pr_review_root(
                 event, project_id=project_id, worktree_query=wq
             )
+        project_root = review_root.path
 
-        # ----- Stage A: opencode (gemma4:e4b) — up to opencode_max_turns -----
-        # T-275: gated on settings.opencode_enabled so the stage can be silenced
-        # globally without removing the code paths T-274 still needs. When the
-        # flag is False, stage A is skipped exactly as if the binary were absent.
-        if self._opencode_available and settings.opencode_enabled:
-            try:
-                opencode_token = await get_opencode_reviewer_token()
-            except FileNotFoundError as err:
-                # Host has the opencode binary but no PEM at
-                # ~/.agent-vm/credentials/opencode-reviewer.pem. Stage A is
-                # skipped; codex still runs. See docs/setup-credentials.md.
-                logger.info(
-                    "Opencode reviewer PEM missing — skipping stage A for PR #%d (%s)",
-                    event.pr_number,
-                    err,
-                )
+        try:
+            # ----- Stage A: opencode (gemma4:e4b) — up to opencode_max_turns -----
+            # T-275: gated on settings.opencode_enabled so the stage can be silenced
+            # globally without removing the code paths T-274 still needs. When the
+            # flag is False, stage A is skipped exactly as if the binary were absent.
+            if self._opencode_available and settings.opencode_enabled:
+                try:
+                    opencode_token = await get_opencode_reviewer_token()
+                except FileNotFoundError as err:
+                    # Host has the opencode binary but no PEM at
+                    # ~/.agent-vm/credentials/opencode-reviewer.pem. Stage A is
+                    # skipped; codex still runs. See docs/setup-credentials.md.
+                    logger.info(
+                        "Opencode reviewer PEM missing — skipping stage A for PR #%d (%s)",
+                        event.pr_number,
+                        err,
+                    )
+                    opencode_token = None
+            else:
                 opencode_token = None
-        else:
-            opencode_token = None
 
-        if opencode_token is not None:
-            async with self._registry() as registry:
-                loop_a = ReviewLoop(
-                    OpencodeReviewer(project_root),
-                    max_turns=settings.opencode_max_turns,
-                    registry=registry,
-                    project_id=project_id,
-                    pr_url=event.pr_url,
-                    pr_number=event.pr_number,
-                    repo_full_name=event.repo_full_name,
-                    head_sha=head_sha,
-                    stage="opencode",
-                    reviewer_token=opencode_token,
-                )
-                outcome_a = await loop_a.run(diff=filtered)
-            if outcome_a.turns_used == 0 and outcome_a.errors:
-                # A completely failed stage A posts a single skip comment so
-                # the author knows why opencode produced nothing.
-                await self._notify_skip(
-                    event,
-                    SkipReason.OPENCODE_FAILED,
-                    (
-                        "Opencode stage A failed every turn. "
-                        f"Reasons: {', '.join(outcome_a.errors[:3])}. "
-                        "Codex (stage B) still runs."
-                    ),
-                )
+            if opencode_token is not None:
+                async with self._registry() as registry:
+                    loop_a = ReviewLoop(
+                        OpencodeReviewer(project_root),
+                        max_turns=settings.opencode_max_turns,
+                        registry=registry,
+                        project_id=project_id,
+                        pr_url=event.pr_url,
+                        pr_number=event.pr_number,
+                        repo_full_name=event.repo_full_name,
+                        head_sha=head_sha,
+                        stage="opencode",
+                        reviewer_token=opencode_token,
+                    )
+                    outcome_a = await loop_a.run(diff=filtered)
+                if outcome_a.turns_used == 0 and outcome_a.errors:
+                    # A completely failed stage A posts a single skip comment so
+                    # the author knows why opencode produced nothing.
+                    await self._notify_skip(
+                        event,
+                        SkipReason.OPENCODE_FAILED,
+                        (
+                            "Opencode stage A failed every turn. "
+                            f"Reasons: {', '.join(outcome_a.errors[:3])}. "
+                            "Codex (stage B) still runs."
+                        ),
+                    )
 
-        # ----- Stage B: codex (Claude-API) — up to codex_max_turns -----
-        if self._codex_available:
-            review_token = await get_codex_reviewer_token()
-            async with self._registry() as registry:
-                loop_b = ReviewLoop(
-                    CodexReviewer(project_root),
-                    max_turns=settings.codex_max_turns,
-                    registry=registry,
-                    project_id=project_id,
-                    pr_url=event.pr_url,
-                    pr_number=event.pr_number,
-                    repo_full_name=event.repo_full_name,
-                    head_sha=head_sha,
-                    stage="codex",
-                    reviewer_token=review_token,
-                )
-                await loop_b.run(diff=filtered)
-        logger.info(
-            "review_session_end pr=%d repo=%s",
-            event.pr_number,
-            event.repo_full_name,
-        )
+            # ----- Stage B: codex (Claude-API) — up to codex_max_turns -----
+            if self._codex_available:
+                review_token = await get_codex_reviewer_token()
+                async with self._registry() as registry:
+                    loop_b = ReviewLoop(
+                        CodexReviewer(project_root),
+                        max_turns=settings.codex_max_turns,
+                        registry=registry,
+                        project_id=project_id,
+                        pr_url=event.pr_url,
+                        pr_number=event.pr_number,
+                        repo_full_name=event.repo_full_name,
+                        head_sha=head_sha,
+                        stage="codex",
+                        reviewer_token=review_token,
+                    )
+                    await loop_b.run(diff=filtered)
+            logger.info(
+                "review_session_end pr=%d repo=%s",
+                event.pr_number,
+                event.repo_full_name,
+            )
+        finally:
+            if review_root.is_temp and review_root.main_clone is not None:
+                await _remove_review_checkout(review_root.main_clone, review_root.path)
 
     def _registry(self) -> _RegistryCtx:
         """Context manager that yields an ``IReviewTurnRegistry`` bound to a session."""

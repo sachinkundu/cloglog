@@ -79,7 +79,12 @@ demo-check: ## Check demo document exists and verifies
 sync-mcp-dist: ## Rebuild mcp-server/dist and broadcast mcp_tools_updated to online worktrees (T-244)
 	@uv run python scripts/sync_mcp_dist.py
 
-quality: ## Run full quality gate (lint + typecheck + test + coverage)
+quality: ## Run full quality gate (invariants fail-fast → lint → typecheck → test → coverage → contract → demo)
+	@echo "── Invariants ──────────────────────────"
+	@echo ""
+	@echo "  Silent-failure pin tests (see docs/invariants.md):"
+	@$(MAKE) --no-print-directory invariants && echo "    all passing        ✓" || (echo "    FAILED ✗ — a silent-failure invariant regressed. See docs/invariants.md for the rule behind each pin test." && exit 1)
+	@echo ""
 	@echo "── Backend ─────────────────────────────"
 	@echo ""
 	@echo "  Lint:"

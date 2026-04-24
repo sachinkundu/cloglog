@@ -112,3 +112,8 @@ rows based on transient probes, rewriting status columns) belongs in
 Backfilling a newly-added column is the one allowed data write.
 
 **Pin:** `tests/test_no_destructive_migrations.py::test_no_destructive_migrations`
+(plus `::test_destructive_patterns_reference_real_tables`, a self-check
+that cross-references every table named in the destructive regexes
+against `Base.metadata` so a table rename can't quietly make a pattern
+dead — caught on PR #206 round 2 when `agent_sessions` was flagged in
+place of the real `sessions` table).

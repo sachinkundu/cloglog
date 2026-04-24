@@ -123,7 +123,7 @@ uvx showboat exec "$DEMO_FILE" bash \
    grep -q "ALLOWED_DESTRUCTIVE_MIGRATIONS" "$T" && echo "allowlist_present=yes" || echo "allowlist_present=MISSING"
    grep -q "def _extract_upgrade_body" "$T" && echo "upgrade_only_scope=yes" || echo "upgrade_only_scope=MISSING"
    python3 -c "
-import sys, pathlib
+import sys
 sys.path.insert(0, \"tests\")
 import test_no_destructive_migrations as m
 violations = []
@@ -131,7 +131,7 @@ for path in sorted(m.VERSIONS_DIR.glob(\"*.py\")):
     if path.name == \"__init__.py\":
         continue
     body = m._extract_upgrade_body(path.read_text())
-    for pat in m.DESTRUCTIVE_PATTERNS:
+    for pat, _tables in m.DESTRUCTIVE_PATTERNS:
         if pat.search(body):
             violations.append(path.name)
 print(f\"current_migration_violations={len(violations)}\")

@@ -1,7 +1,7 @@
 # CLAUDE.md is smaller and every silent-failure gotcha now points at a pin test runnable via `make invariants`.
 
-*2026-04-24T11:27:57Z by Showboat 0.6.1*
-<!-- showboat-id: cf9a4497-0406-4c51-9a75-2cbcd0e6affd -->
+*2026-04-24T11:35:22Z by Showboat 0.6.1*
+<!-- showboat-id: d37857d2-982b-444d-9c81-be79b2fb9a04 -->
 
 ### CLAUDE.md is no longer a dumping ground
 
@@ -155,7 +155,7 @@ T=tests/test_no_destructive_migrations.py
    grep -q "ALLOWED_DESTRUCTIVE_MIGRATIONS" "$T" && echo "allowlist_present=yes" || echo "allowlist_present=MISSING"
    grep -q "def _extract_upgrade_body" "$T" && echo "upgrade_only_scope=yes" || echo "upgrade_only_scope=MISSING"
    python3 -c "
-import sys, pathlib
+import sys
 sys.path.insert(0, \"tests\")
 import test_no_destructive_migrations as m
 violations = []
@@ -163,7 +163,7 @@ for path in sorted(m.VERSIONS_DIR.glob(\"*.py\")):
     if path.name == \"__init__.py\":
         continue
     body = m._extract_upgrade_body(path.read_text())
-    for pat in m.DESTRUCTIVE_PATTERNS:
+    for pat, _tables in m.DESTRUCTIVE_PATTERNS:
         if pat.search(body):
             violations.append(path.name)
 print(f\"current_migration_violations={len(violations)}\")

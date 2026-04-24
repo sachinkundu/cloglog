@@ -43,18 +43,32 @@ changes. Read both in full — don't truncate.
 
 #### Verdict is `needs_demo` if the diff adds or changes any of:
 
-- **HTTP route decorators.** New or changed `@router.{get,post,patch,put,delete}`
-  in `src/gateway/**/routes.py`. New path, changed response shape, or
-  changed request body schema are all stakeholder-observable.
+- **HTTP route decorators anywhere in the backend.** New or changed
+  `@router.{get,post,patch,put,delete}` (or the `@<name>_router.*` form
+  bound to the same `APIRouter`) in any Python file under `src/**`.
+  Routers live in each bounded context (`src/board/routes.py`,
+  `src/agent/routes.py`, `src/document/routes.py`, `src/gateway/routes.py`,
+  plus non-`routes.py` files like `src/gateway/sse.py`,
+  `src/gateway/webhook.py`), and `src/gateway/app.py` composes them
+  under `/api/v1`. A new path, changed response shape, or changed
+  request body schema is stakeholder-observable regardless of which
+  context owns the file. The reliable signal is the decorator, not
+  the filename — grep the diff for `@.*\.(get|post|patch|put|delete)\(`
+  to catch every case.
 - **React components rendered on a user-visible route.** Changes in
   `frontend/src/**` that affect rendered output — new components on a
   routed page, changed UI copy, changed interaction behaviour. A pure
   refactor of a component's internals (same rendered output, same props,
   same behaviour) does **not** count; look for whether a user would
   notice.
-- **MCP tool definitions.** New tool file in `mcp-server/src/tools/`,
-  renamed tool, changed input/output schema. Agents and the user both
-  observe these.
+- **MCP tool definitions.** New or changed `server.tool(...)` registrations
+  in `mcp-server/src/server.ts` (tool name, description, Zod input/output
+  schema), and changes to the tool-handler dispatcher in
+  `mcp-server/src/tools.ts` that alter what a tool returns or accepts.
+  Both agents and the user observe these — the tool surface is the
+  MCP boundary, and any schema drift is a breaking change for callers.
+  There is no `mcp-server/src/tools/` directory in this repo; do not
+  look for one.
 - **CLI output surface.** Changes in `src/**/cli.py`, user-invoked
   `scripts/*.sh`, or `Makefile` targets whose stdout a user reads. A
   `make` target that exists solely for CI/dev tooling does not count;

@@ -148,9 +148,9 @@ tools:
 
 - Read `git diff origin/main...HEAD` and `git diff --name-only origin/main...HEAD`.
 - Verdict is `needs_demo` if the diff adds or changes any of:
-  - HTTP route decorators (new/changed `@router.{get,post,patch,put,delete}` in `src/gateway/**/routes.py`, new path, changed response shape).
+  - HTTP route decorators anywhere under `src/**`. Routers live in each bounded context (`src/board/routes.py`, `src/agent/routes.py`, `src/document/routes.py`, `src/gateway/routes.py`) plus non-`routes.py` files like `src/gateway/sse.py` and `src/gateway/webhook.py`; `src/gateway/app.py` composes them under `/api/v1`. The reliable signal is the `@*_router.{get,post,patch,put,delete}(` decorator, not the filename.
   - React components rendered on a user-visible route, or user-observable UI behaviour (not pure refactors of component internals).
-  - MCP tool definitions (new tool file in `mcp-server/src/tools/`, renamed tool, changed input/output schema).
+  - MCP tool definitions — new or changed `server.tool(...)` registrations in `mcp-server/src/server.ts` (tool name, description, Zod input/output schema), and changes to the handler dispatcher in `mcp-server/src/tools.ts` that alter what a tool returns or accepts. There is no `mcp-server/src/tools/` directory in this repo.
   - CLI output surface (`src/**/cli.py`, user-invoked `scripts/*.sh`, `Makefile` targets whose stdout a user reads).
   - DB migration that changes user-observable data shape (backfill, new enum value a user sees).
 - Verdict is `no_demo` if the diff is:

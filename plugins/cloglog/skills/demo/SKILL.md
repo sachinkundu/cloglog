@@ -84,8 +84,17 @@ Agent(
 
 Using a resolved SHA (rather than `origin/main`) makes the command
 bit-identical to what `scripts/check-demo.sh` runs at gate time:
-`git diff $MERGE_BASE HEAD | sha256sum`. The three-dot and two-dot
-forms yield the same bytes when `$BASE` is already the merge-base.
+`git diff $MERGE_BASE HEAD -- . ':(exclude)docs/demos/' | sha256sum`.
+The three-dot and two-dot forms yield the same bytes when `$BASE` is
+already the merge-base.
+
+The pathspec exclude (`-- . ':(exclude)docs/demos/'`) is load-bearing:
+it keeps the hash pinned to the code the classifier evaluated,
+without the exemption.md file (which the agent is about to write)
+poisoning its own pin once committed. All three hash-computation
+sites — this skill's Step 1, the classifier subagent, and
+`scripts/check-demo.sh` — must use the same exclude or the hashes
+won't match.
 
 The subagent emits exactly one JSON object on stdout:
 

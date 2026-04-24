@@ -113,11 +113,12 @@ if [[ -f "$EXEMPTION_FILE" ]]; then
   fi
 
   # Hash MUST be computed with the same command the classifier uses so
-  # bytes match exactly. The classifier emits sha256 of
-  # `git diff origin/main...HEAD`; because MERGE_BASE is already the
-  # resolved merge-base of origin/main and HEAD, `git diff $MERGE_BASE HEAD`
-  # is bit-identical to the three-dot form.
-  CURRENT_HASH=$(git diff "$MERGE_BASE" HEAD 2>/dev/null | sha256sum | awk '{print $1}')
+  # bytes match exactly. Everyone (classifier, skill, this script) excludes
+  # `docs/demos/` from the hashed diff — otherwise committing exemption.md
+  # changes the diff bytes and invalidates its own pin. The exclusion keeps
+  # the hash pinned to the code the classifier evaluated, which is the
+  # whole point of the diff_hash invariant.
+  CURRENT_HASH=$(git diff "$MERGE_BASE" HEAD -- . ':(exclude)docs/demos/' 2>/dev/null | sha256sum | awk '{print $1}')
 
   if [[ "$STORED_HASH" == "$CURRENT_HASH" ]]; then
     echo "  Exemption verified (diff_hash matches): $EXEMPTION_FILE"

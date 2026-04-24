@@ -86,16 +86,18 @@ def _commit_code_change(repo: Path, env: dict[str, str]) -> None:
 
 
 def _current_diff_hash(repo: Path, env: dict[str, str]) -> str:
-    """Mirror check-demo.sh: ``sha256sum`` of ``git diff $MERGE_BASE HEAD``
-    where MERGE_BASE is the origin/main merge-base. Bit-identical to
-    ``git diff origin/main...HEAD``."""
+    """Mirror check-demo.sh: ``sha256sum`` of
+    ``git diff $MERGE_BASE HEAD -- . ':(exclude)docs/demos/'`` where
+    MERGE_BASE is the origin/main merge-base. The pathspec exclude is
+    load-bearing — without it, committing exemption.md would change
+    the diff bytes and invalidate its own pin."""
     merge_base = _run(
         ["git", "merge-base", "origin/main", "HEAD"],
         repo,
         env,
     ).stdout.strip()
     diff = subprocess.check_output(
-        ["git", "diff", merge_base, "HEAD"],
+        ["git", "diff", merge_base, "HEAD", "--", ".", ":(exclude)docs/demos/"],
         cwd=repo,
         env=env,
         text=True,
@@ -134,15 +136,62 @@ src/gateway.py
 
 
 def test_exemption_with_matching_hash_passes(tmp_path: Path) -> None:
+    """Real-flow happy path — commit the code change, write the
+    exemption with the correct hash, commit the exemption too, then
+    run the gate. The exemption.md commit MUST NOT invalidate its own
+    hash (pathspec-exclude of docs/demos/ keeps the hash pinned to the
+    code the classifier evaluated)."""
     env = _init_repo(tmp_path)
     _commit_code_change(tmp_path, env)
     _write_exemption(tmp_path, _current_diff_hash(tmp_path, env))
+    # Commit the exemption — real agents do this; an untracked
+    # exemption.md would never be the state the gate sees at push time.
+    _run(
+        ["git", "add", "docs/demos/feature-branch/exemption.md"],
+        tmp_path,
+        env,
+    ).check_returncode()
+    _run(
+        ["git", "commit", "-m", "add exemption"],
+        tmp_path,
+        env,
+    ).check_returncode()
     result = _run(["bash", str(CHECK_DEMO_SH)], tmp_path, env)
     assert result.returncode == 0, (
-        f"exemption with matching diff_hash was rejected.\n"
+        f"exemption with matching diff_hash was rejected after commit.\n"
         f"stdout: {result.stdout!r}\nstderr: {result.stderr!r}"
     )
     assert "Exemption verified" in result.stdout
+
+
+def test_exemption_commit_does_not_invalidate_its_own_hash(tmp_path: Path) -> None:
+    """Regression pin for the F-51 self-invalidation bug: once
+    exemption.md is committed, ``git diff $MERGE_BASE HEAD`` now
+    includes the exemption file itself. Without the pathspec exclude,
+    its bytes would shift the hash and make every real-flow PR fail
+    the gate on its first push. Assert explicitly that the hash
+    computed BEFORE the exemption commit equals the hash computed
+    AFTER — that equality is what makes the exemption path usable."""
+    env = _init_repo(tmp_path)
+    _commit_code_change(tmp_path, env)
+    hash_before_exemption = _current_diff_hash(tmp_path, env)
+    _write_exemption(tmp_path, hash_before_exemption)
+    _run(
+        ["git", "add", "docs/demos/feature-branch/exemption.md"],
+        tmp_path,
+        env,
+    ).check_returncode()
+    _run(
+        ["git", "commit", "-m", "add exemption"],
+        tmp_path,
+        env,
+    ).check_returncode()
+    hash_after_exemption = _current_diff_hash(tmp_path, env)
+    assert hash_before_exemption == hash_after_exemption, (
+        "Committing exemption.md shifted the diff_hash — the "
+        "pathspec exclude of docs/demos/ is broken or missing.\n"
+        f"before: {hash_before_exemption}\nafter:  {hash_after_exemption}"
+    )
 
 
 def test_exemption_with_stale_hash_rejected(tmp_path: Path) -> None:

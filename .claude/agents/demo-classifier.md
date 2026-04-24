@@ -105,12 +105,24 @@ stakeholders find out at release time.
 ### 3. Compute the diff hash
 
 ```bash
-git diff "$BASE"...HEAD | sha256sum | awk '{print $1}'
+git diff "$BASE" HEAD -- . ':(exclude)docs/demos/' | sha256sum | awk '{print $1}'
 ```
 
-This hash seals the classification to the exact diff you reviewed. The
-demo skill writes it into `exemption.md`'s frontmatter; `check-demo.sh`
-recomputes it and fails on drift.
+Note the pathspec exclude — `docs/demos/` is stripped from the diff
+before hashing. Without the exclude, committing `exemption.md` would
+change the diff bytes and invalidate its own pin. Everyone who
+computes this hash (this classifier, `scripts/check-demo.sh`, the
+`cloglog:demo` skill) uses the same exclude so all three bytes
+match.
+
+The two-dot `git diff A B -- pathspec` form is used here (rather than
+three-dot) because `$BASE` is a resolved merge-base SHA — `A B` and
+`A...B` are bit-identical once `A` is already the merge-base of `A`
+and `B`.
+
+This hash seals the classification to the exact code the classifier
+reviewed. The demo skill writes it into `exemption.md`'s frontmatter;
+`check-demo.sh` recomputes it and fails on drift.
 
 ### 4. Pick a `suggested_demo_shape`
 

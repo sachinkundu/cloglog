@@ -45,6 +45,23 @@ ONLY report findings that you verified by reading files outside the diff. Each f
 - Suggestions that don't fix a real problem
 - Anything you haven't verified against the actual codebase
 
+## Demo expectations
+
+Independent of the `demo-reviewer` agent, you are also an auditor for demo coverage. This check is orthogonal to patch correctness: a PR can have a correct patch AND insufficient demo evidence. Report both.
+
+Read `docs/demos/<branch>/` if it exists (the branch-to-directory convention matches `scripts/check-demo.sh` — full branch name substring match over `docs/demos/*/`, slash → hyphen normalisation).
+
+- **If the diff adds user-observable behaviour and the demo directory contains only `exemption.md` (no `demo.md`), flag it** and cite the specific files in the diff that introduce the user-observable change. User-observable surfaces in this codebase:
+  - Route decorators — `@[A-Za-z_]*router\.(get|post|patch|put|delete)\(` anywhere under `src/**` (routers live in every bounded context: `src/board/routes.py`, `src/agent/routes.py`, `src/document/routes.py`, `src/gateway/routes.py`, `src/gateway/sse.py`, `src/gateway/webhook.py`, composed in `src/gateway/app.py`).
+  - MCP tools — `server.tool(...)` registrations in `mcp-server/src/server.ts` or handler-dispatcher changes in `mcp-server/src/tools.ts` (there is no `mcp-server/src/tools/` directory).
+  - Frontend components on user-visible routes — new rendered JSX, new routed views, changed copy, changed interaction behaviour in `frontend/src/**`.
+  - CLI surfaces — `src/**/cli.py`, user-invoked `scripts/*.sh`, or `Makefile` targets whose stdout a user reads.
+  - User-observable migrations — backfills that appear on the dashboard, new enum values shown in status dots, column renames surfaced in API responses.
+- **If the diff adds frontend behaviour AND `demo.md` exists but contains zero Showboat `image` blocks, flag it.** Screenshots are the proof a stakeholder cares about for frontend work; curl output alone does not substitute.
+- **If the diff is purely internal (refactor, test-only, logging/metrics, dependency bump, internal plumbing) and there is an `exemption.md`, do not flag** — this is the intended path. The exemption's `diff_hash` pin and the `demo-reviewer` agent's Dimension D already audit whether the classifier's call was right; your job here is to catch the specific case where the classifier or reviewer missed a user-observable change.
+
+**Comment-only.** Do not gate, request changes, or mark the review as blocking for demo-coverage issues. The human user is the final merge gate; your finding is one of several pressures.
+
 ## Output
 
 "patch is correct" after thorough verification is a valid and valuable finding. Do not invent problems.

@@ -37,32 +37,23 @@ GH_TOKEN="$BOT_TOKEN" gh pr checkout <PR_NUM>
 
 ### 2. Find the demo artifact
 
-Use the **same substring lookup** that `scripts/check-demo.sh` and
-`scripts/run-demo.sh` use — not an exact branch-name match. The
-scripts derive `FEATURE` from the branch in one specific way: when
-the branch itself starts with `fN-*` (e.g. `f51-demo-classifier`),
-FEATURE collapses to the `fN` prefix; every other branch shape
-(including the common `wt-*` worktree-branch prefix) keeps the full
-branch name. FEATURE is then normalised (slash → hyphen) and
-substring-searched through `docs/demos/*/` case-insensitively. Mirror
-the scripts exactly — diverging from their algorithm is the only way
-the reviewer can be right while the gate is wrong, or vice versa.
-
-A `wt-f51-demo-classifier` branch will not match
-`docs/demos/f51-demo-classifier/` — the scripts don't strip the `wt-`
-prefix before matching, so the reviewer shouldn't either. The
-authoritative rule is "whatever `scripts/run-demo.sh` finds is what
-this reviewer reviews."
+Use the **same substring lookup** that `scripts/check-demo.sh` uses —
+the gate is what enforces the contract, so the reviewer must mirror
+it. The gate uses the full branch name as FEATURE (unless
+`DEMO_FEATURE` is set explicitly), normalises slash → hyphen, and
+substring-searches `docs/demos/*/` case-insensitively. `scripts/run-demo.sh`
+additionally collapses `fN-*` branches to the `fN` prefix, but that's a
+convenience for invoking a manually-placed feature-level demo dir;
+the gate itself does **not** honour that collapse, and neither should
+this reviewer. If a reviewer flags something the gate accepts (or
+vice versa), the reviewer is wrong.
 
 ```bash
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
-# Match scripts/run-demo.sh feature-detection: fN-* branch prefix wins,
-# otherwise full branch name. Slash→hyphen normalisation matches
-# check-demo.sh.
-case "$BRANCH" in
-  f[0-9]*-*) FEATURE=$(echo "$BRANCH" | grep -oP '^f\d+') ;;
-  *)         FEATURE="$BRANCH" ;;
-esac
+# Match scripts/check-demo.sh exactly: FEATURE is DEMO_FEATURE if set,
+# else the full branch name. Slash→hyphen normalisation matches
+# the skill's exemption.md write path (plugins/cloglog/skills/demo/SKILL.md).
+FEATURE="${DEMO_FEATURE:-$BRANCH}"
 FEATURE_NORM="${FEATURE//\//-}"
 
 # Substring search docs/demos/*/ — same convention as the scripts.
@@ -79,7 +70,9 @@ fi
 DEMO_FILE="${DEMO_DIR}demo.md"
 EXEMPTION_FILE="${DEMO_DIR}exemption.md"
 
-MERGE_BASE=$(git merge-base origin/main HEAD 2>/dev/null || git merge-base main HEAD)
+MERGE_BASE=$(git merge-base origin/main HEAD 2>/dev/null \
+  || git merge-base main HEAD 2>/dev/null \
+  || echo main)
 CHANGED=$(git diff --name-only "$MERGE_BASE" HEAD)
 NONALLOWLIST=$(echo "$CHANGED" | grep -vE '^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates)/|^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$' || true)
 ```
@@ -151,7 +144,7 @@ git diff --name-only "$MERGE_BASE" HEAD
 Test the classifier's `no_demo` verdict against what you see in the diff. The red flags that make an exemption **invalid** regardless of reasoning:
 
 - **Diff touches `frontend/src/**` with new render logic** (new `<Component>` JSX, new routed view, changed conditional render, changed user-visible copy) → **invalid exemption, demand Rodney screenshots.**
-- **Diff adds or changes any `@<name>_router.{get,post,patch,put,delete}(` decorator anywhere under `src/**`** (not just `src/gateway/` — routers live in each bounded context: `src/board/routes.py`, `src/agent/routes.py`, `src/document/routes.py`, `src/gateway/routes.py`, plus `src/gateway/sse.py`, `src/gateway/webhook.py`; `src/gateway/app.py` composes them) → **invalid exemption, demand curl demo.**
+- **Diff adds or changes any route decorator anywhere under `src/**`** — the repo's route files use plain `@router.{get,post,patch,put,delete}(` inside modules that declare a local `router = APIRouter(...)` (`src/board/routes.py`, `src/agent/routes.py`, `src/document/routes.py`, `src/gateway/routes.py`, `src/gateway/sse.py`, `src/gateway/webhook.py`), which `src/gateway/app.py` then composes. Some modules alias the router to `*_router`, so both spellings must match. The reliable grep is `grep -rE '^@[A-Za-z_]*router\.(get|post|patch|put|delete)\(' src/` — it catches `@router.get(` and `@agent_router.post(` in the same pass, mirroring the rule the `demo-classifier` subagent already uses → **invalid exemption, demand curl demo.**
 - **Diff adds or changes a `server.tool(...)` registration in `mcp-server/src/server.ts` or a handler in `mcp-server/src/tools.ts`** (there is no `mcp-server/src/tools/` directory in this repo — do not look for one) → **invalid exemption, demand MCP tool-exec demo.**
 - **Diff contains a user-observable migration** (backfill of a column shown on the dashboard, new enum value appearing in status dots, renamed column returned by an API) → **invalid exemption, demand a real demo.** The demo itself is a `backend-curl` (API response before/after the migration) or `frontend-screenshot` (UI before/after) — whichever surface exposes the migrated data to the user. Migration output (`alembic upgrade head` log lines) is **not** a demo; `plugins/cloglog/skills/demo/SKILL.md` rejects that shape and the classifier's `suggested_demo_shape` field never emits a migration-specific type.
 

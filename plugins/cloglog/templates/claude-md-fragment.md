@@ -11,8 +11,8 @@
 
 ### PR Quality
 
-- **PR body structure:** Summary (1-3 bullets) → Demo (inline proof it works) → Test Report (delta, strategy, results).
-- **The demo is the most important thing after the summary.** Embed output directly — curl responses, screenshots, state machine transitions. The reviewer should see proof before reading code.
+- **PR body structure:** `## Demo` (stakeholder sentence + demo document link, OR exemption one-liner, OR static auto-exempt note) → `## Tests` (delta, strategy, results) → `## Changes` (what changed and why). Exactly these three sections, in this order — matches what `plugins/cloglog/skills/github-bot` and `plugins/cloglog/agents/worktree-agent.md` require, and what `plugins/cloglog/skills/demo` produces.
+- **The demo is the most important section and comes first.** Embed output directly — curl responses, screenshots, state machine transitions. The reviewer should see proof before reading code.
 - **Proactive rebase:** When other PRs merge to main while yours is open, rebase before the reviewer has to ask.
 - **Conflict marker check:** After resolving merge conflicts, grep for `^<<<<<<` across source dirs to catch leftover markers.
 - Run the full quality gate before pushing. Don't assume it passes.

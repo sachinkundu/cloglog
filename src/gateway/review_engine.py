@@ -63,14 +63,24 @@ REVIEW_TIMEOUT_SECONDS: Final = 300.0
 RATE_LIMIT_WINDOW_SECONDS: Final = 3600.0
 REVIEW_POST_RETRY_DELAY_SECONDS: Final = 5.0
 REVIEW_REQUEST_TIMEOUT_SECONDS: Final = 30.0
-# Maximum number of bot reviews per PR. The cycle is at most:
-#   (1) author opens PR → bot reviews → claude-coding-agent pushes a fix,
-#   (2) bot reviews the fix → claude-coding-agent pushes another fix → human decides.
-# A single round (one bot review, one coder fix, then human approves) is
-# also fine when the first review is trivially addressable. What the cap
-# prevents is a third bot review on top of two prior ones — by that point
-# the human reviewer has enough context to act.
-MAX_REVIEWS_PER_PR: Final = 2
+# Backstop cap on bot review sessions per PR (T-227). The primary stop
+# condition is verdict-based: skip further review when the latest codex
+# review emitted ``:pass:`` (verdict="approve") in its body — the bot is
+# satisfied, the author has the signal. This cap is a secondary safety net
+# so a coder/reviewer that never converges bails out instead of looping
+# forever. 5 is chosen to give larger PRs room for a few rounds while still
+# bounded; raise it only if a real PR hits the backstop without convergence.
+MAX_REVIEWS_PER_PR: Final = 5
+# Prefix that ``_format_review_body`` emits when ``result.verdict == "approve"``
+# AND the review contains no ``critical``/``high`` findings (see the demotion
+# rule in ``_format_review_body``). The cap check reads the latest codex review's
+# body and treats this prefix as the approval signal on GitHub — the bot
+# deliberately never posts with ``event="APPROVE"`` (see ``post_review``, which
+# pins event to ``COMMENT``), so body content is the canonical approval marker.
+# A contradictory approve (verdict="approve" + severe finding) is demoted to
+# ``:warning:`` so this helper does not treat it as a real approval — matching
+# the loop's consensus predicate (PR #201 round 2 HIGH).
+_APPROVE_BODY_PREFIX: Final = ":pass:"
 # When the codex subprocess times out we kill it, then best-effort drain any
 # stderr the kernel has already flushed into the pipe. 1s is enough for the
 # kernel to hand over the buffered bytes without blocking the handler.
@@ -511,13 +521,31 @@ def _partition_findings(
     return inline, orphans
 
 
+_SEVERE_SEVERITIES: Final = frozenset({"critical", "high"})
+
+
 def _format_review_body(result: ReviewResult, orphans: list[ReviewFinding]) -> str:
-    """Assemble the top-level review body with the summary and any orphan findings."""
+    """Assemble the top-level review body with the summary and any orphan findings.
+
+    When ``verdict == "approve"`` is contradicted by any ``critical``/``high``
+    severity finding, the body prefix is demoted from ``:pass:`` to ``:warning:``
+    so the GitHub review body reflects the real consensus state. This mirrors
+    ``ReviewLoop._reached_consensus`` (``src/gateway/review_loop.py:124-149``),
+    which refuses to short-circuit a contradictory approve — the two must stay
+    aligned so the T-227 ``latest_codex_review_is_approval`` helper cannot treat
+    a contradictory row as a real approval on webhook replay. Observed on
+    PR #190 with gemma4-e4b-32k emitting ``:pass:`` + ``[CRITICAL]`` in the
+    same turn (codex flagged the gap on PR #201 round 2 HIGH).
+    """
+    has_severe_finding = any(f.severity in _SEVERE_SEVERITIES for f in result.findings)
+    effective_verdict = (
+        "request_changes" if result.verdict == "approve" and has_severe_finding else result.verdict
+    )
     verdict_icon = {
         "approve": "pass",
         "request_changes": "warning",
         "comment": "info",
-    }.get(result.verdict, "info")
+    }.get(effective_verdict, "info")
     lines = [
         f":{verdict_icon}: {result.summary}",
     ]
@@ -575,6 +603,86 @@ async def count_bot_reviews(
     # Legacy fallback: no commit_ids at all — back-compat with existing tests
     # that don't set ``commit_id`` in their mocked review payloads.
     return len(codex_rows)
+
+
+async def latest_codex_review_is_approval(
+    repo_full_name: str,
+    pr_number: int,
+    token: str,
+    head_sha: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> bool:
+    """Return whether the latest codex review of ``head_sha`` emitted ``:pass:``.
+
+    Scoped to a single commit on purpose: an approval of commit A must NOT
+    suppress review of a newly-pushed commit B. This aligns with the rest of
+    the review pipeline, whose consensus and turn accounting are keyed on
+    ``(pr_url, head_sha, stage)`` (``src/review/repository.py`` unique index;
+    ``src/gateway/review_loop.py`` turn sequencer; ``docs/design/two-stage-pr-review.md``
+    §3 "new push starts both stages from turn 1"). A PR-wide scope here would
+    let an older commit's ``:pass:`` mask regressions introduced on a later push.
+
+    Approval is encoded as the ``_APPROVE_BODY_PREFIX`` (``:pass:``) on the
+    review body because ``post_review`` pins ``event="COMMENT"`` (bot never
+    flips GitHub's merge state). Rows are filtered by ``commit_id == head_sha``
+    — legacy rows without ``commit_id`` are deliberately excluded; they cannot
+    prove an approval of *this* commit. GitHub's /reviews endpoint returns
+    rows oldest-first by id, so the last matching row is the most recent.
+    Returns False when ``head_sha`` is empty (caller couldn't resolve a
+    commit to scope to) or when no codex review matches ``head_sha``.
+    """
+    if not head_sha:
+        return False
+    url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}/reviews"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    close_when_done = client is None
+    http = client or httpx.AsyncClient()
+    try:
+        resp = await http.get(url, headers=headers, timeout=REVIEW_REQUEST_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        reviews = resp.json()
+    finally:
+        if close_when_done:
+            await http.aclose()
+    codex_rows = [
+        r
+        for r in reviews
+        if (r.get("user") or {}).get("login") == _CODEX_BOT and r.get("commit_id") == head_sha
+    ]
+    if not codex_rows:
+        return False
+    body = (codex_rows[-1].get("body") or "").lstrip()
+    return body.startswith(_APPROVE_BODY_PREFIX)
+
+
+def _should_skip_for_cap(
+    prior_sessions: int,
+    latest_is_approval: bool,
+) -> tuple[bool, bool]:
+    """Pure decision helper for T-227 cap — returns ``(skip, is_backstop)``.
+
+    Semantics:
+    - ``(True, False)``  → latest bot review was an approval; skip silently
+      (the author already has the ``:pass:`` signal).
+    - ``(True, True)``   → session backstop reached without approval; skip
+      AND post a skip comment so the author knows review is done.
+    - ``(False, False)`` → proceed with the review.
+
+    Approval beats the backstop: if ``latest_is_approval`` is True we always
+    return the silent-skip branch, even when ``prior_sessions >= MAX_REVIEWS_PER_PR``.
+    Posting a "maximum reached" comment on a PR the bot already approved
+    would be confusing.
+    """
+    if latest_is_approval:
+        return (True, False)
+    if prior_sessions >= MAX_REVIEWS_PER_PR:
+        return (True, True)
+    return (False, False)
 
 
 async def post_review(
@@ -805,19 +913,46 @@ class ReviewEngineConsumer:
         # Claude bot token for reading diffs (has contents:read).
         claude_token = await get_github_app_token()
 
-        # Per-PR session cap (spec §6.3): only applies when codex is runnable
-        # (the cap counts codex bot sessions specifically). On an opencode-only
-        # host (spec §5.4 registration matrix row 3), skip the cap check — an
-        # unconditional codex token fetch would blow up before stage A runs.
-        # Fix for PR #187 round 1 HIGH.
+        # Head SHA that triggered this webhook — needed up-front because the
+        # T-227 approval check is per-commit (an approval of commit A must
+        # not suppress review of a newly-pushed commit B). Falls through to
+        # the degraded path further down if empty.
+        head_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
+
+        # Per-PR session cap (spec §6.3, T-227): verdict-based with a backstop.
+        # Skip further review when the latest codex review OF THE CURRENT head_sha
+        # emitted ``:pass:`` (bot satisfied with THIS commit — author has the
+        # signal). The count-based backstop at ``MAX_REVIEWS_PER_PR`` counts
+        # PR-wide sessions and only fires when no approval has been reached on
+        # the current head. Only applies when codex is runnable — opencode-only
+        # hosts (spec §5.4 registration matrix row 3) skip the cap check; an
+        # unconditional codex token fetch would blow up before stage A runs
+        # (PR #187 round 1).
         if self._codex_available:
             codex_token_for_cap = await get_codex_reviewer_token()
             prior = await count_bot_reviews(
                 event.repo_full_name, event.pr_number, codex_token_for_cap
             )
-            if prior >= MAX_REVIEWS_PER_PR:
+            # Short-circuit: zero prior reviews cannot include an approval, so
+            # no need for the extra HTTP call. Keeps existing tests with
+            # ``count_bot_reviews = 0`` stubs working unchanged.
+            latest_is_approval = prior > 0 and await latest_codex_review_is_approval(
+                event.repo_full_name,
+                event.pr_number,
+                codex_token_for_cap,
+                head_sha,
+            )
+            skip, is_backstop = _should_skip_for_cap(prior, latest_is_approval)
+            if skip and not is_backstop:
                 logger.info(
-                    "PR #%d already has %d bot sessions (cap=%d) — skipping",
+                    "PR #%d: latest bot review is an approval (:pass:) — skipping further review",
+                    event.pr_number,
+                )
+                return
+            if skip and is_backstop:
+                logger.info(
+                    "PR #%d reached bot-review backstop "
+                    "(%d sessions, cap=%d, no approval) — skipping",
                     event.pr_number,
                     prior,
                     MAX_REVIEWS_PER_PR,
@@ -826,9 +961,9 @@ class ReviewEngineConsumer:
                     event,
                     SkipReason.MAX_REVIEWS,
                     (
-                        f"Review skipped: this PR already has the "
-                        f"maximum of {MAX_REVIEWS_PER_PR} bot review sessions. "
-                        f"Request human review."
+                        f"Review skipped: this PR reached the maximum of "
+                        f"{MAX_REVIEWS_PER_PR} bot review sessions without the "
+                        f"bot reaching approval. Request human review."
                     ),
                 )
                 return
@@ -867,7 +1002,7 @@ class ReviewEngineConsumer:
         # Resolve the turn registry + project_id. The sequencer writes turn-
         # accounting rows into ``pr_review_turns``; idempotency + reset rules
         # (spec §3.3/§3.4) depend on the registry being consulted every turn.
-        head_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
+        # ``head_sha`` was resolved up-front for the T-227 cap check.
         if self._session_factory is None or not head_sha:
             logger.warning(
                 "Review sequencer fell back to single-turn codex path for PR #%d "

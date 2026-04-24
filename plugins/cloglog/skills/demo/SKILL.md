@@ -58,15 +58,34 @@ satisfying. If you edit one, edit both, and re-run
 
 ## Step 1 — Classifier (only runs if Step 0 did not auto-exempt)
 
-Spawn the `demo-classifier` subagent via the `Agent` tool:
+First, resolve the merge-base SHA using the **same fallback chain as
+Step 0 and `scripts/check-demo.sh`** — never hard-code `origin/main`.
+Worktrees that have only local `main` configured must still be able to
+classify:
+
+```bash
+MERGE_BASE=$(git merge-base origin/main HEAD 2>/dev/null \
+  || git merge-base main HEAD 2>/dev/null \
+  || echo main)
+```
+
+Then spawn the `demo-classifier` subagent via the `Agent` tool, passing
+`MERGE_BASE` explicitly so the subagent doesn't re-resolve (and so its
+`diff_hash` is computed against the exact same ref the gate will
+recompute against):
 
 ```
 Agent(
   description: "Classify demo need for current diff",
   subagent_type: "demo-classifier",
-  prompt: "Read git diff origin/main...HEAD and emit the JSON verdict per your subagent definition. Do not write any files. No prose — JSON only."
+  prompt: "BASE=<the MERGE_BASE you resolved above, literal SHA>. Read git diff \"$BASE\" HEAD and git diff --name-only \"$BASE\" HEAD, then emit the JSON verdict per your subagent definition. Do not write any files. No prose — JSON only."
 )
 ```
+
+Using a resolved SHA (rather than `origin/main`) makes the command
+bit-identical to what `scripts/check-demo.sh` runs at gate time:
+`git diff $MERGE_BASE HEAD | sha256sum`. The three-dot and two-dot
+forms yield the same bytes when `$BASE` is already the merge-base.
 
 The subagent emits exactly one JSON object on stdout:
 

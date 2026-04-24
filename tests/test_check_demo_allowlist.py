@@ -103,9 +103,23 @@ ALLOWLISTED_PATHS = [
     "tests/e2e/test_browser.py",
     "Makefile",
     "plugins/cloglog/hooks/new-hook.sh",
+    # Plugin subdirs beyond hooks — all developer/workflow tooling,
+    # never user-observable code. Regression from the initial F-51
+    # regex (codex round 1 on PR #208): PR 4 (skill) and PR 6
+    # (template) would otherwise fail check-demo.sh mid-rollout.
+    "plugins/cloglog/skills/demo/SKILL.md",
+    "plugins/cloglog/agents/demo-classifier.md",
+    "plugins/cloglog/templates/codex-review-prompt.md",
     "pyproject.toml",
     "ruff.toml",
     "uv.lock",
+    # Nested package-lock.json — the repo's real dependency lockfiles.
+    # Regression from the initial F-51 regex (codex round 1 on PR #208):
+    # the old allowlist matched `package-lock.json$` (no path anchor);
+    # dropping it to `\.lock$` only broke dep-only PRs touching
+    # frontend/ or mcp-server/.
+    "frontend/package-lock.json",
+    "mcp-server/package-lock.json",
 ]
 
 

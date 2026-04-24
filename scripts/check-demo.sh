@@ -28,7 +28,7 @@ fi
 MERGE_BASE=$(git merge-base origin/main HEAD 2>/dev/null \
   || git merge-base main HEAD 2>/dev/null \
   || echo "main")
-CODE_CHANGES=$(git diff "$MERGE_BASE" --name-only 2>/dev/null | grep -vE '^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/hooks/|^pyproject\.toml$|^ruff\.toml$|\.lock$' | head -1 || true)
+CODE_CHANGES=$(git diff "$MERGE_BASE" --name-only 2>/dev/null | grep -vE '^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates)/|^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$' | head -1 || true)
 if [[ -z "$CODE_CHANGES" ]]; then
   echo "  Docs-only branch — no demo required."
   exit 0

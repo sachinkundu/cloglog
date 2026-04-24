@@ -50,9 +50,11 @@ agent finishes code  →  invokes `cloglog:demo` skill
             │  Every changed file matches    │
             │  docs/, tests/, Makefile,      │
             │  scripts/, .github/, .claude/, │
-            │  .cloglog/, plugins/*/hooks/,  │
-            │  *.lock, CLAUDE.md,            │
-            │  pyproject.toml, ruff.toml ?   │
+            │  .cloglog/, CLAUDE.md,         │
+            │  plugins/*/{hooks,skills,      │
+            │  agents,templates}/,           │
+            │  pyproject.toml, ruff.toml,    │
+            │  package-lock.json, *.lock ?   │
             └────────────┬───────────────────┘
                          │
                  yes ────┴──── no
@@ -106,16 +108,21 @@ Current regex (inverse — what's **excluded** from allowlist):
 New regex (same semantics — any changed file *not* matching is a reason
 to not auto-exempt):
 ```
-^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/hooks/|^pyproject\.toml$|^ruff\.toml$|\.lock$
+^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates)/|^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$
 ```
 
 Added paths:
 - `tests/` (all tests, not just e2e — unit/integration/property
   tests are equally unobservable to a stakeholder).
 - `Makefile` (build orchestration, not user behaviour).
-- `plugins/*/hooks/` (plugin infrastructure — not user-observable code).
+- `plugins/*/(hooks|skills|agents|templates)/` (plugin infrastructure —
+  workflow tooling for developers/agents, not user-observable code).
 - `.cloglog/` (project config).
 - `pyproject.toml`, `ruff.toml`, `*.lock` (tooling/deps).
+- `package-lock.json` (nested or root — this repo keeps dependency
+  lockfiles at `frontend/package-lock.json` and
+  `mcp-server/package-lock.json`; the pre-F-51 allowlist matched
+  `package-lock\.json$` unanchored for exactly this reason).
 
 If every changed file matches the allowlist → `check-demo.sh` exits 0.
 No subagent, no artifact, no demo, no exemption file required.
@@ -177,7 +184,7 @@ Prepend two steps in front of the existing Steps 1–6.
 ```bash
 BASE=$(git merge-base origin/main HEAD 2>/dev/null || git merge-base main HEAD)
 CHANGED=$(git diff --name-only "$BASE"..HEAD)
-NONALLOWLIST=$(echo "$CHANGED" | grep -vE '^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/hooks/|^pyproject\.toml$|^ruff\.toml$|\.lock$' || true)
+NONALLOWLIST=$(echo "$CHANGED" | grep -vE '^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates)/|^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$' || true)
 
 if [[ -z "$NONALLOWLIST" ]]; then
   echo "Auto-exempt: all changes are in the static allowlist."

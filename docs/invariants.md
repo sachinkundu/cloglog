@@ -125,9 +125,9 @@ place of the real `sessions` table).
 The gate's "docs-only" short-circuit (the `grep -vE` regex at line 31)
 must exempt a branch if, and only if, every changed file matches the
 allowlist: `docs/`, `CLAUDE.md`, `.claude/`, `.cloglog/`, `scripts/`,
-`.github/`, `tests/`, `Makefile`, `plugins/*/hooks/`, `pyproject.toml`,
-`ruff.toml`, `*.lock`. A single file outside that set forces the demo
-gate. The failure mode the pin guards is a silent regression: an edit
+`.github/`, `tests/`, `Makefile`, `plugins/*/{hooks,skills,agents,templates}/`,
+`pyproject.toml`, `ruff.toml`, `package-lock.json` (nested or root),
+`*.lock`. A single file outside that set forces the demo gate. The failure mode the pin guards is a silent regression: an edit
 that drops a listed path (reintroducing false positives for agents who
 touch `Makefile` or `tests/`) OR that widens the allowlist to match a
 user-observable path (a new route file that now auto-exempts). Neither

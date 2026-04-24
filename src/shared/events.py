@@ -53,6 +53,7 @@ class EventBus:
         self._global_subscribers: list[asyncio.Queue[Event]] = []
 
     def subscribe(self, project_id: UUID) -> asyncio.Queue[Event]:
+        """Subscribe to events for a single project."""
         queue: asyncio.Queue[Event] = asyncio.Queue()
         self._subscribers.setdefault(project_id, []).append(queue)
         return queue

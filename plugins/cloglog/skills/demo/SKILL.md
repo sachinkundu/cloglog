@@ -8,11 +8,135 @@ user-invocable: false
 
 Stop and ask: **what would I show on demo day?**
 
-This skill walks you through producing a demo that proves the feature works — from the stakeholder's perspective, not the engineer's.
+This skill walks you through deciding whether a demo is needed, and — when
+it is — producing one that proves the feature works from the stakeholder's
+perspective, not the engineer's.
+
+The flow has three possible terminal states for a PR:
+
+1. **Auto-exempt** (Step 0) — every changed file is developer-tooling
+   infrastructure, covered by the static allowlist. No artifact produced.
+2. **Exempt via `exemption.md`** (Step 1) — the `demo-classifier` subagent
+   reads the diff and verdict's `no_demo`. The skill writes
+   `docs/demos/<branch>/exemption.md` with a hash of the diff.
+3. **Real demo** (Steps 2–6) — the classifier says `needs_demo`, or you
+   already know the change is user-observable. Produce a Showboat/Rodney
+   demo.
+
+Which state applies is not your judgment call to make on gut feel. Run
+Step 0. Run Step 1 if Step 0 doesn't terminate. Only write a real demo
+when the flow directs you to.
 
 ---
 
-## Step 1 — State the feature
+## Step 0 — Static fast-path
+
+Check whether every changed file is developer infrastructure. If so, the
+gate auto-exempts and you write nothing.
+
+```bash
+BASE=$(git merge-base origin/main HEAD 2>/dev/null || git merge-base main HEAD)
+CHANGED=$(git diff --name-only "$BASE" HEAD)
+NONALLOWLIST=$(echo "$CHANGED" | grep -vE '^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates)/|^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$' || true)
+
+if [[ -z "$NONALLOWLIST" ]]; then
+  echo "Auto-exempt: all changes are in the static allowlist."
+  # Skill exits here. No file written. scripts/check-demo.sh will reach
+  # the same conclusion with the same regex when `make quality` runs.
+  exit 0
+fi
+```
+
+The regex **must** be kept bit-identical to the one in
+`scripts/check-demo.sh`. Drift between the two silently re-introduces
+the F-51 failure mode the skill was written to prevent — agents
+producing synthetic grep/awk demos to satisfy a gate that didn't need
+satisfying. If you edit one, edit both, and re-run
+`tests/test_check_demo_allowlist.py`.
+
+---
+
+## Step 1 — Classifier (only runs if Step 0 did not auto-exempt)
+
+Spawn the `demo-classifier` subagent via the `Agent` tool:
+
+```
+Agent(
+  description: "Classify demo need for current diff",
+  subagent_type: "demo-classifier",
+  prompt: "Read git diff origin/main...HEAD and emit the JSON verdict per your subagent definition. Do not write any files. No prose — JSON only."
+)
+```
+
+The subagent emits exactly one JSON object on stdout:
+
+```json
+{
+  "verdict": "needs_demo" | "no_demo",
+  "reasoning": "signal/counter-signal + counterfactual",
+  "diff_hash": "<sha256 of git diff origin/main...HEAD>",
+  "suggested_demo_shape": "backend-curl" | "frontend-screenshot" | "mcp-tool-exec" | "cli-exec" | null
+}
+```
+
+Parse the JSON mechanically. Ignore anything that is not valid JSON —
+treat it as a classifier failure and escalate rather than guess.
+
+### If `verdict == "no_demo"`
+
+Write `docs/demos/<branch>/exemption.md` and commit it. Branch-name
+slashes become hyphens (`feat/foo` → `feat-foo`). Frontmatter must
+carry `verdict`, `diff_hash`, `classifier`, `generated_at` — those four
+fields are what `scripts/check-demo.sh` reads.
+
+```bash
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+DEMO_DIR="docs/demos/${BRANCH//\//-}"
+mkdir -p "$DEMO_DIR"
+
+cat > "$DEMO_DIR/exemption.md" <<MD
+---
+verdict: no_demo
+diff_hash: <classifier's diff_hash, verbatim>
+classifier: demo-classifier
+generated_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+---
+
+## Why no demo
+
+<paste classifier reasoning verbatim — signal, counter-signal, counterfactual>
+
+## Changed files
+
+$(git diff --name-only "$BASE" HEAD | sed 's/^/- /')
+MD
+```
+
+Then:
+- `git add "$DEMO_DIR/exemption.md"` and commit it alongside your code
+  changes.
+- Skill exits. Your PR body uses the compact exemption section shown
+  in Step 6 below.
+- `scripts/check-demo.sh` recomputes the hash at gate time; if you keep
+  coding after exemption, the hash drifts and the gate fails. That is
+  intentional — re-run this skill to reclassify.
+
+### If `verdict == "needs_demo"`
+
+Proceed to Step 2 below. Seed the decision table with the classifier's
+`suggested_demo_shape` as a starting point:
+
+- `backend-curl` → Backend API / CLI row.
+- `frontend-screenshot` → Frontend / UI row.
+- `mcp-tool-exec` → MCP server tool row.
+- `cli-exec` → CLI row (subset of backend/API).
+
+The classifier is a suggestion, not a decree — if the diff is a
+combo (backend + frontend), Step 3 tells you to run both.
+
+---
+
+## Step 2 — State the feature
 
 Write one sentence from the stakeholder's view. This sentence opens your `demo.md` and your PR body.
 
@@ -23,7 +147,7 @@ The stakeholder sentence describes what the user can now *do*, not what you buil
 
 ---
 
-## Step 2 — Demo decision table
+## Step 3 — Demo decision table
 
 Pick your row based on what changed:
 
@@ -33,13 +157,13 @@ Pick your row based on what changed:
 | Frontend / UI | Browser screenshots of state transitions | Rodney screenshots → Showboat `image` |
 | MCP server tool | curl the backend endpoint AND a Claude session calling the actual MCP tool | Showboat `exec` + `note` |
 | Backend + Frontend combo | API curl for the write path + Rodney screenshots for the read path | Both Showboat flows combined |
-| Docs / config only | No demo required — use exemption declaration (Step 5) | N/A |
+| Docs / config only | Should have auto-exempted at Step 0. If you're here, Step 0 or Step 1 made a mistake — halt and re-check. | N/A |
 
-If your change touches code (any `.py`, `.ts`, `.tsx`, `.js` file), you need a demo. Test output, log lines, and migration output are **not** demos — they are test evidence. The demo shows a user action and its outcome.
+If your change touches code (any `.py`, `.ts`, `.tsx`, `.js` file) AND the classifier returned `needs_demo`, you need a demo. Test output, log lines, and migration output are **not** demos — they are test evidence. The demo shows a user action and its outcome.
 
 ---
 
-## Step 3 — Show the journey
+## Step 4 — Show the journey
 
 A demo has three moments:
 
@@ -51,7 +175,7 @@ Not just the happy path — include at least one edge case or error response tha
 
 ---
 
-## Step 4 — Produce the demo
+## Step 5 — Produce the demo
 
 ### Two-file structure
 
@@ -192,34 +316,11 @@ Then run: `make demo`
 
 ---
 
-## Step 5 — Exemption declaration
-
-Some changes legitimately have no demo. Valid reasons:
-
-- Pure docs/spec/plan changes (no `.py`, `.ts`, `.tsx`, `.js` files changed)
-- Refactor with no observable behavior change (must justify: what is the same before and after?)
-- Test-only changes (the test run IS the proof — cite the test names and pass counts)
-
-**Invalid reasons:** "the change is small", "it's obvious", "it's just a config change", "I don't have time".
-
-If exempting, paste this block verbatim into your PR body as the `## Demo` section:
-
-```
-## Demo
-
-**No demo — exemption declared.**
-
-Reason: <one of the valid reasons above>
-Evidence: <what proves this is a valid exemption: list of changed files showing only docs, or test names + pass counts, or before/after behavior description showing nothing observable changed>
-```
-
-The demo reviewer will check that your reason is valid and your evidence matches.
-
----
-
 ## Step 6 — PR body
 
-Section order is non-negotiable. Demo goes first.
+Section order is non-negotiable. Demo (or exemption) goes first.
+
+**If you wrote a `demo.md`:**
 
 ```markdown
 ## Demo
@@ -240,7 +341,29 @@ Re-verify: `uvx showboat verify docs/demos/<branch>/demo.md`
 <what changed and why — bullet points>
 ```
 
-Do not write the PR body until `make demo` has run successfully and `demo.md` exists in the repo. The demo document must be committed with the PR.
+**If the classifier returned `no_demo` and you committed `exemption.md`:**
+
+```markdown
+## Demo
+
+**No demo — classifier exemption (`docs/demos/<branch>/exemption.md`).**
+
+<one-line paraphrase of the classifier's `reasoning` — not the full JSON>
+
+Verify: `bash scripts/check-demo.sh` (recomputes the diff hash and passes when the exemption is fresh).
+
+## Tests
+
+...
+
+## Changes
+
+...
+```
+
+Do not write the PR body until either `make demo` has run successfully (if you have a demo) or `bash scripts/check-demo.sh` prints `Exemption verified` (if you have an exemption).
+
+**If Step 0 auto-exempted and you wrote no file:** paste the one-line summary from Step 0's output into the PR body; `check-demo.sh` will reach the same conclusion on its own.
 
 ---
 
@@ -252,13 +375,15 @@ Before creating the PR, run:
 make demo-check
 ```
 
-This calls `scripts/check-demo.sh` which:
-1. Skips on `main` branch (no demo required)
-2. Skips docs-only branches (no code changed)
-3. Checks `docs/demos/<branch>/demo.md` exists
-4. Runs `uvx showboat verify` if showboat is available
+This calls `scripts/check-demo.sh` which tries three acceptance paths in order:
 
-`make quality` also calls `demo-check` as its last step — your commit will be blocked if the demo is missing or fails verification.
+1. **Static allowlist** — every changed file matches the widened regex. Exit 0.
+2. **`demo.md` present** — run `uvx showboat verify`. Pass → exit 0.
+3. **`exemption.md` present** — parse frontmatter, recompute `sha256(git diff $MERGE_BASE HEAD)`, compare against stored `diff_hash`. Match → exit 0. Mismatch → exit 1 with "exemption is stale for current diff".
+
+If both `demo.md` and `exemption.md` exist, `demo.md` wins.
+
+`make quality` also calls `demo-check` as its last step — your commit will be blocked if the demo is missing, the demo fails verification, or the exemption's hash is stale.
 
 **Note:** `uvx showboat verify` re-runs all captured commands. It requires the same server state as when you recorded the demo. Run verify as part of `make demo` (already built into the demo-script.sh template above), not as a standalone step after the server is down.
 

@@ -31,8 +31,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from src.gateway.webhook_dispatcher import webhook_dispatcher
     from src.shared.config import settings
     from src.shared.database import async_session_factory
+    from src.shared.events import event_bus
 
     logger = logging.getLogger(__name__)
+
+    # Cross-worker event mirror — every gunicorn worker LISTENs on the same
+    # Postgres channel so an event published on worker A reaches an SSE
+    # subscriber on worker B (T-228).
+    event_bus.configure_cross_worker(settings.database_url)
+    await event_bus.start_listener()
 
     # Register webhook consumers
     webhook_dispatcher.register(AgentNotifierConsumer())
@@ -106,6 +113,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
+    await event_bus.stop_listener()
 
 
 def create_app() -> FastAPI:

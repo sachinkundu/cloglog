@@ -17,13 +17,29 @@ from src.shared.events import Event, event_bus
 
 router = APIRouter(tags=["sse"])
 
+# How often sse-starlette emits a keepalive comment (`: ping\n\n`) on an
+# otherwise idle SSE stream. Without this, idle connections behind a proxy
+# or tunnel can be silently reaped — the browser never realizes the stream
+# went dead and stops auto-refreshing the dashboard (T-228).
+SSE_PING_INTERVAL_SECONDS = 15
+
 
 async def _event_generator(
     project_id: UUID,
 ) -> AsyncGenerator[dict[str, str], None]:
-    """Yield SSE events for a project from the event bus."""
+    """Yield SSE events for a project from the event bus.
+
+    Emits an initial ``connected`` frame so the client sees activity
+    immediately rather than waiting for the first business event. The
+    periodic keepalive is configured at the EventSourceResponse level
+    via ``ping``.
+    """
     queue = event_bus.subscribe(project_id)
     try:
+        yield {
+            "event": "connected",
+            "data": json.dumps({"type": "connected", "project_id": str(project_id)}),
+        }
         while True:
             event: Event = await queue.get()
             yield {
@@ -45,4 +61,7 @@ async def stream_events(
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    return EventSourceResponse(_event_generator(project_id))
+    return EventSourceResponse(
+        _event_generator(project_id),
+        ping=SSE_PING_INTERVAL_SECONDS,
+    )

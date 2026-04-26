@@ -1,26 +1,27 @@
 ---
 verdict: no_demo
-diff_hash: 7351a0d3c53a123d5e2e225af2f9f849fff5122accc8cbd061b7a17b58b1c7a4
+diff_hash: dc78abe8523be74715e413503704a4e1aca94497b222e7e214eb78a42361a151
 classifier: demo-classifier
-generated_at: 2026-04-26T10:41:53Z
+generated_at: 2026-04-26T11:26:35Z
 ---
 
 ## Why no demo
 
-Diff touches only agent-internal plumbing: docs
-(`docs/design/agent-lifecycle.md`), worktree-agent/skill prompts
+The diff is internal agent-workflow plumbing: docs
+(`docs/design/agent-lifecycle.md` §3.1), plugin prompts
 (`plugins/cloglog/agents/worktree-agent.md`,
-`plugins/cloglog/skills/github-bot/SKILL.md`,
-`plugins/cloglog/skills/launch/SKILL.md`), a new pure helper at
-`plugins/cloglog/scripts/auto_merge_gate.py` invoked by agents via shell, and
-two test files. No `@router.*` decorator changes in `src/**`, no React
-components, no `server.tool` registrations in `mcp-server/`, no user-invoked
-CLI surface, and no DB migrations. Strongest counter-signal considered was
-the `auto_merge_gate.py` CLI-shaped helper, but its consumer is the
-worktree-agent's bash, not a human reading stdout. If the change had added an
-`@router.*` (e.g. exposing a merge-gate decision endpoint in
-`src/gateway/`) or modified `mcp-server/src/server.ts` tool schemas, the
-verdict would flip to `needs_demo`.
+`plugins/cloglog/skills/{github-bot,launch}/SKILL.md`), a pure-decision
+helper (`plugins/cloglog/scripts/auto_merge_gate.py`), and pin tests. No
+`@router.*` decorator changes anywhere under `src/**`, no
+`frontend/src/**` edits, no `server.tool(...)` change in
+`mcp-server/src/server.ts`, and the new script is invoked by worktree agents
+(not a user-read CLI). The strongest `needs_demo` candidate was the
+`auto_merge_gate.py` script, but it's an internal subprocess in an agent
+handler — its stdout (`merge`/hold reason) is consumed by bash, not read by
+a stakeholder. Counterfactual: if the change had also added a `@router.*`
+endpoint to surface auto-merge state on the dashboard, or a UI badge in
+`frontend/src/**` showing the `hold-merge` label state, the verdict would
+have flipped to `needs_demo` (frontend-screenshot).
 
 ## Changed files
 

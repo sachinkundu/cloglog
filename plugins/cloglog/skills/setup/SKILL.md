@@ -30,17 +30,25 @@ mcp__cloglog__register_agent(worktree_path: "<current working directory>")
 
 Save the returned `worktree_id` — you'll need it for agent operations.
 
-### 2. Start inbox monitor
+### 2. Start inbox monitor (idempotent)
 
-The inbox file is at `<current working directory>/.cloglog/inbox`. Start a persistent monitor:
+The inbox file is at `<current working directory>/.cloglog/inbox`. **One inbox monitor per agent process, period.** Persistent monitors are session-local but are NOT auto-stopped on `/clear`, so a naive spawn on every `/cloglog setup` accumulates duplicate tails — every inbox event then fires N times.
 
-```
-Monitor(
-  command: "tail -f <current working directory>/.cloglog/inbox",
-  description: "Main agent inbox — messages from worktree agents",
-  persistent: true
-)
-```
+Before spawning, reconcile against existing monitors:
+
+1. Call `TaskList`.
+2. Filter for running Monitor tasks whose `command` matches `tail -f <current working directory>/.cloglog/inbox` (compare the full inbox path).
+3. Branch on the count of matches:
+   - **Exactly one** → reuse it. Tell the user: *"Reusing existing inbox monitor (task `<id>`)."* Do NOT spawn a new Monitor.
+   - **Zero** → spawn a fresh persistent monitor:
+     ```
+     Monitor(
+       command: "tail -f <current working directory>/.cloglog/inbox",
+       description: "Main agent inbox — messages from worktree agents",
+       persistent: true
+     )
+     ```
+   - **Two or more** → keep the oldest matching monitor (lowest creation time / first in `TaskList` ordering), `TaskStop` each of the others, and tell the user: *"Stopped N duplicate monitor(s); reusing task `<id>`."*
 
 ### 3. Confirm
 

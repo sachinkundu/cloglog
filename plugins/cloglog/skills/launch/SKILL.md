@@ -69,14 +69,24 @@ Priority: <priority>
 - Feature ID: `<uuid>` (if applicable)
 
 ## Inbox
-Monitor your inbox for messages from the main agent:
-```
-Monitor(
-  command: "tail -f <WORKTREE_PATH>/.cloglog/inbox",
-  description: "Messages from main agent",
-  persistent: true
-)
-```
+Monitor your inbox for messages from the main agent. **One inbox monitor per agent process, period** — persistent monitors survive `/clear`, so a naive spawn on a re-entered session would duplicate tails and triple-fire every event.
+
+Before spawning, reconcile against existing monitors:
+
+1. Call `TaskList`.
+2. Filter for running Monitor tasks whose `command` matches `tail -f <WORKTREE_PATH>/.cloglog/inbox`.
+3. Branch on the count of matches:
+   - **Exactly one** → reuse it; do not spawn a new Monitor.
+   - **Zero** → spawn a fresh persistent monitor:
+     ```
+     Monitor(
+       command: "tail -f <WORKTREE_PATH>/.cloglog/inbox",
+       description: "Messages from main agent",
+       persistent: true
+     )
+     ```
+   - **Two or more** → keep the oldest matching monitor and `TaskStop` the rest.
+
 When you receive a message, read it and act on the instruction. The main agent may send rebasing requests, priority changes, or other guidance.
 
 ## Workflow

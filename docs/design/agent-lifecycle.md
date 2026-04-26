@@ -300,12 +300,30 @@ manual merges (PR #217). A successful merge fires the existing
 reviewer side (`review_engine.py`, codex bot prompt, `post_review`) is
 not modified by T-295; codex output stays as-is.
 
-**Hold reasons.** When the gate refuses to merge it returns one of
-`not_codex_reviewer`, `not_codex_pass`, `ci_not_green`, `hold_label`.
-The agent calls `add_task_note` for `hold_label` (the human wants to
-know the override is in effect) and stays in `review` for the others —
-the next webhook event (CI completion, push, label removal) re-runs the
-gate with fresh data.
+**Hold reasons and re-trigger paths.** When the gate refuses to merge it
+returns one of `not_codex_reviewer`, `not_codex_pass`, `ci_not_green`,
+`hold_label`. The re-trigger surface is *narrower than the conditions
+suggest* because the webhook consumer at `src/gateway/webhook_consumers.py`
+only bridges a subset of GitHub events to the worktree inbox: `ci_failed`
+fires only on terminal failure (success and pending produce no event),
+and `pull_request` actions are filtered to `opened/synchronize/closed`
+in `src/gateway/webhook.py` (label changes never reach the agent). The
+agent therefore handles each hold reason explicitly:
+
+| `reason` | Gate re-runs by itself? | What clears the hold |
+| --- | --- | --- |
+| `not_codex_reviewer` | No | The next codex `review_submitted` event. |
+| `not_codex_pass` | No | A new codex review on the next push (codex re-reviews on `synchronize`). |
+| `ci_not_green` | **Yes — synchronous in-handler wait** | The handler runs `gh pr checks <num> --watch --interval 30` inside the same `review_submitted` invocation, then re-evaluates the gate exactly once. CI completion does NOT produce an inbox event, so the wait must happen here. |
+| `hold_label` | No | Human action: manual merge OR a push that triggers a fresh codex review. The agent records the hold via `add_task_note`. |
+
+The synchronous `--watch` for `ci_not_green` is **not** a `/loop` — it
+is a single `gh` subprocess invocation inside one event handler, with a
+natural terminal state (CI buckets all leaving `pending`). The
+`/loop`-forbidden rule (Section 3) targets repeated agent re-prompts;
+blocking on a subprocess that exits when CI terminates is the same
+shape as `make quality`. A `hold_label` hold genuinely requires human
+action — the agent has no event to wait on.
 
 ## 4. MCP discipline
 

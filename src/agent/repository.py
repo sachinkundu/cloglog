@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -9,6 +10,8 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agent.models import Session, Worktree
+
+logger = logging.getLogger(__name__)
 
 
 class AgentRepository:
@@ -18,9 +21,17 @@ class AgentRepository:
     # --- Worktree ---
 
     async def upsert_worktree(
-        self, project_id: UUID, worktree_path: str, branch_name: str
+        self, project_id: UUID, worktree_path: str, branch_name: str, role: str = "worktree"
     ) -> tuple[Worktree, bool]:
-        """Find or create a worktree. Returns (worktree, is_new)."""
+        """Find or create a worktree. Returns (worktree, is_new).
+
+        ``role`` is derived from ``worktree_path`` by the caller (T-245):
+        the project's repo-root checkout is ``main``; ``/.claude/worktrees/*``
+        checkouts are ``worktree``. We always overwrite the stored role on
+        re-registration because the value is purely a function of the path,
+        which never changes for an existing row — so this is a self-healing
+        write for any backfilled row that the heuristic disagrees with.
+        """
         result = await self._session.execute(
             select(Worktree).where(
                 Worktree.project_id == project_id,
@@ -30,6 +41,7 @@ class AgentRepository:
         existing = result.scalar_one_or_none()
         if existing is not None:
             existing.status = "online"
+            existing.role = role
             # Only overwrite branch_name if the caller actually supplied one.
             # A transient empty value (e.g. MCP probe failed briefly) must not
             # wipe a previously populated name — that would re-open the
@@ -45,11 +57,43 @@ class AgentRepository:
             worktree_path=worktree_path,
             branch_name=branch_name,
             status="online",
+            role=role,
         )
         self._session.add(worktree)
         await self._session.commit()
         await self._session.refresh(worktree)
         return worktree, True
+
+    async def get_main_agent_worktree(self, project_id: UUID) -> Worktree | None:
+        """Return the project's main-agent worktree (T-245 webhook fallback).
+
+        Selects rows with ``role='main'`` ordered by ``created_at`` so the
+        earliest-registered main wins when more than one is present —
+        deterministic without requiring callers to dedupe. Logs a warning
+        when multiple rows match so the supervisor can investigate the
+        misconfiguration.
+
+        Does NOT filter by ``status``: the main agent's inbox file lives on
+        disk regardless of whether the agent process is currently online,
+        and webhook events that arrive while the main agent is offline must
+        still land in its inbox to be picked up on next launch.
+        """
+        result = await self._session.execute(
+            select(Worktree)
+            .where(Worktree.project_id == project_id, Worktree.role == "main")
+            .order_by(Worktree.created_at)
+        )
+        rows = list(result.scalars().all())
+        if not rows:
+            return None
+        if len(rows) > 1:
+            logger.warning(
+                "Multiple main-agent worktrees for project %s: %s; picked earliest %s",
+                project_id,
+                [str(w.id) for w in rows],
+                rows[0].id,
+            )
+        return rows[0]
 
     async def get_worktree(self, worktree_id: UUID) -> Worktree | None:
         return await self._session.get(Worktree, worktree_id)

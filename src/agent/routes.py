@@ -332,7 +332,7 @@ async def create_close_off_task(
     lands a first-class teardown card on the board. Idempotent on the
     resolved worktree row: relaunching/resuming the same worktree path
     returns the existing task with ``created=false``. Assigns the task to
-    the main-agent worktree (resolved from ``settings.main_agent_inbox_path``)
+    the main-agent worktree (resolved via ``worktrees.role='main'``, T-245)
     when that mapping is available; otherwise the card stays unassigned and
     still surfaces to the supervisor on backlog.
 
@@ -351,14 +351,20 @@ async def create_close_off_task(
             ),
         ) from None
 
-    main_agent_worktree_id: UUID | None = None
-    if settings.main_agent_inbox_path is not None:
+    # Resolve the main-agent worktree via the role column (T-245) so the
+    # close-off task gets assigned to it. Falls back to the documented
+    # ``settings.main_agent_inbox_path`` when no role='main' row exists yet —
+    # operators may have configured the env var but not yet run
+    # ``/cloglog setup`` (the manual step that registers the main agent).
+    # When neither resolves, the card stays unassigned and still surfaces on
+    # the supervisor's backlog.
+    main_agent = await agent_repo.get_main_agent_worktree(project.id)
+    if main_agent is None and settings.main_agent_inbox_path is not None:
         # The main-agent inbox lives at ``<main-clone>/.cloglog/inbox`` —
         # the parent directory's parent is the main agent's worktree_path.
-        main_path = str(settings.main_agent_inbox_path.parent.parent)
-        main_agent = await agent_repo.get_worktree_by_path(project.id, main_path)
-        if main_agent is not None:
-            main_agent_worktree_id = main_agent.id
+        legacy_path = str(settings.main_agent_inbox_path.parent.parent)
+        main_agent = await agent_repo.get_worktree_by_path(project.id, legacy_path)
+    main_agent_worktree_id: UUID | None = main_agent.id if main_agent is not None else None
 
     board_service = BoardService(BoardRepository(session))
     task, created = await board_service.create_close_off_task(

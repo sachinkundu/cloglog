@@ -832,70 +832,104 @@ class TestAgentRepositoryBranchLookup:
 
 
 # ---------------------------------------------------------------------------
-# T-253 Main-Agent Fallback
+# T-245 Main-Agent Fallback (role-based)
 # ---------------------------------------------------------------------------
 
 
-class TestMainAgentFallback:
-    """Tests for T-253: close-wave PRs (wt-close-* branches with no registered
-    worktree) should reach the main agent rather than being silently dropped.
+async def _seed_main_agent_worktree(
+    session: AsyncSession, project_id: uuid.UUID, *, worktree_path: str, status: str = "online"
+) -> Worktree:
+    """Insert a ``role='main'`` worktree row for ``project_id``."""
+    worktree = Worktree(
+        project_id=project_id,
+        worktree_path=worktree_path,
+        branch_name="",
+        status=status,
+        role="main",
+    )
+    session.add(worktree)
+    await session.commit()
+    await session.refresh(worktree)
+    return worktree
 
-    When (a) Task.pr_url lookup misses, (b) Worktree.branch_name fallback
-    misses, AND (c) settings.main_agent_inbox_path is configured, the resolver
-    routes the event to the main agent's inbox. ISSUE_COMMENT is deliberately
-    excluded from this fallback because bots generate heavy noise on that event.
+
+async def _seed_isolated_project(
+    session: AsyncSession, *, suffix: str | None = None
+) -> tuple[Project, str]:
+    """Create a Project with a unique ``repo_url`` so ``find_project_by_repo``
+    is unambiguous within a test that exercises the resolver. Returns the
+    project and the matching ``repo_full_name`` for use in the ``WebhookEvent``.
+    """
+    s = suffix or uuid.uuid4().hex[:8]
+    repo_full_name = f"sachinkundu/cloglog-{s}"
+    project = Project(
+        name=f"t245-{s}",
+        description="T-245",
+        repo_url=f"https://github.com/{repo_full_name}",
+    )
+    session.add(project)
+    await session.commit()
+    await session.refresh(project)
+    return project, repo_full_name
+
+
+class TestMainAgentFallback:
+    """T-245: route unmatched PRs to the project's main-agent worktree.
+
+    The resolution order is (1) ``Task.pr_url``, (2) ``Worktree.branch_name``,
+    (3) ``Worktree.role='main'`` for the project. ISSUE_COMMENT is excluded
+    from the fallback to avoid bot spam landing in the main inbox. PRs from
+    foreign repos short-circuit at the project lookup so they cannot leak
+    into another project's main inbox.
     """
 
     @pytest.mark.asyncio
-    async def test_resolver_returns_main_agent_recipient_when_config_set_and_all_lookups_miss(
-        self, db_session: AsyncSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    async def test_resolver_returns_main_agent_when_role_set_and_all_lookups_miss(
+        self, db_session: AsyncSession, tmp_path: Path
     ) -> None:
-        """T-253: resolver returns a ResolvedRecipient pointing at the main-agent
-        inbox when settings.main_agent_inbox_path is configured and neither the
-        pr_url nor branch_name matches any known worktree.
-
-        This is the critical path for close-wave PRs whose branch (e.g.
-        wt-close-foo) has no registered Worktree row. The project still has
-        to match — close-wave PRs live in the project's own repo — so seed a
-        project for ``sachinkundu/cloglog`` first.
+        """Tertiary fallback returns the role='main' worktree when both prior
+        lookups miss. This is the critical path for main-agent-authored PRs and
+        close-wave PRs whose branch has no registered worktree row.
         """
-        main_inbox = tmp_path / "main-inbox"
-        monkeypatch.setattr(settings, "main_agent_inbox_path", main_inbox)
-
-        # Seed the project so find_project_by_repo() succeeds — without this
-        # the resolver short-circuits before the main-agent fallback (foreign
-        # repos must NOT reach the main inbox; see the T-253 review follow-up).
-        await _seed_project_and_task(db_session, pr_url=_unique_pr_url())
+        project, repo_full_name = await _seed_isolated_project(db_session)
+        main_path = str(tmp_path / "main-clone")
+        main = await _seed_main_agent_worktree(db_session, project.id, worktree_path=main_path)
 
         event = _make_event(
             event_type=WebhookEventType.PR_MERGED,
             pr_url=_unique_pr_url(),
             head_branch="wt-close-no-match",
         )
+        event = WebhookEvent(**{**event.__dict__, "repo_full_name": repo_full_name})
         consumer = AgentNotifierConsumer()
 
         result = await consumer._resolve_agent(event, db_session)
 
         assert result is not None
         assert isinstance(result, ResolvedRecipient)
-        assert result.inbox_path == main_inbox
-        assert result.worktree_id is None
+        assert result.worktree_id == main.id
+        assert result.inbox_path == Path(main_path) / ".cloglog" / "inbox"
 
     @pytest.mark.asyncio
-    async def test_resolver_returns_none_when_config_unset(
+    async def test_resolver_returns_none_when_no_main_agent_registered(
         self, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """T-253 regression: when settings.main_agent_inbox_path is None (default),
-        the resolver must still return None for events with no matching worktree —
-        the original behaviour is preserved and no fallback fires.
+        """Acceptance: a project with no main-agent worktree AND no legacy
+        ``main_agent_inbox_path`` configured → DEBUG log + drop.
+
+        The project exists (``find_project_by_repo`` succeeds) but no row carries
+        ``role='main'`` and the env-var compat fallback is not configured, so
+        the resolver returns ``None`` — same outcome as the pre-T-253 baseline.
         """
         monkeypatch.setattr(settings, "main_agent_inbox_path", None)
+        _project, repo_full_name = await _seed_isolated_project(db_session)
 
         event = _make_event(
             event_type=WebhookEventType.PR_MERGED,
             pr_url=_unique_pr_url(),
             head_branch="wt-close-no-match",
         )
+        event = WebhookEvent(**{**event.__dict__, "repo_full_name": repo_full_name})
         consumer = AgentNotifierConsumer()
 
         result = await consumer._resolve_agent(event, db_session)
@@ -903,35 +937,59 @@ class TestMainAgentFallback:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_handle_appends_json_to_main_inbox_when_worktree_lookup_misses(
-        self, db_session: AsyncSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    async def test_resolver_picks_earliest_when_multiple_main_agents(
+        self, db_session: AsyncSession, tmp_path: Path
     ) -> None:
-        """T-253 integration: handle() must write a JSON line to the main-agent
-        inbox file when the event cannot be resolved to any worktree agent.
-
-        This simulates a close-wave PR (wt-close-foo) merging with no
-        registered Worktree — the main agent must receive the pr_merged event
-        so it can run post-merge processing.
+        """Acceptance: two ``role='main'`` rows → pick deterministically by
+        earliest ``created_at``. ``get_main_agent_worktree`` also logs a warning;
+        we don't assert the log line here but the deterministic pick is required.
         """
-        main_inbox = tmp_path / "main-inbox"
-        monkeypatch.setattr(settings, "main_agent_inbox_path", main_inbox)
+        project, repo_full_name = await _seed_isolated_project(db_session)
+        first = await _seed_main_agent_worktree(
+            db_session, project.id, worktree_path=str(tmp_path / "main-first")
+        )
+        # Second main row created strictly after the first so created_at differs.
+        await _seed_main_agent_worktree(
+            db_session, project.id, worktree_path=str(tmp_path / "main-second")
+        )
 
-        # Seed an unrelated project/worktree so the DB is not empty, but
-        # use a pr_url that does NOT match the event — ensuring both lookups miss.
-        unrelated_pr = _unique_pr_url()
-        await _seed_project_and_task(db_session, pr_url=unrelated_pr)
-
-        event_pr_url = _unique_pr_url()
         event = _make_event(
             event_type=WebhookEventType.PR_MERGED,
-            pr_url=event_pr_url,
+            pr_url=_unique_pr_url(),
+            head_branch="wt-no-match",
+        )
+        event = WebhookEvent(**{**event.__dict__, "repo_full_name": repo_full_name})
+        consumer = AgentNotifierConsumer()
+
+        result = await consumer._resolve_agent(event, db_session)
+
+        assert result is not None
+        assert result.worktree_id == first.id
+
+    @pytest.mark.asyncio
+    async def test_handle_appends_json_to_main_agent_inbox_when_lookups_miss(
+        self, db_session: AsyncSession, tmp_path: Path
+    ) -> None:
+        """End-to-end: handle() writes the JSON line to the main agent's
+        ``<worktree_path>/.cloglog/inbox`` when both prior lookups miss.
+        """
+        main_dir = tmp_path / "main-clone"
+        main_dir.mkdir()
+        project, repo_full_name = await _seed_isolated_project(db_session)
+        await _seed_main_agent_worktree(db_session, project.id, worktree_path=str(main_dir))
+
+        event = _make_event(
+            event_type=WebhookEventType.PR_MERGED,
+            pr_url=_unique_pr_url(),
             head_branch="wt-close-foo",
         )
+        event = WebhookEvent(**{**event.__dict__, "repo_full_name": repo_full_name})
         consumer = AgentNotifierConsumer(session_factory=_make_session_factory(db_session))
 
         await consumer.handle(event)
 
-        assert main_inbox.exists(), "Main-agent inbox file must be created by handle()"
+        main_inbox = main_dir / ".cloglog" / "inbox"
+        assert main_inbox.exists(), "Main-agent inbox must be created by handle()"
         lines = main_inbox.read_text().strip().split("\n")
         assert len(lines) == 1
         msg = json.loads(lines[0])
@@ -939,22 +997,20 @@ class TestMainAgentFallback:
 
     @pytest.mark.asyncio
     async def test_worktree_still_routed_to_own_inbox_when_pr_url_matches(
-        self, db_session: AsyncSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, db_session: AsyncSession, tmp_path: Path
     ) -> None:
-        """T-253 regression: when the primary pr_url lookup succeeds, the main-agent
-        fallback must NOT fire — the event belongs to the matched worktree agent.
-
-        Ensures configuring main_agent_inbox_path does not intercept events that
-        already have a registered owner.
+        """Acceptance: when ``Task.pr_url`` matches, the task path wins and the
+        main-agent fallback must NOT fire — registering a main agent must not
+        intercept events that already have a registered owner.
         """
-        main_inbox = tmp_path / "main-inbox"
-        monkeypatch.setattr(settings, "main_agent_inbox_path", main_inbox)
-
         wt_dir = tmp_path / "wt-real"
         wt_dir.mkdir()
-        _project, task, _worktree = await _seed_project_and_task(
+        main_dir = tmp_path / "main-clone"
+        main_dir.mkdir()
+        project, task, _worktree = await _seed_project_and_task(
             db_session, worktree_path=str(wt_dir)
         )
+        await _seed_main_agent_worktree(db_session, project.id, worktree_path=str(main_dir))
 
         event = _make_event(
             event_type=WebhookEventType.PR_MERGED,
@@ -964,35 +1020,26 @@ class TestMainAgentFallback:
 
         await consumer.handle(event)
 
-        # The worktree's own inbox must have received the event
         worktree_inbox = wt_dir / ".cloglog" / "inbox"
-        assert worktree_inbox.exists(), "Worktree inbox must be written when pr_url matches"
+        assert worktree_inbox.exists()
         msg = json.loads(worktree_inbox.read_text().strip())
         assert msg["type"] == "pr_merged"
-
-        # The main-agent inbox must NOT have been touched
-        assert not main_inbox.exists(), (
+        assert not (main_dir / ".cloglog" / "inbox").exists(), (
             "Main-agent inbox must NOT be written when a worktree owns the PR"
         )
 
     @pytest.mark.asyncio
     async def test_issue_comment_does_not_reach_main_agent(
-        self, db_session: AsyncSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, db_session: AsyncSession, tmp_path: Path
     ) -> None:
-        """T-253 filter: ISSUE_COMMENT must NOT fall back to the main-agent inbox
-        even when settings.main_agent_inbox_path is configured and the project
-        is known (no worktree matches).
-
-        Bot spam on issue_comment would overwhelm the main agent's inbox; this
-        event type is deliberately excluded from MAIN_AGENT_EVENTS.
+        """ISSUE_COMMENT must NOT fall back to the main-agent inbox even when a
+        main-agent worktree exists — bot spam would overwhelm it. The event type
+        is deliberately excluded from ``MAIN_AGENT_EVENTS``.
         """
-        main_inbox = tmp_path / "main-inbox"
-        monkeypatch.setattr(settings, "main_agent_inbox_path", main_inbox)
-
-        # Seed the project so the foreign-repo guard passes and we actually
-        # exercise the MAIN_AGENT_EVENTS filter rather than short-circuiting
-        # earlier on project lookup.
-        await _seed_project_and_task(db_session, pr_url=_unique_pr_url())
+        project, repo_full_name = await _seed_isolated_project(db_session)
+        await _seed_main_agent_worktree(
+            db_session, project.id, worktree_path=str(tmp_path / "main-clone")
+        )
 
         event = _make_event(
             event_type=WebhookEventType.ISSUE_COMMENT,
@@ -1000,6 +1047,7 @@ class TestMainAgentFallback:
             head_branch="",  # issue_comment arrives with empty head_branch
             raw={"comment": {"body": "bot spam"}},
         )
+        event = WebhookEvent(**{**event.__dict__, "repo_full_name": repo_full_name})
         consumer = AgentNotifierConsumer()
 
         result = await consumer._resolve_agent(event, db_session)
@@ -1010,25 +1058,79 @@ class TestMainAgentFallback:
         )
 
     @pytest.mark.asyncio
-    async def test_unknown_repo_does_not_reach_main_agent_even_with_config(
-        self, db_session: AsyncSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    async def test_legacy_settings_path_used_when_no_main_role_row(
+        self,
+        db_session: AsyncSession,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """T-253 guard: a valid signed webhook for a repo that is NOT registered
-        as a cloglog project must NOT fall through to the main-agent inbox, even
-        when main_agent_inbox_path is configured.
-
-        Without this guard, any signed webhook that shares the backend's endpoint
-        (e.g. a different repo mapped to the same secret) would leak into this
-        project's main-agent inbox whenever the primary pr_url lookup misses.
-        The main agent inbox belongs to this project only — foreign repos must
-        be dropped before the tertiary fallback runs.
+        """T-253 compatibility: when no ``role='main'`` row is registered yet but
+        ``settings.main_agent_inbox_path`` IS configured, the resolver falls
+        through to that file path. Without this chain, an operator who set the
+        documented env var but has not yet run ``/cloglog setup`` (the manual
+        step that registers the main agent) would lose unmatched PR events.
         """
-        main_inbox = tmp_path / "main-inbox"
-        monkeypatch.setattr(settings, "main_agent_inbox_path", main_inbox)
+        legacy_inbox = tmp_path / "legacy-main-inbox"
+        monkeypatch.setattr(settings, "main_agent_inbox_path", legacy_inbox)
+        _project, repo_full_name = await _seed_isolated_project(db_session)
 
-        # Seed a project for sachinkundu/cloglog so the DB is not empty —
-        # the event will target a different repo_full_name.
-        await _seed_project_and_task(db_session, pr_url=_unique_pr_url())
+        event = _make_event(
+            event_type=WebhookEventType.PR_MERGED,
+            pr_url=_unique_pr_url(),
+            head_branch="wt-no-match",
+        )
+        event = WebhookEvent(**{**event.__dict__, "repo_full_name": repo_full_name})
+        consumer = AgentNotifierConsumer()
+
+        result = await consumer._resolve_agent(event, db_session)
+
+        assert result is not None
+        assert result.inbox_path == legacy_inbox
+        assert result.worktree_id is None
+
+    @pytest.mark.asyncio
+    async def test_role_main_takes_precedence_over_legacy_settings_path(
+        self,
+        db_session: AsyncSession,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When BOTH a ``role='main'`` row exists AND the legacy
+        ``main_agent_inbox_path`` is set, the role-based path wins — the
+        registered worktree is the source of truth.
+        """
+        legacy_inbox = tmp_path / "legacy-main-inbox"
+        monkeypatch.setattr(settings, "main_agent_inbox_path", legacy_inbox)
+        project, repo_full_name = await _seed_isolated_project(db_session)
+        main_path = str(tmp_path / "registered-main")
+        main = await _seed_main_agent_worktree(db_session, project.id, worktree_path=main_path)
+
+        event = _make_event(
+            event_type=WebhookEventType.PR_MERGED,
+            pr_url=_unique_pr_url(),
+            head_branch="wt-no-match",
+        )
+        event = WebhookEvent(**{**event.__dict__, "repo_full_name": repo_full_name})
+        consumer = AgentNotifierConsumer()
+
+        result = await consumer._resolve_agent(event, db_session)
+
+        assert result is not None
+        assert result.worktree_id == main.id
+        assert result.inbox_path == Path(main_path) / ".cloglog" / "inbox"
+
+    @pytest.mark.asyncio
+    async def test_unknown_repo_does_not_reach_main_agent(
+        self, db_session: AsyncSession, tmp_path: Path
+    ) -> None:
+        """A signed webhook for a repo NOT registered as a cloglog project must
+        not fall through to any project's main-agent inbox. The resolver short-
+        circuits at ``find_project_by_repo`` before the role lookup runs.
+        """
+        project, _ = await _seed_isolated_project(db_session)
+        await _seed_main_agent_worktree(
+            db_session, project.id, worktree_path=str(tmp_path / "main-clone")
+        )
 
         foreign_repo = f"someone-else/unrelated-{uuid.uuid4().hex[:6]}"
         event = WebhookEvent(
@@ -1046,8 +1148,106 @@ class TestMainAgentFallback:
 
         result = await consumer._resolve_agent(event, db_session)
 
-        assert result is None, (
-            f"Foreign repo {foreign_repo!r} must not reach the main-agent inbox — "
-            "the resolver must short-circuit when find_project_by_repo misses."
+        assert result is None
+
+
+class TestGetMainAgentWorktree:
+    """Repository-level tests for ``AgentRepository.get_main_agent_worktree``."""
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_main_role_row(self, db_session: AsyncSession) -> None:
+        project, _task, _worktree = await _seed_project_and_task(
+            db_session, pr_url=_unique_pr_url()
         )
-        assert not main_inbox.exists(), "Main-agent inbox file must not be created"
+        agent_repo = AgentRepository(db_session)
+        assert await agent_repo.get_main_agent_worktree(project.id) is None
+
+    @pytest.mark.asyncio
+    async def test_returns_main_role_row(self, db_session: AsyncSession, tmp_path: Path) -> None:
+        project, _task, _worktree = await _seed_project_and_task(
+            db_session, pr_url=_unique_pr_url()
+        )
+        main = await _seed_main_agent_worktree(
+            db_session, project.id, worktree_path=str(tmp_path / "main")
+        )
+        agent_repo = AgentRepository(db_session)
+        found = await agent_repo.get_main_agent_worktree(project.id)
+        assert found is not None
+        assert found.id == main.id
+
+    @pytest.mark.asyncio
+    async def test_ignores_offline_status_filter(
+        self, db_session: AsyncSession, tmp_path: Path
+    ) -> None:
+        """An offline main agent must still be findable — the inbox file lives
+        on disk regardless of process state.
+        """
+        project, _task, _worktree = await _seed_project_and_task(
+            db_session, pr_url=_unique_pr_url()
+        )
+        main = await _seed_main_agent_worktree(
+            db_session,
+            project.id,
+            worktree_path=str(tmp_path / "main"),
+            status="offline",
+        )
+        agent_repo = AgentRepository(db_session)
+        found = await agent_repo.get_main_agent_worktree(project.id)
+        assert found is not None
+        assert found.id == main.id
+
+
+class TestRegisterDerivesRole:
+    """``register`` derives ``worktrees.role`` from the path: rows under a
+    ``/.claude/worktrees/`` segment are ``worktree``; everything else is
+    ``main``. This is the source of truth for the webhook fallback.
+    """
+
+    @pytest.mark.asyncio
+    async def test_repo_root_path_gets_main_role(
+        self, db_session: AsyncSession, tmp_path: Path
+    ) -> None:
+        from src.agent.services import AgentService
+        from src.board.repository import BoardRepository as _BoardRepo
+
+        project = Project(
+            name=f"role-main-{uuid.uuid4().hex[:6]}",
+            description="T-245",
+            repo_url="https://github.com/sachinkundu/role-main",
+        )
+        db_session.add(project)
+        await db_session.commit()
+
+        service = AgentService(AgentRepository(db_session), _BoardRepo(db_session))
+        main_path = str(tmp_path / "main-clone")
+        await service.register(project.id, main_path, branch_name="main")
+
+        repo = AgentRepository(db_session)
+        wt = await repo.get_worktree_by_path(project.id, main_path)
+        assert wt is not None
+        assert wt.role == "main"
+
+    @pytest.mark.asyncio
+    async def test_sandboxed_worktree_path_gets_worktree_role(
+        self, db_session: AsyncSession, tmp_path: Path
+    ) -> None:
+        from src.agent.services import AgentService
+        from src.board.repository import BoardRepository as _BoardRepo
+
+        project = Project(
+            name=f"role-wt-{uuid.uuid4().hex[:6]}",
+            description="T-245",
+            repo_url="https://github.com/sachinkundu/role-wt",
+        )
+        db_session.add(project)
+        await db_session.commit()
+
+        service = AgentService(AgentRepository(db_session), _BoardRepo(db_session))
+        wt_path = f"{tmp_path}/.claude/worktrees/wt-role-test"
+        Path(wt_path).mkdir(parents=True)
+        await service.register(project.id, wt_path, branch_name="wt-role-test")
+
+        repo = AgentRepository(db_session)
+        wt = await repo.get_worktree_by_path(project.id, wt_path)
+        assert wt is not None
+        assert wt.role == "worktree"

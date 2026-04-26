@@ -234,6 +234,9 @@ prod-bg: ## Start prod server in background
 
 promote: ## Deploy latest origin/main to prod with zero-downtime worker rotation
 	@echo "Promoting origin/main to prod..."
+	@if [ ! -f /tmp/cloglog-prod.pid ]; then echo "ERROR: gunicorn not running — service is down, cannot promote. Run \`make prod\` to bring the backend up first, then \`make promote\`. (Spec §4.2: make prod is restart-only with no git operations; make promote requires a live backend so the worker rotation actually deploys the new SHA before the worktree, DB, or origin/prod are mutated.)"; exit 1; fi
+	@PROD_PID=$$(cat /tmp/cloglog-prod.pid); \
+		if ! kill -0 "$$PROD_PID" 2>/dev/null; then echo "ERROR: stale /tmp/cloglog-prod.pid (PID $$PROD_PID is dead) — service is down. Run \`make prod-stop && make prod\` to clean up and restart, then \`make promote\`."; exit 1; fi
 	@git -C ../cloglog-prod fetch origin
 	@git -C ../cloglog-prod merge --ff-only origin/main
 	@cd ../cloglog-prod && uv sync
@@ -244,9 +247,7 @@ promote: ## Deploy latest origin/main to prod with zero-downtime worker rotation
 		echo "  API URL:  $$API_URL"; \
 		(cd ../cloglog-prod/frontend && VITE_API_URL="$$API_URL" npx vite build 2>&1 | tail -2); \
 		(cd ../cloglog-prod && uv run alembic upgrade head); \
-		if [ ! -f /tmp/cloglog-prod.pid ]; then echo "  ERROR: gunicorn not running — service is down, cannot promote. Run \`make prod\` to bring the backend up first, then \`make promote\` to deploy + advance origin/prod. (Spec §4.2: make prod is the restart path; make promote requires a live backend so the worker rotation actually deploys the new SHA before origin/prod is published.)"; exit 1; fi; \
 		PROD_PID=$$(cat /tmp/cloglog-prod.pid); \
-		if ! kill -0 "$$PROD_PID" 2>/dev/null; then echo "  ERROR: stale /tmp/cloglog-prod.pid (PID $$PROD_PID is dead) — service is down. Run \`make prod-stop && make prod\` to clean up and restart, then \`make promote\`."; exit 1; fi; \
 		kill -HUP "$$PROD_PID" && echo "  Backend: rotated workers (PID $$PROD_PID)."; \
 		fuser -k 4173/tcp 2>/dev/null || true; \
 		rm -f /tmp/cloglog-prod-frontend.pid; \

@@ -1,29 +1,33 @@
 ---
 verdict: no_demo
-diff_hash: 26b021c9d0c22e8126fb78bd7773aee2a30ab78e6999c38f10b1fac1e5972d08
+diff_hash: 1cca0078b52191550e8344b4e1adce3c1d67996552c89400c47c1a33cf427ff7
 classifier: demo-classifier
-generated_at: 2026-04-26T09:50:46Z
+generated_at: 2026-04-26T10:01:17Z
 ---
 
 ## Why no demo
 
-Diff is internal plumbing for the worktree-agent auto-merge gate (T-295): a new
-pure-Python helper at `plugins/cloglog/scripts/auto_merge_gate.py` with a
-pinning test at `tests/test_auto_merge_gate.py`, plus skill/doc updates in
-`plugins/cloglog/skills/{github-bot,launch}/SKILL.md` and
-`docs/design/agent-lifecycle.md`. No HTTP route decorators (no `@router.*`
-added in `src/**`), no React/UI changes, no MCP server.tool registrations, no
-CLI stdout a human reads, no migrations. The strongest `needs_demo` candidate
-considered was the new helper script's CLI, but it's invoked by agent skills,
-not read by a stakeholder. Counterfactual: had the change added a new
-`@router.post` in `src/gateway/**` to expose auto-merge state, or modified
-`mcp-server/src/server.ts` tool schemas, the verdict would have flipped to
-`needs_demo`.
+Diff is internal plumbing: a new pure-Python decision helper at
+`plugins/cloglog/scripts/auto_merge_gate.py`, two pin tests
+(`tests/test_auto_merge_gate.py`,
+`tests/plugins/test_auto_merge_skill_handles_silent_holds.py`), and prose
+updates to `docs/design/agent-lifecycle.md` plus the github-bot and launch
+SKILL.md files. No HTTP route decorators, no React components, no MCP tool
+definitions in `mcp-server/src/server.ts`, no CLI output a user reads, no DB
+migration. Strongest `needs_demo` candidate considered: the
+`auto_merge_gate.py` CLI prints a hold reason and exits 0/1 — but it's
+invoked by the worktree agent skill, not by a human, so it fails the "CLI
+output surface" test. Counterfactual: if the change had added a new
+`@router.post` in `src/gateway/webhook.py` to surface label-change events,
+or changed a server.tool schema in `mcp-server/src/server.ts`, the verdict
+would have flipped to `needs_demo`.
 
 ## Changed files
 
+- docs/demos/wt-t295-auto-merge/exemption.md
 - docs/design/agent-lifecycle.md
 - plugins/cloglog/scripts/auto_merge_gate.py
 - plugins/cloglog/skills/github-bot/SKILL.md
 - plugins/cloglog/skills/launch/SKILL.md
+- tests/plugins/test_auto_merge_skill_handles_silent_holds.py
 - tests/test_auto_merge_gate.py

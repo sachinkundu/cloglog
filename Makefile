@@ -254,20 +254,31 @@ promote: ## Deploy latest origin/main to prod with zero-downtime worker rotation
 		echo "  Done — frontend rebuilt and restarted on :4173."; \
 		[ -n "$$HOST_IP" ] && echo "  Tailnet: http://$$HOST_IP:4173" || true
 
-verify-prod-protection: ## Assert GitHub branch protection on `prod` (linear history + push restricted)
-	@BOT_TOKEN=$$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py); \
-		REPO=$$(GH_TOKEN="$$BOT_TOKEN" gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$$||'); \
-		PROT=$$(GH_TOKEN="$$BOT_TOKEN" gh api "repos/$$REPO/branches/prod/protection" 2>/dev/null); \
-		if [ -z "$$PROT" ]; then \
-			echo "FAIL: no branch protection on $$REPO:prod (apply rules in GitHub UI per docs/design/prod-branch-tracking.md §3.2)"; exit 1; \
+verify-prod-protection: ## Assert GitHub branch protection on `prod`. Requires operator's gh auth (admin:read scope) — the GitHub App PEM has no `administration` permission.
+	@REPO=$$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$$||'); \
+		RESP=$$(gh api "repos/$$REPO/branches/prod/protection" 2>&1); \
+		RC=$$?; \
+		if [ $$RC -ne 0 ]; then \
+			case "$$RESP" in \
+				*"Resource not accessible by integration"*|*"Must have admin rights"*) \
+					echo "FAIL: gh auth lacks 'administration:read' on $$REPO. The branch-protection API requires operator's personal token (App PEM has no admin scope by design)."; \
+					echo "Fix: \`gh auth login --scopes 'repo,admin:org'\` as the operator before running this target."; \
+					exit 2;; \
+				*"Branch not protected"*|*"Not Found"*) \
+					echo "FAIL: no branch protection on $$REPO:prod (apply rules in GitHub UI per docs/design/prod-branch-tracking.md §3.2)."; exit 1;; \
+				*"Requires authentication"*|*"Bad credentials"*) \
+					echo "FAIL: gh is not authenticated. Run \`gh auth login --scopes 'repo,admin:org'\` as the operator and retry."; exit 2;; \
+				*) \
+					echo "FAIL: gh api error on $$REPO:prod protection: $$RESP"; exit 1;; \
+			esac; \
 		fi; \
-		LINEAR=$$(echo "$$PROT" | jq -r '.required_linear_history.enabled // false'); \
-		RESTRICT=$$(echo "$$PROT" | jq -r '.restrictions | (.users + .teams + .apps | length) // 0'); \
+		LINEAR=$$(echo "$$RESP" | jq -r '.required_linear_history.enabled // false'); \
+		RESTRICT=$$(echo "$$RESP" | jq -r '.restrictions | ((.users // []) + (.teams // []) + (.apps // []) | length) // 0'); \
 		if [ "$$LINEAR" != "true" ]; then \
-			echo "FAIL: required_linear_history is not enabled on $$REPO:prod"; exit 1; \
+			echo "FAIL: required_linear_history is not enabled on $$REPO:prod (spec §3.2)."; exit 1; \
 		fi; \
 		if [ -z "$$RESTRICT" ] || [ "$$RESTRICT" = "0" ] || [ "$$RESTRICT" = "null" ]; then \
-			echo "FAIL: push restrictions on $$REPO:prod are empty (anyone with push can write)"; exit 1; \
+			echo "FAIL: push restrictions on $$REPO:prod are empty — anyone with push can write (spec §3.2)."; exit 1; \
 		fi; \
 		echo "OK: $$REPO:prod has linear history + $$RESTRICT push principal(s)."
 

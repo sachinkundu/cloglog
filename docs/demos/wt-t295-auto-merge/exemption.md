@@ -1,26 +1,24 @@
 ---
 verdict: no_demo
-diff_hash: 1cca0078b52191550e8344b4e1adce3c1d67996552c89400c47c1a33cf427ff7
+diff_hash: 59af68c61bf54699805cd8c6f655fbc67d1143ee73a7bcedbe162f01ffa014b9
 classifier: demo-classifier
-generated_at: 2026-04-26T10:01:17Z
+generated_at: 2026-04-26T10:14:28Z
 ---
 
 ## Why no demo
 
-Diff is internal plumbing: a new pure-Python decision helper at
-`plugins/cloglog/scripts/auto_merge_gate.py`, two pin tests
-(`tests/test_auto_merge_gate.py`,
-`tests/plugins/test_auto_merge_skill_handles_silent_holds.py`), and prose
-updates to `docs/design/agent-lifecycle.md` plus the github-bot and launch
-SKILL.md files. No HTTP route decorators, no React components, no MCP tool
-definitions in `mcp-server/src/server.ts`, no CLI output a user reads, no DB
-migration. Strongest `needs_demo` candidate considered: the
-`auto_merge_gate.py` CLI prints a hold reason and exits 0/1 — but it's
-invoked by the worktree agent skill, not by a human, so it fails the "CLI
-output surface" test. Counterfactual: if the change had added a new
-`@router.post` in `src/gateway/webhook.py` to surface label-change events,
-or changed a server.tool schema in `mcp-server/src/server.ts`, the verdict
-would have flipped to `needs_demo`.
+Diff is internal agent-workflow plumbing: a new pure-Python decision helper at
+`plugins/cloglog/scripts/auto_merge_gate.py`, prose updates to
+`docs/design/agent-lifecycle.md` and two `plugins/cloglog/skills/*/SKILL.md`
+files, plus pin tests under `tests/`. No `@router.*` decorators in
+`src/**`, no `frontend/src/**` changes, no `server.tool` registrations in
+`mcp-server/src/server.ts`, no `src/**/cli.py` or Makefile output-surface
+changes, and no migrations. The strongest `needs_demo` candidate was the
+`auto_merge_gate.py` helper, but it is invoked only by the worktree agent's
+skill — not a user-facing CLI/route — so it doesn't clear the bar.
+Counterfactual: if the diff had wired the helper into a user-invoked `make`
+target or added a Gateway route exposing the gate decision, it would have
+flipped to `needs_demo`.
 
 ## Changed files
 

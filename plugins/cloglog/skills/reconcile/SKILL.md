@@ -119,10 +119,22 @@ committed files (e.g. patching a skill, CLAUDE.md, or a script), do
 `wt-reconcile-*` PR flow, exactly the same shape every other agent
 uses (see `docs/design/prod-branch-tracking.md` §7):
 
+Push and PR via the **exact `Push + Create PR` sequence** from
+`plugins/cloglog/skills/github-bot/SKILL.md` — a bare `gh pr create`
+falls back to the operator's personal `gh auth` and breaks the
+bot-identity invariant. Only the bot-authenticated form below is
+correct:
+
 ```bash
 git checkout -b wt-reconcile-<date>-<topic>
 # edits + commit
-gh pr create --base main --head wt-reconcile-<date>-<topic>
+BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
+git remote set-url origin "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git"
+git push -u origin HEAD
+GH_TOKEN="$BOT_TOKEN" gh pr create --base main --head wt-reconcile-<date>-<topic> \
+  --title "chore(reconcile): <topic>" \
+  --body "<what reconcile fixed and why>"
 # after merge:
 git checkout main && git fetch origin && git merge --ff-only origin/main
 git branch -D wt-reconcile-<date>-<topic>

@@ -74,3 +74,12 @@ def test_reconcile_skill_documents_wt_reconcile_branch_pr_flow() -> None:
         '/ PR gates" calls out (run any documented executable command '
         "sequence end-to-end before merging the docs that describe it)."
     )
+    assert 'GH_TOKEN="$BOT_TOKEN" gh pr create' in body, (
+        "reconcile SKILL.md must show the bot-authenticated PR-creation "
+        'form (`GH_TOKEN="$BOT_TOKEN" gh pr create ...`). Codex PR '
+        "#230 round 1 MEDIUM caught a draft that showed a bare "
+        "`gh pr create`; an operator following that for a "
+        "wt-reconcile-* fix would open the PR under their personal "
+        "`gh auth` and break the bot-identity invariant the github-bot "
+        "skill exists to enforce."
+    )

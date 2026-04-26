@@ -88,3 +88,12 @@ def test_close_wave_skill_documents_branch_pr_flow() -> None:
         "regressing it would re-open the merge-commit-on-main hazard "
         'documented in CLAUDE.md "Deployment ordering".'
     )
+    assert 'GH_TOKEN="$BOT_TOKEN" gh pr create' in body, (
+        "close-wave SKILL.md Step 13 must show the bot-authenticated "
+        'PR-creation form (`GH_TOKEN="$BOT_TOKEN" gh pr create ...`). '
+        "Codex PR #230 round 1 MEDIUM caught an earlier draft that "
+        "showed a bare `gh pr create` snippet; an operator following "
+        "that literally would create the PR under their personal "
+        "`gh auth` session and break the bot-identity invariant the "
+        "github-bot skill exists to enforce."
+    )

@@ -334,12 +334,16 @@ Fill in "State After This Wave" with what's now implemented and verified working
 
 ## Step 13: Commit, push, and PR
 
-Commit all fixes, work log, and CLAUDE.md updates to the `wt-close-<date>-<wave-name>` branch from Step 10. Push the branch via the github-bot skill and open a PR against `main`:
+Commit all fixes, work log, and CLAUDE.md updates to the `wt-close-<date>-<wave-name>` branch from Step 10. Push the branch and open a PR against `main` using the **exact `Push + Create PR` sequence** from `plugins/cloglog/skills/github-bot/SKILL.md` — every `git push` and every `gh` invocation MUST go through the bot identity. A bare `gh pr create` falls back to the operator's personal `gh auth` and breaks the bot-identity invariant the github-bot skill exists to enforce; only the bot-authenticated form below is correct:
 
 ```bash
-gh pr create --base main --head wt-close-<date>-<wave-name> \
+BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
+git remote set-url origin "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git"
+git push -u origin HEAD
+GH_TOKEN="$BOT_TOKEN" gh pr create --base main --head wt-close-<date>-<wave-name> \
   --title "chore(close-wave): <wave-name>" \
-  --body "<work-log path + learnings summary>"
+  --body "<work-log path + learnings summary, with the standard Demo + Test Report sections>"
 ```
 
 Auto-merge applies per `plugins/cloglog/skills/github-bot/SKILL.md` "Auto-Merge on Codex Pass" once codex review and CI checks pass. After merge, fast-forward main and drop the local branch:

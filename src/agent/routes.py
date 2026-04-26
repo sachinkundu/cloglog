@@ -39,6 +39,7 @@ from src.gateway.auth import (
     McpOrProject,
     SupervisorAuth,
 )
+from src.shared.config import settings
 from src.shared.database import get_session
 from src.shared.events import Event, EventType, event_bus
 
@@ -351,10 +352,18 @@ async def create_close_off_task(
         ) from None
 
     # Resolve the main-agent worktree via the role column (T-245) so the
-    # close-off task gets assigned to it. Falls back gracefully when no main
-    # agent is registered: the card stays unassigned and still surfaces on
+    # close-off task gets assigned to it. Falls back to the documented
+    # ``settings.main_agent_inbox_path`` when no role='main' row exists yet —
+    # operators may have configured the env var but not yet run
+    # ``/cloglog setup`` (the manual step that registers the main agent).
+    # When neither resolves, the card stays unassigned and still surfaces on
     # the supervisor's backlog.
     main_agent = await agent_repo.get_main_agent_worktree(project.id)
+    if main_agent is None and settings.main_agent_inbox_path is not None:
+        # The main-agent inbox lives at ``<main-clone>/.cloglog/inbox`` —
+        # the parent directory's parent is the main agent's worktree_path.
+        legacy_path = str(settings.main_agent_inbox_path.parent.parent)
+        main_agent = await agent_repo.get_worktree_by_path(project.id, legacy_path)
     main_agent_worktree_id: UUID | None = main_agent.id if main_agent is not None else None
 
     board_service = BoardService(BoardRepository(session))

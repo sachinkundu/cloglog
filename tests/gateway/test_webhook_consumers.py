@@ -26,6 +26,7 @@ from src.gateway.webhook_consumers import (
     ResolvedRecipient,
 )
 from src.gateway.webhook_dispatcher import WebhookEvent, WebhookEventType
+from src.shared.config import settings
 
 REPO = "sachinkundu/cloglog"
 BRANCH = "wt-test-branch"
@@ -911,14 +912,16 @@ class TestMainAgentFallback:
 
     @pytest.mark.asyncio
     async def test_resolver_returns_none_when_no_main_agent_registered(
-        self, db_session: AsyncSession
+        self, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Acceptance: a project with no main-agent worktree → DEBUG log + drop.
+        """Acceptance: a project with no main-agent worktree AND no legacy
+        ``main_agent_inbox_path`` configured → DEBUG log + drop.
 
         The project exists (``find_project_by_repo`` succeeds) but no row carries
-        ``role='main'``, so the fallback finds nothing and returns ``None`` —
-        the same outcome as before T-245 shipped.
+        ``role='main'`` and the env-var compat fallback is not configured, so
+        the resolver returns ``None`` — same outcome as the pre-T-253 baseline.
         """
+        monkeypatch.setattr(settings, "main_agent_inbox_path", None)
         _project, repo_full_name = await _seed_isolated_project(db_session)
 
         event = _make_event(
@@ -1053,6 +1056,68 @@ class TestMainAgentFallback:
             "ISSUE_COMMENT must not be routed to main agent; "
             f"MAIN_AGENT_EVENTS={MAIN_AGENT_EVENTS!r}"
         )
+
+    @pytest.mark.asyncio
+    async def test_legacy_settings_path_used_when_no_main_role_row(
+        self,
+        db_session: AsyncSession,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """T-253 compatibility: when no ``role='main'`` row is registered yet but
+        ``settings.main_agent_inbox_path`` IS configured, the resolver falls
+        through to that file path. Without this chain, an operator who set the
+        documented env var but has not yet run ``/cloglog setup`` (the manual
+        step that registers the main agent) would lose unmatched PR events.
+        """
+        legacy_inbox = tmp_path / "legacy-main-inbox"
+        monkeypatch.setattr(settings, "main_agent_inbox_path", legacy_inbox)
+        _project, repo_full_name = await _seed_isolated_project(db_session)
+
+        event = _make_event(
+            event_type=WebhookEventType.PR_MERGED,
+            pr_url=_unique_pr_url(),
+            head_branch="wt-no-match",
+        )
+        event = WebhookEvent(**{**event.__dict__, "repo_full_name": repo_full_name})
+        consumer = AgentNotifierConsumer()
+
+        result = await consumer._resolve_agent(event, db_session)
+
+        assert result is not None
+        assert result.inbox_path == legacy_inbox
+        assert result.worktree_id is None
+
+    @pytest.mark.asyncio
+    async def test_role_main_takes_precedence_over_legacy_settings_path(
+        self,
+        db_session: AsyncSession,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When BOTH a ``role='main'`` row exists AND the legacy
+        ``main_agent_inbox_path`` is set, the role-based path wins — the
+        registered worktree is the source of truth.
+        """
+        legacy_inbox = tmp_path / "legacy-main-inbox"
+        monkeypatch.setattr(settings, "main_agent_inbox_path", legacy_inbox)
+        project, repo_full_name = await _seed_isolated_project(db_session)
+        main_path = str(tmp_path / "registered-main")
+        main = await _seed_main_agent_worktree(db_session, project.id, worktree_path=main_path)
+
+        event = _make_event(
+            event_type=WebhookEventType.PR_MERGED,
+            pr_url=_unique_pr_url(),
+            head_branch="wt-no-match",
+        )
+        event = WebhookEvent(**{**event.__dict__, "repo_full_name": repo_full_name})
+        consumer = AgentNotifierConsumer()
+
+        result = await consumer._resolve_agent(event, db_session)
+
+        assert result is not None
+        assert result.worktree_id == main.id
+        assert result.inbox_path == Path(main_path) / ".cloglog" / "inbox"
 
     @pytest.mark.asyncio
     async def test_unknown_repo_does_not_reach_main_agent(

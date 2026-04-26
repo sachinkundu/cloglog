@@ -17,6 +17,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.gateway.webhook_dispatcher import WebhookEvent, WebhookEventType
+from src.shared.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -113,8 +114,14 @@ class AgentNotifierConsumer:
           (``worktrees.role='main'``) for eligible event types. Handles close-wave
           and main-agent-authored PRs whose branch has no registered worktree row,
           so they reach the main agent instead of being silently dropped.
+        Quaternary (T-253 compatibility): when no main-agent worktree is
+          registered yet but ``settings.main_agent_inbox_path`` is configured,
+          fall back to that file path. This preserves the documented deployment
+          contract from before T-245 — operators who have set the env var but
+          have not yet run ``/cloglog setup`` (which registers the main agent)
+          still receive unmatched PR events instead of having them dropped.
 
-        ISSUE_COMMENT is excluded from the main-agent fallback because bots
+        ISSUE_COMMENT is excluded from the main-agent fallbacks because bots
         generate heavy noise on that event type.
 
         Returns ResolvedRecipient or None.
@@ -162,6 +169,15 @@ class AgentNotifierConsumer:
             if main_worktree is not None:
                 inbox_path = Path(main_worktree.worktree_path) / ".cloglog" / "inbox"
                 return ResolvedRecipient(inbox_path=inbox_path, worktree_id=main_worktree.id)
+
+            # Quaternary (T-253 compat): the role-based lookup is the source of
+            # truth, but the documented MAIN_AGENT_INBOX_PATH env var still has
+            # to work for operators who set it before running /cloglog setup —
+            # otherwise this PR is a silent regression for that deployment path.
+            if settings.main_agent_inbox_path is not None:
+                return ResolvedRecipient(
+                    inbox_path=settings.main_agent_inbox_path, worktree_id=None
+                )
 
         return None
 

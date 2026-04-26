@@ -77,10 +77,10 @@ Before spawning, reconcile against existing monitors:
 2. Filter for running Monitor tasks whose `command` ends in `.cloglog/inbox` and resolves to **this** worktree's inbox file. Match on path suffix (`/.cloglog/inbox`) and verify the resolved absolute path equals `<WORKTREE_PATH>/.cloglog/inbox` — historical monitors started with the relative path `tail -f .cloglog/inbox` (see the github-bot crash-recovery flow) must still be caught here, otherwise the dedupe is bypassed and `/clear` followed by recovery would still spawn a duplicate.
 3. Branch on the count of matches:
    - **Exactly one** → reuse it; do not spawn a new Monitor.
-   - **Zero** → spawn a fresh persistent monitor. **The inbox file may not exist yet** — `.cloglog/on-worktree-create.sh` does not pre-create it, and the lifecycle spec leaves first creation to the backend's first webhook write. `tail -f` on a missing file exits immediately (verified: this skill's own author hit it on session start). Wrap the tail so the file is materialised first, and use `tail -F` so brief disappearance does not kill the monitor:
+   - **Zero** → spawn a fresh persistent monitor. **The inbox file may not exist yet** — `.cloglog/on-worktree-create.sh` does not pre-create it, and the lifecycle spec leaves first creation to the backend's first webhook write. `tail -f` on a missing file exits immediately (verified: this skill's own author hit it on session start). Bare `tail -F` is also wrong: it only emits the last 10 lines, so on a re-entered session you would silently miss every earlier event. Use `tail -n +1 -F` (full replay + reopen-by-name) and wrap with `mkdir`/`touch` so the file is materialised first:
      ```
      Monitor(
-       command: "mkdir -p <WORKTREE_PATH>/.cloglog && touch <WORKTREE_PATH>/.cloglog/inbox && tail -F <WORKTREE_PATH>/.cloglog/inbox",
+       command: "mkdir -p <WORKTREE_PATH>/.cloglog && touch <WORKTREE_PATH>/.cloglog/inbox && tail -n +1 -F <WORKTREE_PATH>/.cloglog/inbox",
        description: "Messages from main agent",
        persistent: true
      )

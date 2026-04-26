@@ -69,7 +69,7 @@
 ### Agent Communication
 
 - **Agents communicate via inbox files.** Each agent has an inbox at `<worktree_path>/.cloglog/inbox` — the per-worktree file the webhook consumer and backend both write to. See `docs/design/agent-lifecycle.md` Section 3 for the inbox contract and a note on the removed legacy path.
-- **Receiving:** On registration, start a persistent Monitor on your inbox (`tail -f <worktree_path>/.cloglog/inbox`). Messages arrive as Monitor notifications in real-time.
+- **Receiving:** On registration, start **exactly one** persistent Monitor on your inbox. Reconcile via `TaskList` first (match path suffix `/.cloglog/inbox`, reuse on one-match, keep-oldest on two+) — persistent monitors survive `/clear` and naive re-spawn duplicates the tail. Use `mkdir -p <worktree_path>/.cloglog && touch <worktree_path>/.cloglog/inbox && tail -n +1 -F <worktree_path>/.cloglog/inbox` (the `mkdir`/`touch` prelude is mandatory because the backend creates the inbox lazily on first webhook write; `-n +1` replays the full file rather than only the last 10 lines; `-F` re-opens by name on rotation). Messages arrive as Monitor notifications in real-time.
 - **Sending:** Append to the target agent's inbox: `echo "[sender] message" >> <target_worktree_path>/.cloglog/inbox`. Look up the target path on the `worktrees` table — do not construct a path from a worktree id.
 - **Inbox lifecycle:** The backend creates the inbox on first write (`mkdir -p` + append). On worktree removal, remove the `.cloglog/` directory.
 - **Main agent inbox:** The main session runs its own Monitor on `<project_root>/.cloglog/inbox` so worktree agents can report back (e.g., `pr_merged`, `agent_unregistered`).

@@ -43,12 +43,12 @@ Before spawning, reconcile against existing monitors:
    - **Zero** → spawn a fresh persistent monitor. **The inbox file may not exist yet** (the backend creates it on first webhook write), and `tail -f` against a missing file exits immediately — leaving the agent monitor-less. Wrap the tail so the file is materialised first:
      ```
      Monitor(
-       command: "mkdir -p <current working directory>/.cloglog && touch <current working directory>/.cloglog/inbox && tail -F <current working directory>/.cloglog/inbox",
+       command: "mkdir -p <current working directory>/.cloglog && touch <current working directory>/.cloglog/inbox && tail -n +1 -F <current working directory>/.cloglog/inbox",
        description: "Main agent inbox — messages from worktree agents",
        persistent: true
      )
      ```
-     `tail -F` (capital F) is a defence in depth — if the file is rotated or briefly removed, it re-opens by name instead of dying.
+     `-n +1` is mandatory — bare `tail -F` only emits the last 10 existing lines, so on a re-entered session with a long event history you would silently miss everything older. `-F` (capital) is a defence in depth — if the file is rotated or briefly removed, it re-opens by name instead of dying.
    - **Two or more** → keep the oldest matching monitor (lowest creation time / first in `TaskList` ordering), `TaskStop` each of the others, and tell the user: *"Stopped N duplicate monitor(s); reusing task `<id>`."*
 
 ### 3. Confirm

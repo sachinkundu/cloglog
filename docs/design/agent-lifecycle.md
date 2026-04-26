@@ -201,11 +201,18 @@ different roots and the hardcode corrupts them. Tracked as T-NEW in the
 
 Every agent monitors **exactly** `<worktree_path>/.cloglog/inbox`. The path is
 always within the worktree and is always named `inbox` (no worktree-id suffix).
-Canonical `Monitor` invocation:
+**Exactly one** Monitor per agent process — see the dedupe procedure in
+`plugins/cloglog/skills/setup/SKILL.md` and `plugins/cloglog/skills/launch/SKILL.md`
+that reconciles via `TaskList` before spawning, since persistent monitors
+survive `/clear`. Canonical `Monitor` invocation (note the `mkdir`/`touch`
+prelude — the inbox is created lazily by the backend's first webhook write,
+and `tail -f` against a missing file exits immediately; `-n +1 -F` replays
+every existing event from line 1 instead of the default last 10, and re-opens
+the file by name if it is rotated):
 
 ```
 Monitor(
-  command: "tail -f <worktree_path>/.cloglog/inbox",
+  command: "mkdir -p <worktree_path>/.cloglog && touch <worktree_path>/.cloglog/inbox && tail -n +1 -F <worktree_path>/.cloglog/inbox",
   description: "Inbox — messages from main agent and webhook events",
   persistent: true
 )

@@ -109,7 +109,13 @@ When you receive a message, read it and act on the instruction. The main agent m
     reflecting whichever terminal state the skill reached (the skill's
     own Step 6 prints the matching PR-body template).
 12. Move task to review with PR URL via `mcp__cloglog__update_task_status`
-13. Your `.cloglog/inbox` Monitor delivers review/merge/CI events automatically — do NOT start a `/loop`. On `review_submitted` from `cloglog-codex-reviewer[bot]`: run the auto-merge gate (see the github-bot skill's *Auto-Merge on Codex Pass* section). On `pr_merged`: call `mcp__cloglog__mark_pr_merged(task_id, worktree_id)`, then for `spec`/`plan` tasks call `mcp__cloglog__report_artifact(task_id, worktree_id, artifact_path)`, then `mcp__cloglog__get_my_tasks` and start the next `backlog` task. See the `github-bot` skill's PR Event Inbox section for each event's shape.
+13. Your `.cloglog/inbox` Monitor delivers review/merge/CI events automatically — do NOT start a `/loop`. On `review_submitted` from `cloglog-codex-reviewer[bot]`: run the auto-merge gate (see the github-bot skill's *Auto-Merge on Codex Pass* section). On `pr_merged`:
+    - **First**, append a `pr_merged_notification` line to `<project_root>/.cloglog/inbox` so the supervisor sees the merge (T-262 — the `pr_merged` webhook only fans out to the merging worktree's own inbox; without this notification a parallel worktree blocked on this PR has no signal):
+      ```bash
+      printf '{"type":"pr_merged_notification","worktree":"<wt-name>","worktree_id":"<uuid>","task":"T-NNN","task_id":"<uuid>","pr":"<pr-url>","pr_number":NNN,"ts":"%s"}\n' "$(date -Is)" \
+        >> <project_root>/.cloglog/inbox
+      ```
+    - Then call `mcp__cloglog__mark_pr_merged(task_id, worktree_id)`, then for `spec`/`plan` tasks call `mcp__cloglog__report_artifact(task_id, worktree_id, artifact_path)`, then `mcp__cloglog__get_my_tasks` and start the next `backlog` task. See the `github-bot` skill's PR Event Inbox section for each event's shape.
 14. Exit condition — `get_my_tasks` returns no task in `backlog` status. Then run the shutdown sequence:
     - Generate `shutdown-artifacts/work-log.md` and `shutdown-artifacts/learnings.md` inside the worktree (use absolute paths when referring to them).
     - **Emit `agent_unregistered` to `<project_root>/.cloglog/inbox` before `unregister_agent`.** Shape:
@@ -120,6 +126,7 @@ When you receive a message, read it and act on the instruction. The main agent m
         "worktree_id": "<uuid>",
         "ts": "<utc-iso>",
         "tasks_completed": ["T-NNN"],
+        "prs": {"T-NNN": "<pr-url>"},
         "artifacts": {
           "work_log": "/abs/path/shutdown-artifacts/work-log.md",
           "learnings": "/abs/path/shutdown-artifacts/learnings.md"
@@ -127,7 +134,7 @@ When you receive a message, read it and act on the instruction. The main agent m
         "reason": "all_assigned_tasks_complete"
       }
       ```
-      Absolute paths are required so the main agent can read the artifacts after the worktree is torn down. This event is authoritative — do not rely on the SessionEnd hook to emit it for you.
+      Absolute paths are required so the main agent can read the artifacts after the worktree is torn down. The `prs` map (T-262) carries the PR URL for each completed task — build it by walking `mcp__cloglog__get_my_tasks()` and, for each row with a non-null `pr_url`, keying the map at `f"T-{row.number}"` (the `TaskInfo` schema exposes both `number` and `pr_url`). Tasks completed without a PR (plan tasks via `skip_pr=True`, docs-only) MUST be omitted from `prs` rather than mapped to `null`. `tasks_completed` stays a flat list of IDs so existing parsers keep working. This event is authoritative — do not rely on the SessionEnd hook to emit it for you.
     - Call `mcp__cloglog__unregister_agent` and exit.
 
 ## Pipeline (Features Only)

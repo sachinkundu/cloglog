@@ -67,10 +67,12 @@ class TaskInfo(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    number: int
     title: str
     description: str
     status: str
     priority: str
+    pr_url: str | None = None
     artifact_path: str | None = None
 
 

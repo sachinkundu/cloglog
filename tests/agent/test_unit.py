@@ -417,6 +417,19 @@ class TestAgentService:
         assert r2["current_task"] is not None
         assert r2["current_task"]["id"] == task.id  # type: ignore[index]
 
+        # T-262 round 3 (Codex): the route declares response_model=RegisterResponse,
+        # whose current_task is TaskInfo. After T-262 added required `number` to
+        # TaskInfo, the hand-built dict in AgentService.register() must include
+        # every required field or FastAPI's response validation returns 500
+        # instead of 201 on every reconnect with an active task. Pin the full
+        # round-trip so a future schema change can't silently break this path.
+        from src.agent.schemas import RegisterResponse
+
+        validated = RegisterResponse.model_validate(r2)
+        assert validated.current_task is not None
+        assert validated.current_task.number == task.number
+        assert validated.current_task.pr_url == task.pr_url
+
     async def test_register_stores_branch_name_from_caller(self, db_session: AsyncSession) -> None:
         """The backend is a pure pass-through for ``branch_name``. The caller
         (the MCP server or a direct API client) derives it and sends it; the

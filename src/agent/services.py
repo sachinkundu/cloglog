@@ -21,6 +21,17 @@ from src.shared.events import Event, EventType, event_bus
 
 logger = logging.getLogger(__name__)
 
+# Path segment that distinguishes a sandboxed worktree checkout from the
+# project's repo-root (main agent) checkout. T-245: the webhook resolver
+# uses ``worktrees.role`` to fall back to the main-agent inbox; the role
+# is derived from this segment at registration time so no separate config
+# or project.repo_root field is needed.
+_WORKTREE_PATH_MARKER = "/.claude/worktrees/"
+
+
+def _derive_worktree_role(worktree_path: str) -> str:
+    return "worktree" if _WORKTREE_PATH_MARKER in worktree_path else "main"
+
 
 def make_worktree_query(session: AsyncSession) -> IWorktreeQuery:
     """Build an ``IWorktreeQuery`` bound to an open async session.
@@ -131,7 +142,9 @@ class AgentService:
         short-circuit and ``get_worktree_by_branch``'s empty-guard are the
         safety nets if a caller sends an empty value.
         """
-        worktree, is_new = await self._repo.upsert_worktree(project_id, worktree_path, branch_name)
+        worktree, is_new = await self._repo.upsert_worktree(
+            project_id, worktree_path, branch_name, role=_derive_worktree_role(worktree_path)
+        )
 
         # Always generate a fresh agent token on registration.
         # The previous session's MCP server process is gone, so the old
@@ -155,10 +168,13 @@ class AgentService:
             if task is not None:
                 current_task = {
                     "id": task.id,
+                    "number": task.number,
                     "title": task.title,
                     "description": task.description,
                     "status": task.status,
                     "priority": task.priority,
+                    "pr_url": task.pr_url,
+                    "artifact_path": task.artifact_path,
                 }
 
         await event_bus.publish(
@@ -461,10 +477,13 @@ class AgentService:
             if t.status == "backlog":
                 next_task = {
                     "id": t.id,
+                    "number": t.number,
                     "title": t.title,
                     "description": t.description,
                     "status": t.status,
                     "priority": t.priority,
+                    "pr_url": t.pr_url,
+                    "artifact_path": t.artifact_path,
                 }
                 break
 

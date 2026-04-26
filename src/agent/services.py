@@ -155,10 +155,13 @@ class AgentService:
             if task is not None:
                 current_task = {
                     "id": task.id,
+                    "number": task.number,
                     "title": task.title,
                     "description": task.description,
                     "status": task.status,
                     "priority": task.priority,
+                    "pr_url": task.pr_url,
+                    "artifact_path": task.artifact_path,
                 }
 
         await event_bus.publish(
@@ -461,10 +464,13 @@ class AgentService:
             if t.status == "backlog":
                 next_task = {
                     "id": t.id,
+                    "number": t.number,
                     "title": t.title,
                     "description": t.description,
                     "status": t.status,
                     "priority": t.priority,
+                    "pr_url": t.pr_url,
+                    "artifact_path": t.artifact_path,
                 }
                 break
 

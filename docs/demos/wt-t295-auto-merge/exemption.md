@@ -1,29 +1,30 @@
 ---
 verdict: no_demo
-diff_hash: 59af68c61bf54699805cd8c6f655fbc67d1143ee73a7bcedbe162f01ffa014b9
+diff_hash: 3081bc8cb127bb31425c57c74637f36d3a1ea25e74a6b947f994a2ec7c4fc5f0
 classifier: demo-classifier
-generated_at: 2026-04-26T10:14:28Z
+generated_at: 2026-04-26T10:23:45Z
 ---
 
 ## Why no demo
 
-Diff is internal agent-workflow plumbing: a new pure-Python decision helper at
-`plugins/cloglog/scripts/auto_merge_gate.py`, prose updates to
-`docs/design/agent-lifecycle.md` and two `plugins/cloglog/skills/*/SKILL.md`
-files, plus pin tests under `tests/`. No `@router.*` decorators in
-`src/**`, no `frontend/src/**` changes, no `server.tool` registrations in
-`mcp-server/src/server.ts`, no `src/**/cli.py` or Makefile output-surface
-changes, and no migrations. The strongest `needs_demo` candidate was the
-`auto_merge_gate.py` helper, but it is invoked only by the worktree agent's
-skill — not a user-facing CLI/route — so it doesn't clear the bar.
-Counterfactual: if the diff had wired the helper into a user-invoked `make`
-target or added a Gateway route exposing the gate decision, it would have
-flipped to `needs_demo`.
+Diff is internal workflow plumbing for the worktree-agent's auto-merge gate
+(T-295): a new pure-Python helper at `plugins/cloglog/scripts/auto_merge_gate.py`,
+prose updates to `docs/design/agent-lifecycle.md` and the
+github-bot/launch/worktree-agent skill markdowns, and two pin tests under
+`tests/`. Strongest `needs_demo` candidate considered: the helper script is
+invoked via a CLI shape, but it is agent-internal tooling (worktree-agent
+shells out to it inside an event handler) — no user reads its stdout, no
+`@router` decorator, no React component, no MCP `server.tool` registration,
+no migration. Counterfactual: if the gate had added a new HTTP endpoint (e.g.,
+a `/api/v1/auto-merge` route) or a new MCP tool wrapping the merge action,
+or surfaced a `hold-merge` status dot in the dashboard, the verdict would
+have flipped to `needs_demo`.
 
 ## Changed files
 
 - docs/demos/wt-t295-auto-merge/exemption.md
 - docs/design/agent-lifecycle.md
+- plugins/cloglog/agents/worktree-agent.md
 - plugins/cloglog/scripts/auto_merge_gate.py
 - plugins/cloglog/skills/github-bot/SKILL.md
 - plugins/cloglog/skills/launch/SKILL.md

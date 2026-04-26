@@ -19,8 +19,8 @@ fatal: 'main' is already checked out at '/home/sachin/code/cloglog-prod'
 Three concrete consequences:
 
 1. **Stale `wt-*` branches linger on the dev clone between sessions.** After a wave merges, the dev worktree's HEAD stays on the last merged `wt-*` branch (already gone on origin) instead of advancing to `main`. `git status` then shows phantom diffs against `main` and `make quality` runs against an arbitrary base. Documented in work log `docs/work-logs/2026-04-23-reconcile-wt-codex-review-badge.md:71` (`detached at 01d93ef and origin/main at 2bad450`).
-2. **New worktrees inherit a wrong base ref unless explicitly told otherwise.** Memory `feedback_worktree_from_origin_main.md` exists *only* because of this — every worktree creation must say `origin/main` instead of the natural `HEAD`/`main`. One slip and unpushed local-main commits leak into the next PR (the original incident behind that memory).
-3. **Every `/clear` and `/cloglog setup` runs a workaround.** Memory `feedback_setup_park_on_main.md` (current ground truth) instructs the main agent to `git checkout --detach origin/main` instead of `git checkout main`, because the natural form fails. Detached HEAD is acceptable for the dev worktree's idle state, but it is friction every session, and it forces `git checkout -b <wt-name> <sha>` semantics for any in-place commit work (see §7 / T-282).
+2. **New worktrees inherit a wrong base ref unless explicitly told otherwise.** Memory `feedback_worktree_from_origin_main.md` exists in part because of this — every worktree creation must say `origin/main` instead of the natural `HEAD`/`main`. One slip and unpushed local-main commits leak into the next PR (the original incident behind that memory). Note: the underlying hazard (local-main commits not yet pushed to origin) is not eliminated by this spec — close-wave today commits directly to local `main` (`plugins/cloglog/skills/close-wave/SKILL.md:298,322`), and that flow survives until T-prod-7 retires it. So `feedback_worktree_from_origin_main.md` stays valid; what this spec removes is the *additional* lock-induced friction (the dev worktree being unable to sit on `main` at all), not the entire motivation for the memory.
+3. **Every `/clear` and `/cloglog setup` runs a workaround.** Memory `feedback_setup_park_on_main.md` (current ground truth) instructs the main agent to `git checkout --detach origin/main` instead of `git checkout main`, because the natural form fails. Detached HEAD is acceptable for the dev worktree's idle state, but it is friction every session, and it forces `git checkout -b <wt-name> <sha>` semantics for any in-place commit work (see §7).
 
 The proposed fix removes all three consequences with a one-line conceptual change: **production tracks `prod`, not `main`.**
 
@@ -194,9 +194,16 @@ Ordered, with verification after each step. Run as the user (not as an agent) �
 
 10. **Close out:** any new lingering memories or CLAUDE.md mentions of "detached HEAD" / "main is checked out elsewhere" get scrubbed. (Boy-Scout, in a follow-on housekeeping task — not in the impl PR.)
 
-## 7. Interaction with T-282
+## 7. Interaction with the close-wave / reconcile detached-HEAD-push workaround
 
-T-282 (#282 — "close-wave / reconcile: main agent commits without spawning a worktree (no wt-* prefix, detached-HEAD push)") exists *because* the dev worktree could not check out `main`. Its workaround is: when the main agent needs to commit a fold/reconcile/learnings update, it does so on detached HEAD and pushes via `git push origin HEAD:main` with the bot identity.
+> **Identifier note.** The original T-292 brief points at "T-282 (#282)" as the task carrying this workaround. Verification (2026-04-26):
+>
+> - GitHub does not have an issue/PR `#282` — `gh api repos/.../issues/282` returns `404 Not Found`.
+> - The board ID `T-282` was used as the close-off task for T-281 and is recorded as complete in `docs/work-logs/2026-04-24-t281-resolver-path0-work-log.md:69` ("close-off task T-282 marked complete").
+>
+> So the brief's identifier is stale. The *workflow* described in the brief — the main agent committing fold/reconcile updates without a worktree, on detached HEAD, pushing as the bot — is real and is currently codified in `plugins/cloglog/skills/close-wave/SKILL.md:298,322` (fix on `main`, commit on `main`). This section addresses *that workflow*; the task that retires it is T-prod-7 in §10. **Do not "close T-282"** — file the close-wave/reconcile rewrite as T-prod-7 and let §10 own the work.
+
+The detached-HEAD push workaround exists *because* the dev worktree cannot check out `main`. When the main agent needs to commit a fold/reconcile/learnings update without a worktree, the close-wave/reconcile skills today have it work in-place on the main clone (which is in detached state per `feedback_setup_park_on_main.md`) and push via the bot identity.
 
 Once this spec lands, the dev worktree is on `main`. Fold/reconcile commits become natural:
 
@@ -214,9 +221,7 @@ git branch -D wt-reconcile-<date>-<topic>
 
 This is the *exact same* workflow every other agent uses. No detached-HEAD push.
 
-**Recommendation: close T-282 as obsoleted by T-292's impl tasks.** Fold the close-wave / reconcile updates into the §6 migration's final clean-up: when removing the detached-HEAD codepath, also remove T-282's guidance from the close-wave/reconcile skills. Filing them as separate impl tasks would be churn — they share a single edit.
-
-If T-292 ships and T-282's underlying constraint persists for some unforeseen reason, T-282 can be reopened. Closing it pre-emptively is the right default given the tight coupling.
+**Recommendation: file the rewrite as T-prod-7 (§10) and own the close-wave/reconcile edits there.** Do not try to close a board ID `T-282` — that ID is already complete (see identifier note above) and was a close-off task for T-281, unrelated to this workflow. T-prod-7 is the single place that retires the detached-HEAD push and rewrites the close-wave/reconcile pull lines (§5.4) in one edit.
 
 ## 8. Rollback story
 
@@ -240,10 +245,9 @@ Document this in `CLAUDE.md`'s Runtime & Deployment section as the "rollback pat
 1. **Branch-protection rules are a manual GitHub UI step.** Not enforced by code. If the operator forgets §6 step 8, agents (or anyone with bot push permissions) can push directly to `prod`. *Mitigation:* add a `make verify-prod-protection` script that calls `gh api repos/:owner/:repo/branches/prod/protection` and asserts the rules. Include in the impl plan.
 2. **Railway deployment epic (F-35) is not on the board as an active epic** (verified via `mcp__cloglog__list_epics`). The reference in the original task description (`Epic "Railway Deployment — Staging & Production"`) is to the *spec* `docs/superpowers/specs/2026-04-18-dev-prod-separation-design.md`, not a tracked epic. If F-35 is silently scheduled for the near term, this spec needs review against whatever Railway-specific branch model emerges. *Resolution:* file a follow-up to confirm with the user before impl starts whether F-35 is dormant or imminent.
 3. **`alembic upgrade head` runs in `make promote`, not in `make prod`.** Today this is correct (CI ran it on `main`). Confirm no impl task accidentally moves `alembic upgrade head` into `make prod`'s startup; that would silently apply migrations on a restart-only-no-promote, which is exactly the "no auto-deploy on boot" guarantee §4.2 protects.
-4. **Bot agents that have `git checkout main -- <path>` in their playbooks** (e.g., `github-bot/SKILL.md:46`) currently fail silently in the dev worktree because of the lock. After this spec they succeed — meaning the *behaviour changes* even if the docs don't. Pin test recommended: §4 of the impl plan should add a regression test that verifies `git checkout main -- <some-file>` in the dev worktree exits 0.
-5. **Local `main` drift on the dev worktree.** Once dev has a real local `main`, agents could accidentally commit to it (e.g., a stray `git commit` not on a `wt-*` branch). The existing `protect-worktree-writes` hook protects worktree paths but not branch identity. *Mitigation:* a pre-commit hook on the dev clone that rejects commits on `main` unless `ALLOW_MAIN_COMMIT=1` is set (impl task; only a dev-clone setup chore, not part of the plugin).
-6. **Cloudflared tunnel restart on prod-worktree branch switch.** Step 6/2 (`git checkout -b prod --track origin/prod`) doesn't change file content (since `prod` HEAD == `main` HEAD initially), so gunicorn doesn't need a restart. But `prod_worktree_path`-aware tools (e.g., the F-48 backend that resolves source-root from `Settings`) should be sanity-checked to ensure they care about the *path*, not the *branch name*. Read `T-255` learnings (`docs/work-logs/2026-04-19-t255-review-source-root-learnings.md`) before impl — that's the file with the most context.
-7. **What if the user wants two prod environments?** (e.g., prod and a staging on a `staging` branch.) Out of scope for T-292; F-35 is the right place to design it. Note in the impl plan so it isn't accidentally pre-built.
+4. **Local `main` drift on the dev worktree.** Once dev has a real local `main`, agents could accidentally commit to it (e.g., a stray `git commit` not on a `wt-*` branch). The existing `protect-worktree-writes` hook protects worktree paths but not branch identity. *Mitigation:* a pre-commit hook on the dev clone that rejects commits on `main` unless `ALLOW_MAIN_COMMIT=1` is set (impl task; only a dev-clone setup chore, not part of the plugin).
+5. **Cloudflared tunnel restart on prod-worktree branch switch.** Step 6/2 (`git checkout -b prod --track origin/prod`) doesn't change file content (since `prod` HEAD == `main` HEAD initially), so gunicorn doesn't need a restart. But `prod_worktree_path`-aware tools (e.g., the F-48 backend that resolves source-root from `Settings`) should be sanity-checked to ensure they care about the *path*, not the *branch name*. Read `T-255` learnings (`docs/work-logs/2026-04-19-t255-review-source-root-learnings.md`) before impl — that's the file with the most context.
+6. **What if the user wants two prod environments?** (e.g., prod and a staging on a `staging` branch.) Out of scope for T-292; F-35 is the right place to design it. Note in the impl plan so it isn't accidentally pre-built.
 
 ## 10. Proposed follow-on impl tasks
 
@@ -257,7 +261,7 @@ Listed for the user to file on the board. Not created here.
 | T-prod-4 | Update `CLAUDE.md` Runtime & Deployment section: document `prod` branch, promotion semantics, and the rollback subsection from §8. |
 | T-prod-5 | Header-supersede `docs/superpowers/specs/2026-04-18-dev-prod-separation-design.md` with a one-line forward reference to this spec. |
 | T-prod-6 | Update memory `feedback_setup_park_on_main.md` from "detached HEAD" to "checkout main + ff" recipe, and drop the pending-task paragraph. |
-| T-prod-7 | Remove the close-wave/reconcile detached-HEAD push codepath (T-282 fold) AND retarget the close-wave/reconcile pulls to `git fetch origin && git merge --ff-only origin/main` (replacing plain `git pull origin main` at `close-wave/SKILL.md:263-264` and `reconcile/SKILL.md:296-297`). Replace the in-place "fix on main + commit" guidance with the natural short-lived `wt-reconcile-*` branch + PR flow. Close T-282 in the same PR. |
+| T-prod-7 | Remove the close-wave/reconcile detached-HEAD push codepath AND retarget the close-wave/reconcile pulls to `git fetch origin && git merge --ff-only origin/main` (replacing plain `git pull origin main` at `close-wave/SKILL.md:263-264` and `reconcile/SKILL.md:296-297`). Replace the in-place "fix on main + commit" guidance (`close-wave/SKILL.md:298,322`, `reconcile/SKILL.md:293`) with the natural short-lived `wt-reconcile-*` branch + PR flow shown in §7. (Note: the original T-292 brief calls this a "T-282 fold." Per §7's identifier note, board ID `T-282` is already complete and unrelated; T-prod-7 owns the rewrite directly. No board task needs to be closed for this fold.) |
 | T-prod-8 | Add a pre-commit hook on the dev clone rejecting direct commits to `main` unless `ALLOW_MAIN_COMMIT=1` is set. **Depends on T-prod-7** — the close-wave/reconcile skills today still require committing directly to `main` (`close-wave/SKILL.md:298,322`, `reconcile/SKILL.md:293`); installing the hook before T-prod-7 retires those flows would break documented operator maintenance. (Dev-clone setup; do not put in the plugin.) |
 | T-prod-9 | Smoke-test promotion end-to-end (inert PR → `make promote` → tunnel verification → `git ls-remote origin refs/heads/prod` matches the deployed SHA) and record the result in a work log. Final acceptance step. |
 

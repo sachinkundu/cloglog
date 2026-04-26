@@ -24,9 +24,11 @@ Run `git status`. If there are uncommitted changes, STOP and commit or stash the
 
 ### 1b. Resolve entity IDs
 
-Parse `$ARGUMENTS` to extract feature/task identifiers (F-*, T-*). Look up the actual UUIDs using MCP tools:
-- `mcp__cloglog__get_board` to find tasks/features
-- `mcp__cloglog__list_features` for feature details
+Parse `$ARGUMENTS` to extract feature/task identifiers (F-*, T-*) — `/cloglog launch` only accepts features and standalone tasks; epics (`E-*`) are containers and have no launch semantics in Steps 2-4 or the agent template. For each identifier, call `mcp__cloglog__search` with the entity-number token (e.g. `T-45`, `F-12`) — a single call returns the matching `id`/`type`/`number`/`title`/`status` (and parent epic + feature for tasks), so you never have to page the full board to turn `T-NNN` into a UUID.
+
+Fall back to `mcp__cloglog__get_board` / `mcp__cloglog__list_features` / `mcp__cloglog__get_active_tasks` only when you genuinely need to *enumerate* (e.g. "list every backlog task in this feature") rather than resolve a known number.
+
+**Never `psql` the board** to look up an ID. The MCP server is the only sanctioned read path; raw SQL bypasses the agent-token auth checks and can drift out of sync with the API contract.
 
 ### 1c. Check task status
 
@@ -92,7 +94,7 @@ When you receive a message, read it and act on the instruction. The main agent m
 
 ## Workflow
 1. Read the project CLAUDE.md for project-specific instructions
-2. Load MCP tools: call `ToolSearch(query: "select:mcp__cloglog__register_agent,mcp__cloglog__start_task,mcp__cloglog__update_task_status,mcp__cloglog__get_my_tasks,mcp__cloglog__unregister_agent,mcp__cloglog__add_task_note,mcp__cloglog__mark_pr_merged,mcp__cloglog__report_artifact")` — MCP tools are deferred and MUST be loaded via ToolSearch before calling them.
+2. Load MCP tools: call `ToolSearch(query: "select:mcp__cloglog__register_agent,mcp__cloglog__start_task,mcp__cloglog__update_task_status,mcp__cloglog__get_my_tasks,mcp__cloglog__unregister_agent,mcp__cloglog__add_task_note,mcp__cloglog__mark_pr_merged,mcp__cloglog__report_artifact,mcp__cloglog__search")` — MCP tools are deferred and MUST be loaded via ToolSearch before calling them. `mcp__cloglog__search` is in the preload so any later T-NNN/F-NN reference (and parent-epic context for tasks) can be resolved in one call instead of paging the board.
 
    **Stop on MCP failure.** Halt on any MCP failure: startup unavailability emits `mcp_unavailable` and exits; runtime tool errors emit `mcp_tool_error` and wait for the main agent; transient network errors get one backoff retry before escalating. See `docs/design/agent-lifecycle.md` §4.1 for both event shapes.
      - **Startup** (ToolSearch returns no matches, or the first MCP call after register fails at the transport layer): write an `mcp_unavailable` event to `<project_root>/.cloglog/inbox` and exit.

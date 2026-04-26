@@ -72,3 +72,29 @@ cloglog, the MCP server, and every worktree agent share one host filesystem. The
 - Frontend: React 18, Vite, TypeScript, Vitest
 - MCP Server: Node.js, TypeScript, @modelcontextprotocol/sdk
 - Tools: uv, ruff, mypy, pytest
+
+## Agent Learnings
+
+Durable gotchas discovered during worktree tasks. Each bullet is non-obvious and has caused a real failure.
+
+### Showboat demos
+
+- **`ast.unparse` substring checks need structural scoping.** `ast.unparse(Return_node)` prepends the `return` keyword — `"return"` contains `"turn"` — causing false positives. Always unparse `ret.value` (the expression), not the wrapping statement. Applies equally to `fn.args`, `node.test`, and other statement wrappers.
+- **`uv run --quiet python` for demos that import project modules.** Plain `python3 - <<PY` works for stdlib-only proofs. Proofs that import project code need `uv run --quiet python - <<PY`; `--quiet` keeps stdout deterministic across runs.
+- **Plain Python `import` does NOT trigger `conftest.py`.** `python -c "from tests.foo import bar; bar.TestX().test_y()"` runs the test method without activating pytest's conftest auto-discovery. Use this pattern when a Showboat proof needs test-asserted behaviour without the session-autouse Postgres fixture firing.
+
+### review_engine plumbing
+
+- **Opencode-only host has a hard constraint on `count_bot_reviews`.** `TestOpencodeOnlyHost::test_session_cap_check_skipped_when_codex_unavailable` pins that `count_bot_reviews` MUST NOT be called when `_codex_available=False`. Any future code that needs a prior session count must gate the HTTP call on `_codex_available` or pre-seed a fallback (`prior = 0`) before the capability-gated block.
+
+### Worktrees
+
+- **Fast-forward from `origin/main` before any diff-based tool.** A worktree created from a stale local `main` will show phantom diffs relative to `origin/main`. Run `git merge --ff-only origin/main` before the demo classifier, PR-body drafting, or any diff-based check.
+
+### Demo classifier / exemption gate (F-51)
+
+- **Allowlist regexes must be validated against the actual repo path tree.** Grep every path class before writing — a narrow-by-accident regex blocks the feature it enables (e.g., `plugins/*/hooks/` broke rollout PRs that touch `plugins/cloglog/skills/`; nested `package-lock.json` lives at `frontend/` and `mcp-server/`, not root).
+- **Route rules: key on the decorator, not the filename.** When a subagent rule says "user-observable HTTP routes," match `@[A-Za-z_]*router\.(get|post|patch|put|delete)\(` across all bounded contexts — not `src/gateway/**/routes.py`.
+- **Test fixtures that shortcut the production flow can hide the exact failure mode you care about.** Writing `exemption.md` untracked covers the happy path but misses self-invalidation: committing the file changes the diff bytes, changing the SHA256, invalidating the stored `diff_hash`. Pin tests should reflect the real agent flow, not a convenient untracked-file shortcut.
+- **Two-dot vs three-dot `git diff` matters for diff_hash correctness.** `git diff A B` (two-dot) includes changes A has that B doesn't; `git diff A...B` (three-dot) is merge-base-to-B. When `A` is a resolved merge-base SHA both produce identical bytes; when `A` is a raw ref and main has advanced, two-dot includes main's new commits as "removed." Use three-dot in the classifier; document equivalence conditions explicitly at every hash-computation site.
+- **Codex's 5-session cap is a hard ceiling; bundle the full scope correctly in round 1.** When a PR generates round-after-round of sibling-file findings the scope is still expanding — include every affected file before the first codex turn, or expect to hit the cap without approval.

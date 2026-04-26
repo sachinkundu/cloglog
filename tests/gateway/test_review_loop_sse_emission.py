@@ -35,7 +35,7 @@ def _record_events() -> tuple[list[Event], object]:
     captured: list[Event] = []
 
     class _Rec:
-        async def put(self, event: Event) -> None:
+        def put_nowait(self, event: Event) -> None:
             captured.append(event)
 
     # Attach to the global event bus's internal global subscribers list.

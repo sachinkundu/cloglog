@@ -261,8 +261,11 @@ Skip branches that are already gone.
 
 ```bash
 git checkout main
-git pull origin main
+git fetch origin
+git merge --ff-only origin/main
 ```
+
+A non-fast-forward state means real divergence (e.g., a stray local-`main` commit) — investigate, do not paper over with a merge commit.
 
 ## Step 9.5: Sync MCP Server Dist (T-244)
 

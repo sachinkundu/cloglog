@@ -293,8 +293,8 @@ Case A/B tier-2 fallback, or Case C directly.
 - **Merged PR + task in review**: call `mcp__cloglog__mark_pr_merged` with
   the `task_id` to flip `pr_merged=True` (unblocks the `start_task` guard);
   then flag for user — only the user can move the task to done.
-- **Pull merged changes**: always run `git pull origin main` at the end to
-  ensure local main is current.
+- **Pull merged changes**: always run `git fetch origin && git merge --ff-only origin/main` at the end to
+  ensure local main is current. A non-fast-forward state means real divergence — investigate, do not paper over with a merge commit.
 
 Report what was fixed and which path each worktree followed (cooperative vs
 force_unregister) so the operator can tell at a glance whether any tier-2

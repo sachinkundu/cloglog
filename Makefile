@@ -274,6 +274,7 @@ verify-prod-protection: ## Assert GitHub branch protection on `prod`. Requires o
 			esac; \
 		fi; \
 		LINEAR=$$(echo "$$RESP" | jq -r '.required_linear_history.enabled // false'); \
+		PR_REQUIRED=$$(echo "$$RESP" | jq -r 'if .required_pull_request_reviews then "true" else "false" end'); \
 		USERS=$$(echo "$$RESP" | jq -r '.restrictions.users // [] | length'); \
 		APPS=$$(echo "$$RESP" | jq -r '.restrictions.apps // [] | length'); \
 		TEAMS=$$(echo "$$RESP" | jq -r '.restrictions.teams // [] | length'); \
@@ -281,6 +282,9 @@ verify-prod-protection: ## Assert GitHub branch protection on `prod`. Requires o
 		APP_SLUGS=$$(echo "$$RESP" | jq -r '.restrictions.apps // [] | map(.slug) | join(",")'); \
 		if [ "$$LINEAR" != "true" ]; then \
 			echo "FAIL: required_linear_history is not enabled on $$REPO:prod (spec §3.2)."; exit 1; \
+		fi; \
+		if [ "$$PR_REQUIRED" = "true" ]; then \
+			echo "FAIL: $$REPO:prod requires a pull request before merging — but \`make promote\` pushes directly. Spec §3.2 forbids the PR requirement on prod (disable \"Require a pull request before merging\" in the GitHub UI)."; exit 1; \
 		fi; \
 		if [ -z "$$RESP" ] || [ "$$(echo $$RESP | jq -r '.restrictions // null')" = "null" ]; then \
 			echo "FAIL: push restrictions on $$REPO:prod are not configured — anyone with push can write (spec §3.2)."; exit 1; \
@@ -294,7 +298,10 @@ verify-prod-protection: ## Assert GitHub branch protection on `prod`. Requires o
 		if [ "$$USERS" = "0" ]; then \
 			echo "FAIL: no user is allowed to push to $$REPO:prod (spec §3.2 — at least the operator must be permitted to run \`make promote\`)."; exit 1; \
 		fi; \
-		echo "OK: $$REPO:prod has linear history + push restricted to user(s): $$USER_LOGINS (no apps, no teams)."
+		if [ "$$USERS" != "1" ]; then \
+			echo "FAIL: $$USERS users ($$USER_LOGINS) are allowed to push to $$REPO:prod. Spec §3.2 restricts pushes to a single operator account; multiple humans defeat the single-promotion-gate guarantee."; exit 1; \
+		fi; \
+		echo "OK: $$REPO:prod has linear history, no PR requirement, and push restricted to single user: $$USER_LOGINS."
 
 prod-logs: ## Tail prod server logs
 	@tail -f /tmp/cloglog-prod.log /tmp/cloglog-prod-access.log

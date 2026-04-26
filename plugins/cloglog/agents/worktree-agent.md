@@ -143,7 +143,7 @@ the full inbox contract and a note on the removed legacy path.
   `plugins/cloglog/skills/launch/SKILL.md`. The canonical command:
   ```
   Monitor(
-    command: "mkdir -p <your_worktree_path>/.cloglog && touch <your_worktree_path>/.cloglog/inbox && tail -n +1 -F <your_worktree_path>/.cloglog/inbox",
+    command: "mkdir -p <your_worktree_path>/.cloglog && touch <your_worktree_path>/.cloglog/inbox && tail -n 0 -F <your_worktree_path>/.cloglog/inbox",
     persistent: true,
     description: "Agent inbox"
   )

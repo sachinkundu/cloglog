@@ -43,12 +43,12 @@ Before spawning, reconcile against existing monitors:
    - **Zero** → spawn a fresh persistent monitor. **The inbox file may not exist yet** (the backend creates it on first webhook write), and `tail -f` against a missing file exits immediately — leaving the agent monitor-less. Wrap the tail so the file is materialised first:
      ```
      Monitor(
-       command: "mkdir -p <current working directory>/.cloglog && touch <current working directory>/.cloglog/inbox && tail -n +1 -F <current working directory>/.cloglog/inbox",
+       command: "mkdir -p <current working directory>/.cloglog && touch <current working directory>/.cloglog/inbox && tail -n 0 -F <current working directory>/.cloglog/inbox",
        description: "Main agent inbox — messages from worktree agents",
        persistent: true
      )
      ```
-     `-n +1` is mandatory — bare `tail -F` only emits the last 10 existing lines, so on a re-entered session with a long event history you would silently miss everything older. `-F` (capital) is a defence in depth — if the file is rotated or briefly removed, it re-opens by name instead of dying.
+     `-n 0` (start at end-of-file, only deliver events appended from now on) is the correct semantic for this codebase: the inbox is **append-only for the worktree's entire lifetime** (`src/gateway/webhook_consumers.py` always appends; `request_shutdown` is pinned by `tests/agent/test_unit.py` not to truncate). Re-delivering historical events would re-process already-handled `pr_merged`/`review_submitted` lines and crash `start_task` (see `src/agent/services.py:357-370` — only one active task per agent). To reconcile events that landed while the agent was offline, use the *Check PR Status* drill-down in `plugins/cloglog/skills/github-bot/SKILL.md`, not `tail` history. `-F` (capital) is a defence in depth — if the file is rotated or briefly removed, it re-opens by name instead of dying.
    - **Two or more** → keep the oldest matching monitor (lowest creation time / first in `TaskList` ordering), `TaskStop` each of the others, and tell the user: *"Stopped N duplicate monitor(s); reusing task `<id>`."*
 
 ### 3. Confirm

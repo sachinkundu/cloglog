@@ -155,7 +155,7 @@ Note: `pr_merged` does **not** carry a `task_id` — use the active task_id from
 
 How to respond to each event type:
 
-- **`review_submitted`** — move the task back to `in_progress` via `mcp__cloglog__update_task_status`, read the review body from the event (and fetch the full comments with *Check PR Status* below if needed), address the feedback, push a fix, move back to `review`.
+- **`review_submitted`** — first run the [Auto-Merge on Codex Pass](#auto-merge-on-codex-pass) gate; if it returns `merge`, run the merge command and stop here. Otherwise move the task back to `in_progress` via `mcp__cloglog__update_task_status`, read the review body from the event (and fetch the full comments with *Check PR Status* below if needed), address the feedback, push a fix, move back to `review`. (An approval-shaped review from the codex bot that does NOT pass the gate — for example, CI is still pending — is informational; stay in `review` and wait for the next event rather than moving to `in_progress`.)
 - **`review_comment`** — a reviewer posted a standalone inline diff comment without opening a review. The event carries `path`, `line`, and the comment body. Treat it the same as `review_submitted`: move back to `in_progress`, address the feedback at `path:line`, push a fix, move back to `review`.
 - **`issue_comment`** — a reviewer posted an issue-style PR comment. These are often clarifying questions or approvals without a formal review. Read the body; if it requires a code change, follow the same in_progress → fix → review flow. If it is informational (e.g., "LGTM, just waiting on CI"), reply via the *Reply to Review Comments* section and stay in `review`.
 - **`ci_failed`** — follow [CI Failure Recovery](#ci-failure-recovery) to read the failed logs and push a fix. CI re-runs automatically on push; a subsequent `check_run` webhook will report the new result. Note: the consumer only filters out `conclusion=success`, so `conclusion=null` (still pending) may surface here — check `gh pr checks <PR_NUM>` before assuming the run terminated.
@@ -175,6 +175,135 @@ If the inbox monitor is not running, events pile up silently in the file and not
 1. Re-register, then run the dedupe-aware idempotent restart from the launch skill's Inbox section (TaskList → match suffix `<WORKTREE_PATH>/.cloglog/inbox` → reuse / spawn / keep-oldest).
 2. **Reconcile PR webhook events** by running *Check PR Status* below — drills into current PR merge state, CI, comments, and reviews via `gh`. The branch-name fallback path also excludes offline worktrees, so events that fired before your task had a `pr_url` set (e.g., the first CI run after `git push` but before `update_task_status`) may have been dropped at the producer side too; this drill-down covers both gaps.
 3. **Reconcile control events** — webhook events have a GitHub-side source of truth, but supervisor-driven control lines do NOT and the only durable record is the inbox file itself. `request_shutdown` writes a `{"type":"shutdown"}` line to your worktree inbox (`src/agent/services.py:183-223`) and the DB `shutdown_requested` bit is no longer surfaced on heartbeat (`tests/agent/test_unit.py:1253-1357`), so a missed shutdown means the agent silently resumes work after a crash. Inspect the inbox tail one-shot — `Read` the tail of `<WORKTREE_PATH>/.cloglog/inbox` (e.g., last 50 lines) and grep for any line where `"type"` is `"shutdown"`, `"mcp_tool_error"`, `"resume"`, or other supervisor-issued control messages. Act on each one as if it had just arrived. (A proper offset-tracked replay — analogous to `scripts/wait_for_agent_unregistered.py` — is the durable fix and is filed as follow-up work.)
+
+### Auto-Merge on Codex Pass
+
+After a `review_submitted` inbox event, the worktree agent decides whether to merge its own PR via a four-condition gate (T-295). The gate is implemented as a pure-Python helper; the agent shells out to it, never reproduces the logic inline.
+
+**Conditions (all five must hold):**
+
+1. Reviewer is `cloglog-codex-reviewer[bot]` — the `reviewer` field on the inbox event payload.
+2. Review body, `lstrip()`ed, starts with `:pass:` — matches `_APPROVE_BODY_PREFIX` in `src/gateway/review_engine.py`. The bot deliberately never posts with `event="APPROVE"`; body content is the canonical approval marker.
+3. No human reviewer's most recent review is `CHANGES_REQUESTED`. Codex always posts as `event="COMMENT"` (`post_review` in `src/gateway/review_engine.py`), so a codex `:pass:` does NOT clear a human's outstanding change request — GitHub still blocks the merge from the human's side, and this gate must too. Computed from `gh api repos/${REPO}/pulls/${PR_NUM}/reviews`, filtered to non-bot users, latest review per author.
+4. Every check on `gh pr checks <PR_NUM> --json name,bucket` is `pass` or `skipping`. **Empty rollup also passes** — docs-only spec PRs attach no checks because [`ci.yml`](../../../.github/workflows/ci.yml) filters by `paths:`. Pending or failing → see *When the gate holds* below; do not assume an inbox event will retrigger.
+5. The PR does not carry the `hold-merge` label — set via `gh pr edit --add-label hold-merge` when a human wants to override auto-merge for a specific PR. Label REMOVAL fires no webhook the consumer surfaces (see [`src/gateway/webhook.py`](../../../src/gateway/webhook.py): only `opened/synchronize/closed` map through), so removing `hold-merge` does NOT re-run the gate by itself — see *When the gate holds*.
+
+**Invocation:**
+
+```bash
+BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
+PR_NUM=<the PR number from the inbox event>
+
+# Compute has_human_changes_requested: latest review per non-bot author,
+# True iff any of those latest reviews is in state CHANGES_REQUESTED.
+# group_by + map(last) collapses to one row per .user.login, preserving the
+# REST API's oldest-first ordering.
+HAS_HUMAN_CR=$(GH_TOKEN="$BOT_TOKEN" gh api "repos/${REPO}/pulls/${PR_NUM}/reviews" \
+  --jq '[.[] | select(.user.type != "Bot")] | group_by(.user.login) | map(last) | any(.state == "CHANGES_REQUESTED")')
+
+# Labels from `gh pr view`, checks from `gh pr checks` — the latter is the
+# ONLY `gh` surface that returns the normalized `bucket` field
+# (pass/pending/fail/cancel/skipping). `gh pr view --json statusCheckRollup`
+# returns conclusion/status enums in a different shape and the gate would
+# always read bucket=null. Empty array is fine — the gate treats no checks
+# as green for docs-only PRs.
+LABELS=$(GH_TOKEN="$BOT_TOKEN" gh pr view "$PR_NUM" --json labels --jq '[.labels[].name]')
+CHECKS=$(GH_TOKEN="$BOT_TOKEN" gh pr checks "$PR_NUM" --json name,bucket 2>/dev/null || echo '[]')
+
+# Assemble with `jq -n` so we can inject every field as a typed argument
+# (`--argjson` for already-JSON values, `--arg` for strings). This is the
+# only invocation shape that survives `gh pr view --jq` not accepting `--arg`.
+PAYLOAD=$(jq -nc \
+  --arg reviewer "<reviewer field from inbox event>" \
+  --arg body "<body field from inbox event>" \
+  --arg has_human_cr "$HAS_HUMAN_CR" \
+  --argjson checks "$CHECKS" \
+  --argjson labels "$LABELS" \
+  '{
+    reviewer: $reviewer,
+    body: $body,
+    checks: $checks,
+    labels: $labels,
+    has_human_changes_requested: ($has_human_cr == "true")
+  }')
+
+REASON=$(printf '%s' "$PAYLOAD" | python3 plugins/cloglog/scripts/auto_merge_gate.py)
+GATE_RC=$?
+
+if [[ "$GATE_RC" == "0" ]]; then
+  GH_TOKEN="$BOT_TOKEN" gh pr merge "$PR_NUM" --squash --delete-branch
+  # The pr_merged webhook fires next; the inbox handler runs the existing
+  # mark_pr_merged → report_artifact → get_my_tasks flow.
+else
+  case "$REASON" in
+    human_changes_requested)
+      # mcp__cloglog__add_task_note(task_id, "auto-merge skipped: human reviewer has CHANGES_REQUESTED outstanding")
+      # Same flow as a normal review_submitted from a human — the task is
+      # back in the human's court. Move to in_progress, address the review,
+      # push, return to review.
+      ;;
+    ci_not_green)
+      # The webhook consumer ONLY emits ci_failed inbox events (see
+      # CI_FAILED_CONCLUSIONS in src/gateway/webhook_consumers.py); a check
+      # that turns green produces no event, so "wait for the next event"
+      # would deadlock the gate when codex passes before CI terminates.
+      # Block synchronously on `gh pr checks --watch` (one process, one
+      # handler invocation — NOT a /loop), then re-evaluate the gate
+      # exactly once. If CI ends red, fall through to the standard
+      # in_progress fix flow.
+      GH_TOKEN="$BOT_TOKEN" gh pr checks "$PR_NUM" --watch --interval 30 || true
+      HAS_HUMAN_CR=$(GH_TOKEN="$BOT_TOKEN" gh api "repos/${REPO}/pulls/${PR_NUM}/reviews" \
+        --jq '[.[] | select(.user.type != "Bot")] | group_by(.user.login) | map(last) | any(.state == "CHANGES_REQUESTED")')
+      LABELS=$(GH_TOKEN="$BOT_TOKEN" gh pr view "$PR_NUM" --json labels --jq '[.labels[].name]')
+      CHECKS=$(GH_TOKEN="$BOT_TOKEN" gh pr checks "$PR_NUM" --json name,bucket 2>/dev/null || echo '[]')
+      PAYLOAD=$(jq -nc \
+        --arg reviewer "<reviewer field from inbox event>" \
+        --arg body "<body field from inbox event>" \
+        --arg has_human_cr "$HAS_HUMAN_CR" \
+        --argjson checks "$CHECKS" \
+        --argjson labels "$LABELS" \
+        '{reviewer: $reviewer, body: $body, checks: $checks, labels: $labels, has_human_changes_requested: ($has_human_cr == "true")}')
+      REASON=$(printf '%s' "$PAYLOAD" | python3 plugins/cloglog/scripts/auto_merge_gate.py)
+      if [[ "$REASON" == "merge" ]]; then
+        GH_TOKEN="$BOT_TOKEN" gh pr merge "$PR_NUM" --squash --delete-branch
+      fi
+      # If still not_green here, CI ended red — let the existing CI failure
+      # flow take over.
+      ;;
+    hold_label)
+      # mcp__cloglog__add_task_note(task_id, "auto-merge skipped: hold-merge label set; clear by manual merge or by pushing a no-op commit")
+      # hold-merge is sticky from the agent's side: label-removal does NOT
+      # produce an inbox event (only opened/synchronize/closed PR actions do
+      # — src/gateway/webhook.py). The human override is cleared by either
+      # (a) merging the PR manually, or (b) pushing a commit so a fresh
+      # codex review_submitted re-runs this gate.
+      ;;
+    not_codex_pass|not_codex_reviewer)
+      # Not an approval shape — the existing review_submitted in_progress
+      # flow takes over.
+      ;;
+  esac
+fi
+```
+
+**When the gate holds.** Each hold reason has a specific re-trigger path; do not generalize:
+
+| Reason | Will the gate re-run on its own? | What re-triggers it |
+| --- | --- | --- |
+| `not_codex_reviewer` | No (this run only) | The next codex `review_submitted` event. |
+| `not_codex_pass` | No | A new codex review on the next push (codex re-reviews on `synchronize`). |
+| `human_changes_requested` | No | Address the human's review, push a fix — `synchronize` triggers a fresh codex review and re-runs the gate (assuming the human dismisses or supersedes their change request). |
+| `ci_not_green` | **Yes — the handler `gh pr checks --watch`s in-line** | Synchronous wait inside the same handler invocation, then a single re-evaluation. CI success does not produce an inbox event. |
+| `hold_label` | No | Human action: manual merge OR a push that triggers a fresh codex review. The webhook consumer does not surface label-changed events. |
+
+**Why a pure-Python helper, not inline bash.** Tests pin the four-condition truth table at `tests/test_auto_merge_gate.py`. Reproducing the logic in shell would split the source of truth between the test and the agent. The helper takes JSON in, prints the reason, exits 0/1.
+
+**What the agent must NOT do:**
+
+- Do not parse the review body with regex sprawl. The marker is `:pass:` as a leading prefix after `lstrip()` — that is what the helper checks and what `latest_codex_review_is_approval` checks server-side.
+- Do not assume "the next webhook event will re-run the gate" for `ci_not_green` or `hold_label`. Successful CI checks and label changes are NOT bridged to the worktree inbox by `src/gateway/webhook_consumers.py` — see the *When the gate holds* table above for the actual re-trigger paths.
+- Do not skip the `has_human_changes_requested` lookup. The gate's *reviewer* field only ratifies that the *triggering* event is the codex bot; the helper relies on `has_human_changes_requested` (computed from `gh api .../reviews`) to enforce that no human's outstanding `CHANGES_REQUESTED` is being silently overridden. Omitting the lookup would let a codex `:pass:` posted after a human request-changes review auto-merge the PR — a regression of the T-295 review fix.
 
 ### Reply to Review Comments
 

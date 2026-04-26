@@ -253,7 +253,7 @@ Webhook and supervisor events. The agent's required response is listed.
 | Event `type` | Source | Required response |
 | --- | --- | --- |
 | `task_assigned` | main agent (inbox write) | Call `get_my_tasks`; `start_task` on the new backlog entry per Section 1's algorithm. |
-| `review_submitted` | webhook | Read review body; if `changes_requested`, move task back to `in_progress`, address, push, return to `review`. Approvals with no change are informational. |
+| `review_submitted` | webhook | First run the §3.1 auto-merge gate; if it passes, merge and stop. Otherwise: if `changes_requested`, move task back to `in_progress`, address, push, return to `review`. Approval-shaped reviews that fail the gate (e.g., CI still pending) are informational — stay in `review`. |
 | `review_comment` | webhook | Inline PR comment. If actionable, address it like `review_submitted`; otherwise reply via the github-bot skill's comment path. |
 | `issue_comment` | webhook | Issue-style PR comment. Same rule: actionable → fix; informational → reply or ignore. |
 | `ci_failed` | webhook | Follow the github-bot skill's CI recovery flow. Fix the failure, push. CI re-runs on push; next `check_run` webhook delivers the result. |
@@ -295,6 +295,79 @@ that awaits one will deadlock.
 If an AGENT_PROMPT, skill, or template tells an agent to "wait for the task to
 show done" or "block on the board showing merged," the prompt is wrong and
 must be fixed.
+
+### 3.1 Auto-merge gate (T-295)
+
+Before T-295, every PR — including those with a passing codex review and
+green CI — waited on a human to click *Merge*. The gate frees the worktree
+agent to merge its own PR when the conditions below all hold, while
+preserving an explicit override for PRs that warrant a manual look.
+
+**Conditions (all five must hold to merge):**
+
+1. The triggering `review_submitted` event's `reviewer` is
+   `cloglog-codex-reviewer[bot]` (`_CODEX_BOT` in `src/gateway/review_engine.py`).
+2. The review body, after `lstrip()`, starts with `:pass:` —
+   matches `_APPROVE_BODY_PREFIX` in `src/gateway/review_engine.py` and the
+   server-side `latest_codex_review_is_approval` predicate. The codex bot
+   deliberately never posts with `event="APPROVE"` (see `post_review`),
+   so body content is canonical.
+3. No human reviewer's most recent review is `CHANGES_REQUESTED`. Codex
+   always posts as `event="COMMENT"` (`post_review`), so a codex `:pass:`
+   does not clear a human's outstanding change request — GitHub still
+   blocks the merge from the human's side, and this gate must too. The
+   agent computes the flag from
+   `gh api repos/.../pulls/<PR_NUM>/reviews`, filtered to non-bot
+   authors, taking the latest review per author.
+4. Every check returned by `gh pr checks <PR_NUM> --json name,bucket` has
+   bucket `pass` or `skipping`. **An empty rollup also passes** —
+   `.github/workflows/ci.yml` filters by `paths:` and a docs-only PR
+   (e.g., a spec PR opened by the worktree-agent's spec task) attaches
+   no checks at all. Pending or failing checks → hold. The handler does
+   NOT wait for an inbox event here; see the *Hold reasons and
+   re-trigger paths* table below for the actual re-trigger surface
+   (`success`/`pending` check_runs are not bridged to the worktree
+   inbox; only `ci_failed` is).
+5. The PR does not carry the `hold-merge` label. Setting the label via
+   `gh pr edit --add-label hold-merge` is the human override path.
+
+**Implementation.** The gate is a pure-Python helper at
+`plugins/cloglog/scripts/auto_merge_gate.py`. The four-condition truth
+table is pinned by `tests/test_auto_merge_gate.py`. The agent shells out
+to the helper after every `review_submitted` event from the codex bot
+and never reproduces the logic inline. The merge command is
+`gh pr merge <num> --squash --delete-branch` — same shape as today's
+manual merges (PR #217). A successful merge fires the existing
+`pr_merged` webhook → main agent's close-off path runs unchanged. The
+reviewer side (`review_engine.py`, codex bot prompt, `post_review`) is
+not modified by T-295; codex output stays as-is.
+
+**Hold reasons and re-trigger paths.** When the gate refuses to merge it
+returns one of `not_codex_reviewer`, `not_codex_pass`,
+`human_changes_requested`, `ci_not_green`, `hold_label`. The re-trigger
+surface is *narrower than the conditions suggest* because the webhook
+consumer at `src/gateway/webhook_consumers.py` only bridges a subset of
+GitHub events to the worktree inbox: `ci_failed` fires only on terminal
+failure (success and pending produce no event), and `pull_request`
+actions are filtered to `opened/synchronize/closed` in
+`src/gateway/webhook.py` (label changes never reach the agent). The
+agent therefore handles each hold reason explicitly:
+
+| `reason` | Gate re-runs by itself? | What clears the hold |
+| --- | --- | --- |
+| `not_codex_reviewer` | No | The next codex `review_submitted` event. |
+| `not_codex_pass` | No | A new codex review on the next push (codex re-reviews on `synchronize`). |
+| `human_changes_requested` | No | Address the review and push — `synchronize` re-triggers codex; the human dismissing/superseding their change request lifts the block. |
+| `ci_not_green` | **Yes — synchronous in-handler wait** | The handler runs `gh pr checks <num> --watch --interval 30` inside the same `review_submitted` invocation, then re-evaluates the gate exactly once. CI completion does NOT produce an inbox event, so the wait must happen here. |
+| `hold_label` | No | Human action: manual merge OR a push that triggers a fresh codex review. The agent records the hold via `add_task_note`. |
+
+The synchronous `--watch` for `ci_not_green` is **not** a `/loop` — it
+is a single `gh` subprocess invocation inside one event handler, with a
+natural terminal state (CI buckets all leaving `pending`). The
+`/loop`-forbidden rule (Section 3) targets repeated agent re-prompts;
+blocking on a subprocess that exits when CI terminates is the same
+shape as `make quality`. A `hold_label` hold genuinely requires human
+action — the agent has no event to wait on.
 
 ## 4. MCP discipline
 

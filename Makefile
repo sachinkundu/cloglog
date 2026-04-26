@@ -1,4 +1,4 @@
-.PHONY: help install test test-board test-agent test-document test-gateway test-e2e test-e2e-browser test-e2e-browser-ui test-e2e-browser-headed test-e2e-browser-report invariants lint typecheck coverage contract-check demo demo-check quality run-backend prod prod-bg promote prod-logs prod-stop db-up db-down db-migrate db-revision db-refresh-from-prod sync-mcp-dist
+.PHONY: help install test test-board test-agent test-document test-gateway test-e2e test-e2e-browser test-e2e-browser-ui test-e2e-browser-headed test-e2e-browser-report invariants lint typecheck coverage contract-check demo demo-check quality run-backend prod prod-bg promote verify-prod-protection prod-logs prod-stop db-up db-down db-migrate db-revision db-refresh-from-prod sync-mcp-dist
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -234,7 +234,9 @@ prod-bg: ## Start prod server in background
 
 promote: ## Deploy latest origin/main to prod with zero-downtime worker rotation
 	@echo "Promoting origin/main to prod..."
-	@git -C ../cloglog-prod pull origin main
+	@git -C ../cloglog-prod fetch origin
+	@git -C ../cloglog-prod merge --ff-only origin/main
+	@git -C ../cloglog-prod push origin prod
 	@cd ../cloglog-prod && uv sync
 	@cd ../cloglog-prod/frontend && npm ci --silent
 	@HOST_IP=$$(tailscale ip -4 2>/dev/null | head -n1 || true); \
@@ -251,6 +253,23 @@ promote: ## Deploy latest origin/main to prod with zero-downtime worker rotation
 		(cd ../cloglog-prod/frontend && npm run preview -- --port 4173 $$PREVIEW_HOST_FLAG & echo $$! > /tmp/cloglog-prod-frontend.pid); \
 		echo "  Done — frontend rebuilt and restarted on :4173."; \
 		[ -n "$$HOST_IP" ] && echo "  Tailnet: http://$$HOST_IP:4173" || true
+
+verify-prod-protection: ## Assert GitHub branch protection on `prod` (linear history + push restricted)
+	@BOT_TOKEN=$$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py); \
+		REPO=$$(GH_TOKEN="$$BOT_TOKEN" gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$$||'); \
+		PROT=$$(GH_TOKEN="$$BOT_TOKEN" gh api "repos/$$REPO/branches/prod/protection" 2>/dev/null); \
+		if [ -z "$$PROT" ]; then \
+			echo "FAIL: no branch protection on $$REPO:prod (apply rules in GitHub UI per docs/design/prod-branch-tracking.md §3.2)"; exit 1; \
+		fi; \
+		LINEAR=$$(echo "$$PROT" | jq -r '.required_linear_history.enabled // false'); \
+		RESTRICT=$$(echo "$$PROT" | jq -r '.restrictions | (.users + .teams + .apps | length) // 0'); \
+		if [ "$$LINEAR" != "true" ]; then \
+			echo "FAIL: required_linear_history is not enabled on $$REPO:prod"; exit 1; \
+		fi; \
+		if [ -z "$$RESTRICT" ] || [ "$$RESTRICT" = "0" ] || [ "$$RESTRICT" = "null" ]; then \
+			echo "FAIL: push restrictions on $$REPO:prod are empty (anyone with push can write)"; exit 1; \
+		fi; \
+		echo "OK: $$REPO:prod has linear history + $$RESTRICT push principal(s)."
 
 prod-logs: ## Tail prod server logs
 	@tail -f /tmp/cloglog-prod.log /tmp/cloglog-prod-access.log

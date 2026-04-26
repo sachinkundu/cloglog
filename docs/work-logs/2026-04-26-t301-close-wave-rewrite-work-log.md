@@ -62,4 +62,4 @@ Auto-exempt (static allowlist). Every changed file is developer infrastructure (
 
 ## Learnings & Issues
 
-See `learnings.md`.
+See [`2026-04-26-t301-close-wave-rewrite-learnings.md`](2026-04-26-t301-close-wave-rewrite-learnings.md).

@@ -61,7 +61,7 @@ The proposed fix removes all three consequences with a one-line conceptual chang
 | Operation | What it does today | What it does after this spec |
 |---|---|---|
 | `make prod` | Starts gunicorn + vite preview from `../cloglog-prod` (foreground). Asserts no other prod process owns `:8001`. | Unchanged — boots/serves whatever is currently checked out on `prod`. No git operations. |
-| `make promote` | `git -C ../cloglog-prod pull origin main`, then `uv sync`, `npm ci`, `vite build`, `alembic upgrade head`, `kill -HUP gunicorn`, restart preview. | `git -C ../cloglog-prod fetch origin && git -C ../cloglog-prod merge --ff-only origin/main` (the prod branch is now `prod`, but it advances by ff-merging `origin/main`), then everything else as today. |
+| `make promote` | `git -C ../cloglog-prod pull origin main`, then `uv sync`, `npm ci`, `vite build`, `alembic upgrade head`, `kill -HUP gunicorn`, restart preview. | `git -C ../cloglog-prod fetch origin && git -C ../cloglog-prod merge --ff-only origin/main && git -C ../cloglog-prod push origin prod` (the prod branch is now `prod`, advances by ff-merging `origin/main`, and the resulting tip is pushed back so `origin/prod` always reflects deployed code), then everything else as today. |
 
 ### 4.2 Why separate
 
@@ -80,7 +80,7 @@ For each, **STAY** = no change needed; **UPDATE** = change required; **CONSIDER*
 
 ### 5.1 Makefile
 
-- `Makefile:235-253` (`promote` target). **UPDATE** — change `git -C ../cloglog-prod pull origin main` to `git -C ../cloglog-prod fetch origin && git -C ../cloglog-prod merge --ff-only origin/main`. The downstream `uv sync`, `vite build`, `alembic upgrade head`, `kill -HUP` steps are unchanged.
+- `Makefile:235-253` (`promote` target). **UPDATE** — replace `git -C ../cloglog-prod pull origin main` with three lines: `git -C ../cloglog-prod fetch origin`, `git -C ../cloglog-prod merge --ff-only origin/main`, `git -C ../cloglog-prod push origin prod`. The `push` is load-bearing: without it, `origin/prod` is created at migration time and then never advances, so the live service drifts ahead of `origin/prod` after the first promotion — breaking the §3.3 invariant that `prod` represents deployed code (and the future Railway deploy source). The downstream `uv sync`, `vite build`, `alembic upgrade head`, `kill -HUP` steps are unchanged.
 - `Makefile:156-195` (`prod` target). **STAY** — boots from `../cloglog-prod`, no branch reference in the body.
 - `Makefile:197-233` (`prod-bg`). **STAY** — same reason as `prod`.
 - `Makefile:1` `.PHONY` line. **STAY** — `promote` already declared.
@@ -103,9 +103,9 @@ For each, **STAY** = no change needed; **UPDATE** = change required; **CONSIDER*
 
 - `launch/SKILL.md:154-158`. **STAY** — instructs `git fetch origin main` and `git worktree add -b <wt> <path> origin/main`. Continues to be correct: worktrees branch off `main` (the integration branch), not `prod`.
 - `close-wave/SKILL.md:108`, `:223`. **STAY** — `git log/diff main..<branch>` correctly compares feature branches against integration. (After this spec, `git log main..<branch>` resolves to local `main` which the dev worktree now has — *more* reliable than before.)
-- `close-wave/SKILL.md:263-264` (`git checkout main && git pull origin main`). **STAY conceptually, becomes simpler**. Today this is impossible in the dev worktree (because of the issue this spec fixes); after the spec, this is the natural and correct close-out step. The `git checkout main` line becomes operational instead of aspirational.
+- `close-wave/SKILL.md:263-264` (`git checkout main && git pull origin main`). **UPDATE** — once the dev clone has a writable local `main`, plain `git pull` may attempt a merge if local `main` has diverged (e.g., a stray fold commit not yet pushed). Replace with `git checkout main && git fetch origin && git merge --ff-only origin/main`. This matches the existing CLAUDE.md learning at line 92 and keeps `main..<branch>` baselines clean for the diff-based hooks (§5.5).
 - `close-wave/SKILL.md:298,322` (commit fixes to `main`). **STAY** — the commit target is `main`, which is now the dev worktree's actual branch. See §7 for the simplification.
-- `reconcile/SKILL.md:296-297` (`git pull origin main` at end). **STAY** — same reason. Becomes naturally executable.
+- `reconcile/SKILL.md:296-297` (`git pull origin main` at end). **UPDATE** — same reasoning as the close-wave pull above. Replace with `git fetch origin && git merge --ff-only origin/main`. A non-fast-forward state here means a real divergence the operator must investigate, not paper over with a merge commit.
 - `reconcile/SKILL.md:98` (stale-branch detection compares against merged-into-main state). **STAY** — `main` remains the merge target.
 - `demo/SKILL.md:38, 62-69, 85`. **STAY** — uses `origin/main` as PR base (as in `scripts/check-demo.sh`).
 - `github-bot/SKILL.md:46` (`git checkout main -- <file>`). **STAY** — the literal command is now executable in the dev worktree.
@@ -252,13 +252,19 @@ Listed for the user to file on the board. Not created here.
 | Task | Scope (one line) |
 |---|---|
 | T-prod-1 | Create `prod` branch on origin (one-time push) and switch the cloglog-prod worktree to track it. (Manual; user-run; verification commands provided.) |
-| T-prod-2 | Update `Makefile`'s `promote` target to `fetch + merge --ff-only origin/main` instead of `pull origin main`. |
+| T-prod-2 | Update `Makefile`'s `promote` target to `fetch + merge --ff-only origin/main + push origin prod` instead of `pull origin main`. The `push` keeps `origin/prod` honest. |
 | T-prod-3 | Apply GitHub branch protection on `prod` (linear history, restricted push) and add `make verify-prod-protection` that asserts the rules via `gh api`. |
 | T-prod-4 | Update `CLAUDE.md` Runtime & Deployment section: document `prod` branch, promotion semantics, and the rollback subsection from §8. |
 | T-prod-5 | Header-supersede `docs/superpowers/specs/2026-04-18-dev-prod-separation-design.md` with a one-line forward reference to this spec. |
 | T-prod-6 | Update memory `feedback_setup_park_on_main.md` from "detached HEAD" to "checkout main + ff" recipe, and drop the pending-task paragraph. |
-| T-prod-7 | Remove the close-wave/reconcile detached-HEAD push codepath (T-282 fold). Replace with the natural short-lived `wt-reconcile-*` branch + PR flow. Close T-282 in the same PR. |
-| T-prod-8 | Add a pre-commit hook on the dev clone rejecting direct commits to `main` unless `ALLOW_MAIN_COMMIT=1` is set. (Dev-clone setup; do not put in the plugin.) |
-| T-prod-9 | Smoke-test promotion end-to-end (inert PR → `make promote` → tunnel verification) and record the result in a work log. Final acceptance step. |
+| T-prod-7 | Remove the close-wave/reconcile detached-HEAD push codepath (T-282 fold) AND retarget the close-wave/reconcile pulls to `git fetch origin && git merge --ff-only origin/main` (replacing plain `git pull origin main` at `close-wave/SKILL.md:263-264` and `reconcile/SKILL.md:296-297`). Replace the in-place "fix on main + commit" guidance with the natural short-lived `wt-reconcile-*` branch + PR flow. Close T-282 in the same PR. |
+| T-prod-8 | Add a pre-commit hook on the dev clone rejecting direct commits to `main` unless `ALLOW_MAIN_COMMIT=1` is set. **Depends on T-prod-7** — the close-wave/reconcile skills today still require committing directly to `main` (`close-wave/SKILL.md:298,322`, `reconcile/SKILL.md:293`); installing the hook before T-prod-7 retires those flows would break documented operator maintenance. (Dev-clone setup; do not put in the plugin.) |
+| T-prod-9 | Smoke-test promotion end-to-end (inert PR → `make promote` → tunnel verification → `git ls-remote origin refs/heads/prod` matches the deployed SHA) and record the result in a work log. Final acceptance step. |
 
-T-prod-1 is sequential and gates everything; T-prod-2 and T-prod-3 can be parallel after that; T-prod-4 / T-prod-5 / T-prod-6 are independent docs/memory edits; T-prod-7 depends on T-prod-1 (so the natural flow is reachable); T-prod-8 is independent; T-prod-9 is last.
+Dependency order:
+- **T-prod-1** is sequential and gates everything (must run first; surgery on the branches themselves).
+- **T-prod-2** and **T-prod-3** can run in parallel after T-prod-1.
+- **T-prod-4 / T-prod-5 / T-prod-6** are independent docs/memory edits, parallelizable any time after T-prod-1.
+- **T-prod-7** depends on T-prod-1 (so the natural `wt-reconcile-*` flow is reachable on the dev clone) and folds in the `--ff-only` retarget for the two pulls.
+- **T-prod-8** depends on **T-prod-7** (see table note) — the pre-commit guard would otherwise reject the direct-`main` commits the close-wave/reconcile skills still require.
+- **T-prod-9** is last.

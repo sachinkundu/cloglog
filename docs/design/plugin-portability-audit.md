@@ -17,15 +17,21 @@ Ranked by adoption blast radius. Each blocks `/cloglog init` from producing a
 working multi-agent project on a fresh repo, end-to-end.
 
 0. **Five plugin entry points parse `.cloglog/config.yaml` with `python3 -c 'import yaml'`** in violation of the project's own invariant at `docs/invariants.md:76`. On any host whose system Python lacks PyYAML — which is most of them — `plugins/cloglog/hooks/worktree-create.sh:35-41` exits before bootstrap (so `/cloglog launch` produces a worktree that never registers); `plugins/cloglog/hooks/quality-gate.sh:39-43` silently falls back to `make quality` even when the project configured `npm test`; `plugins/cloglog/hooks/protect-worktree-writes.sh:52-72` drops the scope guard entirely; `plugins/cloglog/hooks/enforce-task-transitions.sh:50-56` skips the gate that wires `mcp__cloglog__update_task_status`/`mcp__cloglog__complete_task` (so a worktree agent can move a task straight to `done` past the intended `review` gate); and `plugins/cloglog/skills/launch/SKILL.md:223-229` (whose template materialises `.cloglog/launch.sh`) resolves `backend_url` to `http://localhost:8000` on the shutdown path so `unregister-by-path` posts to the wrong backend, leaving the worktree stuck online. The fix is mechanical (replace each with the grep+sed pattern from `.cloglog/on-worktree-create.sh:88-105`, hoisted into a shared helper) but until it lands no other portability fix matters — agents on a fresh host can't even register or unregister cleanly.
-1. **`/cloglog init` has no installation step.** The skill assumes
-   `plugins/cloglog/`, `scripts/gh-app-token.py`, `scripts/wait_for_agent_unregistered.py`,
-   `scripts/install-dev-hooks.sh`, the entire MCP server (`mcp-server/`), the
-   prod-promote tooling (`make promote`, `make verify-prod-protection`), the
-   webhook tunnel (`cloglog-webhooks` cloudflared), and the cloglog backend
-   itself are all *already present* in the project being initialized. There is
-   no story for "get a fresh repo to the point where `/cloglog init` is
-   runnable." Net: today the plugin only works inside the cloglog repo and
-   any sibling clone of it.
+1. **`/cloglog init` emits unresolved placeholders.** The plugin is
+   designed to be installed via `claude plugins install` per
+   `docs/superpowers/specs/2026-04-12-cloglog-plugin-extraction-design.md:10-29`
+   (one shared backend, plugin discovered through `${CLAUDE_PLUGIN_ROOT}` —
+   not vendored into each consumer repo). The portability blocker is that
+   the init skill emits literal `<absolute-path-to-project>`,
+   `/path/to/mcp-server/dist/index.js`, and `<path to plugins/cloglog>`
+   placeholders into `.claude/settings.json` and the prompt instructions
+   (`plugins/cloglog/skills/init/SKILL.md:62,77,280`) that are never
+   resolved at runtime. A fresh repo following the documented flow lands a
+   broken `.claude/settings.json`. Tangentially: `scripts/gh-app-token.py`,
+   `scripts/wait_for_agent_unregistered.py`, and `scripts/install-dev-hooks.sh`
+   are referenced from skills via project-relative paths — those need to
+   move into `${CLAUDE_PLUGIN_ROOT}/scripts/` so an installed plugin can
+   reference them without a per-repo copy.
 2. **Hardcoded reviewer-bot login, dashboard key, and tunnel name in the
    plugin.** `cloglog-codex-reviewer[bot]` (auto-merge gate, github-bot
    skill), `cloglog-opencode-reviewer[bot]` (review_engine), the
@@ -168,19 +174,25 @@ Beyond the per-skill citations in §1, two systemic patterns:
 
 I created `/tmp/audit-fresh-repo` (`git init` + a one-line README) and walked
 through the steps that `plugins/cloglog/skills/init/SKILL.md` would execute,
-*without running them* — running them requires the plugin to already be
-installed in the fresh repo, and that's the first gap.
+*without running them*. Per the design spec
+(`docs/superpowers/specs/2026-04-12-cloglog-plugin-extraction-design.md:10-29,
+301-315`) the plugin is installed via `claude plugins install`, the backend
+is one shared service across projects, and the `.cloglog/on-worktree-create.sh`
+hook is **optional** project-specific bootstrap — a project with zero custom
+setup still gets the full workflow. The audit walks the gaps that prevent the
+init flow from producing a working repo against that contract; it does **not**
+recommend vendoring the plugin or universalising cloglog's worktree-infra.
 
 | Step | What init does | What happens on fresh repo |
 |---|---|---|
-| 0 (missing) | Install the plugin into the project | **Step 0 does not exist.** The skill assumes `plugins/cloglog/` is already vendored at `<project>/plugins/cloglog/`. There is no `git submodule add`, no `claude-marketplace install`, no copy step. A fresh repo has no plugin at all and therefore cannot invoke `/cloglog init` |
+| (prereq) | Plugin installed via `claude plugins install` | The skill assumes the plugin is reachable through `${CLAUDE_PLUGIN_ROOT}` (`plugins/cloglog/settings.json:9-20,42-43,69-70,89-90`). Confirmed working architecture; gap below is in what the init skill emits, not in the install model |
 | 1a | Detect project name from `basename $(pwd)` | Works |
 | 1b | Detect quality command (Makefile/package.json/Cargo/pyproject) | Works for the four detected stacks; fails closed for anything else (asks user) |
 | 1c | Default backend_url `http://localhost:8000` | Works *if* the operator already runs the cloglog backend. Otherwise the rest of the flow succeeds, but the agent will fail at first MCP call |
 | 2 | Call `mcp__cloglog__get_board` to check project exists | **Cannot run before MCP is configured (Step 3).** Step 2 is out of order — at step 2 the MCP server has not been configured for this project, and the project API key is not yet in `~/.cloglog/credentials`. The MCP tool will not be loaded. The skill papers over this with "the user will need to register it through the backend API or MCP tools" — i.e., manual |
 | 3 | Inject `cloglog` MCP server into `.claude/settings.json` with placeholder `"args": ["/path/to/mcp-server/dist/index.js"]` | The placeholder is **literal**. The skill never asks the operator where their MCP server build lives. On first session restart the MCP server fails to start, the agent has no `mcp__cloglog__*` tools, and the SessionStart hook prints "Run /cloglog setup" — which then fails the same way |
 | 4a | Write `.cloglog/config.yaml` with project_name/backend_url/quality_command | Misses `project_id`, `worktree_scopes`, `prod_worktree_path`. See gap in §4 |
-| 4b | Write `on-worktree-create.sh` for detected stack | Generates only `uv sync` / `npm install`. The launch skill (`plugins/cloglog/skills/launch/SKILL.md:182-189`) and the WorktreeCreate hook (`plugins/cloglog/hooks/worktree-create.sh:65-68`) **do** execute this script — but the generated content omits the close-off-task POST and the worktree-infra (port allocation, per-worktree Postgres) plumbing that this repo's hand-written `.cloglog/on-worktree-create.sh` performs. Multi-worktree projects without those steps would collide on a single dev DB and would never land a close-off task on the board |
+| 4b | Write `on-worktree-create.sh` for detected stack | Generates `uv sync` / `npm install` per the design contract — this is correct; the spec (`docs/superpowers/specs/2026-04-12-cloglog-plugin-extraction-design.md:41-47,301-315`) explicitly says infrastructure setup (ports, DBs, deps) is project-provided and *optional*. **Cloglog's** hand-written `.cloglog/on-worktree-create.sh` adds close-off-task POST and `worktree-infra.sh` (port allocation, per-worktree Postgres) — those are cloglog-specific extensions, not init responsibilities, and downstream projects opt in by editing their own script. The actual gap here is that init's tech-stack detection is limited (Python/uv, Node, Rust); a project on a stack outside those four gets an empty stub |
 | 4c | Write `on-worktree-destroy.sh` (empty stub) | Works |
 | 5 | Append "Workflow Discipline (cloglog)" section to CLAUDE.md | Works. **Side effect**: rules block agents from working on tasks before the board exists; the project must register itself first via Step 2, which it can't do (see above) |
 | 6a | Check for `git remote get-url origin` | Works. Fresh repo has no remote → records "GitHub repo: not configured" and continues |
@@ -192,14 +204,24 @@ installed in the fresh repo, and that's the first gap.
 | 8 | `echo '.cloglog/inbox' >> .gitignore`, then `git add .cloglog/ .github/codex/ .gitignore` | Works |
 | 9 | Print summary, remind operator to set `~/.cloglog/credentials` | Works as text, but every preceding step that landed a placeholder (`/path/to/mcp-server/dist/index.js`, `<absolute-path-to-project>`, `<path to plugins/cloglog>`) is now committed to the project |
 
-**Net assessment:** `/cloglog init` cannot today produce a working multi-agent
-project on a fresh repo. The minimum changes to make it work are: (a) a
-prerequisite step that vendors the plugin and the MCP server, (b) resolution
-of all `<...>` placeholders to concrete paths, (c) generation of
-`worktree_scopes` and `project_id`, (d) a generated `on-worktree-create.sh`
-that registers a close-off task, and (e) a documented bot-setup story that
-doesn't depend on the operator having a sibling cloglog clone in
-`~/code/`.
+**Net assessment:** Per the design spec the plugin is operator-installed via
+`claude plugins install`, so vendoring is *not* a portability blocker. The
+minimum changes to make `/cloglog init` produce a working repo are:
+(a) resolve the literal `<absolute-path-to-project>`,
+`/path/to/mcp-server/dist/index.js`, and `<path to plugins/cloglog>`
+placeholders to concrete values at runtime;
+(b) reorder Steps 2 and 3 so MCP is configured before `get_board` runs;
+(c) generate `worktree_scopes` and `project_id` in `.cloglog/config.yaml`;
+(d) move project-relative script references (`scripts/gh-app-token.py`,
+`wait_for_agent_unregistered.py`, `install-dev-hooks.sh`) into
+`${CLAUDE_PLUGIN_ROOT}/scripts/` so the installed plugin can resolve them;
+(e) document a bot-setup story that doesn't depend on the operator having a
+sibling cloglog clone in `~/code/`.
+
+Cloglog's own close-off-task POST and `worktree-infra.sh` setup are
+cloglog-specific extensions to its `.cloglog/on-worktree-create.sh` and stay
+out of the generic init contract — projects that need similar machinery edit
+their own optional bootstrap script.
 
 ### 7. Documentation
 
@@ -224,7 +246,7 @@ literals from generated artifacts.
 
 | Gap | Proposed fix |
 |---|---|
-| No fresh-repo `/cloglog init` smoke test | Add `tests/plugin/test_init_on_fresh_repo.py` that creates a `tmp_path` repo, runs the init steps non-interactively, and asserts: (a) **no unresolved placeholders** like `<absolute-path-to-project>`, `<path to plugins/cloglog>`, `/path/to/mcp-server/dist/index.js`; (b) **no repo-specific literals** like `../cloglog-prod`, `cloglog.voxdez.com`, hardcoded reviewer-bot logins, `/home/sachin/...`. Note: the **brand surface** (`cloglog`, `mcp__cloglog__*`, the MCP server name `cloglog-mcp`, the `~/.cloglog/credentials` path) is intentionally retained — `plugins/cloglog/skills/init/SKILL.md:69-77,155-165` writes those literals on purpose, so the test must allowlist them, not flag them |
+| No fresh-repo `/cloglog init` smoke test | Add `tests/plugin/test_init_on_fresh_repo.py` that creates a `tmp_path` repo, runs the init steps non-interactively, and asserts: (a) **no unresolved placeholders** like `<absolute-path-to-project>`, `<path to plugins/cloglog>`, `/path/to/mcp-server/dist/index.js`; (b) **no repo-specific literals** like `../cloglog-prod`, `cloglog.voxdez.com`, hardcoded reviewer-bot logins, `/home/sachin/...`. Two carve-outs: (i) the **brand surface** (`cloglog`, `mcp__cloglog__*`, the MCP server name `cloglog-mcp`, the `~/.cloglog/credentials` path) is intentionally retained — `plugins/cloglog/skills/init/SKILL.md:69-77,155-165` writes those literals on purpose; (ii) `.cloglog/launch.sh` is **exempt** from the host-specific-literals assertion — `plugins/cloglog/skills/launch/SKILL.md:206-221` and `tests/plugins/test_launch_skill_uses_abs_paths.py:35-103` pin that the launcher must contain absolute `WORKTREE_PATH`/`PROJECT_ROOT` to prevent the T-284 cwd-drift regression. For the launcher, write the inverse assertion: placeholders must be resolved AND absolute paths must be present |
 | No portability assertion that skills don't grow new cloglog citations | Add a pin test that greps `plugins/cloglog/` for the **specific** strings catalogued above (repo-specific paths, `cloglog-prod`, reviewer-bot logins, dashboard keys, `cloglog.voxdez.com`, source-tree line citations) and fails on regressions. Echo the existing pattern from `tests/test_mcp_json_no_secret.py`. Do NOT pin against the brand-surface literals — see above |
 
 ### 9. Webhook + GitHub App — multi-tenancy
@@ -282,14 +304,24 @@ Phase 1 — **make the plugin self-contained** (no behavior change for cloglog):
 
 Phase 2 — **make `/cloglog init` actually work on a fresh repo**:
 
-5. Add a Step 0 that vendors the plugin (decision: submodule vs. plugin
-   marketplace vs. copy). Until this lands, document the manual install path
-   in `README.md`.
+5. Document the operator install flow (`claude plugins install <marketplace>`)
+   in `README.md` and the init skill's prerequisites. The plugin is reached
+   through `${CLAUDE_PLUGIN_ROOT}` once installed — no vendoring.
 6. Resolve every `<...>` placeholder in the init flow at runtime
-   (mcp-server path, plugin root, absolute project path).
-7. Generate `worktree_scopes` and `project_id` in `.cloglog/config.yaml`.
-8. Generate an `on-worktree-create.sh` that includes close-off-task
-   registration (currently only this repo's hand-written copy does it).
+   (mcp-server path → resolve from `${CLAUDE_PLUGIN_ROOT}/../mcp-server`
+   when bundled, or prompt the operator; plugin root → `${CLAUDE_PLUGIN_ROOT}`;
+   absolute project path → `git rev-parse --show-toplevel`).
+7. Reorder init Steps 2 and 3 so MCP is configured before `get_board`
+   runs; today the call to `mcp__cloglog__get_board` precedes MCP setup
+   and silently fails.
+8. Generate `worktree_scopes` and `project_id` in `.cloglog/config.yaml`.
+   `worktree_scopes` should be a permissive default keyed off the detected
+   stack, with the existing cloglog scope set staying as-is in this repo.
+9. Keep `.cloglog/on-worktree-create.sh` generation focused on the
+   tech-stack bootstrap the spec mandates (`uv sync` / `npm install` /
+   etc.). Cloglog's close-off-task POST and `worktree-infra.sh` plumbing
+   are project-specific extensions and stay in cloglog's hand-written
+   copy; downstream projects opt in by editing their own script.
 
 Phase 3 — **multi-tenant GitHub App story**:
 
@@ -320,11 +352,12 @@ Phase 2 step 5 unblocks 6, 7, 8 but 6/7/8 are independent of each other once
 
 ## Open questions
 
-1. **Plugin install model.** Submodule, plugin marketplace, or copy-on-init?
-   The current marketplace.json suggests the plugin is intended to be
-   installed via a marketplace, but `/cloglog init` is written as if the
-   plugin is already in `<project>/plugins/cloglog/`. Pick one model and
-   make the init Step 0 reflect it.
+1. **Plugin install ergonomics.** The design spec is explicit: `claude
+   plugins install` is the install model and `${CLAUDE_PLUGIN_ROOT}` is the
+   discovery path. Open question is the marketplace UX — does cloglog
+   publish the marketplace publicly, or is install via a private/local
+   marketplace path? Phase 2 docs need a concrete one-line install command
+   for `README.md`.
 2. **Backend topology — one shared or one per project?** Today there's one
    cloglog backend. If a second project uses the same backend, project_id
    discriminates rows — but `make prod`, the cloudflared tunnel, and the

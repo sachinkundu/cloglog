@@ -128,6 +128,30 @@ def test_hook_derives_tasks_completed_from_git_log(
     assert event["tasks_completed"] == ["T-243"]
 
 
+def test_hook_emits_prs_map_field(stub_worktree: tuple[Path, Path], tmp_path: Path) -> None:
+    """T-262: the hook MUST emit a `prs` field (map of T-NNN -> PR URL).
+
+    Best-effort enrichment via `gh pr list` runs only when `gh` is on PATH
+    and the worktree's branch has a merged PR; in this test environment
+    `gh` is not authenticated against the stub repo, so the value is `{}`.
+    The pin is on the field's existence and shape (an object), not its
+    contents — supervisors interpret missing keys as 'hook didn't know.'
+    """
+    main, wt = stub_worktree
+    env = {"HOME": str(tmp_path / "empty-home"), "PATH": os.environ["PATH"]}
+    _run_hook(wt, env)
+
+    event = json.loads((main / ".cloglog" / "inbox").read_text().strip().splitlines()[-1])
+    assert "prs" in event, "agent_unregistered MUST carry a `prs` field (T-262)"
+    assert isinstance(event["prs"], dict), "`prs` MUST be a JSON object"
+    # Backward-compat pin: tasks_completed remains a flat list of IDs so
+    # existing parsers (work-log generators, supervisor scripts) keep
+    # working without changes. T-262 chose Option A (parallel map) for
+    # exactly this reason.
+    assert isinstance(event["tasks_completed"], list)
+    assert all(isinstance(t, str) for t in event["tasks_completed"])
+
+
 def test_hook_emits_empty_tasks_array_when_no_refs_in_commits(
     tmp_path: Path,
 ) -> None:

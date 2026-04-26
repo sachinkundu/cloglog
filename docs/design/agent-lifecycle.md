@@ -46,6 +46,11 @@ The algorithm fires at each of two triggers:
 
 ```
 on trigger A (pr_merged):
+    0. emit pr_merged_notification to <project_root>/.cloglog/inbox
+       (T-262: surfaces the merge to the supervisor's inbox so a parallel
+       worktree blocked on this PR sees the unblock without polling
+       gh pr list. Carries worktree, worktree_id, task, task_id, pr,
+       pr_number, ts.)
     1. mark_pr_merged(task_id, worktree_id)
     2. if task_type in (spec, plan):
            report_artifact(task_id, worktree_id, artifact_path)
@@ -121,6 +126,10 @@ to the exiting task type, but never reorder them.
      "worktree_id": "<uuid>",
      "ts": "<utc-iso>",
      "tasks_completed": ["T-NNN", "T-NNN"],
+     "prs": {
+       "T-NNN": "https://github.com/<org>/<repo>/pull/<n>",
+       "T-NNN": "https://github.com/<org>/<repo>/pull/<n>"
+     },
      "artifacts": {
        "work_log": "/abs/path/shutdown-artifacts/work-log.md",
        "learnings": "/abs/path/shutdown-artifacts/learnings.md"
@@ -130,6 +139,8 @@ to the exiting task type, but never reorder them.
    ```
 
    The `artifacts.work_log` and `artifacts.learnings` values **must be absolute paths**, not worktree-relative — the main agent reads them after the worktree is torn down and the relative root is gone by then.
+
+   **`prs` shape (T-262, Option A — parallel map).** Keys are the same `T-NNN` strings present in `tasks_completed`; values are the GitHub PR URL the agent provided to `update_task_status(..., pr_url=...)` for that task. `tasks_completed` stays a flat list of IDs so existing parsers keep working unchanged — `prs` is purely additive. Tasks completed without a PR (plan tasks via `skip_pr=True`, or any other no-PR path) MUST be omitted from `prs` rather than mapped to `null` or an empty string. The agent builds the map by walking `get_my_tasks()` at shutdown and reading each row's `pr_url` field. The hook backstop emits `prs: {}` when it cannot recover the map — see Hook backstop below.
 
    This event is the trigger the main agent's close-wave and reconcile
    flows react to. It is authoritative — the backend's `WORKTREE_OFFLINE`
@@ -152,10 +163,15 @@ to the exiting task type, but never reorder them.
    never `git rev-parse --show-toplevel` — the latter returns the
    worktree path when the supervisor runs inside a worktree.
 
-   **Hook backstop (T-243).** `plugins/cloglog/hooks/agent-shutdown.sh` writes
-   the event as well, with `reason: "best_effort_backstop_from_session_end_hook"`
+   **Hook backstop (T-243, T-262).** `plugins/cloglog/hooks/agent-shutdown.sh`
+   writes the event as well, with `reason: "best_effort_backstop_from_session_end_hook"`
    and `worktree_id` omitted (the hook has no access to the UUID — it lives in
-   backend state). Close-wave's consumer deduplicates on `(worktree, ts)`,
+   backend state). The hook recovers the `prs` map via a single
+   `gh pr list --state merged --head <wt-name>` call, intersected with the
+   `T-NNN` IDs scanned out of merged-PR titles/bodies; if `gh` is missing,
+   unauthenticated, or returns no merged PRs, the hook emits `prs: {}`
+   (advisory absence — supervisors fall back to `gh pr list` lookups).
+   Close-wave's consumer deduplicates on `(worktree, ts)`,
    not `(worktree_id, ts)`, and prefers the richer agent-written record when
    both are present. The backstop exists because `zellij action close-tab`
    has historically skipped the hook (T-217) — but under the cooperative
@@ -242,7 +258,8 @@ never received by it.
 | Event `type` | When |
 | --- | --- |
 | `agent_started` | Immediately after a successful `register_agent`. Tells the main agent the worktree is live. |
-| `agent_unregistered` | Step 4 of the Section 2 shutdown sequence, before `unregister_agent`. Carries paths to shutdown artifacts. |
+| `pr_merged_notification` | On receipt of a `pr_merged` inbox event, BEFORE `mark_pr_merged`. Carries `worktree`, `worktree_id`, `task` (T-NNN string), `task_id` (UUID), `pr` (URL), `pr_number` (int), `ts`. T-262: the `pr_merged` webhook fan-out only reaches the agent's own inbox; this event surfaces the merge to the supervisor so a parallel worktree blocked on the PR can be unblocked without `gh pr list` polling. |
+| `agent_unregistered` | Step 5 of the Section 2 shutdown sequence, before `unregister_agent`. Carries paths to shutdown artifacts and the `prs` map (T-262). |
 | `mcp_unavailable` | **Startup** MCP failure only (Section 4.1): ToolSearch returns no matches, or the first MCP call fails at the transport layer. Agent emits and exits. |
 | `mcp_tool_error` | **Runtime** MCP failure (Section 4.1): an MCP tool call returned a 5xx, a backend exception, a 409 state-machine guard, or — after one backoff retry — a transient network error. Agent emits and waits for main. |
 | `need_session_restart` | On `mcp_tools_updated` when the new tools are load-bearing for the active task. |

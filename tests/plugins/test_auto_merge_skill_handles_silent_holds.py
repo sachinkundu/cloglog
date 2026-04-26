@@ -115,6 +115,47 @@ def test_worktree_agent_template_references_auto_merge_gate() -> None:
     )
 
 
+def test_skill_uses_gh_pr_checks_for_bucket_field() -> None:
+    """Self-test caught two ``gh`` API quirks on PR #224 round 5:
+
+    1. ``gh pr view --jq`` does NOT accept ``--arg`` (only ``gh api`` does);
+       the auto-merge bash crashed with ``unknown flag: --arg``.
+    2. ``gh pr view --json statusCheckRollup`` returns CheckRun nodes with
+       ``conclusion``/``status`` enums and NO ``bucket`` key — the gate
+       always read ``bucket=null`` and held forever on ``ci_not_green``.
+
+    The fix is to source checks from ``gh pr checks --json name,bucket``
+    (the only `gh` surface that returns the normalized bucket) and
+    assemble the payload with `jq -n --argjson` so we can inject the
+    raw JSON arrays as typed values. Pin both against re-introduction.
+    """
+    body = SKILL.read_text()
+    auto_merge_idx = body.index("### Auto-Merge on Codex Pass")
+    next_section_idx = body.index("###", auto_merge_idx + 1)
+    section = body[auto_merge_idx:next_section_idx]
+    import re
+
+    # Quirk 1: `gh pr view ... --arg` is invalid. Look for that pattern in
+    # the bash code blocks and reject it.
+    bad_args = re.findall(r"gh pr view[^\n`]*\\?\n[^\n`]*--arg", section)
+    assert not bad_args, (
+        "auto-merge section uses `gh pr view ... --arg`, which crashes with "
+        "`unknown flag: --arg`. Use `gh api` with `--arg`, or fetch raw JSON "
+        "and pipe through standalone `jq -c --argjson`."
+    )
+
+    # Quirk 2: the gate's `bucket` field must come from `gh pr checks`, not
+    # from `gh pr view --json statusCheckRollup`. The skill's executable
+    # bash blocks must reference `gh pr checks --json name,bucket` for the
+    # actual data fetch. (We allow the cautionary prose mention of
+    # statusCheckRollup as an anti-pattern warning.)
+    assert "gh pr checks" in section and "name,bucket" in section, (
+        "auto-merge bash no longer fetches checks via `gh pr checks --json "
+        "name,bucket` — the gate cannot read the bucket field from the "
+        "statusCheckRollup shape."
+    )
+
+
 def test_skill_invocation_block_sets_repo_before_using_it() -> None:
     """The auto-merge bash snippet must derive ``REPO`` itself.
 

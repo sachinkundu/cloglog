@@ -195,18 +195,31 @@ PR_NUM=<the PR number from the inbox event>
 HAS_HUMAN_CR=$(GH_TOKEN="$BOT_TOKEN" gh api "repos/${REPO}/pulls/${PR_NUM}/reviews" \
   --jq '[.[] | select(.user.type != "Bot")] | group_by(.user.login) | map(last) | any(.state == "CHANGES_REQUESTED")')
 
-PAYLOAD=$(GH_TOKEN="$BOT_TOKEN" gh pr view "$PR_NUM" \
-  --json labels,statusCheckRollup \
-  --jq '{
-    reviewer: $reviewer,
-    body: $body,
-    checks: (.statusCheckRollup // [] | map({name: (.name // .workflowName // ""), bucket})),
-    labels: ((.labels // []) | map(.name)),
-    has_human_changes_requested: ($has_human_cr == "true")
-  }' \
+# Labels from `gh pr view`, checks from `gh pr checks` — the latter is the
+# ONLY `gh` surface that returns the normalized `bucket` field
+# (pass/pending/fail/cancel/skipping). `gh pr view --json statusCheckRollup`
+# returns conclusion/status enums in a different shape and the gate would
+# always read bucket=null. Empty array is fine — the gate treats no checks
+# as green for docs-only PRs.
+LABELS=$(GH_TOKEN="$BOT_TOKEN" gh pr view "$PR_NUM" --json labels --jq '[.labels[].name]')
+CHECKS=$(GH_TOKEN="$BOT_TOKEN" gh pr checks "$PR_NUM" --json name,bucket 2>/dev/null || echo '[]')
+
+# Assemble with `jq -n` so we can inject every field as a typed argument
+# (`--argjson` for already-JSON values, `--arg` for strings). This is the
+# only invocation shape that survives `gh pr view --jq` not accepting `--arg`.
+PAYLOAD=$(jq -nc \
   --arg reviewer "<reviewer field from inbox event>" \
   --arg body "<body field from inbox event>" \
-  --arg has_human_cr "$HAS_HUMAN_CR")
+  --arg has_human_cr "$HAS_HUMAN_CR" \
+  --argjson checks "$CHECKS" \
+  --argjson labels "$LABELS" \
+  '{
+    reviewer: $reviewer,
+    body: $body,
+    checks: $checks,
+    labels: $labels,
+    has_human_changes_requested: ($has_human_cr == "true")
+  }')
 
 REASON=$(printf '%s' "$PAYLOAD" | python3 plugins/cloglog/scripts/auto_merge_gate.py)
 GATE_RC=$?
@@ -235,18 +248,15 @@ else
       GH_TOKEN="$BOT_TOKEN" gh pr checks "$PR_NUM" --watch --interval 30 || true
       HAS_HUMAN_CR=$(GH_TOKEN="$BOT_TOKEN" gh api "repos/${REPO}/pulls/${PR_NUM}/reviews" \
         --jq '[.[] | select(.user.type != "Bot")] | group_by(.user.login) | map(last) | any(.state == "CHANGES_REQUESTED")')
-      PAYLOAD=$(GH_TOKEN="$BOT_TOKEN" gh pr view "$PR_NUM" \
-        --json labels,statusCheckRollup \
-        --jq '{
-          reviewer: $reviewer,
-          body: $body,
-          checks: (.statusCheckRollup // [] | map({name: (.name // .workflowName // ""), bucket})),
-          labels: ((.labels // []) | map(.name)),
-          has_human_changes_requested: ($has_human_cr == "true")
-        }' \
+      LABELS=$(GH_TOKEN="$BOT_TOKEN" gh pr view "$PR_NUM" --json labels --jq '[.labels[].name]')
+      CHECKS=$(GH_TOKEN="$BOT_TOKEN" gh pr checks "$PR_NUM" --json name,bucket 2>/dev/null || echo '[]')
+      PAYLOAD=$(jq -nc \
         --arg reviewer "<reviewer field from inbox event>" \
         --arg body "<body field from inbox event>" \
-        --arg has_human_cr "$HAS_HUMAN_CR")
+        --arg has_human_cr "$HAS_HUMAN_CR" \
+        --argjson checks "$CHECKS" \
+        --argjson labels "$LABELS" \
+        '{reviewer: $reviewer, body: $body, checks: $checks, labels: $labels, has_human_changes_requested: ($has_human_cr == "true")}')
       REASON=$(printf '%s' "$PAYLOAD" | python3 plugins/cloglog/scripts/auto_merge_gate.py)
       if [[ "$REASON" == "merge" ]]; then
         GH_TOKEN="$BOT_TOKEN" gh pr merge "$PR_NUM" --squash --delete-branch

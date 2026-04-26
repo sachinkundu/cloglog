@@ -129,13 +129,23 @@ dev: ## Start everything (db + migrate + backend + frontend)
 	@# Kill old processes on ports 8000 and 5173 if still running
 	@fuser -k 8000/tcp 2>/dev/null && echo "  Killed old backend on :8000" || true
 	@fuser -k 5173/tcp 2>/dev/null && echo "  Killed old frontend on :5173" || true
-	@echo "  Starting backend + frontend..."
-	@trap 'kill 0; fuser -k 8000/tcp 2>/dev/null; fuser -k 5173/tcp 2>/dev/null' EXIT INT TERM; \
+	@HOST_IP=$$(tailscale ip -4 2>/dev/null | head -n1 || true); \
+		if [ -n "$$HOST_IP" ]; then \
+			echo "  Frontend: http://$$HOST_IP:5173 (tailnet)"; \
+		else \
+			echo "  Frontend: http://localhost:5173"; \
+		fi; \
+		echo "  Starting backend + frontend..."; \
+		trap 'kill 0; fuser -k 8000/tcp 2>/dev/null; fuser -k 5173/tcp 2>/dev/null' EXIT INT TERM; \
 		uv run uvicorn src.gateway.app:create_app --factory --host 0.0.0.0 --port 8000 --reload \
 			--reload-exclude '.claude/worktrees' \
 			--reload-exclude '__pycache__' \
 			--reload-exclude '*.pyc' & \
-		(cd frontend && npm run dev) & \
+		if [ -n "$$HOST_IP" ]; then \
+			(cd frontend && npm run dev -- --host "$$HOST_IP") & \
+		else \
+			(cd frontend && npm run dev) & \
+		fi; \
 		wait
 
 run-backend: ## Start the FastAPI backend
@@ -156,15 +166,23 @@ prod: ## Start prod server (gunicorn + vite preview, foreground — run in a zel
 		exit 1; \
 	fi
 	@scripts/preflight.sh
-	@echo "Starting cloglog prod server..."
-	@echo "  Backend:  http://localhost:8001"
-	@echo "  Frontend: http://localhost:4173"
-	@echo "  Tunnel:   https://cloglog.voxdez.com (systemd-managed; see docs/contracts/webhook-pipeline-spec.md)"
-	@echo "  Building frontend..."
-	@cd ../cloglog-prod/frontend && npm ci --silent && VITE_API_URL=http://localhost:8001/api/v1 npx vite build 2>&1 | tail -2
-	@echo "  Frontend: built"
-	@fuser -k 4173/tcp 2>/dev/null || true
-	@trap 'kill 0; fuser -k 4173/tcp 2>/dev/null; rm -f /tmp/cloglog-prod-frontend.pid' EXIT INT TERM; \
+	@HOST_IP=$$(tailscale ip -4 2>/dev/null | head -n1 || true); \
+		HOST=$${HOST_IP:-localhost}; \
+		API_URL=$${VITE_API_URL:-http://$$HOST:8001/api/v1}; \
+		echo "Starting cloglog prod server..."; \
+		echo "  Backend:  http://localhost:8001"; \
+		[ -n "$$HOST_IP" ] && echo "  Backend:  http://$$HOST_IP:8001 (tailnet)" || true; \
+		echo "  Frontend: http://localhost:4173"; \
+		[ -n "$$HOST_IP" ] && echo "  Frontend: http://$$HOST_IP:4173 (tailnet)" || true; \
+		echo "  API URL:  $$API_URL"; \
+		echo "  Tunnel:   https://cloglog.voxdez.com (systemd-managed; see docs/contracts/webhook-pipeline-spec.md)"; \
+		echo "  Building frontend..."; \
+		(cd ../cloglog-prod/frontend && npm ci --silent && VITE_API_URL="$$API_URL" npx vite build 2>&1 | tail -2); \
+		echo "  Frontend: built"; \
+		fuser -k 4173/tcp 2>/dev/null || true; \
+		PREVIEW_HOST_FLAG=""; \
+		[ -n "$$HOST_IP" ] && PREVIEW_HOST_FLAG="--host $$HOST_IP"; \
+		trap 'kill 0; fuser -k 4173/tcp 2>/dev/null; rm -f /tmp/cloglog-prod-frontend.pid' EXIT INT TERM; \
 		(cd ../cloglog-prod && uv run gunicorn src.gateway.asgi:app \
 		    --worker-class uvicorn.workers.UvicornWorker \
 		    --workers 2 \
@@ -174,7 +192,7 @@ prod: ## Start prod server (gunicorn + vite preview, foreground — run in a zel
 		    --access-logfile /tmp/cloglog-prod-access.log \
 		    --log-level info 2>&1 | sed -u 's/^/[backend] /') & \
 		(tail -F -n 0 /tmp/cloglog-prod.log 2>/dev/null | sed -u 's/^/[backend] /') & \
-		(cd ../cloglog-prod/frontend && npm run preview -- --port 4173 2>&1 | sed -u 's/^/[frontend] /' & echo $$! > /tmp/cloglog-prod-frontend.pid) & \
+		(cd ../cloglog-prod/frontend && npm run preview -- --port 4173 $$PREVIEW_HOST_FLAG 2>&1 | sed -u 's/^/[frontend] /' & echo $$! > /tmp/cloglog-prod-frontend.pid) & \
 		wait
 
 prod-bg: ## Start prod server in background
@@ -189,36 +207,51 @@ prod-bg: ## Start prod server in background
 		exit 1; \
 	fi
 	@scripts/preflight.sh
-	@echo "Starting cloglog prod server (background)..."
-	@echo "  Backend:  http://localhost:8001"
-	@echo "  Frontend: http://localhost:4173"
-	@echo "  Tunnel:   https://cloglog.voxdez.com (systemd-managed; see docs/contracts/webhook-pipeline-spec.md)"
-	@cd ../cloglog-prod/frontend && npm ci --silent && VITE_API_URL=http://localhost:8001/api/v1 npx vite build 2>&1 | tail -2
-	@cd ../cloglog-prod && uv run gunicorn src.gateway.asgi:app \
-	    --worker-class uvicorn.workers.UvicornWorker \
-	    --workers 2 \
-	    --bind 0.0.0.0:8001 \
-	    --pid /tmp/cloglog-prod.pid \
-	    --error-logfile /tmp/cloglog-prod.log \
-	    --access-logfile /tmp/cloglog-prod-access.log \
-	    --log-level info \
-	    --daemon
-	@fuser -k 4173/tcp 2>/dev/null || true
-	@cd ../cloglog-prod/frontend && npm run preview -- --port 4173 & echo $$! > /tmp/cloglog-prod-frontend.pid
-	@echo "  Backend PID: $$(cat /tmp/cloglog-prod.pid)  Frontend PID: $$(cat /tmp/cloglog-prod-frontend.pid)"
+	@HOST_IP=$$(tailscale ip -4 2>/dev/null | head -n1 || true); \
+		HOST=$${HOST_IP:-localhost}; \
+		API_URL=$${VITE_API_URL:-http://$$HOST:8001/api/v1}; \
+		echo "Starting cloglog prod server (background)..."; \
+		echo "  Backend:  http://localhost:8001"; \
+		[ -n "$$HOST_IP" ] && echo "  Backend:  http://$$HOST_IP:8001 (tailnet)" || true; \
+		echo "  Frontend: http://localhost:4173"; \
+		[ -n "$$HOST_IP" ] && echo "  Frontend: http://$$HOST_IP:4173 (tailnet)" || true; \
+		echo "  API URL:  $$API_URL"; \
+		echo "  Tunnel:   https://cloglog.voxdez.com (systemd-managed; see docs/contracts/webhook-pipeline-spec.md)"; \
+		(cd ../cloglog-prod/frontend && npm ci --silent && VITE_API_URL="$$API_URL" npx vite build 2>&1 | tail -2); \
+		(cd ../cloglog-prod && uv run gunicorn src.gateway.asgi:app \
+		    --worker-class uvicorn.workers.UvicornWorker \
+		    --workers 2 \
+		    --bind 0.0.0.0:8001 \
+		    --pid /tmp/cloglog-prod.pid \
+		    --error-logfile /tmp/cloglog-prod.log \
+		    --access-logfile /tmp/cloglog-prod-access.log \
+		    --log-level info \
+		    --daemon); \
+		fuser -k 4173/tcp 2>/dev/null || true; \
+		PREVIEW_HOST_FLAG=""; \
+		[ -n "$$HOST_IP" ] && PREVIEW_HOST_FLAG="--host $$HOST_IP"; \
+		(cd ../cloglog-prod/frontend && npm run preview -- --port 4173 $$PREVIEW_HOST_FLAG & echo $$! > /tmp/cloglog-prod-frontend.pid); \
+		echo "  Backend PID: $$(cat /tmp/cloglog-prod.pid)  Frontend PID: $$(cat /tmp/cloglog-prod-frontend.pid)"
 
 promote: ## Deploy latest origin/main to prod with zero-downtime worker rotation
 	@echo "Promoting origin/main to prod..."
 	@git -C ../cloglog-prod pull origin main
 	@cd ../cloglog-prod && uv sync
 	@cd ../cloglog-prod/frontend && npm ci --silent
-	@cd ../cloglog-prod/frontend && VITE_API_URL=http://localhost:8001/api/v1 npx vite build 2>&1 | tail -2
-	@cd ../cloglog-prod && uv run alembic upgrade head
-	@if [ -f /tmp/cloglog-prod.pid ]; then kill -HUP $$(cat /tmp/cloglog-prod.pid) && echo "  Backend: rotated workers."; else echo "  Warning: gunicorn not running — start with make prod"; fi
-	@fuser -k 4173/tcp 2>/dev/null || true
-	@rm -f /tmp/cloglog-prod-frontend.pid
-	@cd ../cloglog-prod/frontend && npm run preview -- --port 4173 & echo $$! > /tmp/cloglog-prod-frontend.pid
-	@echo "  Done — frontend rebuilt and restarted on :4173."
+	@HOST_IP=$$(tailscale ip -4 2>/dev/null | head -n1 || true); \
+		HOST=$${HOST_IP:-localhost}; \
+		API_URL=$${VITE_API_URL:-http://$$HOST:8001/api/v1}; \
+		echo "  API URL:  $$API_URL"; \
+		(cd ../cloglog-prod/frontend && VITE_API_URL="$$API_URL" npx vite build 2>&1 | tail -2); \
+		(cd ../cloglog-prod && uv run alembic upgrade head); \
+		if [ -f /tmp/cloglog-prod.pid ]; then kill -HUP $$(cat /tmp/cloglog-prod.pid) && echo "  Backend: rotated workers."; else echo "  Warning: gunicorn not running — start with make prod"; fi; \
+		fuser -k 4173/tcp 2>/dev/null || true; \
+		rm -f /tmp/cloglog-prod-frontend.pid; \
+		PREVIEW_HOST_FLAG=""; \
+		[ -n "$$HOST_IP" ] && PREVIEW_HOST_FLAG="--host $$HOST_IP"; \
+		(cd ../cloglog-prod/frontend && npm run preview -- --port 4173 $$PREVIEW_HOST_FLAG & echo $$! > /tmp/cloglog-prod-frontend.pid); \
+		echo "  Done — frontend rebuilt and restarted on :4173."; \
+		[ -n "$$HOST_IP" ] && echo "  Tailnet: http://$$HOST_IP:4173" || true
 
 prod-logs: ## Tail prod server logs
 	@tail -f /tmp/cloglog-prod.log /tmp/cloglog-prod-access.log

@@ -40,14 +40,15 @@ Before spawning, reconcile against existing monitors:
 2. Filter for running Monitor tasks whose `command` ends in `.cloglog/inbox` and resolves to **this** project's inbox file. Match on path suffix (`/.cloglog/inbox`) and verify the resolved absolute path equals `<current working directory>/.cloglog/inbox` — historical monitors started with the relative path `tail -f .cloglog/inbox` (see the github-bot crash-recovery flow) must still be caught here, otherwise the dedupe is bypassed.
 3. Branch on the count of matches:
    - **Exactly one** → reuse it. Tell the user: *"Reusing existing inbox monitor (task `<id>`)."* Do NOT spawn a new Monitor.
-   - **Zero** → spawn a fresh persistent monitor:
+   - **Zero** → spawn a fresh persistent monitor. **The inbox file may not exist yet** (the backend creates it on first webhook write), and `tail -f` against a missing file exits immediately — leaving the agent monitor-less. Wrap the tail so the file is materialised first:
      ```
      Monitor(
-       command: "tail -f <current working directory>/.cloglog/inbox",
+       command: "mkdir -p <current working directory>/.cloglog && touch <current working directory>/.cloglog/inbox && tail -F <current working directory>/.cloglog/inbox",
        description: "Main agent inbox — messages from worktree agents",
        persistent: true
      )
      ```
+     `tail -F` (capital F) is a defence in depth — if the file is rotated or briefly removed, it re-opens by name instead of dying.
    - **Two or more** → keep the oldest matching monitor (lowest creation time / first in `TaskList` ordering), `TaskStop` each of the others, and tell the user: *"Stopped N duplicate monitor(s); reusing task `<id>`."*
 
 ### 3. Confirm

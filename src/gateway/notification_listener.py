@@ -17,7 +17,13 @@ logger = logging.getLogger(__name__)
 
 async def _handle_review_event(event: Event) -> None:
     """Create a notification and optionally fire notify-send."""
-    task_id = UUID(event.data["task_id"])
+    raw_task_id = event.data.get("task_id")
+    if not raw_task_id:
+        # Cross-worker mirror (T-228) means this listener now sees status-change
+        # events from peer workers, demos, and tests too — not all of them
+        # carry a task_id (they predate the notification flow). Skip silently.
+        return
+    task_id = UUID(raw_task_id)
 
     async with async_session_factory() as session:
         repo = BoardRepository(session)

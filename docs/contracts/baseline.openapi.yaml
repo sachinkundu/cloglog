@@ -1798,6 +1798,9 @@ components:
           type: string
           format: uuid
           title: Id
+        number:
+          type: integer
+          title: Number
         title:
           type: string
           title: Title
@@ -1810,9 +1813,20 @@ components:
         priority:
           type: string
           title: Priority
+        pr_url:
+          anyOf:
+            - type: string
+            - type: 'null'
+          title: Pr Url
+        artifact_path:
+          anyOf:
+            - type: string
+            - type: 'null'
+          title: Artifact Path
       type: object
       required:
       - id
+      - number
       - title
       - description
       - status

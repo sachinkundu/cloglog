@@ -140,6 +140,29 @@ if tasks_raw=$(cd "$CWD" && git log --pretty=%s%n%b main..HEAD 2>/dev/null); the
   TASKS_JSON=$(printf '%s\n' "$tasks_raw" | jq -Rn '[inputs | scan("T-[0-9]+")] | unique')
 fi
 
+# T-262: best-effort enrichment of the (task -> PR URL) map. The agent's own
+# emit (Section 2 step 5) is the authoritative source — it walks
+# `get_my_tasks` and reads each row's `pr_url`. The hook has no MCP access
+# and runs after the worktree may already be torn down, so we use a single
+# `gh pr list --state merged --head <branch>` call to recover the map from
+# GitHub. Missing `gh`, missing auth, or no merged PR yields `prs: {}` —
+# consumers MUST treat the field as advisory: presence of a key is correct,
+# absence is "hook didn't know," not "no PR exists."
+PRS_JSON='{}'
+if command -v gh >/dev/null 2>&1 && [[ "$TASKS_JSON" != "[]" ]]; then
+  if prs_raw=$(cd "$CWD" && gh pr list --state merged --head "$WORKTREE_NAME" \
+                  --json number,url,title,body --limit 50 2>/dev/null); then
+    PRS_JSON=$(jq -c --argjson tasks "$TASKS_JSON" '
+      ([.[] as $pr
+        | (($pr.title // "") + " " + ($pr.body // "")) as $text
+        | [($text | scan("T-[0-9]+"))] as $hits
+        | $hits[] | {key: ., value: $pr.url}
+       ] | from_entries)
+      | with_entries(select(.key as $k | $tasks | index($k)))
+    ' <<<"$prs_raw" 2>/dev/null) || PRS_JSON='{}'
+  fi
+fi
+
 TS=$(date -Iseconds)
 jq -cn \
   --arg wt "$WORKTREE_NAME" \
@@ -147,7 +170,9 @@ jq -cn \
   --arg wl "${ARTIFACTS_DIR}/work-log.md" \
   --arg ln "${ARTIFACTS_DIR}/learnings.md" \
   --argjson tasks "$TASKS_JSON" \
+  --argjson prs "$PRS_JSON" \
   '{type:"agent_unregistered", worktree:$wt, ts:$ts, tasks_completed:$tasks,
+    prs:$prs,
     artifacts:{work_log:$wl, learnings:$ln},
     reason:"best_effort_backstop_from_session_end_hook"}' \
   >> "$MAIN_INBOX" 2>> /tmp/agent-shutdown-debug.log || true

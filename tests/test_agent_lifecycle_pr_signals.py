@@ -26,6 +26,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LIFECYCLE = REPO_ROOT / "docs" / "design" / "agent-lifecycle.md"
 LAUNCH_SKILL = REPO_ROOT / "plugins" / "cloglog" / "skills" / "launch" / "SKILL.md"
+GITHUB_BOT_SKILL = REPO_ROOT / "plugins" / "cloglog" / "skills" / "github-bot" / "SKILL.md"
+CLAUDE_MD_FRAGMENT = REPO_ROOT / "plugins" / "cloglog" / "templates" / "claude-md-fragment.md"
+WORKTREE_AGENT = REPO_ROOT / "plugins" / "cloglog" / "agents" / "worktree-agent.md"
 
 
 def test_lifecycle_spec_documents_pr_merged_notification() -> None:
@@ -73,3 +76,25 @@ def test_launch_skill_prompts_prs_map_in_unregister() -> None:
     assert "get_my_tasks" in prompt and "pr_url" in prompt, (
         "launch SKILL must tell the agent to build the prs map from get_my_tasks rows' pr_url field"
     )
+
+
+def test_secondary_instruction_sources_propagate_t262():
+    """The launch SKILL is not the only instruction source agents read.
+
+    Codex flagged in PR #220 round 1 that github-bot SKILL, the
+    claude-md-fragment template, and the worktree-agent agent definition
+    all describe the pr_merged + shutdown protocol independently — and
+    all of them must mention the new event/field or a launched agent
+    following the referenced instructions can still recreate the
+    visibility gap T-262 closes.
+    """
+    for path in (GITHUB_BOT_SKILL, CLAUDE_MD_FRAGMENT, WORKTREE_AGENT):
+        body = path.read_text()
+        assert "pr_merged_notification" in body, (
+            f"{path.relative_to(REPO_ROOT)} must instruct agents to emit "
+            "pr_merged_notification before mark_pr_merged (T-262)"
+        )
+        assert "prs" in body, (
+            f"{path.relative_to(REPO_ROOT)} must mention the prs map "
+            "in the agent_unregistered shape (T-262)"
+        )

@@ -42,7 +42,7 @@ Your work follows a strict pipeline. Call `mcp__cloglog__get_my_tasks` to get yo
 3. If the project's CLAUDE.md specifies review agents or additional subagents for the spec phase, follow those instructions
 4. Create a PR with the spec (use `github-bot` skill)
 5. Call `mcp__cloglog__update_task_status` to move the task to `review` with the PR URL
-6. Confirm your `.cloglog/inbox` Monitor is running — webhook events (`review_submitted`, `ci_failed`, `pr_merged`) arrive there automatically. On `pr_merged`: call `mcp__cloglog__mark_pr_merged`, then `mcp__cloglog__report_artifact` with the spec file path, then `mcp__cloglog__get_my_tasks` and start the next task. See the `github-bot` skill's **PR Event Inbox** section.
+6. Confirm your `.cloglog/inbox` Monitor is running — webhook events (`review_submitted`, `ci_failed`, `pr_merged`) arrive there automatically. On `pr_merged`: **first emit `pr_merged_notification` to `<project_root>/.cloglog/inbox`** (T-262 — surfaces the merge to the supervisor and any parallel worktree blocked on this PR; the `pr_merged` webhook only reaches your own inbox), then call `mcp__cloglog__mark_pr_merged`, then `mcp__cloglog__report_artifact` with the spec file path, then `mcp__cloglog__get_my_tasks` and start the next task. See the `github-bot` skill's **PR Event Inbox** section for the full `pr_merged_notification` shape.
 
 ### Plan Task (task_type: "plan")
 
@@ -185,7 +185,7 @@ Shutdown sequence (in order, skip steps that do not apply):
    - `shutdown-artifacts/work-log.md` — timeline and scope of this run
    - `shutdown-artifacts/learnings.md` — patterns, gotchas, and follow-up items
    Use **absolute paths** when referencing these files in the next step.
-4. **Emit `agent_unregistered` to the main agent inbox** (`<project_root>/.cloglog/inbox`) *before* calling `unregister_agent`. See `docs/design/agent-lifecycle.md` §2 step 5 for the full event shape (required fields: `type`, `worktree`, `worktree_id`, `ts`, `tasks_completed`, `artifacts.work_log`, `artifacts.learnings`, `reason`). Artifact paths MUST be absolute. This event is authoritative for the main agent's close-wave flow; the SessionEnd hook writes a best-effort fallback only.
+4. **Emit `agent_unregistered` to the main agent inbox** (`<project_root>/.cloglog/inbox`) *before* calling `unregister_agent`. See `docs/design/agent-lifecycle.md` §2 step 5 for the full event shape (required fields: `type`, `worktree`, `worktree_id`, `ts`, `tasks_completed`, `prs` (T-262 — `T-NNN -> PR URL` map; build it by walking `get_my_tasks()` for each row's `pr_url`; omit tasks without a PR), `artifacts.work_log`, `artifacts.learnings`, `reason`). Artifact paths MUST be absolute. This event is authoritative for the main agent's close-wave flow; the SessionEnd hook writes a best-effort fallback only.
 5. Call `mcp__cloglog__unregister_agent`.
 6. Exit.
 

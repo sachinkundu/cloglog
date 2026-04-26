@@ -287,14 +287,16 @@ verify-prod-protection: ## Assert GitHub ruleset protection on `prod`. Uses the 
 			exit 1; \
 		fi; \
 		RULE_TYPES=$$(echo "$$RULESET" | jq -r '[.rules[].type] | join(",")'); \
-		for required in deletion non_fast_forward required_linear_history; do \
-			case ",$$RULE_TYPES," in *",$$required,"*) :;; *) \
-				echo "FAIL: ruleset $$ID on $$REPO is missing rule '$$required' (spec §3.2). Have: [$$RULE_TYPES]."; \
-				exit 1;; \
-			esac; \
-		done; \
+		case ",$$RULE_TYPES," in *",required_linear_history,"*) :;; *) \
+			echo "FAIL: ruleset $$ID on $$REPO is missing 'required_linear_history' rule (spec §3.2 clause 1: \"Require linear history\"). Have: [$$RULE_TYPES]."; \
+			exit 1;; \
+		esac; \
 		case ",$$RULE_TYPES," in *",pull_request,"*) \
-			echo "FAIL: ruleset $$ID on $$REPO has a 'pull_request' rule — but \`make promote\` pushes directly. Spec §3.2 forbids the PR requirement on prod."; \
+			echo "FAIL: ruleset $$ID on $$REPO has a 'pull_request' rule — but \`make promote\` pushes directly. Spec §3.2 clause 3 forbids the PR requirement on prod."; \
+			exit 1;; \
+		esac; \
+		case ",$$RULE_TYPES," in *",update,"*) :;; *) \
+			echo "FAIL: ruleset $$ID on $$REPO has no 'update' rule (spec §3.2 clause 2: \"Restrict pushes to the user's account\"). Without 'update', any actor with write access can push to prod, defeating the operator-only promotion gate. Add a 'Restrict updates' rule in GitHub UI → Rules → edit ruleset."; \
 			exit 1;; \
 		esac; \
 		BAD_BYPASS=$$(echo "$$RULESET" | jq -r '[.bypass_actors[]? | select(.actor_type != "RepositoryRole" or (.actor_type == "RepositoryRole" and .actor_id != 5))] | map("\(.actor_type):\(.actor_id // "?")") | join(",")'); \
@@ -302,8 +304,16 @@ verify-prod-protection: ## Assert GitHub ruleset protection on `prod`. Uses the 
 			echo "FAIL: ruleset $$ID on $$REPO grants bypass to non-admin actors [$$BAD_BYPASS]. Spec §3.2 forbids any app, agent, or team from bypassing prod protection — only the operator (RepositoryRole admin = id 5) is permitted. On personal repos, the admin role IS the owner account."; \
 			exit 1; \
 		fi; \
-		ADMIN_BYPASS=$$(echo "$$RULESET" | jq -r '[.bypass_actors[]? | select(.actor_type == "RepositoryRole" and .actor_id == 5)] | length'); \
-		echo "OK: $$REPO ruleset $$ID covers refs/heads/prod with rules [$$RULE_TYPES]. Bypass actors: $$ADMIN_BYPASS RepositoryRole=admin (operator), 0 apps/teams/integrations."
+		ADMIN_BYPASS_ALWAYS=$$(echo "$$RULESET" | jq -r '[.bypass_actors[]? | select(.actor_type == "RepositoryRole" and .actor_id == 5 and .bypass_mode == "always")] | length'); \
+		if [ "$$ADMIN_BYPASS_ALWAYS" = "0" ]; then \
+			echo "FAIL: ruleset $$ID on $$REPO has no admin bypass with bypass_mode=always — but \`make promote\` ends with a direct \`git push origin prod\`, which the 'update' rule blocks unless the operator can bypass. Add RepositoryRole admin (actor_id=5) with bypass_mode=always to bypass_actors via GitHub UI → Rules → edit ruleset → Bypass list."; \
+			exit 1; \
+		fi; \
+		WARN=""; \
+		case ",$$RULE_TYPES," in *",non_fast_forward,"*) :;; *) WARN="$$WARN non_fast_forward(force-push not blocked)";; esac; \
+		case ",$$RULE_TYPES," in *",deletion,"*) :;; *) WARN="$$WARN deletion(branch-delete not blocked)";; esac; \
+		[ -n "$$WARN" ] && echo "WARN: ruleset is spec-compliant but missing recommended belt-and-braces rules:$$WARN"; \
+		echo "OK: $$REPO ruleset $$ID covers refs/heads/prod. Spec §3.2 clauses satisfied: linear history (rule), no PR requirement (rule absent), user-only push (update rule + admin bypass). Rules: [$$RULE_TYPES]."
 
 prod-logs: ## Tail prod server logs
 	@tail -f /tmp/cloglog-prod.log /tmp/cloglog-prod-access.log

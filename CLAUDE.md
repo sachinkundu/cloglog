@@ -41,6 +41,8 @@ If you are working in a worktree (`wt-*` branch), you MUST only touch files in y
 
 All pushes, PRs, and GitHub API calls MUST use the GitHub App bot identity. Use the `github-bot` skill — it has the exact commands for pushing, creating PRs, checking status, and replying to review comments. Never use `git push`, `gh pr`, or `gh api` without the bot token.
 
+**Exception — branch-protection / ruleset inspection.** The App PEM (`scripts/gh-app-token.py`) only requests `contents`/`pull_requests`/`issues`/`workflows` permissions. APIs that require `administration:read` (e.g. `gh api repos/X/branches/Y/protection`) return `403 Resource not accessible by integration` against bot tokens. The `make verify-prod-protection` target therefore uses the operator's personal `gh auth` (NOT `BOT_TOKEN`); see the "Branch protection / verification" section below for details.
+
 ## Stop on MCP Failure
 
 Halt on any MCP failure: startup unavailability emits `mcp_unavailable` and exits; runtime tool errors emit `mcp_tool_error` and wait for the main agent; transient network errors get one backoff retry before escalating.

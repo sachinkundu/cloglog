@@ -1,24 +1,24 @@
 ---
 verdict: no_demo
-diff_hash: 3081bc8cb127bb31425c57c74637f36d3a1ea25e74a6b947f994a2ec7c4fc5f0
+diff_hash: a6221e639ef2e483d3d0c964103afd062f683e36e082024b1aa283d54a913b0c
 classifier: demo-classifier
-generated_at: 2026-04-26T10:23:45Z
+generated_at: 2026-04-26T10:30:36Z
 ---
 
 ## Why no demo
 
-Diff is internal workflow plumbing for the worktree-agent's auto-merge gate
-(T-295): a new pure-Python helper at `plugins/cloglog/scripts/auto_merge_gate.py`,
-prose updates to `docs/design/agent-lifecycle.md` and the
-github-bot/launch/worktree-agent skill markdowns, and two pin tests under
-`tests/`. Strongest `needs_demo` candidate considered: the helper script is
-invoked via a CLI shape, but it is agent-internal tooling (worktree-agent
-shells out to it inside an event handler) — no user reads its stdout, no
-`@router` decorator, no React component, no MCP `server.tool` registration,
-no migration. Counterfactual: if the gate had added a new HTTP endpoint (e.g.,
-a `/api/v1/auto-merge` route) or a new MCP tool wrapping the merge action,
-or surfaced a `hold-merge` status dot in the dashboard, the verdict would
-have flipped to `needs_demo`.
+Diff is entirely plugin/agent workflow plumbing: new pure-Python helper at
+`plugins/cloglog/scripts/auto_merge_gate.py`, design doc edits to
+`docs/design/agent-lifecycle.md`, skill/agent-template prose updates
+(github-bot, launch, worktree-agent), and pinning tests under `tests/`. No
+HTTP route decorators, no React components, no MCP tool registrations in
+`mcp-server/src/server.ts`, no CLI surface a user reads, no DB migration.
+The strongest `needs_demo` candidate was the `auto_merge_gate.py` CLI, but
+it is an internal worktree-agent helper invoked via shell from a skill — not
+a user-invoked command — so `cli-exec` does not apply. If the diff had added
+a new `@router` decorator wiring auto-merge into the gateway, or a new
+`server.tool` registration in mcp-server, the verdict would have flipped to
+`needs_demo`.
 
 ## Changed files
 

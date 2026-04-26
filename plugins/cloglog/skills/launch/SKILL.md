@@ -74,7 +74,7 @@ Monitor your inbox for messages from the main agent. **One inbox monitor per age
 Before spawning, reconcile against existing monitors:
 
 1. Call `TaskList`.
-2. Filter for running Monitor tasks whose `command` matches `tail -f <WORKTREE_PATH>/.cloglog/inbox`.
+2. Filter for running Monitor tasks whose `command` ends in `.cloglog/inbox` and resolves to **this** worktree's inbox file. Match on path suffix (`/.cloglog/inbox`) and verify the resolved absolute path equals `<WORKTREE_PATH>/.cloglog/inbox` — historical monitors started with the relative path `tail -f .cloglog/inbox` (see the github-bot crash-recovery flow) must still be caught here, otherwise the dedupe is bypassed and `/clear` followed by recovery would still spawn a duplicate.
 3. Branch on the count of matches:
    - **Exactly one** → reuse it; do not spawn a new Monitor.
    - **Zero** → spawn a fresh persistent monitor:

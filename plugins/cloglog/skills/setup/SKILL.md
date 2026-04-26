@@ -37,7 +37,7 @@ The inbox file is at `<current working directory>/.cloglog/inbox`. **One inbox m
 Before spawning, reconcile against existing monitors:
 
 1. Call `TaskList`.
-2. Filter for running Monitor tasks whose `command` matches `tail -f <current working directory>/.cloglog/inbox` (compare the full inbox path).
+2. Filter for running Monitor tasks whose `command` ends in `.cloglog/inbox` and resolves to **this** project's inbox file. Match on path suffix (`/.cloglog/inbox`) and verify the resolved absolute path equals `<current working directory>/.cloglog/inbox` — historical monitors started with the relative path `tail -f .cloglog/inbox` (see the github-bot crash-recovery flow) must still be caught here, otherwise the dedupe is bypassed.
 3. Branch on the count of matches:
    - **Exactly one** → reuse it. Tell the user: *"Reusing existing inbox monitor (task `<id>`)."* Do NOT spawn a new Monitor.
    - **Zero** → spawn a fresh persistent monitor:

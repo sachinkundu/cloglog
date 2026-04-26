@@ -217,11 +217,24 @@ different roots and the hardcode corrupts them. Tracked as T-NEW in the
 
 Every agent monitors **exactly** `<worktree_path>/.cloglog/inbox`. The path is
 always within the worktree and is always named `inbox` (no worktree-id suffix).
-Canonical `Monitor` invocation:
+**Exactly one** Monitor per agent process — see the dedupe procedure in
+`plugins/cloglog/skills/setup/SKILL.md` and `plugins/cloglog/skills/launch/SKILL.md`
+that reconciles via `TaskList` before spawning, since persistent monitors
+survive `/clear`. Canonical `Monitor` invocation (note the `mkdir`/`touch`
+prelude — the inbox is created lazily by the backend's first webhook write,
+and `tail -f` against a missing file exits immediately; `-n 0 -F` starts at
+end-of-file and only delivers events appended from now on, which is the
+correct semantic given that the inbox is **append-only for the worktree's
+lifetime** — re-delivering historical events would re-process already-handled
+`pr_merged`/`review_submitted` lines and trip `start_task`'s one-active-task
+guard at `src/agent/services.py:357-370`. To reconcile events that landed
+while the agent was offline, use the *Check PR Status* drill-down in
+`plugins/cloglog/skills/github-bot/SKILL.md`, not `tail` history. `-F`
+re-opens the file by name if it is rotated):
 
 ```
 Monitor(
-  command: "tail -f <worktree_path>/.cloglog/inbox",
+  command: "mkdir -p <worktree_path>/.cloglog && touch <worktree_path>/.cloglog/inbox && tail -n 0 -F <worktree_path>/.cloglog/inbox",
   description: "Inbox — messages from main agent and webhook events",
   persistent: true
 )

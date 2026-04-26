@@ -69,14 +69,25 @@ Priority: <priority>
 - Feature ID: `<uuid>` (if applicable)
 
 ## Inbox
-Monitor your inbox for messages from the main agent:
-```
-Monitor(
-  command: "tail -f <WORKTREE_PATH>/.cloglog/inbox",
-  description: "Messages from main agent",
-  persistent: true
-)
-```
+Monitor your inbox for messages from the main agent. **One inbox monitor per agent process, period** — persistent monitors survive `/clear`, so a naive spawn on a re-entered session would duplicate tails and triple-fire every event.
+
+Before spawning, reconcile against existing monitors:
+
+1. Call `TaskList`.
+2. Filter for running Monitor tasks whose `command` ends in `.cloglog/inbox` and resolves to **this** worktree's inbox file. Match on path suffix (`/.cloglog/inbox`) and verify the resolved absolute path equals `<WORKTREE_PATH>/.cloglog/inbox` — historical monitors started with the relative path `tail -f .cloglog/inbox` (see the github-bot crash-recovery flow) must still be caught here, otherwise the dedupe is bypassed and `/clear` followed by recovery would still spawn a duplicate.
+3. Branch on the count of matches:
+   - **Exactly one** → reuse it; do not spawn a new Monitor.
+   - **Zero** → spawn a fresh persistent monitor. **The inbox file may not exist yet** — `.cloglog/on-worktree-create.sh` does not pre-create it, and the lifecycle spec leaves first creation to the backend's first webhook write. `tail -f` on a missing file exits immediately (verified: this skill's own author hit it on session start). Use `tail -n 0 -F` — start at end-of-file (deliver only events appended from now on) and reopen-by-name on rotation. Wrap with `mkdir`/`touch` so the file is materialised first:
+     ```
+     Monitor(
+       command: "mkdir -p <WORKTREE_PATH>/.cloglog && touch <WORKTREE_PATH>/.cloglog/inbox && tail -n 0 -F <WORKTREE_PATH>/.cloglog/inbox",
+       description: "Messages from main agent",
+       persistent: true
+     )
+     ```
+     **Why `-n 0`, not `-n +1`.** The inbox is append-only for the worktree's lifetime (`src/gateway/webhook_consumers.py` always appends; `request_shutdown` is pinned by `tests/agent/test_unit.py` not to truncate). Replaying from line 1 on a re-entered session would re-deliver already-handled events — and the documented `pr_merged` handler immediately calls `start_task`, which raises if another task is active (`src/agent/services.py:357-370`). To reconcile events that landed while you were offline, use the *Check PR Status* drill-down in `plugins/cloglog/skills/github-bot/SKILL.md`, not `tail` history.
+   - **Two or more** → keep the oldest matching monitor and `TaskStop` the rest.
+
 When you receive a message, read it and act on the instruction. The main agent may send rebasing requests, priority changes, or other guidance.
 
 ## Workflow

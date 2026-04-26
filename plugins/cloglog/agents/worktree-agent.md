@@ -136,11 +136,23 @@ itself. The webhook consumer, `request_shutdown`, and every sending agent all
 write to this single path. See `docs/design/agent-lifecycle.md` Section 3 for
 the full inbox contract and a note on the removed legacy path.
 
-- **Receiving:** On registration, start a persistent Monitor on your inbox:
+- **Receiving:** On registration, start **exactly one** persistent Monitor on your inbox.
+  Reconcile via `TaskList` before spawning (match path suffix `/.cloglog/inbox`, reuse
+  on one-match, keep-oldest + `TaskStop` on two+) — persistent monitors survive
+  `/clear`, so a naive re-spawn duplicates every event. The full procedure is in
+  `plugins/cloglog/skills/launch/SKILL.md`. The canonical command:
   ```
-  Monitor("tail -f <your_worktree_path>/.cloglog/inbox", persistent: true, description: "Agent inbox")
+  Monitor(
+    command: "mkdir -p <your_worktree_path>/.cloglog && touch <your_worktree_path>/.cloglog/inbox && tail -n 0 -F <your_worktree_path>/.cloglog/inbox",
+    persistent: true,
+    description: "Agent inbox"
+  )
   ```
-  Your worktree path is whatever `pwd` returns at session start (the launch
+  The `mkdir`/`touch` prelude is mandatory — the backend creates the inbox lazily on
+  first webhook write, and `tail -f` against a missing file exits immediately. `-n +1`
+  replays the full file from line 1 (default `tail -F` only emits the last 10 lines,
+  silently dropping older events on a re-entered session); `-F` re-opens by name on
+  rotation. Your worktree path is whatever `pwd` returns at session start (the launch
   script always `cd`s into the worktree first) and is also returned by
   `register_agent`. Messages arrive as Monitor notifications in real-time —
   no polling needed.

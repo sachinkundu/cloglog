@@ -30,19 +30,36 @@ mcp__cloglog__register_agent(worktree_path: "<current working directory>")
 
 Save the returned `worktree_id` — you'll need it for agent operations.
 
-### 2. Start inbox monitor
+### 2. Start inbox monitor (idempotent)
 
-The inbox file is at `<current working directory>/.cloglog/inbox`. Start a persistent monitor:
+The inbox file is at `<current working directory>/.cloglog/inbox`. **One inbox monitor per agent process, period.** Persistent monitors are session-local but are NOT auto-stopped on `/clear`, so a naive spawn on every `/cloglog setup` accumulates duplicate tails — every inbox event then fires N times.
 
-```
-Monitor(
-  command: "tail -f <current working directory>/.cloglog/inbox",
-  description: "Main agent inbox — messages from worktree agents",
-  persistent: true
-)
-```
+Before spawning, reconcile against existing monitors:
 
-### 3. Confirm
+1. Call `TaskList`.
+2. Filter for running Monitor tasks whose `command` ends in `.cloglog/inbox` and resolves to **this** project's inbox file. Match on path suffix (`/.cloglog/inbox`) and verify the resolved absolute path equals `<current working directory>/.cloglog/inbox` — historical monitors started with the relative path `tail -f .cloglog/inbox` (see the github-bot crash-recovery flow) must still be caught here, otherwise the dedupe is bypassed.
+3. Branch on the count of matches:
+   - **Exactly one** → reuse it. Tell the user: *"Reusing existing inbox monitor (task `<id>`)."* Do NOT spawn a new Monitor.
+   - **Zero** → spawn a fresh persistent monitor. **The inbox file may not exist yet** (the backend creates it on first webhook write), and `tail -f` against a missing file exits immediately — leaving the agent monitor-less. Wrap the tail so the file is materialised first:
+     ```
+     Monitor(
+       command: "mkdir -p <current working directory>/.cloglog && touch <current working directory>/.cloglog/inbox && tail -n 0 -F <current working directory>/.cloglog/inbox",
+       description: "Main agent inbox — messages from worktree agents",
+       persistent: true
+     )
+     ```
+     `-n 0` (start at end-of-file, only deliver events appended from now on) is the correct semantic for this codebase: the inbox is **append-only for the worktree's entire lifetime** (`src/gateway/webhook_consumers.py` always appends; `request_shutdown` is pinned by `tests/agent/test_unit.py` not to truncate). Re-delivering historical events would re-process already-handled `pr_merged`/`review_submitted` lines and crash `start_task` (see `src/agent/services.py:357-370` — only one active task per agent). To reconcile events that landed while the agent was offline, use the *Check PR Status* drill-down in `plugins/cloglog/skills/github-bot/SKILL.md`, not `tail` history. `-F` (capital) is a defence in depth — if the file is rotated or briefly removed, it re-opens by name instead of dying.
+   - **Two or more** → keep the oldest matching monitor (lowest creation time / first in `TaskList` ordering), `TaskStop` each of the others, and tell the user: *"Stopped N duplicate monitor(s); reusing task `<id>`."*
+
+### 3. Reconcile control events on crash recovery
+
+The new monitor starts at end-of-file (`-n 0`), which is correct for `/clear` and re-spawn but means a **supervisor crash** would skip any control lines that worktree agents appended while the supervisor was down. The supervisor inbox carries non-PR events with no GitHub-side equivalent — `agent_unregistered` from `plugins/cloglog/hooks/agent-shutdown.sh:120-155` is the most important: `plugins/cloglog/skills/close-wave/SKILL.md` waits on that exact event to know cleanup can proceed, so a missed `agent_unregistered` leaves a completed worktree looking unfinished.
+
+**If this is a normal session start** (no prior crash): skip this step.
+
+**If you just recovered from a crash** (the previous supervisor session ended unexpectedly, you're not sure whether worktree agents finished while you were down, or close-wave is stuck waiting): inspect the inbox tail one-shot — `Read` the last 100 lines of `<current working directory>/.cloglog/inbox` and look for any line where `"type"` is `"agent_unregistered"`, `"agent_started"`, `"mcp_unavailable"`, `"mcp_tool_error"`, or `"pr_merged"`. Treat each one as if it had just arrived. (A proper offset-tracked replay — analogous to `scripts/wait_for_agent_unregistered.py` which already uses byte offsets for exactly this reason — is the durable fix and is filed as follow-up work; it's out of scope for T-294.)
+
+### 4. Confirm
 
 Tell the user:
 - Registered as worktree `<worktree_id>`

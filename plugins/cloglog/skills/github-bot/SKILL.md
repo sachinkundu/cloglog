@@ -185,6 +185,7 @@ After a `review_submitted` inbox event, the worktree agent decides whether to me
 
 ```bash
 BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
 PR_NUM=<the PR number from the inbox event>
 
 # Compute has_human_changes_requested: latest review per non-bot author,

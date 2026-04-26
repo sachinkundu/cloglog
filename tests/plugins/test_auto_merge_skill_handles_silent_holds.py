@@ -115,6 +115,32 @@ def test_worktree_agent_template_references_auto_merge_gate() -> None:
     )
 
 
+def test_skill_invocation_block_sets_repo_before_using_it() -> None:
+    """The auto-merge bash snippet must derive ``REPO`` itself.
+
+    Codex round 4 caught that the first ``gh api repos/${REPO}/...`` call
+    sat above any ``REPO=`` assignment, so a fresh shell would expand
+    ``repos//pulls/<n>/reviews`` and the gate's
+    ``has_human_changes_requested`` lookup would fail. Pin the assignment
+    to land before the first use of ``$REPO`` in the auto-merge section.
+    """
+    body = SKILL.read_text()
+    auto_merge_idx = body.index("### Auto-Merge on Codex Pass")
+    next_section_idx = body.index("###", auto_merge_idx + 1)
+    section = body[auto_merge_idx:next_section_idx]
+    repo_assign_idx = section.find("REPO=$(gh repo view")
+    repo_use_idx = section.find('"repos/${REPO}/')
+    assert repo_assign_idx != -1, (
+        "auto-merge section no longer derives REPO; the bash snippet will "
+        "expand `repos//pulls/...` in a fresh shell."
+    )
+    assert repo_use_idx != -1, "auto-merge section no longer references repos/${REPO}/"
+    assert repo_assign_idx < repo_use_idx, (
+        "REPO= assignment must precede the first `repos/${REPO}/` lookup; "
+        "otherwise the gate's has_human_changes_requested fetch fails."
+    )
+
+
 def test_skill_passes_human_changes_requested_to_gate() -> None:
     """The new fifth condition needs the agent to actually fetch human reviews.
 

@@ -130,11 +130,8 @@ dev: ## Start everything (db + migrate + backend + frontend)
 	@fuser -k 8000/tcp 2>/dev/null && echo "  Killed old backend on :8000" || true
 	@fuser -k 5173/tcp 2>/dev/null && echo "  Killed old frontend on :5173" || true
 	@HOST_IP=$$(tailscale ip -4 2>/dev/null | head -n1 || true); \
-		if [ -n "$$HOST_IP" ]; then \
-			echo "  Frontend: http://$$HOST_IP:5173 (tailnet)"; \
-		else \
-			echo "  Frontend: http://localhost:5173"; \
-		fi; \
+		echo "  Frontend: http://localhost:5173"; \
+		[ -n "$$HOST_IP" ] && echo "  Frontend: http://$$HOST_IP:5173 (tailnet)" || true; \
 		echo "  Starting backend + frontend..."; \
 		trap 'kill 0; fuser -k 8000/tcp 2>/dev/null; fuser -k 5173/tcp 2>/dev/null' EXIT INT TERM; \
 		uv run uvicorn src.gateway.app:create_app --factory --host 0.0.0.0 --port 8000 --reload \
@@ -142,7 +139,9 @@ dev: ## Start everything (db + migrate + backend + frontend)
 			--reload-exclude '__pycache__' \
 			--reload-exclude '*.pyc' & \
 		if [ -n "$$HOST_IP" ]; then \
-			(cd frontend && npm run dev -- --host "$$HOST_IP") & \
+			VITE_API_URL_DEV=$${VITE_API_URL:-http://$$HOST_IP:8000/api/v1}; \
+			echo "  API URL:  $$VITE_API_URL_DEV"; \
+			(cd frontend && VITE_API_URL="$$VITE_API_URL_DEV" npm run dev -- --host 0.0.0.0) & \
 		else \
 			(cd frontend && npm run dev) & \
 		fi; \
@@ -181,7 +180,7 @@ prod: ## Start prod server (gunicorn + vite preview, foreground — run in a zel
 		echo "  Frontend: built"; \
 		fuser -k 4173/tcp 2>/dev/null || true; \
 		PREVIEW_HOST_FLAG=""; \
-		[ -n "$$HOST_IP" ] && PREVIEW_HOST_FLAG="--host $$HOST_IP"; \
+		[ -n "$$HOST_IP" ] && PREVIEW_HOST_FLAG="--host 0.0.0.0"; \
 		trap 'kill 0; fuser -k 4173/tcp 2>/dev/null; rm -f /tmp/cloglog-prod-frontend.pid' EXIT INT TERM; \
 		(cd ../cloglog-prod && uv run gunicorn src.gateway.asgi:app \
 		    --worker-class uvicorn.workers.UvicornWorker \
@@ -229,7 +228,7 @@ prod-bg: ## Start prod server in background
 		    --daemon); \
 		fuser -k 4173/tcp 2>/dev/null || true; \
 		PREVIEW_HOST_FLAG=""; \
-		[ -n "$$HOST_IP" ] && PREVIEW_HOST_FLAG="--host $$HOST_IP"; \
+		[ -n "$$HOST_IP" ] && PREVIEW_HOST_FLAG="--host 0.0.0.0"; \
 		(cd ../cloglog-prod/frontend && npm run preview -- --port 4173 $$PREVIEW_HOST_FLAG & echo $$! > /tmp/cloglog-prod-frontend.pid); \
 		echo "  Backend PID: $$(cat /tmp/cloglog-prod.pid)  Frontend PID: $$(cat /tmp/cloglog-prod-frontend.pid)"
 
@@ -248,7 +247,7 @@ promote: ## Deploy latest origin/main to prod with zero-downtime worker rotation
 		fuser -k 4173/tcp 2>/dev/null || true; \
 		rm -f /tmp/cloglog-prod-frontend.pid; \
 		PREVIEW_HOST_FLAG=""; \
-		[ -n "$$HOST_IP" ] && PREVIEW_HOST_FLAG="--host $$HOST_IP"; \
+		[ -n "$$HOST_IP" ] && PREVIEW_HOST_FLAG="--host 0.0.0.0"; \
 		(cd ../cloglog-prod/frontend && npm run preview -- --port 4173 $$PREVIEW_HOST_FLAG & echo $$! > /tmp/cloglog-prod-frontend.pid); \
 		echo "  Done — frontend rebuilt and restarted on :4173."; \
 		[ -n "$$HOST_IP" ] && echo "  Tailnet: http://$$HOST_IP:4173" || true

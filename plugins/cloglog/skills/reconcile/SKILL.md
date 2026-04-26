@@ -112,6 +112,26 @@ found, follow the rule that matches its class. **Worktree teardown goes
 through the cooperative path first; `force_unregister` is only for the
 cooperative-timeout fallback.**
 
+Reconcile's auto-fixes are MCP / git-infrastructure calls — they do not
+author committed file changes. If a fix surfaces a need to edit
+committed files (e.g. patching a skill, CLAUDE.md, or a script), do
+**not** commit on `main`. Branch first and ship via the standard
+`wt-reconcile-*` PR flow, exactly the same shape every other agent
+uses (see `docs/design/prod-branch-tracking.md` §7):
+
+```bash
+git checkout -b wt-reconcile-<date>-<topic>
+# edits + commit
+gh pr create --base main --head wt-reconcile-<date>-<topic>
+# after merge:
+git checkout main && git fetch origin && git merge --ff-only origin/main
+git branch -D wt-reconcile-<date>-<topic>
+```
+
+The dev clone's pre-commit hook (`scripts/install-dev-hooks.sh`)
+rejects commits on `main` unless `ALLOW_MAIN_COMMIT=1` is set; treat
+that override as emergency-rollback-only, not as a reconcile shortcut.
+
 ### Step 5.0 — Close-wave delegation for cleanly-completed worktrees
 
 BEFORE executing Case A / Case C teardown on any worktree in the drift set,

@@ -69,6 +69,7 @@ The prod worktree at `/home/sachin/code/cloglog-prod` tracks the `prod` branch (
 - Credentials live in three homes: `~/.cloglog/credentials` (project API key), `~/.agent-vm/credentials/<bot>.pem` (GitHub App private keys), backend `.env` (per-host knobs). See `docs/setup-credentials.md`.
 - `CLOGLOG_API_KEY` never lands in `.mcp.json` — pin: `tests/test_mcp_json_no_secret.py`.
 - The cloudflared tunnel is systemd-managed, not a `make prod` child — `scripts/preflight.sh` verifies it.
+- After cloning the dev repo, run `bash scripts/install-dev-hooks.sh` once to install the pre-commit guard against direct `main` commits. The hook lets `ALLOW_MAIN_COMMIT=1` override only (rare — emergency-rollback cherry-picks). All other commits go via a `wt-*` branch + PR, including close-wave/reconcile fold commits — see `plugins/cloglog/skills/close-wave/SKILL.md` Steps 10/13 and `plugins/cloglog/skills/reconcile/SKILL.md` Step 5.
 
 ### Rollback path
 

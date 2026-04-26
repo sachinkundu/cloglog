@@ -1,6 +1,6 @@
 ---
 name: close-wave
-description: Close a wave of worktrees after PRs merge. Handles PR verification, cooperative shutdown of worktree agents, work-log generation, teardown of worktrees/branches/tabs, quality gate on main, and learnings extraction.
+description: Close a wave of worktrees after PRs merge. Handles PR verification, cooperative shutdown of worktree agents, work-log generation, teardown of worktrees/branches/tabs, quality gate on the close-wave branch, and learnings extraction.
 user-invocable: true
 ---
 
@@ -70,10 +70,10 @@ places and runs Steps 2–14 unchanged otherwise:
   is a `<wave-name>` substitution, not a full filename replacement.
 
 **Callable from reconcile** — everything else (Steps 2, 3, 5, 5a–5d, 6,
-7, 8, 9, 9.5, 10, 11, 12, 13, 14) is identical to the user-driven mode.
-The cooperative shutdown, shutdown-artifact consolidation into the work
-log, worktree/branch/tab removal, quality gate on main, and learnings
-extraction all run unchanged. Anything close-wave does today for a
+7, 8, 9, 9.5, 10, 10.5, 11, 12, 13, 14) is identical to the user-driven
+mode. The cooperative shutdown, shutdown-artifact consolidation into
+the work log, worktree/branch/tab removal, quality gate on the
+`wt-close-*` branch, and learnings extraction all run unchanged. Anything close-wave does today for a
 single worktree is the correct behaviour for reconcile's case — the
 delegation is a pure entry-point change, not a refactor of the pipeline.
 
@@ -289,7 +289,19 @@ A running worktree agent that receives the event follows the protocol in
 the main inbox, wait for a tab relaunch (no MCP hot-reload exists; the tool
 list is cached at session start).
 
-## Step 10: Run Quality Gate
+## Step 10: Open a close-wave branch
+
+The dev clone now has a writable local `main`, so the main agent uses the same `wt-*` branch + PR flow as every other agent (no detached-HEAD push, no direct-`main` commit). See `docs/design/prod-branch-tracking.md` §7.
+
+```bash
+git checkout -b wt-close-<date>-<wave-name>
+```
+
+Use today's date (`$(date -I)`) and the wave name from Step 1 (e.g., `wt-close-2026-04-26-wave-3` or `wt-close-2026-04-26-reconcile-wt-foo` for reconcile-delegated runs). All Step 11/12/13 edits (quality-gate fixes, work log, learnings) land on this branch — never on `main`.
+
+The dev clone's pre-commit hook (installed once via `scripts/install-dev-hooks.sh`) rejects commits on `main` unless `ALLOW_MAIN_COMMIT=1` is set. If you find yourself reaching for that override here, stop — the right answer is the branch above.
+
+## Step 10.5: Run Quality Gate
 
 Read the quality command from `.cloglog/config.yaml` if it exists, otherwise fall back to `make quality`. Run it and fix any issues before proceeding.
 
@@ -298,7 +310,7 @@ Common post-merge problems:
 - Lint/format issues from merged code
 - Type errors from interface mismatches
 
-If the quality gate fails, fix the issues directly on main — these are integration issues that individual worktrees cannot detect.
+If the quality gate fails, fix the issues on the `wt-close-*` branch from Step 10 — these are integration issues that individual worktrees cannot detect, and they ship via the same PR as the work log and learnings update.
 
 ## Step 11: Extract Learnings
 
@@ -320,9 +332,28 @@ Fill in the "Learnings & Issues" section of the work log with:
 
 Fill in "State After This Wave" with what's now implemented and verified working.
 
-## Step 13: Commit and Push
+## Step 13: Commit, push, and PR
 
-Commit all fixes, work log, and CLAUDE.md updates to main using the bot identity (via the github-bot skill). Push as bot.
+Commit all fixes, work log, and CLAUDE.md updates to the `wt-close-<date>-<wave-name>` branch from Step 10. Push the branch via the github-bot skill and open a PR against `main`:
+
+```bash
+gh pr create --base main --head wt-close-<date>-<wave-name> \
+  --title "chore(close-wave): <wave-name>" \
+  --body "<work-log path + learnings summary>"
+```
+
+Auto-merge applies per `plugins/cloglog/skills/github-bot/SKILL.md` "Auto-Merge on Codex Pass" once codex review and CI checks pass. After merge, fast-forward main and drop the local branch:
+
+```bash
+git checkout main
+git fetch origin
+git merge --ff-only origin/main
+git branch -D wt-close-<date>-<wave-name>
+```
+
+A non-fast-forward state means real divergence — investigate, do not paper over with a merge commit.
+
+Never commit directly to `main`. The dev clone's pre-commit hook (`scripts/install-dev-hooks.sh`) blocks that path; the `ALLOW_MAIN_COMMIT=1` override exists only for emergency-rollback cherry-picks, not for close-wave.
 
 ## Step 14: Summary
 

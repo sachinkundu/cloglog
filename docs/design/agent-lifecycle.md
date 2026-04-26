@@ -273,7 +273,7 @@ green CI — waited on a human to click *Merge*. The gate frees the worktree
 agent to merge its own PR when the conditions below all hold, while
 preserving an explicit override for PRs that warrant a manual look.
 
-**Conditions (all four must hold to merge):**
+**Conditions (all five must hold to merge):**
 
 1. The triggering `review_submitted` event's `reviewer` is
    `cloglog-codex-reviewer[bot]` (`_CODEX_BOT` in `src/gateway/review_engine.py`).
@@ -282,11 +282,20 @@ preserving an explicit override for PRs that warrant a manual look.
    server-side `latest_codex_review_is_approval` predicate. The codex bot
    deliberately never posts with `event="APPROVE"` (see `post_review`),
    so body content is canonical.
-3. Every check returned by `gh pr checks <PR_NUM> --json name,bucket` has
-   bucket `pass` or `skipping`. Pending or failing checks → hold; the
-   agent waits for the next `check_run` webhook event. An empty rollup
-   also holds.
-4. The PR does not carry the `hold-merge` label. Setting the label via
+3. No human reviewer's most recent review is `CHANGES_REQUESTED`. Codex
+   always posts as `event="COMMENT"` (`post_review`), so a codex `:pass:`
+   does not clear a human's outstanding change request — GitHub still
+   blocks the merge from the human's side, and this gate must too. The
+   agent computes the flag from
+   `gh api repos/.../pulls/<PR_NUM>/reviews`, filtered to non-bot
+   authors, taking the latest review per author.
+4. Every check returned by `gh pr checks <PR_NUM> --json name,bucket` has
+   bucket `pass` or `skipping`. Pending or failing checks → hold. The
+   handler does NOT wait for an inbox event here; see the *Hold reasons
+   and re-trigger paths* table below for the actual re-trigger surface
+   (`success`/`pending` check_runs are not bridged to the worktree
+   inbox; only `ci_failed` is).
+5. The PR does not carry the `hold-merge` label. Setting the label via
    `gh pr edit --add-label hold-merge` is the human override path.
 
 **Implementation.** The gate is a pure-Python helper at
@@ -301,19 +310,21 @@ reviewer side (`review_engine.py`, codex bot prompt, `post_review`) is
 not modified by T-295; codex output stays as-is.
 
 **Hold reasons and re-trigger paths.** When the gate refuses to merge it
-returns one of `not_codex_reviewer`, `not_codex_pass`, `ci_not_green`,
-`hold_label`. The re-trigger surface is *narrower than the conditions
-suggest* because the webhook consumer at `src/gateway/webhook_consumers.py`
-only bridges a subset of GitHub events to the worktree inbox: `ci_failed`
-fires only on terminal failure (success and pending produce no event),
-and `pull_request` actions are filtered to `opened/synchronize/closed`
-in `src/gateway/webhook.py` (label changes never reach the agent). The
+returns one of `not_codex_reviewer`, `not_codex_pass`,
+`human_changes_requested`, `ci_not_green`, `hold_label`. The re-trigger
+surface is *narrower than the conditions suggest* because the webhook
+consumer at `src/gateway/webhook_consumers.py` only bridges a subset of
+GitHub events to the worktree inbox: `ci_failed` fires only on terminal
+failure (success and pending produce no event), and `pull_request`
+actions are filtered to `opened/synchronize/closed` in
+`src/gateway/webhook.py` (label changes never reach the agent). The
 agent therefore handles each hold reason explicitly:
 
 | `reason` | Gate re-runs by itself? | What clears the hold |
 | --- | --- | --- |
 | `not_codex_reviewer` | No | The next codex `review_submitted` event. |
 | `not_codex_pass` | No | A new codex review on the next push (codex re-reviews on `synchronize`). |
+| `human_changes_requested` | No | Address the review and push — `synchronize` re-triggers codex; the human dismissing/superseding their change request lifts the block. |
 | `ci_not_green` | **Yes — synchronous in-handler wait** | The handler runs `gh pr checks <num> --watch --interval 30` inside the same `review_submitted` invocation, then re-evaluates the gate exactly once. CI completion does NOT produce an inbox event, so the wait must happen here. |
 | `hold_label` | No | Human action: manual merge OR a push that triggers a fresh codex review. The agent records the hold via `add_task_note`. |
 

@@ -64,7 +64,7 @@ def test_design_doc_describes_real_retrigger_surface() -> None:
     """``docs/design/agent-lifecycle.md`` §3.1 must match the skill."""
     body = DESIGN.read_text()
     assert "Hold reasons and re-trigger paths" in body, (
-        "design doc no longer carries the §3.1 hold-reasons table; the four "
+        "design doc no longer carries the §3.1 hold-reasons table; the five "
         "reasons must each name their re-trigger path explicitly."
     )
     # The doc must also call out the `--watch` strategy and the no-event
@@ -74,4 +74,40 @@ def test_design_doc_describes_real_retrigger_surface() -> None:
         "design doc no longer states that label changes are not bridged to "
         "the worktree inbox — that fact is the whole reason `hold_label` "
         "needs human action."
+    )
+
+
+def test_design_doc_condition_three_does_not_promise_check_run_event() -> None:
+    """Pin the §3.1 condition list against re-introducing the deadlock copy.
+
+    PR #224 round 1 said condition 4 (CI checks) "waits for the next
+    `check_run` webhook event"; codex round 2 caught that the same wording
+    was still in the design doc's condition list even after the table below
+    was corrected. The condition wording must point at the table, not at a
+    nonexistent CI-success event.
+    """
+    body = DESIGN.read_text()
+    # The whole point of the fix is that this exact phrasing must NOT recur.
+    assert "waits for the next `check_run` webhook" not in body, (
+        "design doc §3.1 reintroduces the wrong claim that the agent waits "
+        "for a check_run webhook on success. Successful checks are never "
+        "bridged to the worktree inbox — see the table for the real path."
+    )
+
+
+def test_skill_passes_human_changes_requested_to_gate() -> None:
+    """The new fifth condition needs the agent to actually fetch human reviews.
+
+    Otherwise a codex `:pass:` posted after a human `CHANGES_REQUESTED`
+    review would slip past the gate (caught on PR #224 round 2).
+    """
+    body = SKILL.read_text()
+    assert "has_human_changes_requested" in body, (
+        "skill no longer wires `has_human_changes_requested` into the gate "
+        "payload — codex `:pass:` could override a human change request."
+    )
+    # The lookup must hit the GitHub reviews API, not invent the value.
+    assert "/reviews" in body and "CHANGES_REQUESTED" in body, (
+        "skill no longer fetches /reviews to compute the human-change-request "
+        "flag — the gate's fifth condition would always default to False."
     )

@@ -45,6 +45,7 @@ def _inputs(**overrides):
         body=":pass: codex — session 2/5 — no further concerns",
         checks=_green_checks(),
         labels=["enhancement"],
+        has_human_changes_requested=False,
     )
     base.update(overrides)
     return gate.GateInputs(**base)
@@ -85,6 +86,32 @@ def test_codex_review_without_pass_marker_blocks() -> None:
     decision = gate.should_auto_merge(_inputs(body=":warning: codex — found a high-severity issue"))
     assert decision.merge is False
     assert decision.reason == "not_codex_pass"
+
+
+def test_human_changes_requested_blocks_even_with_codex_pass() -> None:
+    """A human ``CHANGES_REQUESTED`` review must override a codex ``:pass:``.
+
+    Codex always posts as ``event="COMMENT"`` (see ``post_review`` in
+    ``src/gateway/review_engine.py``), so its approval does not clear a
+    human's outstanding change request from GitHub's side. The gate has to
+    enforce the same rule the GitHub merge button does — otherwise the agent
+    would auto-merge work the human explicitly blocked.
+    """
+    decision = gate.should_auto_merge(_inputs(has_human_changes_requested=True))
+    assert decision.merge is False
+    assert decision.reason == "human_changes_requested"
+
+
+def test_human_changes_requested_blocks_before_label_or_ci() -> None:
+    """Human block is the strongest hold — fires before label and CI checks."""
+    decision = gate.should_auto_merge(
+        _inputs(
+            has_human_changes_requested=True,
+            labels=[gate.HOLD_LABEL],
+            checks=[],
+        )
+    )
+    assert decision.reason == "human_changes_requested"
 
 
 def test_hold_merge_label_blocks_even_with_pass_and_green_ci() -> None:
@@ -200,8 +227,10 @@ def test_cli_exits_one_on_hold(monkeypatch, capsys) -> None:
 
 
 def test_cli_handles_missing_optional_fields(monkeypatch, capsys) -> None:
-    """Defensive: missing ``labels`` / ``checks`` must not crash — they default
-    to empty, which holds with ``ci_not_green``."""
+    """Defensive: missing ``labels`` / ``checks`` / ``has_human_changes_requested``
+    must not crash. With everything omitted, ``has_human_changes_requested``
+    defaults to False (no false positive on the strongest block) and the
+    empty checks list trips ``ci_not_green``."""
     monkeypatch.setattr(
         "sys.stdin",
         io.StringIO(json.dumps({"reviewer": gate.CODEX_BOT_LOGIN, "body": ":pass:"})),
@@ -209,3 +238,17 @@ def test_cli_handles_missing_optional_fields(monkeypatch, capsys) -> None:
     rc = gate.main([])
     assert rc == 1
     assert capsys.readouterr().out.strip() == "ci_not_green"
+
+
+def test_cli_propagates_human_changes_requested(monkeypatch, capsys) -> None:
+    payload = {
+        "reviewer": gate.CODEX_BOT_LOGIN,
+        "body": ":pass: ok",
+        "checks": _green_checks(),
+        "labels": [],
+        "has_human_changes_requested": True,
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    rc = gate.main([])
+    assert rc == 1
+    assert capsys.readouterr().out.strip() == "human_changes_requested"

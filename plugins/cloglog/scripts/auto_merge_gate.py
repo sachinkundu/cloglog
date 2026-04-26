@@ -2,17 +2,21 @@
 
 The gate decides whether the agent should run
 ``gh pr merge <num> --squash --delete-branch`` on its own PR after a
-``review_submitted`` inbox event arrives. All four conditions must hold:
+``review_submitted`` inbox event arrives. All five conditions must hold:
 
 1. The reviewer is the codex bot (``cloglog-codex-reviewer[bot]``) — random
    commenters never trigger an auto-merge.
 2. The review body, after ``lstrip()``, starts with the codex approval marker
    ``:pass:`` (matches ``_APPROVE_BODY_PREFIX`` in
    ``src/gateway/review_engine.py``).
-3. Every CI check on the PR has terminated with ``success`` (or is an
-   intentional ``skipping``). Pending or failing checks block the merge — the
-   agent waits for the next webhook event.
-4. The PR does not carry the ``hold-merge`` label.
+3. No human reviewer's most recent review on the PR is ``CHANGES_REQUESTED``.
+   Codex always posts as ``event="COMMENT"`` (see ``post_review`` in
+   ``src/gateway/review_engine.py``), so a codex ``:pass:`` does NOT clear a
+   human's outstanding change request — GitHub still blocks the merge from
+   the human's side, and we must too.
+4. Every CI check on the PR has terminated with ``success`` (or is an
+   intentional ``skipping``). Pending or failing checks block the merge.
+5. The PR does not carry the ``hold-merge`` label.
 
 The CLI form reads a single JSON object on stdin with the fields:
 
@@ -20,7 +24,8 @@ The CLI form reads a single JSON object on stdin with the fields:
       "reviewer": "cloglog-codex-reviewer[bot]",
       "body": ":pass: codex — session 2/5 ...",
       "checks": [{"name": "quality", "bucket": "pass"}, ...],
-      "labels": ["enhancement", "hold-merge"]
+      "labels": ["enhancement", "hold-merge"],
+      "has_human_changes_requested": false
     }
 
 Exits 0 with ``merge`` printed to stdout when the gate passes; exits 1 with
@@ -52,6 +57,13 @@ class GateInputs:
     body: str
     checks: Sequence[dict]
     labels: Sequence[str]
+    # True when any human reviewer's most recent review on the PR is in state
+    # CHANGES_REQUESTED. The agent computes this from
+    # ``gh api repos/.../pulls/N/reviews`` filtered to non-bot users, taking
+    # the latest review per author. Defaults to False so callers that omit
+    # the field (older payload shape) hit the cautious path that requires
+    # the agent to surface human reviews explicitly.
+    has_human_changes_requested: bool = False
 
 
 @dataclass(frozen=True)
@@ -61,16 +73,22 @@ class GateDecision:
 
 
 def should_auto_merge(inputs: GateInputs) -> GateDecision:
-    """Pure gate decision. See module docstring for the four conditions.
+    """Pure gate decision. See module docstring for the five conditions.
 
     Order of checks is deliberate: cheap identity/marker checks first so the
-    common "random commenter" path returns immediately without inspecting CI.
+    common "random commenter" path returns immediately without inspecting CI
+    or fetching reviews. The human-CHANGES_REQUESTED check fires before the
+    label and CI checks because it is the strongest *block* — once a human
+    has said no, no amount of green CI or label hygiene should override.
     """
     if inputs.reviewer != CODEX_BOT_LOGIN:
         return GateDecision(False, "not_codex_reviewer")
 
     if not inputs.body.lstrip().startswith(APPROVE_BODY_PREFIX):
         return GateDecision(False, "not_codex_pass")
+
+    if inputs.has_human_changes_requested:
+        return GateDecision(False, "human_changes_requested")
 
     if HOLD_LABEL in inputs.labels:
         return GateDecision(False, "hold_label")
@@ -103,6 +121,7 @@ def _parse_inputs(payload: dict) -> GateInputs:
         body=str(payload.get("body") or ""),
         checks=list(payload.get("checks") or []),
         labels=[str(name) for name in (payload.get("labels") or [])],
+        has_human_changes_requested=bool(payload.get("has_human_changes_requested", False)),
     )
 
 

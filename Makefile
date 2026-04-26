@@ -271,19 +271,21 @@ verify-prod-protection: ## Assert GitHub ruleset protection on `prod`. Uses the 
 					echo "FAIL: gh api error listing rulesets on $$REPO: $$LIST"; exit 1;; \
 			esac; \
 		fi; \
-		ID=$$(echo "$$LIST" | jq -r '[.[] | select(.enforcement == "active" and .target == "branch")] | .[0].id // empty'); \
-		if [ -z "$$ID" ]; then \
+		IDS=$$(echo "$$LIST" | jq -r '[.[] | select(.enforcement == "active" and .target == "branch")] | .[].id'); \
+		if [ -z "$$IDS" ]; then \
 			echo "FAIL: no active branch ruleset on $$REPO. Apply rules in GitHub UI → Settings → Rules per docs/design/prod-branch-tracking.md §3.2 (rulesets API, NOT classic branch protection — classic restrictions don't work on personal repos)."; \
 			exit 1; \
 		fi; \
-		RULESET=$$(gh api "repos/$$REPO/rulesets/$$ID" 2>&1); \
-		RC=$$?; \
-		if [ $$RC -ne 0 ]; then echo "FAIL: gh api error fetching ruleset $$ID on $$REPO: $$RULESET"; exit 1; fi; \
-		INCLUDES=$$(echo "$$RULESET" | jq -r '.conditions.ref_name.include // [] | join(",")'); \
-		case ",$$INCLUDES," in *",refs/heads/prod,"*) :;; *) \
-			echo "FAIL: active ruleset on $$REPO targets [$$INCLUDES] — does not include refs/heads/prod. Spec §3.2 requires ruleset to cover refs/heads/prod."; \
-			exit 1;; \
-		esac; \
+		ID=""; \
+		for cand in $$IDS; do \
+			CAND_RS=$$(gh api "repos/$$REPO/rulesets/$$cand" 2>/dev/null); \
+			INC=$$(echo "$$CAND_RS" | jq -r '.conditions.ref_name.include // [] | join(",")'); \
+			case ",$$INC," in *",refs/heads/prod,"*) ID=$$cand; RULESET=$$CAND_RS; break;; esac; \
+		done; \
+		if [ -z "$$ID" ]; then \
+			echo "FAIL: no active branch ruleset on $$REPO targets refs/heads/prod (checked IDs: $$(echo $$IDS | tr '\n' ' ')). Spec §3.2 requires ruleset to cover refs/heads/prod."; \
+			exit 1; \
+		fi; \
 		RULE_TYPES=$$(echo "$$RULESET" | jq -r '[.rules[].type] | join(",")'); \
 		for required in deletion non_fast_forward required_linear_history; do \
 			case ",$$RULE_TYPES," in *",$$required,"*) :;; *) \
@@ -295,12 +297,13 @@ verify-prod-protection: ## Assert GitHub ruleset protection on `prod`. Uses the 
 			echo "FAIL: ruleset $$ID on $$REPO has a 'pull_request' rule — but \`make promote\` pushes directly. Spec §3.2 forbids the PR requirement on prod."; \
 			exit 1;; \
 		esac; \
-		BYPASS_COUNT=$$(echo "$$RULESET" | jq -r '.bypass_actors // [] | length'); \
-		BYPASS=$$(echo "$$RULESET" | jq -r '.current_user_can_bypass // "unknown"'); \
-		if [ "$$BYPASS" = "always" ] || [ "$$BYPASS" = "pull_requests_only" ]; then \
-			echo "WARN: current user can bypass ruleset on $$REPO ($$BYPASS, $$BYPASS_COUNT bypass actors). Spec §3.2 expects no bypass — temporarily disable the ruleset for rollback per spec §8 instead."; \
+		BAD_BYPASS=$$(echo "$$RULESET" | jq -r '[.bypass_actors[]? | select(.actor_type != "RepositoryRole" or (.actor_type == "RepositoryRole" and .actor_id != 5))] | map("\(.actor_type):\(.actor_id // "?")") | join(",")'); \
+		if [ -n "$$BAD_BYPASS" ]; then \
+			echo "FAIL: ruleset $$ID on $$REPO grants bypass to non-admin actors [$$BAD_BYPASS]. Spec §3.2 forbids any app, agent, or team from bypassing prod protection — only the operator (RepositoryRole admin = id 5) is permitted. On personal repos, the admin role IS the owner account."; \
+			exit 1; \
 		fi; \
-		echo "OK: $$REPO ruleset $$ID covers refs/heads/prod with rules [$$RULE_TYPES] (bypass: $$BYPASS)."
+		ADMIN_BYPASS=$$(echo "$$RULESET" | jq -r '[.bypass_actors[]? | select(.actor_type == "RepositoryRole" and .actor_id == 5)] | length'); \
+		echo "OK: $$REPO ruleset $$ID covers refs/heads/prod with rules [$$RULE_TYPES]. Bypass actors: $$ADMIN_BYPASS RepositoryRole=admin (operator), 0 apps/teams/integrations."
 
 prod-logs: ## Tail prod server logs
 	@tail -f /tmp/cloglog-prod.log /tmp/cloglog-prod-access.log

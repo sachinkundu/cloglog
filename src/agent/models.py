@@ -28,6 +28,9 @@ class Worktree(Base):
     worktree_path: Mapped[str] = mapped_column(String(500))
     branch_name: Mapped[str] = mapped_column(String(255), default="")
     status: Mapped[str] = mapped_column(String(20), default="offline")  # online, offline
+    role: Mapped[str] = mapped_column(
+        String(20), default="worktree", server_default="worktree"
+    )  # main, worktree — used by the webhook resolver's tertiary fallback
     shutdown_requested: Mapped[bool] = mapped_column(default=False)
     current_task_id: Mapped[_uuid.UUID | None] = mapped_column(default=None)
     agent_token_hash: Mapped[str] = mapped_column(String(255), default="")

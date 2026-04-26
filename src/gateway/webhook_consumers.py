@@ -17,7 +17,6 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.gateway.webhook_dispatcher import WebhookEvent, WebhookEventType
-from src.shared.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -110,13 +109,13 @@ class AgentNotifierConsumer:
 
         Primary: match Task.pr_url → worktree_id → Worktree.worktree_path.
         Secondary: match Worktree.branch_name (for PRs opened before agent sets pr_url).
-        Tertiary: route to main-agent inbox when settings.main_agent_inbox_path is set
-          and the event type is in MAIN_AGENT_EVENTS. This handles close-wave PRs
-          (wt-close-* branches with no registered worktree) so they reach the main
-          agent instead of being silently dropped.
+        Tertiary (T-245): route to the project's main-agent worktree
+          (``worktrees.role='main'``) for eligible event types. Handles close-wave
+          and main-agent-authored PRs whose branch has no registered worktree row,
+          so they reach the main agent instead of being silently dropped.
 
-        ISSUE_COMMENT is excluded from the main-agent fallback because bots generate
-        heavy noise on that event type.
+        ISSUE_COMMENT is excluded from the main-agent fallback because bots
+        generate heavy noise on that event type.
 
         Returns ResolvedRecipient or None.
         """
@@ -156,9 +155,13 @@ class AgentNotifierConsumer:
                 inbox_path = Path(worktree.worktree_path) / ".cloglog" / "inbox"
                 return ResolvedRecipient(inbox_path=inbox_path, worktree_id=worktree.id)
 
-        # Tertiary: fall back to main-agent inbox for eligible event types
-        if settings.main_agent_inbox_path is not None and event.type in MAIN_AGENT_EVENTS:
-            return ResolvedRecipient(inbox_path=settings.main_agent_inbox_path, worktree_id=None)
+        # Tertiary (T-245): fall back to the project's main-agent worktree.
+        # ISSUE_COMMENT is excluded to avoid bot-comment spam in the main inbox.
+        if event.type in MAIN_AGENT_EVENTS:
+            main_worktree = await agent_repo.get_main_agent_worktree(project.id)
+            if main_worktree is not None:
+                inbox_path = Path(main_worktree.worktree_path) / ".cloglog" / "inbox"
+                return ResolvedRecipient(inbox_path=inbox_path, worktree_id=main_worktree.id)
 
         return None
 

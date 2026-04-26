@@ -90,6 +90,29 @@ Durable gotchas discovered during worktree tasks. Each bullet is non-obvious and
 ### Worktrees
 
 - **Fast-forward from `origin/main` before any diff-based tool.** A worktree created from a stale local `main` will show phantom diffs relative to `origin/main`. Run `git merge --ff-only origin/main` before the demo classifier, PR-body drafting, or any diff-based check.
+- **`git checkout <branch> -- <path>` is path-scoped and ignores worktree locks.** A locked branch (checked out in another worktree) blocks `git checkout <branch>` (HEAD-changing) but not `git checkout <branch> -- <path>`. When reasoning about worktree-lock consequences, only HEAD-changing checkouts and pulls are affected; pathspec-scoped operations work as normal.
+- **For long-lived branches, `git merge origin/main` beats `git rebase origin/main` on conflict economics.** A 10-commit branch rebased against an advanced `main` surfaces conflicts at every replayed commit that touches a shared file; merge resolves the same conflicts once. Use rebase only for short clean linear history before first review.
+
+### Inbox monitor
+
+- **`tail -n 0 -F` is the only correct default for inbox monitors.** `tail -f` exits if the file is missing (inbox is created lazily by the first webhook write); `tail -F` truncates event history to the last 10 lines; `tail -n +1 -F` re-delivers already-handled `pr_merged` / `review_submitted` and trips the one-active-task guard. Always pre-create the file (`mkdir -p .cloglog && touch .cloglog/inbox`) and use absolute paths — relative paths evade dedupe filters that match on absolute path equality.
+
+### Protocol & schema propagation
+
+- **Pre-flight grep before changing an inbox event shape, MCP response, or agent-instruction wording.** Sweep `plugins/cloglog/skills/*/SKILL.md`, `plugins/cloglog/agents/*.md`, `plugins/cloglog/templates/*.md`, `plugins/cloglog/hooks/*.sh`, `src/agent/schemas.py`, `src/agent/services.py` (hand-built response dicts that bypass `model_validate`), `docs/contracts/baseline.openapi.yaml` AND `frontend/src/api/generated-types.ts` (regenerate with `scripts/generate-contract-types.sh <abspath>`), and `docs/design/agent-lifecycle.md`. Bundle every hit in round 1 — each missed hit costs one Codex session against the 5-session cap.
+- **`from_attributes=True` hides hand-built-dict drift.** Adding a required field to a Pydantic model with `from_attributes=True` works for callers that go through `Model.model_validate(orm_row)` but silently breaks any caller that hand-builds the dict (`{"id": ..., "title": ...}`). Grep for hand-built dict patterns matching the model's field set whenever you add a required field.
+- **`async def` route handlers are `AsyncFunctionDef` in `ast.walk`, not `FunctionDef`.** Demo proofs that filter `ast.FunctionDef` will silently skip async routes. Use `isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))` for any route-handler inspection.
+- **Cross-language demo proofs need each language's own interpolation token.** Pinning URL parity between `src/gateway/cli.py` (Python f-strings: `{var}`) and `mcp-server/src/tools.ts` (TS template literals: `${var}`) requires grepping with each language's actual syntax — a TS-shape grep silently fails on Python.
+
+### Auto-merge / PR gates
+
+- **`gh pr view --json statusCheckRollup` has no `bucket` field.** That normalized enum exists only on `gh pr checks --json name,bucket`. `gh pr view` returns `conclusion`/`status` enums in CheckRun shape. `gh pr view` also rejects `--arg` (that flag is `gh api` / standalone `jq` only). Run any documented executable command sequence end-to-end before merging the docs that describe it.
+- **`paths:` filter in `.github/workflows/ci.yml` produces empty `statusCheckRollup` on docs-only PRs.** Any auto-merge gate that treats "empty checks list" as "still pending" will deadlock those PRs. The semantically right answer is "no CI signal to wait for ⇒ green" (codex still ran; spec PRs are docs-only by intent).
+- **Codex's `event="COMMENT"` is a body marker, not a GitHub approval.** A human `CHANGES_REQUESTED` review still blocks merge. Any auto-merge gate must fetch `gh api repos/.../pulls/<n>/reviews`, filter to non-bot users, group by login, take the latest review per author, and refuse the merge if any latest is `CHANGES_REQUESTED` — user-block fires before label/CI checks.
+
+### Backwards-compat for documented contracts
+
+- **When replacing a documented runtime contract, retire it end-to-end or chain a fallback.** Tests passing on the new path doesn't catch operators who set the old setting per the still-current `.env.example`. Either delete the setting + update docs in the same PR, or keep the old path as a fallback. Don't leave docs claiming behavior the code no longer provides.
 
 ### Demo classifier / exemption gate (F-51)
 

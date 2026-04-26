@@ -118,15 +118,19 @@ class EventBus:
         self._global_subscribers = [q for q in self._global_subscribers if q is not queue]
 
     async def publish(self, event: Event) -> None:
-        self._fan_out_local(event)
+        # The publishing worker fans out to BOTH project subscribers (SSE
+        # streams) and global subscribers (notification_listener, etc.)
+        # because it owns the event end-to-end on this turn.
+        self._fan_out(event, include_global=True)
         if self._dsn is not None:
             await self._notify(event)
 
-    def _fan_out_local(self, event: Event) -> None:
+    def _fan_out(self, event: Event, *, include_global: bool) -> None:
         for queue in self._subscribers.get(event.project_id, []):
             queue.put_nowait(event)
-        for queue in self._global_subscribers:
-            queue.put_nowait(event)
+        if include_global:
+            for queue in self._global_subscribers:
+                queue.put_nowait(event)
 
     def _encode(self, event: Event) -> str:
         return json.dumps(
@@ -260,7 +264,13 @@ class EventBus:
         if source == self._source_id:
             # We already fanned this out locally inside publish().
             return
-        self._fan_out_local(event)
+        # Cross-worker mirror: only fan out to project SSE subscribers, NOT to
+        # `_global_subscribers`. The notification_listener subscribes via
+        # subscribe_all() and runs on every worker — fanning the mirrored
+        # event into it would have every peer worker insert a duplicate
+        # notification row for a single TASK_STATUS_CHANGED → review
+        # transition (codex review on PR #233).
+        self._fan_out(event, include_global=False)
 
 
 event_bus = EventBus()

@@ -19,6 +19,11 @@ uvx showboat note "$DEMO_FILE" \
   "Before T-228: each gunicorn worker held its own in-process EventBus. An event published by worker A only reached SSE subscribers attached to worker A — ~50% loss with --workers 2. The proof below stands up two EventBus instances against the same Postgres database (the same shape as two workers in one process group) and asserts that an event published on bus A is delivered to a subscriber on bus B via the new LISTEN/NOTIFY mirror."
 
 uvx showboat exec "$DEMO_FILE" bash "$(cat <<'EXEC'
+# Source worktree-ports.sh so DATABASE_URL points at this worktree's
+# isolated Postgres database in BOTH `make demo` (where run-demo.sh has
+# already exported it) and `showboat verify` (which re-runs every exec
+# block in a clean shell). PG_HOST/PG_PORT overrides flow through.
+source scripts/worktree-ports.sh
 uv run --quiet python - <<'PY' 2>&1 | tail -1
 import asyncio
 import os
@@ -28,10 +33,7 @@ from src.shared.events import Event, EventBus, EventType
 
 
 async def main() -> str:
-    # Default DSN matches scripts/worktree-ports.sh and src/shared/config.py
-    # so the proof works under both `make demo` (DATABASE_URL set by run-demo.sh)
-    # and `showboat verify` (no shell env, no backend up).
-    dsn = os.environ.get("DATABASE_URL") or "postgresql+asyncpg://cloglog:cloglog_dev@localhost:5432/cloglog"
+    dsn = os.environ["DATABASE_URL"]
     worker_a = EventBus()
     worker_b = EventBus()
     worker_a.configure_cross_worker(dsn)
@@ -68,6 +70,7 @@ uvx showboat note "$DEMO_FILE" \
   "Postgres delivers NOTIFY back to every LISTEN connection — including the publisher's own. Without dedupe a worker would see each event twice (local fan-out + LISTEN echo). The bus stamps every payload with a per-process source_id and the listener drops echoes that match its own id. The proof below publishes once on a single bus and asserts the local subscriber's queue holds exactly one event after the LISTEN echo window closes."
 
 uvx showboat exec "$DEMO_FILE" bash "$(cat <<'EXEC'
+source scripts/worktree-ports.sh
 uv run --quiet python - <<'PY' 2>&1 | tail -1
 import asyncio
 import os
@@ -77,7 +80,7 @@ from src.shared.events import Event, EventBus, EventType
 
 
 async def main() -> str:
-    dsn = os.environ.get("DATABASE_URL") or "postgresql+asyncpg://cloglog:cloglog_dev@localhost:5432/cloglog"
+    dsn = os.environ["DATABASE_URL"]
     bus = EventBus()
     bus.configure_cross_worker(dsn)
     await bus.start_listener()

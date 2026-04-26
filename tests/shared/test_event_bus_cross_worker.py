@@ -126,6 +126,58 @@ async def test_oversize_payload_is_dropped_locally_logged_no_crash(
 
 
 @pytest.mark.asyncio
+async def test_mirrored_events_do_not_reach_global_subscribers(
+    test_db_name: str,
+) -> None:
+    """notification_listener must see each event exactly once across the cluster.
+
+    Every worker runs ``run_notification_listener()`` in lifespan, and it
+    subscribes via ``subscribe_all()``. Without this guard, an event
+    published on worker A would be mirrored via NOTIFY into worker B's
+    listener too, and both workers would insert a notification row for the
+    same task transition — a 2x amplification under ``--workers 2``
+    (codex review on PR #233).
+
+    The publishing worker is responsible for global delivery; mirrored
+    events fan out to project subscribers only.
+    """
+    worker_a = EventBus()
+    worker_b = EventBus()
+    worker_a.configure_cross_worker(_dsn(test_db_name))
+    worker_b.configure_cross_worker(_dsn(test_db_name))
+    await worker_a.start_listener()
+    await worker_b.start_listener()
+    try:
+        await _wait_for_listener(worker_a)
+        await _wait_for_listener(worker_b)
+
+        # Stand in for run_notification_listener() on both workers.
+        listener_a = worker_a.subscribe_all()
+        listener_b = worker_b.subscribe_all()
+
+        project_id = uuid4()
+        await worker_a.publish(
+            Event(
+                type=EventType.TASK_STATUS_CHANGED,
+                project_id=project_id,
+                data={"task_id": str(uuid.uuid4()), "new_status": "review"},
+            )
+        )
+        # Local worker's listener sees it (publisher does global fan-out).
+        await asyncio.wait_for(listener_a.get(), timeout=2.0)
+        # Peer worker's listener must NOT see it. Wait long enough for the
+        # NOTIFY echo to round-trip through Postgres.
+        await asyncio.sleep(0.5)
+        assert listener_b.empty(), (
+            "mirrored event reached peer notification_listener — "
+            "would insert a duplicate notification row"
+        )
+    finally:
+        await worker_a.stop_listener()
+        await worker_b.stop_listener()
+
+
+@pytest.mark.asyncio
 async def test_local_only_mode_unaffected_by_cross_worker_code(test_db_name: str) -> None:
     """Without configure_cross_worker(), publish() must stay synchronous local fan-out.
 

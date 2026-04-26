@@ -33,9 +33,14 @@ If the diff adds new config fields or environment variables:
 ## What to report
 
 ONLY report findings that you verified by reading files outside the diff. Each finding MUST include:
-- Which file(s) you read to discover the issue
-- The specific mismatch or problem
-- Why it will fail (concrete scenario)
+- **Evidence:** which file(s) and line(s) you read outside the diff to discover the issue.
+- **Problem:** the specific mismatch, contract violation, or broken invariant.
+- **Failure:** the concrete scenario in which it breaks (which input, which call site, which user action).
+- **Proposed fix:** a concrete, file-and-line-specific change that would resolve the issue. Include the smallest workable patch — exact text to remove and add, or a precise instruction like "move block X to before line N", "drop assertion at file:N and replace with Y". The implementing agent decides whether to apply your fix verbatim or pick a different approach; your job is to make that decision easy by stating what you would do.
+
+When the right fix is "do not ship this — defer to a follow-up task" (e.g., scope is wrong for this PR), say that explicitly as the proposed fix and explain why.
+
+When you are uncertain between two fixes, list both with a one-line trade-off; do not pretend a single answer.
 
 ## What NOT to report
 
@@ -44,6 +49,7 @@ ONLY report findings that you verified by reading files outside the diff. Each f
 - Type annotation issues (type checkers handle this)
 - Suggestions that don't fix a real problem
 - Anything you haven't verified against the actual codebase
+- Findings without a proposed fix — if you can't propose a fix, you don't understand the problem well enough to file the finding
 
 ## Demo expectations
 

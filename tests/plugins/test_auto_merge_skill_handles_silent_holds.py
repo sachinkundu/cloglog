@@ -95,6 +95,26 @@ def test_design_doc_condition_three_does_not_promise_check_run_event() -> None:
     )
 
 
+def test_worktree_agent_template_references_auto_merge_gate() -> None:
+    """The agent-prompt template that worktree agents read at startup must
+    point at the auto-merge gate.
+
+    Codex round 3 caught that ``plugins/cloglog/agents/worktree-agent.md``
+    described the pre-T-295 ``review_submitted`` flow without mentioning
+    the new gate, leaving an instruction surface that would steer agents
+    to the old in_progress path even when the codex bot had already passed.
+    """
+    template = (ROOT / "plugins" / "cloglog" / "agents" / "worktree-agent.md").read_text()
+    # The template lists the inbox events for both the spec and impl task
+    # paths. Both must steer agents at the new gate before falling through.
+    assert template.count("Auto-Merge on Codex Pass") >= 2, (
+        "worktree-agent.md no longer points at the github-bot skill's "
+        "Auto-Merge on Codex Pass section from both the spec and impl "
+        "task review_submitted notes — agents will follow the pre-T-295 "
+        "in_progress path and miss the gate."
+    )
+
+
 def test_skill_passes_human_changes_requested_to_gate() -> None:
     """The new fifth condition needs the agent to actually fetch human reviews.
 

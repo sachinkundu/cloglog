@@ -290,9 +290,12 @@ preserving an explicit override for PRs that warrant a manual look.
    `gh api repos/.../pulls/<PR_NUM>/reviews`, filtered to non-bot
    authors, taking the latest review per author.
 4. Every check returned by `gh pr checks <PR_NUM> --json name,bucket` has
-   bucket `pass` or `skipping`. Pending or failing checks → hold. The
-   handler does NOT wait for an inbox event here; see the *Hold reasons
-   and re-trigger paths* table below for the actual re-trigger surface
+   bucket `pass` or `skipping`. **An empty rollup also passes** —
+   `.github/workflows/ci.yml` filters by `paths:` and a docs-only PR
+   (e.g., a spec PR opened by the worktree-agent's spec task) attaches
+   no checks at all. Pending or failing checks → hold. The handler does
+   NOT wait for an inbox event here; see the *Hold reasons and
+   re-trigger paths* table below for the actual re-trigger surface
    (`success`/`pending` check_runs are not bridged to the worktree
    inbox; only `ci_failed` is).
 5. The PR does not carry the `hold-merge` label. Setting the label via

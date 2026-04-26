@@ -146,11 +146,17 @@ def test_pending_ci_check_blocks() -> None:
     assert decision.reason == "ci_not_green"
 
 
-def test_empty_check_list_blocks() -> None:
-    """No rollup yet → treat as not-green; the gate must wait for CI."""
+def test_empty_check_list_treated_as_green() -> None:
+    """Docs-only PRs have no CI configured (paths filter in ci.yml).
+
+    The previous "empty = not green" interpretation deadlocked spec PRs
+    that touch only ``docs/**`` — `gh pr checks --watch` returns
+    immediately with no rollup and the gate would never advance. Codex
+    flagged this on PR #224 round 3.
+    """
     decision = gate.should_auto_merge(_inputs(checks=[]))
-    assert decision.merge is False
-    assert decision.reason == "ci_not_green"
+    assert decision.merge is True
+    assert decision.reason == "merge"
 
 
 def test_cancelled_ci_check_blocks() -> None:
@@ -228,16 +234,17 @@ def test_cli_exits_one_on_hold(monkeypatch, capsys) -> None:
 
 def test_cli_handles_missing_optional_fields(monkeypatch, capsys) -> None:
     """Defensive: missing ``labels`` / ``checks`` / ``has_human_changes_requested``
-    must not crash. With everything omitted, ``has_human_changes_requested``
-    defaults to False (no false positive on the strongest block) and the
-    empty checks list trips ``ci_not_green``."""
+    must not crash. Empty checks now count as green (docs-only PRs have no
+    CI configured), and ``has_human_changes_requested`` defaults to False —
+    so the minimal payload merges. The CLI's job here is to not crash; the
+    decision-table tests above pin the actual semantics."""
     monkeypatch.setattr(
         "sys.stdin",
         io.StringIO(json.dumps({"reviewer": gate.CODEX_BOT_LOGIN, "body": ":pass:"})),
     )
     rc = gate.main([])
-    assert rc == 1
-    assert capsys.readouterr().out.strip() == "ci_not_green"
+    assert rc == 0
+    assert capsys.readouterr().out.strip() == "merge"
 
 
 def test_cli_propagates_human_changes_requested(monkeypatch, capsys) -> None:

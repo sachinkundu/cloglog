@@ -42,7 +42,7 @@ Your work follows a strict pipeline. Call `mcp__cloglog__get_my_tasks` to get yo
 3. If the project's CLAUDE.md specifies review agents or additional subagents for the spec phase, follow those instructions
 4. Create a PR with the spec (use `github-bot` skill)
 5. Call `mcp__cloglog__update_task_status` to move the task to `review` with the PR URL
-6. Confirm your `.cloglog/inbox` Monitor is running — webhook events (`review_submitted`, `ci_failed`, `pr_merged`) arrive there automatically. On `pr_merged`: call `mcp__cloglog__mark_pr_merged`, then `mcp__cloglog__report_artifact` with the spec file path, then `mcp__cloglog__get_my_tasks` and start the next task. See the `github-bot` skill's **PR Event Inbox** section.
+6. Confirm your `.cloglog/inbox` Monitor is running — webhook events (`review_submitted`, `ci_failed`, `pr_merged`) arrive there automatically. On a codex `review_submitted`, run the auto-merge gate from the `github-bot` skill's **Auto-Merge on Codex Pass** section *before* falling through to the in_progress fix flow. On `pr_merged`: call `mcp__cloglog__mark_pr_merged`, then `mcp__cloglog__report_artifact` with the spec file path, then `mcp__cloglog__get_my_tasks` and start the next task. See the `github-bot` skill's **PR Event Inbox** section.
 
 ### Plan Task (task_type: "plan")
 
@@ -80,7 +80,7 @@ Your work follows a strict pipeline. Call `mcp__cloglog__get_my_tasks` to get yo
    - **## Tests** — what tests were added, delta from baseline, strategy reasoning
    - **## Changes** — what changed and why
 5. Call `mcp__cloglog__update_task_status` to move the task to `review` with the PR URL
-6. Confirm your `.cloglog/inbox` Monitor is running — webhook events (`review_submitted`, `ci_failed`, `pr_merged`) arrive there automatically. On `pr_merged`: call `mcp__cloglog__mark_pr_merged`, then `mcp__cloglog__get_my_tasks` and start the next task. See the `github-bot` skill's **PR Event Inbox** section.
+6. Confirm your `.cloglog/inbox` Monitor is running — webhook events (`review_submitted`, `ci_failed`, `pr_merged`) arrive there automatically. On a codex `review_submitted`, run the auto-merge gate from the `github-bot` skill's **Auto-Merge on Codex Pass** section *before* falling through to the in_progress fix flow. On `pr_merged`: call `mcp__cloglog__mark_pr_merged`, then `mcp__cloglog__get_my_tasks` and start the next task. See the `github-bot` skill's **PR Event Inbox** section.
 
 ### Between Tasks
 

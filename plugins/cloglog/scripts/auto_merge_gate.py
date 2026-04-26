@@ -102,17 +102,27 @@ def should_auto_merge(inputs: GateInputs) -> GateDecision:
 def _all_checks_green(checks: Iterable[dict]) -> bool:
     """Every check must report a bucket in ``GREEN_BUCKETS``.
 
-    Empty check list is treated as NOT green — a PR with zero CI checks
-    configured should not be auto-merged on a codex pass alone. The project
-    runs a ``quality`` workflow on every PR; an empty list means the rollup
-    has not landed yet (pending).
+    Empty check list is treated as **green**. The project's CI workflow at
+    ``.github/workflows/ci.yml`` filters by ``paths:`` (only fires on
+    ``src/**``, ``frontend/src/**``, ``mcp-server/src/**``, ``tests/**``,
+    etc.); a PR that touches only ``docs/**`` — e.g., a spec PR opened by
+    the worktree-agent's spec task — has zero CI checks attached. The
+    earlier "empty = not green" interpretation deadlocked those PRs:
+    ``gh pr checks --watch`` returns immediately with no rollup, and the
+    gate would loop forever. An empty rollup now means "no CI signal to
+    wait for" and the codex pass is sufficient.
+
+    Trade-off: the brief window between ``git push`` and CI enqueueing
+    check_runs is also empty. In practice codex review takes long enough
+    that CI has always enqueued by the time codex posts ``:pass:``. If a
+    future CI workflow change introduces a real race here, switch to
+    branch-protection's required-status-checks list as the source of
+    truth instead.
     """
-    seen_any = False
     for check in checks:
-        seen_any = True
         if check.get("bucket") not in GREEN_BUCKETS:
             return False
-    return seen_any
+    return True
 
 
 def _parse_inputs(payload: dict) -> GateInputs:

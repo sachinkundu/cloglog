@@ -178,7 +178,7 @@ After a `review_submitted` inbox event, the worktree agent decides whether to me
 1. Reviewer is `cloglog-codex-reviewer[bot]` — the `reviewer` field on the inbox event payload.
 2. Review body, `lstrip()`ed, starts with `:pass:` — matches `_APPROVE_BODY_PREFIX` in `src/gateway/review_engine.py`. The bot deliberately never posts with `event="APPROVE"`; body content is the canonical approval marker.
 3. No human reviewer's most recent review is `CHANGES_REQUESTED`. Codex always posts as `event="COMMENT"` (`post_review` in `src/gateway/review_engine.py`), so a codex `:pass:` does NOT clear a human's outstanding change request — GitHub still blocks the merge from the human's side, and this gate must too. Computed from `gh api repos/${REPO}/pulls/${PR_NUM}/reviews`, filtered to non-bot users, latest review per author.
-4. Every check on `gh pr checks <PR_NUM> --json name,bucket` is `pass` or `skipping`. Pending or failing → see *When the gate holds* below; do not assume an inbox event will retrigger.
+4. Every check on `gh pr checks <PR_NUM> --json name,bucket` is `pass` or `skipping`. **Empty rollup also passes** — docs-only spec PRs attach no checks because [`ci.yml`](../../../.github/workflows/ci.yml) filters by `paths:`. Pending or failing → see *When the gate holds* below; do not assume an inbox event will retrigger.
 5. The PR does not carry the `hold-merge` label — set via `gh pr edit --add-label hold-merge` when a human wants to override auto-merge for a specific PR. Label REMOVAL fires no webhook the consumer surfaces (see [`src/gateway/webhook.py`](../../../src/gateway/webhook.py): only `opened/synchronize/closed` map through), so removing `hold-merge` does NOT re-run the gate by itself — see *When the gate holds*.
 
 **Invocation:**

@@ -73,6 +73,7 @@ export interface ToolHandlers {
   remove_dependency(args: { feature_id: string; depends_on_id: string }): Promise<unknown>
   add_task_dependency(args: { task_id: string; depends_on_id: string }): Promise<unknown>
   remove_task_dependency(args: { task_id: string; depends_on_id: string }): Promise<unknown>
+  search(args: { project_id: string; query: string; limit?: number; status_filter?: string[] }): Promise<unknown>
 }
 
 export function createToolHandlers(client: CloglogClient): ToolHandlers {
@@ -274,6 +275,16 @@ export function createToolHandlers(client: CloglogClient): ToolHandlers {
 
     async remove_task_dependency({ task_id, depends_on_id }) {
       return client.request('DELETE', `/api/v1/tasks/${task_id}/dependencies/${depends_on_id}`)
+    },
+
+    async search({ project_id, query, limit, status_filter }) {
+      const params = new URLSearchParams()
+      params.set('q', query)
+      if (limit !== undefined) params.set('limit', String(limit))
+      if (status_filter) {
+        for (const s of status_filter) params.append('status_filter', s)
+      }
+      return client.request('GET', `/api/v1/projects/${project_id}/search?${params.toString()}`)
     },
   }
 }

@@ -441,6 +441,45 @@ describe('Tool Handlers', () => {
     expect(result).toHaveProperty('status', 'created')
   })
 
+  it('search calls GET /projects/{id}/search with q encoded — pins T-NNN resolution path', async () => {
+    // T-164: thin wrapper over the existing backend search endpoint. Same
+    // query-string shape as src/gateway/cli.py:189 so behaviour stays
+    // identical between the CLI and the MCP tool.
+    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
+      query: 'T-42',
+      total: 1,
+      results: [
+        { id: 'task-uuid', type: 'task', number: 42, title: 'Do the thing', status: 'backlog' },
+      ],
+    })
+
+    const result = await handlers.search({ project_id: 'proj-1', query: 'T-42' })
+    expect(client.request).toHaveBeenCalledWith(
+      'GET', '/api/v1/projects/proj-1/search?q=T-42'
+    )
+    expect(result).toHaveProperty('total', 1)
+  })
+
+  it('search URL-encodes free-text queries with spaces and special chars', async () => {
+    await handlers.search({ project_id: 'proj-1', query: 'foo bar & baz' })
+    expect(client.request).toHaveBeenCalledWith(
+      'GET', '/api/v1/projects/proj-1/search?q=foo+bar+%26+baz'
+    )
+  })
+
+  it('search appends limit and status_filter when provided', async () => {
+    await handlers.search({
+      project_id: 'proj-1',
+      query: 'auth',
+      limit: 5,
+      status_filter: ['backlog', 'in_progress'],
+    })
+    expect(client.request).toHaveBeenCalledWith(
+      'GET',
+      '/api/v1/projects/proj-1/search?q=auth&limit=5&status_filter=backlog&status_filter=in_progress'
+    )
+  })
+
   it('remove_task_dependency calls DELETE /tasks/{id}/dependencies/{depends_on_id}', async () => {
     (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true })
 

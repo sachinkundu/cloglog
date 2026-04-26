@@ -541,6 +541,24 @@ export function createServer(client: CloglogClient): McpServer {
     }
   )
 
+  // ── Search ────────────────────────────────────────────
+
+  server.tool(
+    'search',
+    'Search the current project for epics, features, and tasks. Supports entity-number patterns (E-1, F-13, T-42) and free-text queries. Returns matching results with id, type, number, title, and status — use this to resolve a T-NNN/F-NN/E-N reference into a UUID without paging the full board.',
+    {
+      query: z.string().min(1).describe('Entity number (e.g. T-42, F-13, E-1) or free-text search string'),
+      limit: z.number().int().min(1).max(50).optional().describe('Maximum results to return (default 20, max 50)'),
+      status_filter: z.array(z.string()).optional().describe('Restrict results to these statuses (e.g. ["backlog", "in_progress"])'),
+    },
+    wrapHandler(async ({ query, limit, status_filter }: { query: string; limit?: number; status_filter?: string[] }) => {
+      const pid = requireProject()
+      if (typeof pid !== 'string') return pid
+      const result = await handlers.search({ project_id: pid, query, limit, status_filter })
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] }
+    })
+  )
+
   // ── Feature dependencies ─────────────────────────────
 
   server.tool(

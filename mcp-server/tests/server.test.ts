@@ -27,6 +27,35 @@ describe('createServer', () => {
     expect(tools.attach_document).toBeDefined()
     expect(tools.create_tasks).toBeDefined()
     expect(tools.unregister_agent).toBeDefined()
+    expect(tools.search).toBeDefined()
+  })
+})
+
+describe('search tool', () => {
+  it('refuses to call before register_agent — surfaces the same guidance the other project-scoped tools use', async () => {
+    const client = mockClient()
+    const server = createServer(client)
+    const tools = (server as any)._registeredTools
+    const result = await tools.search.handler({ query: 'T-1' })
+    expect(result.content[0].text).toMatch(/Not registered/)
+    expect(client.request).not.toHaveBeenCalled()
+  })
+
+  it('after register, calls GET /projects/{pid}/search?q=...', async () => {
+    const client = mockClient()
+    ;(client.request as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ worktree_id: 'wt-1', project_id: 'proj-1' })
+      .mockResolvedValueOnce({ query: 'T-7', total: 0, results: [] })
+
+    const server = createServer(client)
+    const tools = (server as any)._registeredTools
+    await tools.register_agent.handler({ worktree_path: '/tmp/not-a-repo' })
+    const result = await tools.search.handler({ query: 'T-7' })
+
+    expect(client.request).toHaveBeenLastCalledWith(
+      'GET', '/api/v1/projects/proj-1/search?q=T-7'
+    )
+    expect(result.content[0].text).toContain('"total": 0')
   })
 })
 

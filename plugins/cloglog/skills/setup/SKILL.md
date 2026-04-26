@@ -51,7 +51,15 @@ Before spawning, reconcile against existing monitors:
      `-n 0` (start at end-of-file, only deliver events appended from now on) is the correct semantic for this codebase: the inbox is **append-only for the worktree's entire lifetime** (`src/gateway/webhook_consumers.py` always appends; `request_shutdown` is pinned by `tests/agent/test_unit.py` not to truncate). Re-delivering historical events would re-process already-handled `pr_merged`/`review_submitted` lines and crash `start_task` (see `src/agent/services.py:357-370` — only one active task per agent). To reconcile events that landed while the agent was offline, use the *Check PR Status* drill-down in `plugins/cloglog/skills/github-bot/SKILL.md`, not `tail` history. `-F` (capital) is a defence in depth — if the file is rotated or briefly removed, it re-opens by name instead of dying.
    - **Two or more** → keep the oldest matching monitor (lowest creation time / first in `TaskList` ordering), `TaskStop` each of the others, and tell the user: *"Stopped N duplicate monitor(s); reusing task `<id>`."*
 
-### 3. Confirm
+### 3. Reconcile control events on crash recovery
+
+The new monitor starts at end-of-file (`-n 0`), which is correct for `/clear` and re-spawn but means a **supervisor crash** would skip any control lines that worktree agents appended while the supervisor was down. The supervisor inbox carries non-PR events with no GitHub-side equivalent — `agent_unregistered` from `plugins/cloglog/hooks/agent-shutdown.sh:120-155` is the most important: `plugins/cloglog/skills/close-wave/SKILL.md` waits on that exact event to know cleanup can proceed, so a missed `agent_unregistered` leaves a completed worktree looking unfinished.
+
+**If this is a normal session start** (no prior crash): skip this step.
+
+**If you just recovered from a crash** (the previous supervisor session ended unexpectedly, you're not sure whether worktree agents finished while you were down, or close-wave is stuck waiting): inspect the inbox tail one-shot — `Read` the last 100 lines of `<current working directory>/.cloglog/inbox` and look for any line where `"type"` is `"agent_unregistered"`, `"agent_started"`, `"mcp_unavailable"`, `"mcp_tool_error"`, or `"pr_merged"`. Treat each one as if it had just arrived. (A proper offset-tracked replay — analogous to `scripts/wait_for_agent_unregistered.py` which already uses byte offsets for exactly this reason — is the durable fix and is filed as follow-up work; it's out of scope for T-294.)
+
+### 4. Confirm
 
 Tell the user:
 - Registered as worktree `<worktree_id>`

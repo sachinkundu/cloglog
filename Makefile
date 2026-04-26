@@ -255,53 +255,52 @@ promote: ## Deploy latest origin/main to prod with zero-downtime worker rotation
 	@git -C ../cloglog-prod push origin prod
 	@echo "  origin/prod advanced — branch now reflects deployed code."
 
-verify-prod-protection: ## Assert GitHub branch protection on `prod`. Requires operator's gh auth (admin:read scope) — the GitHub App PEM has no `administration` permission.
+verify-prod-protection: ## Assert GitHub ruleset protection on `prod`. Uses the rulesets API (works on personal repos, unlike classic protection's `restrictions` field which is org-only). Requires operator's gh auth — the GitHub App PEM has no `administration` permission.
 	@REPO=$$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$$||'); \
-		RESP=$$(gh api "repos/$$REPO/branches/prod/protection" 2>&1); \
+		LIST=$$(gh api "repos/$$REPO/rulesets" 2>&1); \
 		RC=$$?; \
 		if [ $$RC -ne 0 ]; then \
-			case "$$RESP" in \
-				*"Resource not accessible by integration"*|*"Must have admin rights"*) \
-					echo "FAIL: gh auth lacks 'administration:read' on $$REPO. The branch-protection API requires operator's personal token (App PEM has no admin scope by design)."; \
-					echo "Fix: \`gh auth login --scopes 'repo,admin:org'\` as the operator before running this target."; \
+			case "$$LIST" in \
+				*"Resource not accessible by integration"*) \
+					echo "FAIL: gh auth lacks repo access on $$REPO. App PEM has no admin scope by design — use operator's personal token."; \
+					echo "Fix: \`gh auth login --scopes 'repo'\` as the operator before running this target."; \
 					exit 2;; \
-				*"Branch not protected"*|*"Not Found"*) \
-					echo "FAIL: no branch protection on $$REPO:prod (apply rules in GitHub UI per docs/design/prod-branch-tracking.md §3.2)."; exit 1;; \
 				*"Requires authentication"*|*"Bad credentials"*) \
-					echo "FAIL: gh is not authenticated. Run \`gh auth login --scopes 'repo,admin:org'\` as the operator and retry."; exit 2;; \
+					echo "FAIL: gh is not authenticated. Run \`gh auth login --scopes 'repo'\` as the operator and retry."; exit 2;; \
 				*) \
-					echo "FAIL: gh api error on $$REPO:prod protection: $$RESP"; exit 1;; \
+					echo "FAIL: gh api error listing rulesets on $$REPO: $$LIST"; exit 1;; \
 			esac; \
 		fi; \
-		LINEAR=$$(echo "$$RESP" | jq -r '.required_linear_history.enabled // false'); \
-		PR_REQUIRED=$$(echo "$$RESP" | jq -r 'if .required_pull_request_reviews then "true" else "false" end'); \
-		USERS=$$(echo "$$RESP" | jq -r '.restrictions.users // [] | length'); \
-		APPS=$$(echo "$$RESP" | jq -r '.restrictions.apps // [] | length'); \
-		TEAMS=$$(echo "$$RESP" | jq -r '.restrictions.teams // [] | length'); \
-		USER_LOGINS=$$(echo "$$RESP" | jq -r '.restrictions.users // [] | map(.login) | join(",")'); \
-		APP_SLUGS=$$(echo "$$RESP" | jq -r '.restrictions.apps // [] | map(.slug) | join(",")'); \
-		if [ "$$LINEAR" != "true" ]; then \
-			echo "FAIL: required_linear_history is not enabled on $$REPO:prod (spec §3.2)."; exit 1; \
+		ID=$$(echo "$$LIST" | jq -r '[.[] | select(.enforcement == "active" and .target == "branch")] | .[0].id // empty'); \
+		if [ -z "$$ID" ]; then \
+			echo "FAIL: no active branch ruleset on $$REPO. Apply rules in GitHub UI → Settings → Rules per docs/design/prod-branch-tracking.md §3.2 (rulesets API, NOT classic branch protection — classic restrictions don't work on personal repos)."; \
+			exit 1; \
 		fi; \
-		if [ "$$PR_REQUIRED" = "true" ]; then \
-			echo "FAIL: $$REPO:prod requires a pull request before merging — but \`make promote\` pushes directly. Spec §3.2 forbids the PR requirement on prod (disable \"Require a pull request before merging\" in the GitHub UI)."; exit 1; \
+		RULESET=$$(gh api "repos/$$REPO/rulesets/$$ID" 2>&1); \
+		RC=$$?; \
+		if [ $$RC -ne 0 ]; then echo "FAIL: gh api error fetching ruleset $$ID on $$REPO: $$RULESET"; exit 1; fi; \
+		INCLUDES=$$(echo "$$RULESET" | jq -r '.conditions.ref_name.include // [] | join(",")'); \
+		case ",$$INCLUDES," in *",refs/heads/prod,"*) :;; *) \
+			echo "FAIL: active ruleset on $$REPO targets [$$INCLUDES] — does not include refs/heads/prod. Spec §3.2 requires ruleset to cover refs/heads/prod."; \
+			exit 1;; \
+		esac; \
+		RULE_TYPES=$$(echo "$$RULESET" | jq -r '[.rules[].type] | join(",")'); \
+		for required in deletion non_fast_forward required_linear_history; do \
+			case ",$$RULE_TYPES," in *",$$required,"*) :;; *) \
+				echo "FAIL: ruleset $$ID on $$REPO is missing rule '$$required' (spec §3.2). Have: [$$RULE_TYPES]."; \
+				exit 1;; \
+			esac; \
+		done; \
+		case ",$$RULE_TYPES," in *",pull_request,"*) \
+			echo "FAIL: ruleset $$ID on $$REPO has a 'pull_request' rule — but \`make promote\` pushes directly. Spec §3.2 forbids the PR requirement on prod."; \
+			exit 1;; \
+		esac; \
+		BYPASS_COUNT=$$(echo "$$RULESET" | jq -r '.bypass_actors // [] | length'); \
+		BYPASS=$$(echo "$$RULESET" | jq -r '.current_user_can_bypass // "unknown"'); \
+		if [ "$$BYPASS" = "always" ] || [ "$$BYPASS" = "pull_requests_only" ]; then \
+			echo "WARN: current user can bypass ruleset on $$REPO ($$BYPASS, $$BYPASS_COUNT bypass actors). Spec §3.2 expects no bypass — temporarily disable the ruleset for rollback per spec §8 instead."; \
 		fi; \
-		if [ -z "$$RESP" ] || [ "$$(echo $$RESP | jq -r '.restrictions // null')" = "null" ]; then \
-			echo "FAIL: push restrictions on $$REPO:prod are not configured — anyone with push can write (spec §3.2)."; exit 1; \
-		fi; \
-		if [ "$$APPS" != "0" ]; then \
-			echo "FAIL: $$APPS GitHub App(s) ($$APP_SLUGS) are allowed to push to $$REPO:prod. Spec §3.2 forbids any app or agent."; exit 1; \
-		fi; \
-		if [ "$$TEAMS" != "0" ]; then \
-			echo "FAIL: $$TEAMS team(s) are allowed to push to $$REPO:prod. Spec §3.2 restricts to a user account only."; exit 1; \
-		fi; \
-		if [ "$$USERS" = "0" ]; then \
-			echo "FAIL: no user is allowed to push to $$REPO:prod (spec §3.2 — at least the operator must be permitted to run \`make promote\`)."; exit 1; \
-		fi; \
-		if [ "$$USERS" != "1" ]; then \
-			echo "FAIL: $$USERS users ($$USER_LOGINS) are allowed to push to $$REPO:prod. Spec §3.2 restricts pushes to a single operator account; multiple humans defeat the single-promotion-gate guarantee."; exit 1; \
-		fi; \
-		echo "OK: $$REPO:prod has linear history, no PR requirement, and push restricted to single user: $$USER_LOGINS."
+		echo "OK: $$REPO ruleset $$ID covers refs/heads/prod with rules [$$RULE_TYPES] (bypass: $$BYPASS)."
 
 prod-logs: ## Tail prod server logs
 	@tail -f /tmp/cloglog-prod.log /tmp/cloglog-prod-access.log

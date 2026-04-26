@@ -62,9 +62,24 @@ Structural DDD rules (router registration, gateway owns no tables, supervisor en
 
 cloglog, the MCP server, and every worktree agent share one host filesystem. The backend can read and write worktree paths directly. If that ever changes it will be a separate, explicit project — do not pre-design for it.
 
+The prod worktree at `/home/sachin/code/cloglog-prod` tracks the `prod` branch (not `main`). `make promote` fast-forwards `prod` from `origin/main` and rotates workers. The dev worktree (this checkout) sits on `main`. PRs always target `main`; `prod` is fast-forward-only and pushed exclusively by `make promote`. Branch protection on `prod` is asserted by `make verify-prod-protection`. Full design: `docs/design/prod-branch-tracking.md`.
+
 - Credentials live in three homes: `~/.cloglog/credentials` (project API key), `~/.agent-vm/credentials/<bot>.pem` (GitHub App private keys), backend `.env` (per-host knobs). See `docs/setup-credentials.md`.
 - `CLOGLOG_API_KEY` never lands in `.mcp.json` — pin: `tests/test_mcp_json_no_secret.py`.
 - The cloudflared tunnel is systemd-managed, not a `make prod` child — `scripts/preflight.sh` verifies it.
+
+### Rollback path
+
+If a bad commit is on `main` but **not yet promoted**: don't run `make promote`. Land a revert PR on `main`; the next `make promote` advances `prod` past both the bad commit and its revert.
+
+If the bad commit is **already on `prod`** (someone ran `make promote` before noticing):
+
+1. `make prod-stop` — stop gunicorn + frontend preview.
+2. `git -C ../cloglog-prod reset --hard <last-known-good-sha>` — roll the prod worktree back. (Force-pushing `origin/prod` is acceptable here; if branch protection blocks it, lift the rule temporarily as the operator.)
+3. `make prod` — restart on the rolled-back SHA.
+4. Land a revert PR on `main` so the next `make promote` doesn't re-pull the bad commit.
+
+Do NOT try to revert via PR on `prod` — `prod` is fast-forward-only by design.
 
 ## Tech Stack
 

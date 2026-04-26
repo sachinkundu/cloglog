@@ -1,4 +1,4 @@
-.PHONY: help install test test-board test-agent test-document test-gateway test-e2e test-e2e-browser test-e2e-browser-ui test-e2e-browser-headed test-e2e-browser-report invariants lint typecheck coverage contract-check demo demo-check quality run-backend prod prod-bg promote prod-logs prod-stop db-up db-down db-migrate db-revision db-refresh-from-prod sync-mcp-dist
+.PHONY: help install test test-board test-agent test-document test-gateway test-e2e test-e2e-browser test-e2e-browser-ui test-e2e-browser-headed test-e2e-browser-report invariants lint typecheck coverage contract-check demo demo-check quality run-backend prod prod-bg promote verify-prod-protection prod-logs prod-stop db-up db-down db-migrate db-revision db-refresh-from-prod sync-mcp-dist
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -234,10 +234,11 @@ prod-bg: ## Start prod server in background
 
 promote: ## Deploy latest origin/main to prod with zero-downtime worker rotation
 	@echo "Promoting origin/main to prod..."
-	@git -C ../cloglog-prod pull origin main
+	@git -C ../cloglog-prod fetch origin
+	@git -C ../cloglog-prod merge --ff-only origin/main
 	@cd ../cloglog-prod && uv sync
 	@cd ../cloglog-prod/frontend && npm ci --silent
-	@HOST_IP=$$(tailscale ip -4 2>/dev/null | head -n1 || true); \
+	@set -e; HOST_IP=$$(tailscale ip -4 2>/dev/null | head -n1 || true); \
 		HOST=$${HOST_IP:-localhost}; \
 		API_URL=$${VITE_API_URL:-http://$$HOST:8001/api/v1}; \
 		echo "  API URL:  $$API_URL"; \
@@ -251,6 +252,56 @@ promote: ## Deploy latest origin/main to prod with zero-downtime worker rotation
 		(cd ../cloglog-prod/frontend && npm run preview -- --port 4173 $$PREVIEW_HOST_FLAG & echo $$! > /tmp/cloglog-prod-frontend.pid); \
 		echo "  Done — frontend rebuilt and restarted on :4173."; \
 		[ -n "$$HOST_IP" ] && echo "  Tailnet: http://$$HOST_IP:4173" || true
+	@git -C ../cloglog-prod push origin prod
+	@echo "  origin/prod advanced — branch now reflects deployed code."
+
+verify-prod-protection: ## Assert GitHub branch protection on `prod`. Requires operator's gh auth (admin:read scope) — the GitHub App PEM has no `administration` permission.
+	@REPO=$$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$$||'); \
+		RESP=$$(gh api "repos/$$REPO/branches/prod/protection" 2>&1); \
+		RC=$$?; \
+		if [ $$RC -ne 0 ]; then \
+			case "$$RESP" in \
+				*"Resource not accessible by integration"*|*"Must have admin rights"*) \
+					echo "FAIL: gh auth lacks 'administration:read' on $$REPO. The branch-protection API requires operator's personal token (App PEM has no admin scope by design)."; \
+					echo "Fix: \`gh auth login --scopes 'repo,admin:org'\` as the operator before running this target."; \
+					exit 2;; \
+				*"Branch not protected"*|*"Not Found"*) \
+					echo "FAIL: no branch protection on $$REPO:prod (apply rules in GitHub UI per docs/design/prod-branch-tracking.md §3.2)."; exit 1;; \
+				*"Requires authentication"*|*"Bad credentials"*) \
+					echo "FAIL: gh is not authenticated. Run \`gh auth login --scopes 'repo,admin:org'\` as the operator and retry."; exit 2;; \
+				*) \
+					echo "FAIL: gh api error on $$REPO:prod protection: $$RESP"; exit 1;; \
+			esac; \
+		fi; \
+		LINEAR=$$(echo "$$RESP" | jq -r '.required_linear_history.enabled // false'); \
+		PR_REQUIRED=$$(echo "$$RESP" | jq -r 'if .required_pull_request_reviews then "true" else "false" end'); \
+		USERS=$$(echo "$$RESP" | jq -r '.restrictions.users // [] | length'); \
+		APPS=$$(echo "$$RESP" | jq -r '.restrictions.apps // [] | length'); \
+		TEAMS=$$(echo "$$RESP" | jq -r '.restrictions.teams // [] | length'); \
+		USER_LOGINS=$$(echo "$$RESP" | jq -r '.restrictions.users // [] | map(.login) | join(",")'); \
+		APP_SLUGS=$$(echo "$$RESP" | jq -r '.restrictions.apps // [] | map(.slug) | join(",")'); \
+		if [ "$$LINEAR" != "true" ]; then \
+			echo "FAIL: required_linear_history is not enabled on $$REPO:prod (spec §3.2)."; exit 1; \
+		fi; \
+		if [ "$$PR_REQUIRED" = "true" ]; then \
+			echo "FAIL: $$REPO:prod requires a pull request before merging — but \`make promote\` pushes directly. Spec §3.2 forbids the PR requirement on prod (disable \"Require a pull request before merging\" in the GitHub UI)."; exit 1; \
+		fi; \
+		if [ -z "$$RESP" ] || [ "$$(echo $$RESP | jq -r '.restrictions // null')" = "null" ]; then \
+			echo "FAIL: push restrictions on $$REPO:prod are not configured — anyone with push can write (spec §3.2)."; exit 1; \
+		fi; \
+		if [ "$$APPS" != "0" ]; then \
+			echo "FAIL: $$APPS GitHub App(s) ($$APP_SLUGS) are allowed to push to $$REPO:prod. Spec §3.2 forbids any app or agent."; exit 1; \
+		fi; \
+		if [ "$$TEAMS" != "0" ]; then \
+			echo "FAIL: $$TEAMS team(s) are allowed to push to $$REPO:prod. Spec §3.2 restricts to a user account only."; exit 1; \
+		fi; \
+		if [ "$$USERS" = "0" ]; then \
+			echo "FAIL: no user is allowed to push to $$REPO:prod (spec §3.2 — at least the operator must be permitted to run \`make promote\`)."; exit 1; \
+		fi; \
+		if [ "$$USERS" != "1" ]; then \
+			echo "FAIL: $$USERS users ($$USER_LOGINS) are allowed to push to $$REPO:prod. Spec §3.2 restricts pushes to a single operator account; multiple humans defeat the single-promotion-gate guarantee."; exit 1; \
+		fi; \
+		echo "OK: $$REPO:prod has linear history, no PR requirement, and push restricted to single user: $$USER_LOGINS."
 
 prod-logs: ## Tail prod server logs
 	@tail -f /tmp/cloglog-prod.log /tmp/cloglog-prod-access.log

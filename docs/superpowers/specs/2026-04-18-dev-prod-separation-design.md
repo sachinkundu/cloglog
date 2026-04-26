@@ -1,5 +1,7 @@
 # Dev/Prod Separation Design
 
+> **Superseded for branch-tracking by `docs/design/prod-branch-tracking.md` (T-292).** This spec records the F-48 design as it shipped; the prod worktree no longer tracks `main` — see the newer spec for current branch semantics.
+
 **Date:** 2026-04-18
 **Status:** Approved
 

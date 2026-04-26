@@ -224,7 +224,7 @@ Webhook and supervisor events. The agent's required response is listed.
 | Event `type` | Source | Required response |
 | --- | --- | --- |
 | `task_assigned` | main agent (inbox write) | Call `get_my_tasks`; `start_task` on the new backlog entry per Section 1's algorithm. |
-| `review_submitted` | webhook | Read review body; if `changes_requested`, move task back to `in_progress`, address, push, return to `review`. Approvals with no change are informational. |
+| `review_submitted` | webhook | First run the §3.1 auto-merge gate; if it passes, merge and stop. Otherwise: if `changes_requested`, move task back to `in_progress`, address, push, return to `review`. Approval-shaped reviews that fail the gate (e.g., CI still pending) are informational — stay in `review`. |
 | `review_comment` | webhook | Inline PR comment. If actionable, address it like `review_submitted`; otherwise reply via the github-bot skill's comment path. |
 | `issue_comment` | webhook | Issue-style PR comment. Same rule: actionable → fix; informational → reply or ignore. |
 | `ci_failed` | webhook | Follow the github-bot skill's CI recovery flow. Fix the failure, push. CI re-runs on push; next `check_run` webhook delivers the result. |
@@ -265,6 +265,47 @@ that awaits one will deadlock.
 If an AGENT_PROMPT, skill, or template tells an agent to "wait for the task to
 show done" or "block on the board showing merged," the prompt is wrong and
 must be fixed.
+
+### 3.1 Auto-merge gate (T-295)
+
+Before T-295, every PR — including those with a passing codex review and
+green CI — waited on a human to click *Merge*. The gate frees the worktree
+agent to merge its own PR when the conditions below all hold, while
+preserving an explicit override for PRs that warrant a manual look.
+
+**Conditions (all four must hold to merge):**
+
+1. The triggering `review_submitted` event's `reviewer` is
+   `cloglog-codex-reviewer[bot]` (`_CODEX_BOT` in `src/gateway/review_engine.py`).
+2. The review body, after `lstrip()`, starts with `:pass:` —
+   matches `_APPROVE_BODY_PREFIX` in `src/gateway/review_engine.py` and the
+   server-side `latest_codex_review_is_approval` predicate. The codex bot
+   deliberately never posts with `event="APPROVE"` (see `post_review`),
+   so body content is canonical.
+3. Every check returned by `gh pr checks <PR_NUM> --json name,bucket` has
+   bucket `pass` or `skipping`. Pending or failing checks → hold; the
+   agent waits for the next `check_run` webhook event. An empty rollup
+   also holds.
+4. The PR does not carry the `hold-merge` label. Setting the label via
+   `gh pr edit --add-label hold-merge` is the human override path.
+
+**Implementation.** The gate is a pure-Python helper at
+`plugins/cloglog/scripts/auto_merge_gate.py`. The four-condition truth
+table is pinned by `tests/test_auto_merge_gate.py`. The agent shells out
+to the helper after every `review_submitted` event from the codex bot
+and never reproduces the logic inline. The merge command is
+`gh pr merge <num> --squash --delete-branch` — same shape as today's
+manual merges (PR #217). A successful merge fires the existing
+`pr_merged` webhook → main agent's close-off path runs unchanged. The
+reviewer side (`review_engine.py`, codex bot prompt, `post_review`) is
+not modified by T-295; codex output stays as-is.
+
+**Hold reasons.** When the gate refuses to merge it returns one of
+`not_codex_reviewer`, `not_codex_pass`, `ci_not_green`, `hold_label`.
+The agent calls `add_task_note` for `hold_label` (the human wants to
+know the override is in effect) and stays in `review` for the others —
+the next webhook event (CI completion, push, label removal) re-runs the
+gate with fresh data.
 
 ## 4. MCP discipline
 

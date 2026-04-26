@@ -155,7 +155,7 @@ Note: `pr_merged` does **not** carry a `task_id` — use the active task_id from
 
 How to respond to each event type:
 
-- **`review_submitted`** — move the task back to `in_progress` via `mcp__cloglog__update_task_status`, read the review body from the event (and fetch the full comments with *Check PR Status* below if needed), address the feedback, push a fix, move back to `review`.
+- **`review_submitted`** — first run the [Auto-Merge on Codex Pass](#auto-merge-on-codex-pass) gate; if it returns `merge`, run the merge command and stop here. Otherwise move the task back to `in_progress` via `mcp__cloglog__update_task_status`, read the review body from the event (and fetch the full comments with *Check PR Status* below if needed), address the feedback, push a fix, move back to `review`. (An approval-shaped review from the codex bot that does NOT pass the gate — for example, CI is still pending — is informational; stay in `review` and wait for the next event rather than moving to `in_progress`.)
 - **`review_comment`** — a reviewer posted a standalone inline diff comment without opening a review. The event carries `path`, `line`, and the comment body. Treat it the same as `review_submitted`: move back to `in_progress`, address the feedback at `path:line`, push a fix, move back to `review`.
 - **`issue_comment`** — a reviewer posted an issue-style PR comment. These are often clarifying questions or approvals without a formal review. Read the body; if it requires a code change, follow the same in_progress → fix → review flow. If it is informational (e.g., "LGTM, just waiting on CI"), reply via the *Reply to Review Comments* section and stay in `review`.
 - **`ci_failed`** — follow [CI Failure Recovery](#ci-failure-recovery) to read the failed logs and push a fix. CI re-runs automatically on push; a subsequent `check_run` webhook will report the new result. Note: the consumer only filters out `conclusion=success`, so `conclusion=null` (still pending) may surface here — check `gh pr checks <PR_NUM>` before assuming the run terminated.
@@ -168,6 +168,67 @@ If the inbox monitor is not running, events pile up silently in the file and not
 
 1. Re-register and start the inbox `Monitor` on `.cloglog/inbox`. `tail -f` replays the full file, so any events that arrived while you were down will be delivered as notifications.
 2. Also run *Check PR Status* below once — the branch-name fallback path excludes offline worktrees, so events that fired before your task had a `pr_url` set (e.g., the first CI run after `git push` but before `update_task_status`) may have been dropped.
+
+### Auto-Merge on Codex Pass
+
+After a `review_submitted` inbox event, the worktree agent decides whether to merge its own PR via a four-condition gate (T-295). The gate is implemented as a pure-Python helper; the agent shells out to it, never reproduces the logic inline.
+
+**Conditions (all four must hold):**
+
+1. Reviewer is `cloglog-codex-reviewer[bot]` — the `reviewer` field on the inbox event payload.
+2. Review body, `lstrip()`ed, starts with `:pass:` — matches `_APPROVE_BODY_PREFIX` in `src/gateway/review_engine.py`. The bot deliberately never posts with `event="APPROVE"`; body content is the canonical approval marker.
+3. Every check on `gh pr checks <PR_NUM> --json name,bucket` is `pass` or `skipping`. Pending or failing → wait for the next webhook event; never speculate.
+4. The PR does not carry the `hold-merge` label — set via `gh pr edit --add-label hold-merge` when a human wants to override auto-merge for a specific PR.
+
+**Invocation:**
+
+```bash
+BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
+PR_NUM=<the PR number from the inbox event>
+
+PAYLOAD=$(GH_TOKEN="$BOT_TOKEN" gh pr view "$PR_NUM" \
+  --json labels,statusCheckRollup \
+  --jq '{
+    reviewer: $reviewer,
+    body: $body,
+    checks: (.statusCheckRollup // [] | map({name: (.name // .workflowName // ""), bucket})),
+    labels: ((.labels // []) | map(.name))
+  }' \
+  --arg reviewer "<reviewer field from inbox event>" \
+  --arg body "<body field from inbox event>")
+
+REASON=$(printf '%s' "$PAYLOAD" | python3 plugins/cloglog/scripts/auto_merge_gate.py)
+GATE_RC=$?
+
+if [[ "$GATE_RC" == "0" ]]; then
+  GH_TOKEN="$BOT_TOKEN" gh pr merge "$PR_NUM" --squash --delete-branch
+  # The pr_merged webhook fires next; the inbox handler runs the existing
+  # mark_pr_merged → report_artifact → get_my_tasks flow.
+else
+  # Hold reasons: not_codex_reviewer, not_codex_pass, ci_not_green, hold_label.
+  # Log via add_task_note so the board carries a breadcrumb, then wait for the
+  # next webhook event (CI completion, push, label removal).
+  case "$REASON" in
+    hold_label)
+      # mcp__cloglog__add_task_note(task_id, "auto-merge skipped: hold-merge label set")
+      ;;
+    ci_not_green)
+      # No-op note — CI is still running; another check_run event will arrive.
+      ;;
+    not_codex_pass|not_codex_reviewer)
+      # Not an approval shape — the existing review_submitted flow takes over.
+      ;;
+  esac
+fi
+```
+
+**Why a pure-Python helper, not inline bash.** Tests pin the four-condition truth table at `tests/test_auto_merge_gate.py`. Reproducing the logic in shell would split the source of truth between the test and the agent. The helper takes JSON in, prints the reason, exits 0/1.
+
+**What the agent must NOT do:**
+
+- Do not parse the review body with regex sprawl. The marker is `:pass:` as a leading prefix after `lstrip()` — that is what the helper checks and what `latest_codex_review_is_approval` checks server-side.
+- Do not retry on `ci_not_green`. CI completion fires a `check_run` webhook → next inbox event → the gate runs again with fresh data.
+- Do not auto-merge any PR whose `gh pr view --json reviewDecision` is `CHANGES_REQUESTED` from a human reviewer; the codex pass alone is not authority over a human's pending change request. (The gate's reviewer check only ratifies that the *triggering* event is the codex bot — it does not inspect the full review history. If you have evidence of a human request-changes review, hold.)
 
 ### Reply to Review Comments
 

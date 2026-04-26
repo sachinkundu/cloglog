@@ -41,6 +41,8 @@ If you are working in a worktree (`wt-*` branch), you MUST only touch files in y
 
 All pushes, PRs, and GitHub API calls MUST use the GitHub App bot identity. Use the `github-bot` skill — it has the exact commands for pushing, creating PRs, checking status, and replying to review comments. Never use `git push`, `gh pr`, or `gh api` without the bot token.
 
+**Exception — branch-protection / ruleset inspection.** The App PEM (`scripts/gh-app-token.py`) only requests `contents`/`pull_requests`/`issues`/`workflows` permissions. APIs that require `administration:read` (e.g. `gh api repos/X/branches/Y/protection`) return `403 Resource not accessible by integration` against bot tokens. The `make verify-prod-protection` target therefore uses the operator's personal `gh auth` (NOT `BOT_TOKEN`); see the "Branch protection / verification" section below for details.
+
 ## Stop on MCP Failure
 
 Halt on any MCP failure: startup unavailability emits `mcp_unavailable` and exits; runtime tool errors emit `mcp_tool_error` and wait for the main agent; transient network errors get one backoff retry before escalating.
@@ -118,6 +120,17 @@ Durable gotchas discovered during worktree tasks. Each bullet is non-obvious and
 - **`from_attributes=True` hides hand-built-dict drift.** Adding a required field to a Pydantic model with `from_attributes=True` works for callers that go through `Model.model_validate(orm_row)` but silently breaks any caller that hand-builds the dict (`{"id": ..., "title": ...}`). Grep for hand-built dict patterns matching the model's field set whenever you add a required field.
 - **`async def` route handlers are `AsyncFunctionDef` in `ast.walk`, not `FunctionDef`.** Demo proofs that filter `ast.FunctionDef` will silently skip async routes. Use `isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))` for any route-handler inspection.
 - **Cross-language demo proofs need each language's own interpolation token.** Pinning URL parity between `src/gateway/cli.py` (Python f-strings: `{var}`) and `mcp-server/src/tools.ts` (TS template literals: `${var}`) requires grepping with each language's actual syntax — a TS-shape grep silently fails on Python.
+
+### Branch protection / verification
+
+- **GitHub App PEM has no `administration` scope.** `scripts/gh-app-token.py` mints installation tokens with `contents`/`pull_requests`/`issues`/`workflows` only. Any `gh api repos/.../branches/<br>/protection` call against a bot token returns `403 Resource not accessible by integration`. Branch-protection inspection targets MUST use the operator's personal `gh auth` (`gh auth login --scopes 'repo,admin:org'`), NOT `BOT_TOKEN`. Suppressing the 403 with `2>/dev/null` is worse than surfacing it — the check then misreports the policy state. Surface the API response, case-match it, and use distinct exit codes for credential issues vs policy violations.
+- **Branch-protection assertions must be clause-by-clause, not "non-empty list".** A protection rule that allows only an App, only a team, or two human users can each defeat an "operator-only" promotion gate while a naive non-empty-count check still prints OK. For each spec clause emit a separate assertion with a specific failure message naming the offending principal. Rolled-up counts lose every interesting failure mode.
+- **Personal repos can't use classic protection's `restrictions` (push-by-actor).** That field requires an org repo. On personal repos, use rulesets API (`gh api repos/X/rulesets`) instead — supports actor-bypass-list and works on personal repos. Verifier targets that need actor-restriction assertions must query rulesets, not classic `branches/<br>/protection`.
+
+### Deployment ordering
+
+- **Publish-the-pointer comes last.** When a remote ref (`origin/prod`, deploy tags, etc.) is the canonical "what is live" pointer, advance it AFTER the deploy block (build, migrate, worker rotation), not before. Pushing first creates a window where the ref advanced but the running service is still on the previous SHA — a silent lie any deploy tooling reading the ref will believe. Generalises beyond `make promote`: any "ground truth from a remote ref" pattern must update the ref only after the contract holds.
+- **Retargeting `git pull` to ff-only is load-bearing once a worktree has a writable local branch.** Plain `git pull origin <branch>` happily creates a merge commit when the local branch has diverged. Skills that ran `git pull origin main` were safe while the dev worktree couldn't check out `main` (sat on detached HEAD); the moment the dev worktree got a writable local `main`, every `git pull` line became a hazard. Use `git fetch origin && git merge --ff-only origin/main` and surface divergence as an investigation prompt — never paper over with a merge commit. **When you change *who* checks out a branch, audit every `git pull` against that branch before shipping the worktree-arrangement change.**
 
 ### Auto-merge / PR gates
 

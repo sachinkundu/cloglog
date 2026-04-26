@@ -234,6 +234,9 @@ prod-bg: ## Start prod server in background
 
 promote: ## Deploy latest origin/main to prod with zero-downtime worker rotation
 	@echo "Promoting origin/main to prod..."
+	@if [ ! -f /tmp/cloglog-prod.pid ]; then echo "ERROR: gunicorn not running — service is down, cannot promote. Run \`make prod\` to bring the backend up first, then \`make promote\`. (Spec §4.2: make prod is restart-only with no git operations; make promote requires a live backend so the worker rotation actually deploys the new SHA before the worktree, DB, or origin/prod are mutated.)"; exit 1; fi
+	@PROD_PID=$$(cat /tmp/cloglog-prod.pid); \
+		if ! kill -0 "$$PROD_PID" 2>/dev/null; then echo "ERROR: stale /tmp/cloglog-prod.pid (PID $$PROD_PID is dead) — service is down. Run \`make prod-stop && make prod\` to clean up and restart, then \`make promote\`."; exit 1; fi
 	@git -C ../cloglog-prod fetch origin
 	@git -C ../cloglog-prod merge --ff-only origin/main
 	@cd ../cloglog-prod && uv sync
@@ -244,7 +247,8 @@ promote: ## Deploy latest origin/main to prod with zero-downtime worker rotation
 		echo "  API URL:  $$API_URL"; \
 		(cd ../cloglog-prod/frontend && VITE_API_URL="$$API_URL" npx vite build 2>&1 | tail -2); \
 		(cd ../cloglog-prod && uv run alembic upgrade head); \
-		if [ -f /tmp/cloglog-prod.pid ]; then kill -HUP $$(cat /tmp/cloglog-prod.pid) && echo "  Backend: rotated workers."; else echo "  Warning: gunicorn not running — start with make prod"; fi; \
+		PROD_PID=$$(cat /tmp/cloglog-prod.pid); \
+		kill -HUP "$$PROD_PID" && echo "  Backend: rotated workers (PID $$PROD_PID)."; \
 		fuser -k 4173/tcp 2>/dev/null || true; \
 		rm -f /tmp/cloglog-prod-frontend.pid; \
 		PREVIEW_HOST_FLAG=""; \
@@ -255,53 +259,65 @@ promote: ## Deploy latest origin/main to prod with zero-downtime worker rotation
 	@git -C ../cloglog-prod push origin prod
 	@echo "  origin/prod advanced — branch now reflects deployed code."
 
-verify-prod-protection: ## Assert GitHub branch protection on `prod`. Requires operator's gh auth (admin:read scope) — the GitHub App PEM has no `administration` permission.
+verify-prod-protection: ## Assert GitHub ruleset protection on `prod`. Uses the rulesets API (works on personal repos, unlike classic protection's `restrictions` field which is org-only). Requires operator's gh auth — the GitHub App PEM has no `administration` permission.
 	@REPO=$$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$$||'); \
-		RESP=$$(gh api "repos/$$REPO/branches/prod/protection" 2>&1); \
+		LIST=$$(gh api "repos/$$REPO/rulesets" 2>&1); \
 		RC=$$?; \
 		if [ $$RC -ne 0 ]; then \
-			case "$$RESP" in \
-				*"Resource not accessible by integration"*|*"Must have admin rights"*) \
-					echo "FAIL: gh auth lacks 'administration:read' on $$REPO. The branch-protection API requires operator's personal token (App PEM has no admin scope by design)."; \
-					echo "Fix: \`gh auth login --scopes 'repo,admin:org'\` as the operator before running this target."; \
+			case "$$LIST" in \
+				*"Resource not accessible by integration"*) \
+					echo "FAIL: gh auth lacks repo access on $$REPO. App PEM has no admin scope by design — use operator's personal token."; \
+					echo "Fix: \`gh auth login --scopes 'repo'\` as the operator before running this target."; \
 					exit 2;; \
-				*"Branch not protected"*|*"Not Found"*) \
-					echo "FAIL: no branch protection on $$REPO:prod (apply rules in GitHub UI per docs/design/prod-branch-tracking.md §3.2)."; exit 1;; \
 				*"Requires authentication"*|*"Bad credentials"*) \
-					echo "FAIL: gh is not authenticated. Run \`gh auth login --scopes 'repo,admin:org'\` as the operator and retry."; exit 2;; \
+					echo "FAIL: gh is not authenticated. Run \`gh auth login --scopes 'repo'\` as the operator and retry."; exit 2;; \
 				*) \
-					echo "FAIL: gh api error on $$REPO:prod protection: $$RESP"; exit 1;; \
+					echo "FAIL: gh api error listing rulesets on $$REPO: $$LIST"; exit 1;; \
 			esac; \
 		fi; \
-		LINEAR=$$(echo "$$RESP" | jq -r '.required_linear_history.enabled // false'); \
-		PR_REQUIRED=$$(echo "$$RESP" | jq -r 'if .required_pull_request_reviews then "true" else "false" end'); \
-		USERS=$$(echo "$$RESP" | jq -r '.restrictions.users // [] | length'); \
-		APPS=$$(echo "$$RESP" | jq -r '.restrictions.apps // [] | length'); \
-		TEAMS=$$(echo "$$RESP" | jq -r '.restrictions.teams // [] | length'); \
-		USER_LOGINS=$$(echo "$$RESP" | jq -r '.restrictions.users // [] | map(.login) | join(",")'); \
-		APP_SLUGS=$$(echo "$$RESP" | jq -r '.restrictions.apps // [] | map(.slug) | join(",")'); \
-		if [ "$$LINEAR" != "true" ]; then \
-			echo "FAIL: required_linear_history is not enabled on $$REPO:prod (spec §3.2)."; exit 1; \
+		IDS=$$(echo "$$LIST" | jq -r '[.[] | select(.enforcement == "active" and .target == "branch")] | .[].id'); \
+		if [ -z "$$IDS" ]; then \
+			echo "FAIL: no active branch ruleset on $$REPO. Apply rules in GitHub UI → Settings → Rules per docs/design/prod-branch-tracking.md §3.2 (rulesets API, NOT classic branch protection — classic restrictions don't work on personal repos)."; \
+			exit 1; \
 		fi; \
-		if [ "$$PR_REQUIRED" = "true" ]; then \
-			echo "FAIL: $$REPO:prod requires a pull request before merging — but \`make promote\` pushes directly. Spec §3.2 forbids the PR requirement on prod (disable \"Require a pull request before merging\" in the GitHub UI)."; exit 1; \
+		ID=""; \
+		for cand in $$IDS; do \
+			CAND_RS=$$(gh api "repos/$$REPO/rulesets/$$cand" 2>/dev/null); \
+			INC=$$(echo "$$CAND_RS" | jq -r '.conditions.ref_name.include // [] | join(",")'); \
+			case ",$$INC," in *",refs/heads/prod,"*) ID=$$cand; RULESET=$$CAND_RS; break;; esac; \
+		done; \
+		if [ -z "$$ID" ]; then \
+			echo "FAIL: no active branch ruleset on $$REPO targets refs/heads/prod (checked IDs: $$(echo $$IDS | tr '\n' ' ')). Spec §3.2 requires ruleset to cover refs/heads/prod."; \
+			exit 1; \
 		fi; \
-		if [ -z "$$RESP" ] || [ "$$(echo $$RESP | jq -r '.restrictions // null')" = "null" ]; then \
-			echo "FAIL: push restrictions on $$REPO:prod are not configured — anyone with push can write (spec §3.2)."; exit 1; \
+		RULE_TYPES=$$(echo "$$RULESET" | jq -r '[.rules[].type] | join(",")'); \
+		case ",$$RULE_TYPES," in *",required_linear_history,"*) :;; *) \
+			echo "FAIL: ruleset $$ID on $$REPO is missing 'required_linear_history' rule (spec §3.2 clause 1: \"Require linear history\"). Have: [$$RULE_TYPES]."; \
+			exit 1;; \
+		esac; \
+		case ",$$RULE_TYPES," in *",pull_request,"*) \
+			echo "FAIL: ruleset $$ID on $$REPO has a 'pull_request' rule — but \`make promote\` pushes directly. Spec §3.2 clause 3 forbids the PR requirement on prod."; \
+			exit 1;; \
+		esac; \
+		case ",$$RULE_TYPES," in *",update,"*) :;; *) \
+			echo "FAIL: ruleset $$ID on $$REPO has no 'update' rule (spec §3.2 clause 2: \"Restrict pushes to the user's account\"). Without 'update', any actor with write access can push to prod, defeating the operator-only promotion gate. Add a 'Restrict updates' rule in GitHub UI → Rules → edit ruleset."; \
+			exit 1;; \
+		esac; \
+		BAD_BYPASS=$$(echo "$$RULESET" | jq -r '[.bypass_actors[]? | select(.actor_type != "RepositoryRole" or (.actor_type == "RepositoryRole" and .actor_id != 5))] | map("\(.actor_type):\(.actor_id // "?")") | join(",")'); \
+		if [ -n "$$BAD_BYPASS" ]; then \
+			echo "FAIL: ruleset $$ID on $$REPO grants bypass to non-admin actors [$$BAD_BYPASS]. Spec §3.2 forbids any app, agent, or team from bypassing prod protection — only the operator (RepositoryRole admin = id 5) is permitted. On personal repos, the admin role IS the owner account."; \
+			exit 1; \
 		fi; \
-		if [ "$$APPS" != "0" ]; then \
-			echo "FAIL: $$APPS GitHub App(s) ($$APP_SLUGS) are allowed to push to $$REPO:prod. Spec §3.2 forbids any app or agent."; exit 1; \
+		ADMIN_BYPASS_ALWAYS=$$(echo "$$RULESET" | jq -r '[.bypass_actors[]? | select(.actor_type == "RepositoryRole" and .actor_id == 5 and .bypass_mode == "always")] | length'); \
+		if [ "$$ADMIN_BYPASS_ALWAYS" = "0" ]; then \
+			echo "FAIL: ruleset $$ID on $$REPO has no admin bypass with bypass_mode=always — but \`make promote\` ends with a direct \`git push origin prod\`, which the 'update' rule blocks unless the operator can bypass. Add RepositoryRole admin (actor_id=5) with bypass_mode=always to bypass_actors via GitHub UI → Rules → edit ruleset → Bypass list."; \
+			exit 1; \
 		fi; \
-		if [ "$$TEAMS" != "0" ]; then \
-			echo "FAIL: $$TEAMS team(s) are allowed to push to $$REPO:prod. Spec §3.2 restricts to a user account only."; exit 1; \
-		fi; \
-		if [ "$$USERS" = "0" ]; then \
-			echo "FAIL: no user is allowed to push to $$REPO:prod (spec §3.2 — at least the operator must be permitted to run \`make promote\`)."; exit 1; \
-		fi; \
-		if [ "$$USERS" != "1" ]; then \
-			echo "FAIL: $$USERS users ($$USER_LOGINS) are allowed to push to $$REPO:prod. Spec §3.2 restricts pushes to a single operator account; multiple humans defeat the single-promotion-gate guarantee."; exit 1; \
-		fi; \
-		echo "OK: $$REPO:prod has linear history, no PR requirement, and push restricted to single user: $$USER_LOGINS."
+		WARN=""; \
+		case ",$$RULE_TYPES," in *",non_fast_forward,"*) :;; *) WARN="$$WARN non_fast_forward(force-push not blocked)";; esac; \
+		case ",$$RULE_TYPES," in *",deletion,"*) :;; *) WARN="$$WARN deletion(branch-delete not blocked)";; esac; \
+		[ -n "$$WARN" ] && echo "WARN: ruleset is spec-compliant but missing recommended belt-and-braces rules:$$WARN"; \
+		echo "OK: $$REPO ruleset $$ID covers refs/heads/prod. Spec §3.2 clauses satisfied: linear history (rule), no PR requirement (rule absent), user-only push (update rule + admin bypass). Rules: [$$RULE_TYPES]."
 
 prod-logs: ## Tail prod server logs
 	@tail -f /tmp/cloglog-prod.log /tmp/cloglog-prod-access.log

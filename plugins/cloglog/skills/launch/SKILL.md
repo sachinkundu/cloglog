@@ -134,7 +134,7 @@ When you receive a message, read it and act on the instruction. The main agent m
         "reason": "all_assigned_tasks_complete"
       }
       ```
-      Absolute paths are required so the main agent can read the artifacts after the worktree is torn down. The `prs` map (T-262) carries the PR URL for each completed task — build it by walking `mcp__cloglog__get_my_tasks()` and reading each row's `pr_url`. Tasks completed without a PR (plan tasks via `skip_pr=True`, docs-only) MUST be omitted from `prs` rather than mapped to `null`. `tasks_completed` stays a flat list of IDs so existing parsers keep working. This event is authoritative — do not rely on the SessionEnd hook to emit it for you.
+      Absolute paths are required so the main agent can read the artifacts after the worktree is torn down. The `prs` map (T-262) carries the PR URL for each completed task — build it by walking `mcp__cloglog__get_my_tasks()` and, for each row with a non-null `pr_url`, keying the map at `f"T-{row.number}"` (the `TaskInfo` schema exposes both `number` and `pr_url`). Tasks completed without a PR (plan tasks via `skip_pr=True`, docs-only) MUST be omitted from `prs` rather than mapped to `null`. `tasks_completed` stays a flat list of IDs so existing parsers keep working. This event is authoritative — do not rely on the SessionEnd hook to emit it for you.
     - Call `mcp__cloglog__unregister_agent` and exit.
 
 ## Pipeline (Features Only)

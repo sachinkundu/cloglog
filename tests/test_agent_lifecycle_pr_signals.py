@@ -78,6 +78,25 @@ def test_launch_skill_prompts_prs_map_in_unregister() -> None:
     )
 
 
+def test_task_info_exposes_fields_needed_for_prs_map():
+    """T-262 round 2 (Codex): the documented `prs`-map construction path
+    walks `get_my_tasks()` and reads each row's `pr_url` and task number
+    (T-NNN). If TaskInfo doesn't expose those fields the protocol is
+    impossible for agents to follow — pin the shape so any future
+    schema slim-down has to remove the docs in lockstep.
+    """
+    from src.agent.schemas import TaskInfo
+
+    fields = set(TaskInfo.model_fields.keys())
+    assert "pr_url" in fields, (
+        "TaskInfo must expose pr_url so agents can build the prs map at shutdown (T-262)"
+    )
+    assert "number" in fields, (
+        "TaskInfo must expose number (the T-NNN suffix) so the prs map "
+        "can be keyed by task ID (T-262)"
+    )
+
+
 def test_secondary_instruction_sources_propagate_t262():
     """The launch SKILL is not the only instruction source agents read.
 

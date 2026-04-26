@@ -80,7 +80,7 @@ Your work follows a strict pipeline. Call `mcp__cloglog__get_my_tasks` to get yo
    - **## Tests** — what tests were added, delta from baseline, strategy reasoning
    - **## Changes** — what changed and why
 5. Call `mcp__cloglog__update_task_status` to move the task to `review` with the PR URL
-6. Confirm your `.cloglog/inbox` Monitor is running — webhook events (`review_submitted`, `ci_failed`, `pr_merged`) arrive there automatically. On `pr_merged`: call `mcp__cloglog__mark_pr_merged`, then `mcp__cloglog__get_my_tasks` and start the next task. See the `github-bot` skill's **PR Event Inbox** section.
+6. Confirm your `.cloglog/inbox` Monitor is running — webhook events (`review_submitted`, `ci_failed`, `pr_merged`) arrive there automatically. On `pr_merged`: **first emit `pr_merged_notification` to `<project_root>/.cloglog/inbox`** (T-262 — surfaces the merge to the supervisor and any parallel worktree blocked on this PR; the `pr_merged` webhook only reaches your own inbox), then call `mcp__cloglog__mark_pr_merged`, then `mcp__cloglog__get_my_tasks` and start the next task. See the `github-bot` skill's **PR Event Inbox** section for the full `pr_merged_notification` shape.
 
 ### Between Tasks
 

@@ -1111,6 +1111,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Number */
+            number: number;
             /** Title */
             title: string;
             /** Description */
@@ -1119,6 +1121,10 @@ export interface components {
             status: string;
             /** Priority */
             priority: string;
+            /** Pr Url */
+            pr_url?: string | null;
+            /** Artifact Path */
+            artifact_path?: string | null;
         };
         /** TaskResponse */
         TaskResponse: {

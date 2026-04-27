@@ -8,6 +8,16 @@ model: sonnet
 
 You are an autonomous worktree agent. You work independently through the full feature pipeline — from design spec through implementation — without human intervention.
 
+## Work-Log Bootstrap
+
+Before anything else, check for prior per-task work logs in this worktree:
+
+```bash
+ls shutdown-artifacts/work-log-T-*.md 2>/dev/null
+```
+
+If any `work-log-T-<NNN>.md` files exist, **read them all** before any other action — they carry context from earlier sessions on this same worktree: decisions, files touched, codex review findings, and most importantly the **Residual TODOs / context the next task should know** section, which is the load-bearing handoff between sessions.
+
 ## First Steps
 
 1. Read `AGENT_PROMPT.md` in your current directory — it contains your feature assignment and task IDs
@@ -42,7 +52,7 @@ Your work follows a strict pipeline. Call `mcp__cloglog__get_my_tasks` to get yo
 3. If the project's CLAUDE.md specifies review agents or additional subagents for the spec phase, follow those instructions
 4. Create a PR with the spec (use `github-bot` skill)
 5. Call `mcp__cloglog__update_task_status` to move the task to `review` with the PR URL
-6. Confirm your `.cloglog/inbox` Monitor is running — webhook events (`review_submitted`, `ci_failed`, `pr_merged`) arrive there automatically. On a codex `review_submitted`, run the auto-merge gate from the `github-bot` skill's **Auto-Merge on Codex Pass** section *before* falling through to the in_progress fix flow. On `pr_merged`: **first emit `pr_merged_notification` to `<project_root>/.cloglog/inbox`** (T-262 — surfaces the merge to the supervisor and any parallel worktree blocked on this PR; the `pr_merged` webhook only reaches your own inbox), then call `mcp__cloglog__mark_pr_merged`, then `mcp__cloglog__report_artifact` with the spec file path, then `mcp__cloglog__get_my_tasks` and start the next task. See the `github-bot` skill's **PR Event Inbox** section for the full `pr_merged_notification` shape.
+6. Confirm your `.cloglog/inbox` Monitor is running — webhook events (`review_submitted`, `ci_failed`, `pr_merged`) arrive there automatically. On a codex `review_submitted`, run the auto-merge gate from the `github-bot` skill's **Auto-Merge on Codex Pass** section *before* falling through to the in_progress fix flow. On `pr_merged`: **first emit `pr_merged_notification` to `<project_root>/.cloglog/inbox`** (T-262 — surfaces the merge to the supervisor and any parallel worktree blocked on this PR; the `pr_merged` webhook only reaches your own inbox), then call `mcp__cloglog__mark_pr_merged`, then `mcp__cloglog__report_artifact` with the spec file path, then write `shutdown-artifacts/work-log-T-<NNN>.md` (see **Per-Task Work-Log Schema** below), emit `agent_unregistered` to the supervisor inbox, call `mcp__cloglog__unregister_agent`, and exit. The supervisor sees the `agent_unregistered` event, checks for remaining backlog tasks, and decides whether to relaunch you for the next task. See the `github-bot` skill's **PR Event Inbox** section for the full `pr_merged_notification` shape.
 
 ### Plan Task (task_type: "plan")
 
@@ -80,15 +90,13 @@ Your work follows a strict pipeline. Call `mcp__cloglog__get_my_tasks` to get yo
    - **## Tests** — what tests were added, delta from baseline, strategy reasoning
    - **## Changes** — what changed and why
 5. Call `mcp__cloglog__update_task_status` to move the task to `review` with the PR URL
-6. Confirm your `.cloglog/inbox` Monitor is running — webhook events (`review_submitted`, `ci_failed`, `pr_merged`) arrive there automatically. On a codex `review_submitted`, run the auto-merge gate from the `github-bot` skill's **Auto-Merge on Codex Pass** section *before* falling through to the in_progress fix flow. On `pr_merged`: **first emit `pr_merged_notification` to `<project_root>/.cloglog/inbox`** (T-262 — surfaces the merge to the supervisor and any parallel worktree blocked on this PR; the `pr_merged` webhook only reaches your own inbox), then call `mcp__cloglog__mark_pr_merged`, then `mcp__cloglog__get_my_tasks` and start the next task. See the `github-bot` skill's **PR Event Inbox** section for the full `pr_merged_notification` shape.
+6. Confirm your `.cloglog/inbox` Monitor is running — webhook events (`review_submitted`, `ci_failed`, `pr_merged`) arrive there automatically. On a codex `review_submitted`, run the auto-merge gate from the `github-bot` skill's **Auto-Merge on Codex Pass** section *before* falling through to the in_progress fix flow. On `pr_merged`: **first emit `pr_merged_notification` to `<project_root>/.cloglog/inbox`** (T-262 — surfaces the merge to the supervisor and any parallel worktree blocked on this PR; the `pr_merged` webhook only reaches your own inbox), then call `mcp__cloglog__mark_pr_merged`, then write `shutdown-artifacts/work-log-T-<NNN>.md` (see **Per-Task Work-Log Schema** below), emit `agent_unregistered` to the supervisor inbox, call `mcp__cloglog__unregister_agent`, and exit. The supervisor decides whether to relaunch you for the next task. See the `github-bot` skill's **PR Event Inbox** section for the full `pr_merged_notification` shape.
 
-### Between Tasks
+### One Task Per Session
 
-After each task completes (PR merges or plan committed):
-- Call `mcp__cloglog__get_my_tasks`
-- If more tasks remain, start the next one
-- If empty, proceed to shutdown
-- **Never exit after just the spec task.** If `get_my_tasks` still returns tasks, you have more work to do.
+Worktree agents execute exactly one task per session. When a task's PR merges, the agent writes a per-task work log, emits `agent_unregistered`, and exits. The supervisor handles relaunching the same worktree for the next backlog task (if any), or triggering close-wave (if none remain).
+
+**Exception: plan → impl pipeline.** A plan task (no PR — committed locally) immediately starts the following impl task within the same session. The session boundary fires when the impl task's PR merges, not when the plan commits.
 
 ## Subagent Spawning
 
@@ -185,20 +193,44 @@ not write the PR body until the skill has run to completion — the
 demo, the exemption, or the static-allowlist check must be settled
 first.
 
+## Per-Task Work-Log Schema
+
+Each task that produces a merged PR requires a per-task work log written to `shutdown-artifacts/work-log-T-<NNN>.md` before the agent exits. This file is the durable, structured handoff between sessions on the same worktree.
+
+```yaml
+---
+task: T-NNN
+title: <task title>
+pr: https://github.com/.../pull/NN
+merged_at: <utc-iso>
+---
+## What shipped
+…
+## Files touched
+…
+## Decisions
+…
+## Review findings + resolutions
+…
+## Learnings (candidate for CLAUDE.md)
+…
+## Residual TODOs / context the next task should know
+…
+```
+
+The **Residual TODOs / context the next task should know** section is load-bearing — it is the first thing the next session reads.
+
 ## Shutdown
 
-Exit condition: **`mcp__cloglog__get_my_tasks` returns no task with status `backlog` for this worktree.** That is the single authoritative signal — do not wait for `done` (administrative, user-driven, no push notification fires) and do not gate on a "feature pipeline is complete" derivation. If the project carries `docs/design/agent-lifecycle.md`, that document is the canonical protocol and overrides this section.
+Exit condition: **on `pr_merged`** — each merged PR triggers a per-task shutdown. Agents exit after every PR merge, regardless of whether more backlog tasks remain. The supervisor coordinates relaunching the same worktree for subsequent tasks.
 
-Shutdown sequence (in order, skip steps that do not apply):
+Shutdown sequence on `pr_merged` (in order):
 
-1. For any task with a merged PR: call `mcp__cloglog__mark_pr_merged(task_id, worktree_id)` as a fallback — idempotent with the webhook consumer.
-2. For `spec` or `plan` tasks: if still `in_progress`, move to `review` (`skip_pr=True` for plan) and call `mcp__cloglog__report_artifact(task_id, worktree_id, artifact_path)`.
-3. Generate shutdown artifacts inside the worktree:
-   - `shutdown-artifacts/work-log.md` — timeline and scope of this run
-   - `shutdown-artifacts/learnings.md` — patterns, gotchas, and follow-up items
-   Use **absolute paths** when referencing these files in the next step.
-4. **Emit `agent_unregistered` to the main agent inbox** (`<project_root>/.cloglog/inbox`) *before* calling `unregister_agent`. See `docs/design/agent-lifecycle.md` §2 step 5 for the full event shape (required fields: `type`, `worktree`, `worktree_id`, `ts`, `tasks_completed`, `prs` (T-262 — `T-NNN -> PR URL` map; build it by walking `get_my_tasks()` for each row's `pr_url`; omit tasks without a PR), `artifacts.work_log`, `artifacts.learnings`, `reason`). Artifact paths MUST be absolute. This event is authoritative for the main agent's close-wave flow; the SessionEnd hook writes a best-effort fallback only.
-5. Call `mcp__cloglog__unregister_agent`.
-6. Exit.
-
-**Do NOT exit prematurely.** If `get_my_tasks` still returns any `backlog` task, you have more work to do.
+1. Emit `pr_merged_notification` to `<project_root>/.cloglog/inbox` (T-262 — surfaces the merge to the supervisor).
+2. Call `mcp__cloglog__mark_pr_merged(task_id, worktree_id)`.
+3. For `spec` tasks: call `mcp__cloglog__report_artifact(task_id, worktree_id, artifact_path)`.
+4. Write `shutdown-artifacts/work-log-T-<NNN>.md` using the schema above. Use absolute paths.
+5. Build the aggregate `shutdown-artifacts/work-log.md` by concatenating all `work-log-T-*.md` files in chronological order, plus a one-line envelope header. This preserves backward compat with close-wave Step 5d which reads `artifacts.work_log`.
+6. **Emit `agent_unregistered` to the main agent inbox** (`<project_root>/.cloglog/inbox`) *before* calling `unregister_agent`. Required fields: `type`, `worktree`, `worktree_id`, `ts`, `tasks_completed`, `prs` (T-262), `artifacts.work_log` (absolute path to `shutdown-artifacts/work-log.md`), `artifacts.learnings` (omit or set to `null` — learnings now live inside per-task logs), `reason: "pr_merged"`. Artifact paths MUST be absolute.
+7. Call `mcp__cloglog__unregister_agent`.
+8. Exit.

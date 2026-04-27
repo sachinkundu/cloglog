@@ -213,16 +213,30 @@ from PRs/commits rather than read from the worktree.
 
 ### Step 5d — Consolidate shutdown artifacts
 
-For each worktree that completed tier 1 successfully, copy or inline its
-`shutdown-artifacts/work-log.md` and `shutdown-artifacts/learnings.md` into
-the wave work log BEFORE Step 7 removes the worktree. The inbox event's
-`artifacts.work_log` and `artifacts.learnings` values are absolute paths —
-use them directly.
+For each worktree that completed tier 1 successfully:
+
+1. Check for **per-task work logs**: `ls <worktree_path>/shutdown-artifacts/work-log-T-*.md`. If any exist, read each one in task-number order — they are the canonical source of what shipped, files touched, decisions, and learnings for each task. Each file follows the schema:
+   ```
+   ---
+   task: T-NNN
+   title: <task title>
+   pr: <pr-url>
+   merged_at: <utc-iso>
+   ---
+   ## What shipped / ## Files touched / ## Decisions /
+   ## Review findings + resolutions / ## Learnings / ## Residual TODOs
+   ```
+
+2. Also read the aggregate `shutdown-artifacts/work-log.md` (pointed to by the `agent_unregistered` event's `artifacts.work_log` field) — it is the concatenation of per-task logs plus a one-line envelope header. Use it when per-task logs are absent (older worktrees) or as a consistency check.
+
+3. Inline all per-task work logs into the wave work log, one section per task, in task-number order. Mark the source clearly (`from work-log-T-NNN.md`). Do this BEFORE Step 7 removes the worktree — the files vanish with the worktree.
 
 For worktrees that fell back to tier 2, reconstruct the per-worktree section
 from `git log --oneline main..<branch>` and the merged PR body, and mark it
 `reconstructed (force_unregister)` so future readers know there is no
 original work log.
+
+**Supervisor relaunch vs close-wave boundary.** Close-wave runs only when *all* tasks assigned to a worktree are resolved (done or review-with-pr-merged). If the supervisor relaunched the same worktree for multiple tasks across multiple sessions, all per-task logs from each session are present in `shutdown-artifacts/` by the time the final agent exits and close-wave runs. Do not run close-wave while a worktree still has `backlog` tasks — the supervisor's `agent_unregistered` handler (see the `launch` skill's **Supervisor Relaunch Flow** section) is responsible for relaunching until all tasks are done, at which point it hands off to close-wave.
 
 ## Step 6: Sanity check — no running launcher
 

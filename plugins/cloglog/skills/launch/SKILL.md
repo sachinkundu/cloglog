@@ -122,15 +122,15 @@ When you receive a message, read it and act on the instruction. The main agent m
     reflecting whichever terminal state the skill reached (the skill's
     own Step 6 prints the matching PR-body template).
 12. Move task to review with PR URL via `mcp__cloglog__update_task_status`
-13. Your `.cloglog/inbox` Monitor delivers review/merge/CI events automatically — do NOT start a `/loop`. On `review_submitted` from `cloglog-codex-reviewer[bot]`: run the auto-merge gate (see the github-bot skill's *Auto-Merge on Codex Pass* section). On `pr_merged`:
-    - **First**, append a `pr_merged_notification` line to `<project_root>/.cloglog/inbox` so the supervisor sees the merge (T-262 — the `pr_merged` webhook only fans out to the merging worktree's own inbox; without this notification a parallel worktree blocked on this PR has no signal):
+13. Your `.cloglog/inbox` Monitor delivers review/merge/CI events automatically — do NOT start a `/loop`. On `review_submitted` from `cloglog-codex-reviewer[bot]`: run the auto-merge gate (see the github-bot skill's *Auto-Merge on Codex Pass* section). On `pr_merged`, run the per-task shutdown sequence:
+    - **First**, append a `pr_merged_notification` line to `<project_root>/.cloglog/inbox` so the supervisor sees the merge (T-262 — the `pr_merged` webhook only fans out to the merging worktree's own inbox):
       ```bash
       printf '{"type":"pr_merged_notification","worktree":"<wt-name>","worktree_id":"<uuid>","task":"T-NNN","task_id":"<uuid>","pr":"<pr-url>","pr_number":NNN,"ts":"%s"}\n' "$(date -Is)" \
         >> <project_root>/.cloglog/inbox
       ```
-    - Then call `mcp__cloglog__mark_pr_merged(task_id, worktree_id)`, then for `spec`/`plan` tasks call `mcp__cloglog__report_artifact(task_id, worktree_id, artifact_path)`, then `mcp__cloglog__get_my_tasks` and start the next `backlog` task. See the `github-bot` skill's PR Event Inbox section for each event's shape.
-14. Exit condition — `get_my_tasks` returns no task in `backlog` status. Then run the shutdown sequence:
-    - Generate `shutdown-artifacts/work-log.md` and `shutdown-artifacts/learnings.md` inside the worktree (use absolute paths when referring to them).
+    - Call `mcp__cloglog__mark_pr_merged(task_id, worktree_id)`. For `spec` tasks also call `mcp__cloglog__report_artifact(task_id, worktree_id, artifact_path)`.
+    - Write `shutdown-artifacts/work-log-T-<NNN>.md` — structured per-task summary (see the worktree-agent template's **Per-Task Work-Log Schema**). The **Residual TODOs / context the next task should know** section is the load-bearing handoff; write it carefully.
+    - Build the aggregate `shutdown-artifacts/work-log.md` by concatenating all `work-log-T-*.md` files in chronological order plus a one-line envelope header (backward compat with close-wave Step 5d).
     - **Emit `agent_unregistered` to `<project_root>/.cloglog/inbox` before `unregister_agent`.** Shape:
       ```json
       {
@@ -142,20 +142,50 @@ When you receive a message, read it and act on the instruction. The main agent m
         "prs": {"T-NNN": "<pr-url>"},
         "artifacts": {
           "work_log": "/abs/path/shutdown-artifacts/work-log.md",
-          "learnings": "/abs/path/shutdown-artifacts/learnings.md"
+          "learnings": null
         },
-        "reason": "all_assigned_tasks_complete"
+        "reason": "pr_merged"
       }
       ```
-      Absolute paths are required so the main agent can read the artifacts after the worktree is torn down. The `prs` map (T-262) carries the PR URL for each completed task — build it by walking `mcp__cloglog__get_my_tasks()` and, for each row with a non-null `pr_url`, keying the map at `f"T-{row.number}"` (the `TaskInfo` schema exposes both `number` and `pr_url`). Tasks completed without a PR (plan tasks via `skip_pr=True`, docs-only) MUST be omitted from `prs` rather than mapped to `null`. `tasks_completed` stays a flat list of IDs so existing parsers keep working. This event is authoritative — do not rely on the SessionEnd hook to emit it for you.
-    - Call `mcp__cloglog__unregister_agent` and exit.
+      Absolute paths are required. `tasks_completed` is a flat list of task UUIDs; build the `prs` map by calling `mcp__cloglog__get_my_tasks()` and, for each row with a non-null `pr_url`, keying the map at `T-{row.number}` (the `TaskInfo` schema exposes both `number` and `pr_url`). Plan tasks (no `pr_url`) MUST be omitted from `prs`. This event is authoritative — do not rely on the SessionEnd hook.
+    - Call `mcp__cloglog__unregister_agent` and **exit**. Do NOT call `get_my_tasks` or start the next task — the supervisor handles that.
+
+**One task per session.** Each session ends after one PR merge (or after a plan+impl pair where the impl PR merges). The supervisor sees `agent_unregistered`, checks for remaining backlog tasks on this worktree, and either relaunches with the continuation prompt (see **Continuation Prompt** below) or triggers close-wave if no tasks remain.
+
+## Continuation Prompt
+
+When the supervisor relaunches the same worktree for task N+1 after task N's PR merged and the agent exited, use this prompt instead of the initial launch prompt:
+
+```
+Read /abs/path/to/worktree/AGENT_PROMPT.md and all shutdown-artifacts/work-log-T-*.md files in that worktree, then begin the next task.
+```
+
+The initial AGENT_PROMPT.md is already in the worktree from the original launch — do not rewrite it. The prior work logs carry the context the new session needs. The new session bootstraps by reading the work logs (see the worktree-agent template's **Work-Log Bootstrap** step), then loads MCP tools, registers, starts the next backlog task, and proceeds normally.
+
+**The launch SKILL writes the initial prompt; the supervisor writes continuation prompts.** Do not encode continuation logic in the launch.sh template — the launcher is dumb bash, and detecting "more tasks remain" requires MCP access the supervisor already has.
+
+## Supervisor Relaunch Flow
+
+When the supervisor inbox receives `agent_unregistered` from a worktree agent:
+
+1. Call `mcp__cloglog__get_my_tasks` (or inspect the `agent_unregistered` event's `tasks_completed` list).
+2. Check whether any task assigned to this worktree still has `status: "backlog"`.
+3. **If backlog tasks remain** → relaunch in the same zellij tab:
+   ```bash
+   # Go to the worktree's tab (same tab name as WORKTREE_NAME)
+   zellij action go-to-tab-by-name "${WORKTREE_NAME}"
+   # Issue the continuation prompt — the tab's current process has exited,
+   # so the shell is at the prompt again
+   zellij action write-chars "claude --dangerously-skip-permissions 'Read ${WORKTREE_PATH}/AGENT_PROMPT.md and all shutdown-artifacts/work-log-T-*.md files in ${WORKTREE_PATH}, then begin the next task.'"
+   zellij action write "13"   # send Enter
+   ```
+4. **If no backlog tasks remain** → invoke the `cloglog:close-wave` skill for this worktree.
 
 ## Pipeline (Features Only)
 If this is a feature with spec/plan/impl tasks:
-- Spec task: write design spec, create PR, wait for merge. On merge: `mark_pr_merged` → `report_artifact` with spec path.
+- Spec task: write design spec, create PR, wait for merge. On merge: `mark_pr_merged` → `report_artifact` → write per-task work log → `agent_unregistered` → exit. Supervisor relaunches for plan task.
 - Plan task: write implementation plan (no PR needed), commit locally, then call `update_task_status(plan_task_id, "review", skip_pr=True)` and `report_artifact(plan_task_id, worktree_id, plan_path)`, then `start_task` on the impl task. **Known backend gap (T-NEW-b):** `start_task` on the impl returns 409 until the pipeline guard at `src/agent/services.py:237` accepts artifact-only predecessor resolution; a 409 is a runtime MCP tool error per §4.1, so when you hit it emit `mcp_tool_error` with `reason: "pipeline_guard_blocked"` to the main inbox and stop — main recognises that reason and handles the advance. See `docs/design/agent-lifecycle.md` §1 for context and §4.1 for the event shape.
-- Impl task: implement the feature, create PR, wait for merge.
-- After each PR merges, call `mcp__cloglog__get_my_tasks` to get the next task.
+- Impl task: implement the feature, create PR, wait for merge. On merge: write per-task work log → `agent_unregistered` → exit.
 ```
 
 Use **absolute paths** when referencing the prompt file. Agents cannot reliably find files by relative path.

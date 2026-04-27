@@ -59,7 +59,7 @@ export interface ToolHandlers {
   list_epics(args: { project_id: string }): Promise<unknown>
   create_feature(args: { project_id: string; epic_id: string; title: string; description?: string }): Promise<unknown>
   list_features(args: { project_id: string; epic_id: string }): Promise<unknown>
-  create_task(args: { project_id: string; feature_id: string; title: string; description?: string; priority?: string; task_type?: string }): Promise<unknown>
+  create_task(args: { project_id: string; feature_id: string; title: string; description?: string; priority?: string; task_type?: string; model?: string }): Promise<unknown>
   get_backlog(args: { project_id: string }): Promise<unknown>
   get_board(args: { project_id: string; epic_id?: string; exclude_done?: boolean }): Promise<unknown>
   get_active_tasks(args: { project_id: string }): Promise<unknown>
@@ -67,7 +67,7 @@ export interface ToolHandlers {
   delete_epic(args: { epic_id: string }): Promise<unknown>
   update_feature(args: { feature_id: string; title?: string; description?: string; status?: string }): Promise<unknown>
   delete_feature(args: { feature_id: string }): Promise<unknown>
-  update_task(args: { task_id: string; title?: string; description?: string; priority?: string }): Promise<unknown>
+  update_task(args: { task_id: string; title?: string; description?: string; priority?: string; model?: string | null }): Promise<unknown>
   delete_task(args: { task_id: string }): Promise<unknown>
   add_dependency(args: { feature_id: string; depends_on_id: string }): Promise<unknown>
   remove_dependency(args: { feature_id: string; depends_on_id: string }): Promise<unknown>
@@ -199,13 +199,15 @@ export function createToolHandlers(client: CloglogClient): ToolHandlers {
       return client.request('GET', `/api/v1/projects/${project_id}/epics/${epic_id}/features`)
     },
 
-    async create_task({ project_id, feature_id, title, description, priority, task_type }) {
-      return client.request('POST', `/api/v1/projects/${project_id}/features/${feature_id}/tasks`, {
+    async create_task({ project_id, feature_id, title, description, priority, task_type, model }) {
+      const body: Record<string, unknown> = {
         title,
         description: description ?? '',
         priority: priority ?? 'normal',
         task_type: task_type ?? 'task',
-      })
+      }
+      if (model !== undefined) body.model = model
+      return client.request('POST', `/api/v1/projects/${project_id}/features/${feature_id}/tasks`, body)
     },
 
     async get_backlog({ project_id }) {
@@ -249,11 +251,12 @@ export function createToolHandlers(client: CloglogClient): ToolHandlers {
       return client.request('DELETE', `/api/v1/features/${feature_id}`)
     },
 
-    async update_task({ task_id, title, description, priority }) {
-      const fields: Record<string, string> = {}
+    async update_task({ task_id, title, description, priority, model }) {
+      const fields: Record<string, unknown> = {}
       if (title !== undefined) fields.title = title
       if (description !== undefined) fields.description = description
       if (priority !== undefined) fields.priority = priority
+      if (model !== undefined) fields.model = model
       return client.request('PATCH', `/api/v1/tasks/${task_id}`, fields)
     },
 

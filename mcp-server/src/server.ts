@@ -411,11 +411,12 @@ export function createServer(client: CloglogClient): McpServer {
       description: z.string().optional().describe('Task description'),
       priority: z.enum(['normal', 'expedite']).optional().describe('Task priority (default: normal)'),
       task_type: z.enum(['spec', 'plan', 'impl', 'task']).optional().describe('Task type for pipeline ordering. spec → plan → impl. Default: task (no pipeline deps)'),
+      model: z.string().optional().describe('Claude model ID for this task (e.g. claude-opus-4-7 for spec/plan, claude-sonnet-4-6 for impl). Omit to use the host default.'),
     },
-    async ({ feature_id, title, description, priority, task_type }) => {
+    async ({ feature_id, title, description, priority, task_type, model }) => {
       const pid = requireProject()
       if (typeof pid !== 'string') return pid
-      const result = await handlers.create_task({ project_id: pid, feature_id, title, description, priority, task_type })
+      const result = await handlers.create_task({ project_id: pid, feature_id, title, description, priority, task_type, model })
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] }
     }
   )
@@ -461,15 +462,16 @@ export function createServer(client: CloglogClient): McpServer {
 
   server.tool(
     'update_task',
-    'Edit a task (title, description, or priority).',
+    'Edit a task (title, description, priority, or model).',
     {
       task_id: z.string().describe('UUID of the task'),
       title: z.string().optional().describe('New title'),
       description: z.string().optional().describe('New description'),
       priority: z.enum(['normal', 'expedite']).optional().describe('New priority'),
+      model: z.string().nullable().optional().describe('Claude model ID to assign (e.g. claude-opus-4-7). Pass null to clear.'),
     },
-    async ({ task_id, title, description, priority }) => {
-      const result = await handlers.update_task({ task_id, title, description, priority })
+    async ({ task_id, title, description, priority, model }) => {
+      const result = await handlers.update_task({ task_id, title, description, priority, model })
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] }
     }
   )

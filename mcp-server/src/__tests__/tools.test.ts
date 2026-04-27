@@ -354,6 +354,58 @@ describe('Tool Handlers', () => {
     )
   })
 
+  it('create_task includes model in POST body when provided', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 't-new', title: 'Write spec', task_type: 'spec', model: 'claude-opus-4-7',
+    })
+
+    await handlers.create_task({
+      project_id: 'proj-1',
+      feature_id: 'f1',
+      title: 'Write spec',
+      task_type: 'spec',
+      model: 'claude-opus-4-7',
+    })
+    expect(client.request).toHaveBeenCalledWith(
+      'POST', '/api/v1/projects/proj-1/features/f1/tasks',
+      { title: 'Write spec', description: '', priority: 'normal', task_type: 'spec', model: 'claude-opus-4-7' }
+    )
+  })
+
+  it('create_task omits model from POST body when not provided', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 't-new', title: 'Fix bug',
+    })
+
+    await handlers.create_task({
+      project_id: 'proj-1',
+      feature_id: 'f1',
+      title: 'Fix bug',
+    })
+    const [, , body] = (client.request as ReturnType<typeof vi.fn>).mock.calls.at(-1)!
+    expect(body).not.toHaveProperty('model')
+  })
+
+  it('update_task includes model in PATCH body when provided', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 't1' })
+
+    await handlers.update_task({ task_id: 't1', model: 'claude-sonnet-4-6' })
+    expect(client.request).toHaveBeenCalledWith(
+      'PATCH', '/api/v1/tasks/t1',
+      { model: 'claude-sonnet-4-6' }
+    )
+  })
+
+  it('update_task includes null model to clear the field', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 't1' })
+
+    await handlers.update_task({ task_id: 't1', model: null })
+    expect(client.request).toHaveBeenCalledWith(
+      'PATCH', '/api/v1/tasks/t1',
+      { model: null }
+    )
+  })
+
   it('update_task_status passes pr_url when provided', async () => {
     await handlers.update_task_status({
       worktree_id: 'wt-123', task_id: 't1', status: 'review',

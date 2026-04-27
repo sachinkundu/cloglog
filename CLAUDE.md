@@ -133,6 +133,17 @@ Durable gotchas discovered during worktree tasks. Each bullet is non-obvious and
 
 - **Don't promote a brief's entity-type list verbatim into the documented argument grammar of an unrelated surface.** The set of entities a *resolver tool* accepts (e.g. `mcp__cloglog__search` accepts T-/F-/E-) is not the set a *workflow command* knows how to execute (e.g. `/cloglog launch` has no epic-launch path). Audit each surface against its own downstream code paths before widening accepted input.
 
+### Plugin hooks: YAML parsing
+
+- **`python3 -c 'import yaml'` in a plugin hook violates `docs/invariants.md:76`.** Multiple plugin entry points still inline `import yaml` to read `.cloglog/config.yaml`; on hosts without global PyYAML the worktree never registers, the scope guard drops, and unregister-by-path posts to the wrong backend. Mechanical grep+sed fix is fine for scalar-key parsers (pattern in `.cloglog/on-worktree-create.sh:88-105`), but **`protect-worktree-writes.sh` reads the nested `worktree_scopes` mapping** which grep+sed cannot represent — needs a plugin-shipped Python parser or a flatter config format. Don't call YAML-parser cleanup "mechanical" without checking each parser's nesting depth.
+- **Client-side preflights vs. safety boundaries.** Hooks like `enforce-task-transitions.sh` look like guards, but the backend already blocks agent → `done` at `src/agent/services.py:417` and `:501`. Skipping such a hook is a UX/portability degradation, not a safety bypass. Audit findings about hooks must distinguish preflight UX from authoritative enforcement — codex catches the inversion.
+
+### Codex review on long-cycle PRs
+
+- **Codex 5/5 cap is not an optional ceiling on factual-precision PRs.** Research/audit docs that cite file:line evidence burn codex sessions on every imprecision — each round generates new sibling findings as codex re-reads adjacent files. Bundling the entire scope correctly in round 1 is the only way to stay under the cap. Once exhausted, the PR is operator-driven; codex skips with a "request human review" comment.
+- **`gitignored` ≠ "not a leak".** Audit findings should distinguish *tracked leak* from *host-specific runtime state* — gitignored files (e.g. `.cloglog/launch.sh`) can still embed operator-host absolute paths that break when copied between operators.
+- **When operator direction overrides recommendations mid-review, preserve the original evidence trail.** Don't rewrite findings in place; strikethrough + Resolved annotation + a preamble carrying the override keeps the audit readable for downstream onboarding work.
+
 ### Inbox monitor
 
 - **`tail -n 0 -F` is the only correct default for inbox monitors.** `tail -f` exits if the file is missing (inbox is created lazily by the first webhook write); `tail -F` truncates event history to the last 10 lines; `tail -n +1 -F` re-delivers already-handled `pr_merged` / `review_submitted` and trips the one-active-task guard. Always pre-create the file (`mkdir -p .cloglog && touch .cloglog/inbox`) and use absolute paths — relative paths evade dedupe filters that match on absolute path equality.

@@ -223,12 +223,21 @@ WORKTREE_PATH="${WORKTREE_PATH}"
 PROJECT_ROOT="${PROJECT_ROOT}"
 
 _backend_url() {
+  # T-312: stdlib-only grep+sed scalar parse — same shape as the shared helper
+  # at plugins/cloglog/hooks/lib/parse-yaml-scalar.sh. Inlined here because
+  # launch.sh runs as a standalone bash exec inside the worktree, with no
+  # CLAUDE_PLUGIN_ROOT in scope to source the helper from. Do NOT reintroduce
+  # the python YAML lib here — the system python3 typically lacks PyYAML and
+  # silently returns the default, breaking ports on portable hosts.
   local cfg="\$PROJECT_ROOT/.cloglog/config.yaml"
-  [[ -f "\$cfg" ]] || { echo "http://localhost:8000"; return; }
-  python3 -c "
-import yaml
-print(yaml.safe_load(open('\$cfg')).get('backend_url','http://localhost:8000'))
-" 2>/dev/null || echo "http://localhost:8000"
+  local default="http://localhost:8000"
+  [[ -f "\$cfg" ]] || { echo "\$default"; return; }
+  local parsed
+  parsed=\$(grep '^backend_url:' "\$cfg" 2>/dev/null | head -n1 \\
+           | sed 's/^backend_url:[[:space:]]*//' \\
+           | sed 's/[[:space:]]*#.*\$//' \\
+           | tr -d '"' | tr -d "'")
+  if [[ -n "\$parsed" ]]; then echo "\$parsed"; else echo "\$default"; fi
 }
 
 _api_key() {

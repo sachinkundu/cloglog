@@ -313,6 +313,29 @@ class TestBuildMessage:
         assert msg["pr_number"] == 42
         assert "MERGED" in msg["message"]
 
+    def test_pr_merged_message_no_get_my_tasks(self) -> None:
+        """T-329: pr_merged message must NOT instruct agents to call get_my_tasks.
+
+        The backend-generated inbox message is the runtime signal agents act on.
+        If it still says 'call get_my_tasks and start the next task', agents
+        will follow the old multi-task loop even if the docs say otherwise.
+        The T-329 contract requires the message to describe the per-task
+        shutdown sequence instead.
+        """
+        consumer = AgentNotifierConsumer()
+        event = _make_event(event_type=WebhookEventType.PR_MERGED)
+        msg = consumer._build_message(event)
+        assert msg is not None
+        assert "get_my_tasks and start the next task" not in msg["message"], (
+            "pr_merged inbox message must not contain 'get_my_tasks and start the next task'. "
+            "T-329 replaces the multi-task loop with a per-task shutdown sequence. "
+            "The supervisor handles relaunching for subsequent tasks."
+        )
+        assert "unregister_agent" in msg["message"], (
+            "pr_merged inbox message must instruct agents to call unregister_agent "
+            "as part of the T-329 per-task shutdown sequence."
+        )
+
     def test_pr_closed_message(self) -> None:
         consumer = AgentNotifierConsumer()
         event = _make_event(event_type=WebhookEventType.PR_CLOSED)

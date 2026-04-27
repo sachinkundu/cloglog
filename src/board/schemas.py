@@ -212,6 +212,7 @@ class ActiveTaskItem(BaseModel):
     worktree_id: UUID | None
     feature_id: UUID
     task_type: str
+    model: str | None = None
 
 
 # --- Backlog tree view ---

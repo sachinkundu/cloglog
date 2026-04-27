@@ -1,7 +1,11 @@
 #!/bin/bash
 # PreToolUse hook: enforce worktree discipline — agents can only write to assigned directories.
-# Reads worktree_scopes from .cloglog/config.yaml instead of hardcoded case statement.
+# Reads worktree_scopes from .cloglog/config.yaml via the stdlib-only parser at
+# lib/parse-worktree-scopes.py (T-313 / Phase 0b — replaces the previous inline
+# python+PyYAML block which silently failed on hosts without PyYAML).
 # Detects worktree via git commands, not path patterns.
+
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 INPUT=$(cat)
 CWD=$(echo "$INPUT" | jq -r '.cwd')
@@ -48,59 +52,43 @@ find_config() {
 CONFIG=$(find_config "$CWD") || exit 0
 
 # --- Look up allowed directories for this worktree scope ---
-# Supports prefix matching: "frontend-auth" matches "frontend" scope
-ALLOWED=$(CONFIG_PATH="$CONFIG" SCOPE_KEY="$SCOPE_NAME" python3 -c "
-import yaml, sys, json, os
+# Supports prefix matching: "frontend-auth" matches "frontend" scope.
+# The parser is stdlib-only — see lib/parse-worktree-scopes.py for the
+# supported YAML subset and why we can't reach for PyYAML here.
+#
+# Fail closed on parser failure: a malformed config (mid-edit, merge
+# conflict markers, unsupported YAML construct) must BLOCK writes, not
+# silently allow them. The previous PyYAML-based snippet swallowed
+# ImportError into allow-all; preserving that fallthrough here would
+# defeat the whole point of T-313.
+PARSER_STDERR=$(mktemp)
+ALLOWED=$(python3 "${HOOK_DIR}/lib/parse-worktree-scopes.py" "$CONFIG" "$SCOPE_NAME" 2>"$PARSER_STDERR")
+PARSER_RC=$?
+if [[ $PARSER_RC -ne 0 ]]; then
+  echo "Blocked: failed to parse worktree_scopes from $CONFIG (rc=$PARSER_RC)" >&2
+  cat "$PARSER_STDERR" >&2
+  rm -f "$PARSER_STDERR"
+  exit 2
+fi
+rm -f "$PARSER_STDERR"
 
-cfg = yaml.safe_load(open(os.environ['CONFIG_PATH']))
-scopes = cfg.get('worktree_scopes', {})
-scope_name = os.environ['SCOPE_KEY']
-
-# Exact match first
-if scope_name in scopes:
-    print(json.dumps(scopes[scope_name]))
-    sys.exit(0)
-
-# Prefix match: 'frontend-auth' matches 'frontend'
-for key in sorted(scopes.keys(), key=len, reverse=True):
-    if scope_name.startswith(key):
-        print(json.dumps(scopes[key]))
-        sys.exit(0)
-
-# No scope defined — allow all writes
-print('[]')
-" 2>/dev/null) || exit 0
-
-# Empty or no scopes — allow all writes
-if [[ "$ALLOWED" == "[]" ]] || [[ -z "$ALLOWED" ]]; then
+# Empty — no scope defined for this worktree, allow all writes.
+if [[ -z "$ALLOWED" ]]; then
   exit 0
 fi
 
 # Make file path relative to CWD
 REL_PATH="${FILE_PATH#$CWD/}"
 
-# Check if file is in an allowed directory
-ALLOWED_JSON="$ALLOWED" REL_PATH_VAL="$REL_PATH" python3 -c "
-import json, sys, os
-allowed = json.loads(os.environ['ALLOWED_JSON'])
-rel_path = os.environ['REL_PATH_VAL']
-for pattern in allowed:
-    if rel_path.startswith(pattern):
-        sys.exit(0)
-sys.exit(1)
-" 2>/dev/null
+# Check if file is in an allowed directory.
+IFS=',' read -ra ALLOWED_ARR <<< "$ALLOWED"
+for pattern in "${ALLOWED_ARR[@]}"; do
+  if [[ "$REL_PATH" == "$pattern"* ]]; then
+    exit 0
+  fi
+done
 
-if [[ $? -eq 0 ]]; then
-  exit 0
-fi
-
-# Format allowed dirs for error message
-ALLOWED_DIRS=$(ALLOWED_JSON="$ALLOWED" python3 -c "
-import json, os
-dirs = json.loads(os.environ['ALLOWED_JSON'])
-print(' '.join(dirs))
-" 2>/dev/null)
-
+ALLOWED_DIRS="${ALLOWED//,/ }"
 echo "Blocked: Worktree '$WORKTREE_NAME' can only write to: $ALLOWED_DIRS" >&2
 echo "Attempted write to: $REL_PATH" >&2
 exit 2

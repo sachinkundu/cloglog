@@ -1,10 +1,12 @@
-"""T-312: pin the absence of `import yaml` at the 4 scalar-key sites.
+"""T-312 + T-313: pin the absence of `import yaml` at every plugin-hook site.
 
-Each entry below was previously a `python3 -c 'import yaml'` block. The
-T-312 fix replaces them with a shared stdlib-only helper. Phase 0b
-(T-313) handles the remaining nested-mapping site at
-plugins/cloglog/hooks/protect-worktree-writes.sh — that file is
-intentionally NOT in this pin set.
+Each entry below was previously a `python3 -c 'import yaml'` block:
+
+* T-312 closed the four scalar-key sites with a shared shell helper
+  (plugins/cloglog/hooks/lib/parse-yaml-scalar.sh).
+* T-313 / Phase 0b closed the remaining nested-mapping site
+  (plugins/cloglog/hooks/protect-worktree-writes.sh) with a stdlib-only
+  Python parser at plugins/cloglog/hooks/lib/parse-worktree-scopes.py.
 
 If a future edit reintroduces `import yaml` at any of these sites, the
 hook will silently break on hosts whose system python3 lacks PyYAML —
@@ -23,6 +25,8 @@ SCALAR_HOOK_FILES = [
     REPO_ROOT / "plugins/cloglog/hooks/quality-gate.sh",
     REPO_ROOT / "plugins/cloglog/hooks/enforce-task-transitions.sh",
 ]
+
+PROTECT_WORKTREE_WRITES = REPO_ROOT / "plugins/cloglog/hooks/protect-worktree-writes.sh"
 
 LAUNCH_SKILL = REPO_ROOT / "plugins/cloglog/skills/launch/SKILL.md"
 
@@ -55,6 +59,26 @@ def test_scalar_hooks_source_the_shared_helper() -> None:
             f"{path.relative_to(REPO_ROOT)} sources the helper but never "
             "calls read_yaml_scalar — dead source line."
         )
+
+
+def test_protect_worktree_writes_has_no_import_yaml() -> None:
+    """Phase 0b pin: the nested-mapping site no longer reaches for PyYAML."""
+    body = _read(PROTECT_WORKTREE_WRITES)
+    assert "import yaml" not in body, (
+        "plugins/cloglog/hooks/protect-worktree-writes.sh reintroduced "
+        "`import yaml` — use plugins/cloglog/hooks/lib/parse-worktree-scopes.py "
+        "instead. See docs/invariants.md:76."
+    )
+
+
+def test_protect_worktree_writes_invokes_the_vendored_parser() -> None:
+    """Positive pin: the hook must call the stdlib-only parser, not just drop yaml."""
+    body = _read(PROTECT_WORKTREE_WRITES)
+    assert "lib/parse-worktree-scopes.py" in body, (
+        "protect-worktree-writes.sh must invoke the vendored parser at "
+        "plugins/cloglog/hooks/lib/parse-worktree-scopes.py — inline grep+sed "
+        "cannot represent the nested worktree_scopes mapping."
+    )
 
 
 def test_launch_skill_template_emits_no_import_yaml() -> None:

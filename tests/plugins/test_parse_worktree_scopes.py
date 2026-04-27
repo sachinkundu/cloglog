@@ -320,3 +320,31 @@ def test_hook_works_when_global_pyyaml_is_unavailable(tmp_path: Path) -> None:
         f"stdout={out.stdout!r} stderr={out.stderr!r}"
     )
     assert "Blocked" in out.stderr
+
+
+def test_hook_fails_closed_on_malformed_config(tmp_path: Path) -> None:
+    """Codex-flagged regression pin (PR #239 review): a malformed
+    ``worktree_scopes`` block must BLOCK writes, not silently allow them.
+
+    The previous ``import yaml`` snippet swallowed ImportError into
+    allow-all, and the first cut of this hook preserved the same
+    fallthrough by writing ``ALLOWED=$(... ) || exit 0`` after the
+    parser invocation. That left the silent-bypass exactly where it
+    was — any mid-edit / merge-conflict-marker config turned the hook
+    into a no-op for every worktree. Pin: malformed config => exit 2.
+    """
+    main, wt = _make_worktree(tmp_path, "board")
+    (main / ".cloglog").mkdir()
+    # Missing closing bracket on the flow list — parser exits 4 with
+    # ``parse error`` on stderr.
+    (main / ".cloglog/config.yaml").write_text(
+        "worktree_scopes:\n  board: [src/board/, tests/board/\n"
+    )
+    out = _run_hook(wt, wt / "src/agent/services.py")
+    assert out.returncode == 2, (
+        f"hook must fail closed on malformed worktree_scopes, got rc={out.returncode} "
+        f"stdout={out.stdout!r} stderr={out.stderr!r}"
+    )
+    assert "Blocked: failed to parse worktree_scopes" in out.stderr
+    # The parser's own stderr must be propagated so an operator can fix the config.
+    assert "parse error" in out.stderr

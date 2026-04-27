@@ -55,7 +55,22 @@ CONFIG=$(find_config "$CWD") || exit 0
 # Supports prefix matching: "frontend-auth" matches "frontend" scope.
 # The parser is stdlib-only — see lib/parse-worktree-scopes.py for the
 # supported YAML subset and why we can't reach for PyYAML here.
-ALLOWED=$(python3 "${HOOK_DIR}/lib/parse-worktree-scopes.py" "$CONFIG" "$SCOPE_NAME") || exit 0
+#
+# Fail closed on parser failure: a malformed config (mid-edit, merge
+# conflict markers, unsupported YAML construct) must BLOCK writes, not
+# silently allow them. The previous `import yaml` snippet swallowed
+# ImportError into allow-all; preserving that fallthrough here would
+# defeat the whole point of T-313.
+PARSER_STDERR=$(mktemp)
+ALLOWED=$(python3 "${HOOK_DIR}/lib/parse-worktree-scopes.py" "$CONFIG" "$SCOPE_NAME" 2>"$PARSER_STDERR")
+PARSER_RC=$?
+if [[ $PARSER_RC -ne 0 ]]; then
+  echo "Blocked: failed to parse worktree_scopes from $CONFIG (rc=$PARSER_RC)" >&2
+  cat "$PARSER_STDERR" >&2
+  rm -f "$PARSER_STDERR"
+  exit 2
+fi
+rm -f "$PARSER_STDERR"
 
 # Empty — no scope defined for this worktree, allow all writes.
 if [[ -z "$ALLOWED" ]]; then

@@ -159,13 +159,17 @@ How to respond to each event type:
 - **`review_comment`** — a reviewer posted a standalone inline diff comment without opening a review. The event carries `path`, `line`, and the comment body. Treat it the same as `review_submitted`: move back to `in_progress`, address the feedback at `path:line`, push a fix, move back to `review`.
 - **`issue_comment`** — a reviewer posted an issue-style PR comment. These are often clarifying questions or approvals without a formal review. Read the body; if it requires a code change, follow the same in_progress → fix → review flow. If it is informational (e.g., "LGTM, just waiting on CI"), reply via the *Reply to Review Comments* section and stay in `review`.
 - **`ci_failed`** — follow [CI Failure Recovery](#ci-failure-recovery) to read the failed logs and push a fix. CI re-runs automatically on push; a subsequent `check_run` webhook will report the new result. Note: the consumer only filters out `conclusion=success`, so `conclusion=null` (still pending) may surface here — check `gh pr checks <PR_NUM>` before assuming the run terminated.
-- **`pr_merged`** —
+- **`pr_merged`** — run the per-task shutdown sequence (T-329 — one task per session):
     1. **First, emit `pr_merged_notification` to the main inbox (T-262)** so the supervisor sees the merge and any parallel worktree blocked on this PR can unblock without polling `gh pr list`. The `pr_merged` webhook only fans out to the merging worktree's own inbox; this notification is the only signal other agents get. Shape:
        ```bash
        printf '{"type":"pr_merged_notification","worktree":"<wt-name>","worktree_id":"<uuid>","task":"T-NNN","task_id":"<uuid>","pr":"<pr-url>","pr_number":NNN,"ts":"%s"}\n' "$(date -Is)" \
          >> <project_root>/.cloglog/inbox
        ```
-    2. Then call `mcp__cloglog__mark_pr_merged` with your active task_id, then `mcp__cloglog__report_artifact` for spec/plan tasks, then `mcp__cloglog__get_my_tasks` and `start_task` on the next task. If `get_my_tasks` returns no `backlog` task, run the full shutdown sequence from `docs/design/agent-lifecycle.md` §2 — generate `shutdown-artifacts/work-log.md` + `shutdown-artifacts/learnings.md`, emit the authoritative `agent_unregistered` event to `<project_root>/.cloglog/inbox` (with absolute paths to both artifacts AND the `prs` map per T-262 — see §2 step 5 for the full shape), then call `unregister_agent` and exit. Do NOT unregister without writing the event first; the SessionEnd hook backstop is best-effort, not a substitute.
+    2. Call `mcp__cloglog__mark_pr_merged` with your active task_id. For spec tasks also call `mcp__cloglog__report_artifact`.
+    3. Write `shutdown-artifacts/work-log-T-<NNN>.md` — the per-task work log (see the worktree-agent template's **Per-Task Work-Log Schema** for required frontmatter keys and sections). The **Residual TODOs / context the next task should know** section is load-bearing — write it carefully.
+    4. Build the aggregate `shutdown-artifacts/work-log.md` by concatenating all per-task `work-log-T-*.md` files in task-number order plus a one-line envelope header (backward compat with close-wave Step 5d).
+    5. Emit `agent_unregistered` to `<project_root>/.cloglog/inbox` with absolute paths to `shutdown-artifacts/work-log.md`, the `prs` map (T-262 — build by calling `get_my_tasks()` and keying `T-{row.number}` for rows with non-null `pr_url`), and `"reason": "pr_merged"`. See §2 step 5 of `docs/design/agent-lifecycle.md` for the full shape.
+    6. Call `mcp__cloglog__unregister_agent` and **exit**. Do NOT call `get_my_tasks` or start the next task — the supervisor handles that via the continuation prompt.
 - **`pr_closed`** — the PR was closed without merging. Move the task back to `in_progress` (or note the closure), ask the main agent for direction if unclear.
 
 If the inbox monitor is not running, events pile up silently in the file and nothing will react to them. Restart it with `Monitor(command="mkdir -p <WORKTREE_PATH>/.cloglog && touch <WORKTREE_PATH>/.cloglog/inbox && tail -n 0 -F <WORKTREE_PATH>/.cloglog/inbox", persistent=true)` as soon as you notice — **always use the absolute worktree path**, never `tail -f .cloglog/inbox` (relative). The `mkdir`/`touch` prelude is mandatory because `tail -f` on a missing file exits immediately and leaves you monitor-less. `-n 0` (start at end-of-file, deliver only events appended from now on) is the correct semantic: the inbox is append-only for the worktree's lifetime, so replaying historical lines would re-deliver already-handled `pr_merged`/`review_submitted` events and crash `start_task`. `tail -F` (capital) re-opens by name if the file is rotated. The setup/launch skills' dedupe filter matches on the inbox path suffix, but using the same absolute form everywhere is the simplest way to keep `TaskList` reconciliation unambiguous across `/clear` cycles.
@@ -234,7 +238,7 @@ GATE_RC=$?
 if [[ "$GATE_RC" == "0" ]]; then
   GH_TOKEN="$BOT_TOKEN" gh pr merge "$PR_NUM" --squash --delete-branch
   # The pr_merged webhook fires next; the inbox handler runs the existing
-  # mark_pr_merged → report_artifact → get_my_tasks flow.
+  # mark_pr_merged → report_artifact → per-task work log → agent_unregistered → exit flow.
 else
   case "$REASON" in
     human_changes_requested)

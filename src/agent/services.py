@@ -222,9 +222,10 @@ class AgentService:
                 "type": "shutdown",
                 "message": (
                     "SHUTDOWN REQUESTED: The master agent has requested this worktree "
-                    "to shut down. Finish your current work, generate shutdown artifacts "
-                    "(work-log.md and learnings.md in shutdown-artifacts/), call "
-                    "unregister_agent, and exit."
+                    "to shut down. Finish your current work, write the per-task "
+                    "shutdown-artifacts/work-log-T-<NNN>.md, build the aggregate "
+                    "shutdown-artifacts/work-log.md, emit agent_unregistered to the "
+                    "main inbox, call unregister_agent, and exit."
                 ),
             }
         )

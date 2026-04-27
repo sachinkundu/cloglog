@@ -17,21 +17,27 @@ doc, not a tutorial.
 
 ## 1. Exit condition
 
-**An agent's work is done when `get_my_tasks` returns no task in `backlog`
-status for this worktree.** That is the single, authoritative exit signal.
+**An agent's session ends on `pr_merged`.** Each worktree agent handles exactly
+one task (or a plan+impl pair) per session. When a task's PR merges, the agent
+writes a per-task work log, emits `agent_unregistered`, and exits — regardless
+of whether more backlog tasks remain on the worktree. The supervisor handles
+relaunching the same worktree for subsequent tasks.
 
 Corollary — things that are NOT exit signals:
 
 | Signal | Why it is not the exit signal |
 | --- | --- |
-| A single PR merged | The agent may have further `backlog` tasks queued. `pr_merged` only fires the "maybe start next task" flow. |
-| The task shows `done` on the board | `done` is administrative and user-driven. No push notification fires when a task moves `review` → `done`. `task_status_changed` is emitted on the SSE event bus (dashboard consumer only) and never reaches the worktree inbox. An agent that waits for `done` deadlocks forever. |
-| The "feature pipeline" is complete | Prior docs spoke of spec → plan → impl as the unit of completion. That concept is retired. Only `get_my_tasks` is authoritative; pipeline-level state is derived, not awaited. |
+| Empty `get_my_tasks()` backlog | The per-task exit fires on `pr_merged`, before checking backlog. `get_my_tasks` is used to build the `prs` map in the shutdown artifact, not to decide when to exit. |
+| The task shows `done` on the board | `done` is administrative and user-driven. No push notification fires when a task moves `review` → `done`. An agent that waits for `done` deadlocks forever. |
+| The "feature pipeline" is complete | Pipeline-level state is derived, not awaited. `pr_merged` is the per-task exit trigger; the supervisor decides whether more tasks follow. |
 
 A task that is `review` with `pr_merged = True` is **finished from the agent's
 side.** The task still needs a human to drag it to `done`, but the agent has no
-further responsibility for it. The agent does not monitor, reply to, or block
-on such tasks.
+further responsibility for it.
+
+**Exception: plan → impl pipeline.** A plan task (no PR — committed locally via
+`skip_pr=True`) does not trigger a session exit. The agent starts the following
+impl task within the same session. The exit fires when the impl task's PR merges.
 
 ### Decision algorithm
 
@@ -39,10 +45,12 @@ The algorithm fires at each of two triggers:
 
 - **Trigger A — `pr_merged` inbox event.** Used by tasks with a PR (spec, impl,
   standalone-with-code).
-- **Trigger B — local commit of the artifact is done.** Used by tasks with NO
-  PR (plan tasks, and any docs/research task that finishes without opening a
-  PR). The agent itself decides when to run this trigger; there is no
-  webhook.
+- **Trigger B — task done without a PR.** Used by tasks that legitimately use
+  `skip_pr=True`: plan tasks and standalone no-PR tasks (docs, research,
+  prototypes). The agent decides when to run this; there is no webhook. Plan
+  tasks proceed to the impl task without exiting; standalone no-PR tasks exit
+  after writing the per-task work log (same shutdown sequence as Trigger A,
+  minus the `mark_pr_merged` call).
 
 ```
 on trigger A (pr_merged):
@@ -54,24 +62,29 @@ on trigger A (pr_merged):
     1. mark_pr_merged(task_id, worktree_id)
     2. if task_type in (spec, plan):
            report_artifact(task_id, worktree_id, artifact_path)
+    3. write shutdown-artifacts/work-log-T-<NNN>.md  (per-task work log)
+    4. build aggregate shutdown-artifacts/work-log.md from all work-log-T-*.md
+    5. emit agent_unregistered to <project_root>/.cloglog/inbox
+       (reason: "pr_merged"; artifacts.work_log: absolute path; artifacts.learnings: null;
+        prs map per T-262)
+    6. call unregister_agent and exit
+    → Supervisor decides: more backlog tasks → relaunch; none → close-wave.
 
-on trigger B (no-PR task finished):
+on trigger B (no-PR task done):
     1. update_task_status(task_id, "review", skip_pr=True)
-    2. if task_type in (spec, plan):
+    2. if task_type == "plan":
            report_artifact(task_id, worktree_id, artifact_path)
-
-continuation (both triggers):
-    3. tasks = get_my_tasks()
-    4. next = first task in tasks with status == backlog
-    5. if next exists:
-           start_task(next.id) and continue working
-       else:
-           run the Section 2 shutdown sequence
+           start_task(impl_task_id) and continue in the same session
+           → No exit here; session ends when impl PR merges (trigger A).
+    3. else (standalone no-PR task — research, docs, etc.):
+           optional: report_artifact(task_id, worktree_id, artifact_path)
+           write shutdown-artifacts/work-log-T-<NNN>.md  (per-task work log)
+           build aggregate shutdown-artifacts/work-log.md
+           emit agent_unregistered (reason: "no_pr_task_complete";
+               artifacts.work_log: absolute path; artifacts.learnings: null)
+           call unregister_agent and exit
+           → Supervisor decides: more backlog tasks → relaunch; none → close-wave.
 ```
-
-Step 5 has no third branch. An empty backlog means shut down — regardless of
-how many `review` tasks still sit on the board with the agent's `worktree_id`
-attached.
 
 **Note on the plan-task path.** Trigger B assumes the agent can move to
 `review` without a PR. The backend today accepts that via `skip_pr=True` in
@@ -102,14 +115,15 @@ to the exiting task type, but never reorder them.
    downstream tasks until this is recorded. `impl` and standalone tasks skip.
    Backend enforces `task.status == "review"` at this step
    (`src/agent/services.py:516`); step 2 is what guarantees it.
-4. **Generate `shutdown-artifacts/`** inside the worktree:
-   - `work-log.md` — timeline and scope of what the agent did this run.
-   - `learnings.md` — patterns, gotchas, or follow-up items future agents
-     should know.
-   - Optional: a final state snapshot (tasks started, artifacts produced, PRs
-     opened, outstanding questions) if useful to the main agent's close-wave
-     step. Absolute paths to both files must be included in the
-     `agent_unregistered` event in the next step.
+4. **Generate `shutdown-artifacts/`** inside the worktree (T-329 — per-task
+   work logs):
+   - `work-log-T-<NNN>.md` — per-task structured summary written at each PR
+     merge or no-PR-task completion. Learnings, decisions, and residual TODOs
+     are embedded here; no separate `learnings.md` is required.
+   - `work-log.md` — aggregate of all per-task logs, built by concatenating
+     `work-log-T-*.md` files in chronological order plus a one-line envelope
+     header. `artifacts.work_log` in the `agent_unregistered` event points to
+     this aggregate file.
 
    Agents generate these files from scratch every shutdown. The worktree
    bootstrap (`.cloglog/on-worktree-create.sh`) removes any inherited
@@ -132,13 +146,18 @@ to the exiting task type, but never reorder them.
      },
      "artifacts": {
        "work_log": "/abs/path/shutdown-artifacts/work-log.md",
-       "learnings": "/abs/path/shutdown-artifacts/learnings.md"
+       "learnings": null
      },
-     "reason": "all_assigned_tasks_complete"
+     "reason": "pr_merged"
    }
    ```
 
-   The `artifacts.work_log` and `artifacts.learnings` values **must be absolute paths**, not worktree-relative — the main agent reads them after the worktree is torn down and the relative root is gone by then.
+   `reason` is `"pr_merged"` for Trigger A (PR-based tasks) and
+   `"no_pr_task_complete"` for Trigger B standalone no-PR tasks.
+   `artifacts.learnings` is `null` — learnings are embedded in the per-task
+   `work-log-T-<NNN>.md` files. The `artifacts.work_log` value **must be an
+   absolute path**, not worktree-relative — the main agent reads it after the
+   worktree is torn down and the relative root is gone by then.
 
    **`prs` shape (T-262, Option A — parallel map).** Keys are the same `T-NNN` strings present in `tasks_completed`; values are the GitHub PR URL the agent provided to `update_task_status(..., pr_url=...)` for that task. `tasks_completed` stays a flat list of IDs so existing parsers keep working unchanged — `prs` is purely additive. Tasks completed without a PR (plan tasks via `skip_pr=True`, or any other no-PR path) MUST be omitted from `prs` rather than mapped to `null` or an empty string. The agent builds the map by walking `get_my_tasks()` at shutdown; the `TaskInfo` response (`src/agent/schemas.py:TaskInfo`) exposes both `number` (the integer suffix) and `pr_url`, so the agent keys the map at `f"T-{row.number}"` for each row whose `pr_url` is non-null. The hook backstop emits `prs: {}` when it cannot recover the map — see Hook backstop below.
 
@@ -257,7 +276,7 @@ Webhook and supervisor events. The agent's required response is listed.
 | `review_comment` | webhook | Inline PR comment. If actionable, address it like `review_submitted`; otherwise reply via the github-bot skill's comment path. |
 | `issue_comment` | webhook | Issue-style PR comment. Same rule: actionable → fix; informational → reply or ignore. |
 | `ci_failed` | webhook | Follow the github-bot skill's CI recovery flow. Fix the failure, push. CI re-runs on push; next `check_run` webhook delivers the result. |
-| `pr_merged` | webhook | Run the Section 1 decision algorithm. `mark_pr_merged` → `report_artifact` (if applicable) → `get_my_tasks` → `start_task` or shutdown. |
+| `pr_merged` | webhook | Run the Section 1 Trigger A algorithm: `mark_pr_merged` → `report_artifact` (if applicable) → write per-task work log → emit `agent_unregistered` → `unregister_agent` → exit. Supervisor handles continuation. |
 | `pr_closed` | webhook | The PR closed without merging. Stop work on this task. Do not re-open the PR. Write a note to the main inbox describing the closure and wait for guidance. |
 | `shutdown` | backend (`request_shutdown`) | Finish the current MCP call, then run the full Section 2 shutdown sequence. Do not start new work. |
 | `mcp_tools_updated` | main agent (T-244) | Inspect the `added`/`removed` list. If the currently active task depends on the change, emit `need_session_restart` to the main inbox, pause, wait for the main agent to close and relaunch the tab (Section 6). Otherwise continue — the current session's MCP tool list is frozen at start and cannot hot-reload. |

@@ -114,7 +114,7 @@ Create a work log file (location configurable, default `docs/work-logs/<date>-<w
 For each worktree, run the **tier-1 → tier-2** sequence from
 `docs/design/agent-lifecycle.md` §5. Cooperative shutdown lets the worktree
 agent run its own Section 2 sequence — emit `agent_unregistered` with
-absolute paths to `shutdown-artifacts/{work-log.md,learnings.md}`, call
+absolute path to `shutdown-artifacts/work-log.md` (`artifacts.learnings` is `null` for T-329 agents — learnings are embedded in per-task work logs), call
 `unregister_agent`, and stop — so the close-wave flow gets a usable work log
 and a clean backend state.
 
@@ -180,9 +180,12 @@ the helper launch is still observed (verified in
 
 Exit codes:
 - **0** — the worktree emitted `agent_unregistered`. Consolidate its
-  `shutdown-artifacts/` into the work log (read `work_log` and `learnings`
-  via the absolute paths carried in the event; the files vanish once the
-  worktree is removed in Step 7).
+  `shutdown-artifacts/` into the work log: read `artifacts.work_log` via
+  the absolute path carried in the event. Read `artifacts.learnings` only if non-null
+  — for T-329 agents `artifacts.learnings` is `null` and learnings are embedded in
+  the per-task `work-log-T-*.md` files (Step 5d); for legacy/backstop agents it is a
+  real path. Never attempt to open a null path. The files vanish once the worktree is
+  removed in Step 7.
 - **1** — timeout. Go to Step 5c (fallback). Do NOT proceed to Step 7 for
   this worktree yet.
 - **2** — inbox path wrong. Stop the whole close-wave and tell the user
@@ -213,16 +216,30 @@ from PRs/commits rather than read from the worktree.
 
 ### Step 5d — Consolidate shutdown artifacts
 
-For each worktree that completed tier 1 successfully, copy or inline its
-`shutdown-artifacts/work-log.md` and `shutdown-artifacts/learnings.md` into
-the wave work log BEFORE Step 7 removes the worktree. The inbox event's
-`artifacts.work_log` and `artifacts.learnings` values are absolute paths —
-use them directly.
+For each worktree that completed tier 1 successfully:
+
+1. Check for **per-task work logs**: `ls <worktree_path>/shutdown-artifacts/work-log-T-*.md`. If any exist, read each one in task-number order — they are the canonical source of what shipped, files touched, decisions, and learnings for each task. Each file follows the schema:
+   ```
+   ---
+   task: T-NNN
+   title: <task title>
+   pr: <pr-url>
+   merged_at: <utc-iso>
+   ---
+   ## What shipped / ## Files touched / ## Decisions /
+   ## Review findings + resolutions / ## Learnings / ## Residual TODOs
+   ```
+
+2. Also read the aggregate `shutdown-artifacts/work-log.md` (pointed to by the `agent_unregistered` event's `artifacts.work_log` field) — it is the concatenation of per-task logs plus a one-line envelope header. Use it when per-task logs are absent (older worktrees) or as a consistency check.
+
+3. Inline all per-task work logs into the wave work log, one section per task, in task-number order. Mark the source clearly (`from work-log-T-NNN.md`). Do this BEFORE Step 7 removes the worktree — the files vanish with the worktree.
 
 For worktrees that fell back to tier 2, reconstruct the per-worktree section
 from `git log --oneline main..<branch>` and the merged PR body, and mark it
 `reconstructed (force_unregister)` so future readers know there is no
 original work log.
+
+**Supervisor relaunch vs close-wave boundary.** Close-wave runs only when *all* tasks assigned to a worktree are resolved (done or review-with-pr-merged). If the supervisor relaunched the same worktree for multiple tasks across multiple sessions, all per-task logs from each session are present in `shutdown-artifacts/` by the time the final agent exits and close-wave runs. Do not run close-wave while a worktree still has `backlog` tasks — the supervisor's `agent_unregistered` handler (see the `launch` skill's **Supervisor Relaunch Flow** section) is responsible for relaunching until all tasks are done, at which point it hands off to close-wave.
 
 ## Step 6: Sanity check — no running launcher
 

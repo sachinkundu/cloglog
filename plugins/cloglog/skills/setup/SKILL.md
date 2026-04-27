@@ -97,6 +97,25 @@ When the user asks "what are the current messages in inbox", "show inbox", "read
 
 You are the supervisor. Worktree agents write to your inbox when they need help (MCP failures, environment issues, questions). When you receive an inbox notification, diagnose the problem and respond by writing to the agent's inbox or sending a message via MCP.
 
+### Handle `agent_unregistered` — relaunch or close-wave
+
+Worktree agents now exit after each PR merge (one task per session). When you receive `agent_unregistered` from a worktree agent, **immediately** decide whether to relaunch or hand off to close-wave:
+
+1. Extract the `worktree_id` and `worktree` (name) fields from the `agent_unregistered` event.
+2. Call `mcp__cloglog__get_active_tasks` and filter for tasks where `worktree_id` matches the unregistered agent's UUID AND `status == "backlog"`. **Do NOT use `mcp__cloglog__get_my_tasks`** — that is scoped to the supervisor's own registration and returns the supervisor's tasks, not the worktree that just unregistered.
+3. **If backlog tasks remain** → relaunch in the same zellij tab using the continuation prompt:
+   ```bash
+   WORKTREE_NAME="<wt-name>"
+   WORKTREE_PATH="<abs/path/to/worktree>"  # from the board or the event's artifacts paths
+   zellij action go-to-tab-by-name "${WORKTREE_NAME}"
+   zellij action write-chars "bash '${WORKTREE_PATH}/.cloglog/launch.sh' 'Read ${WORKTREE_PATH}/AGENT_PROMPT.md and all shutdown-artifacts/work-log-T-*.md files in ${WORKTREE_PATH}, then begin the next task.'"
+   zellij action write "13"
+   ```
+   The new session reads the prior work logs (see worktree-agent **Work-Log Bootstrap**), registers, and starts the next backlog task.
+4. **If no backlog tasks remain** → the worktree is done. Invoke `/cloglog close-wave <wt-name>` to run the cooperative shutdown, consolidate artifacts, and tear down the worktree.
+
+**Why supervisor-driven, not agent-driven.** The agent exits after pr_merged — it cannot check for more tasks after unregistering. The supervisor already receives `agent_unregistered`, has MCP access to inspect the board, and owns the decision about whether to relaunch, reprioritize, or skip a task. Encoding "check for more tasks" in the launcher bash script would duplicate MCP logic the supervisor already owns.
+
 ### Stop on MCP failure (supervisor side)
 
 Halt on any MCP failure: startup unavailability emits `mcp_unavailable` and exits; runtime tool errors emit `mcp_tool_error` and wait for the main agent; transient network errors get one backoff retry before escalating.

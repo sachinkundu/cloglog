@@ -199,8 +199,16 @@ class AgentNotifierConsumer:
                 "pr_number": event.pr_number,
                 "message": (
                     f"PR #{event.pr_number} has been MERGED. "
-                    "If this is a spec/plan task, call report_artifact. "
-                    "Then call get_my_tasks and start the next task."
+                    "Run the per-task shutdown sequence: "
+                    "(1) emit pr_merged_notification to the main inbox, "
+                    "(2) call mark_pr_merged, "
+                    "(3) for spec/plan tasks call report_artifact, "
+                    "(4) write shutdown-artifacts/work-log-T-<NNN>.md, "
+                    "(5) build aggregate shutdown-artifacts/work-log.md, "
+                    "(6) emit agent_unregistered with reason='pr_merged', "
+                    "(7) call unregister_agent and exit. "
+                    "Do NOT call get_my_tasks or start the next task — "
+                    "the supervisor handles relaunching."
                 ),
             }
         if event.type == WebhookEventType.PR_CLOSED:

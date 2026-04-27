@@ -197,6 +197,41 @@ def test_close_wave_documents_supervisor_relaunch_boundary() -> None:
     )
 
 
+def test_close_wave_step5b_treats_learnings_as_optional() -> None:
+    """Close-wave Step 5b must treat artifacts.learnings as optional/null for T-329.
+
+    T-329 sets artifacts.learnings=null; learnings live in per-task work-log-T-*.md
+    files instead. Step 5b must only read artifacts.work_log unconditionally;
+    artifacts.learnings is read only when non-null (legacy/backstop events).
+    Trying to open a null path crashes the close-wave flow.
+    """
+    body = _read(CLOSE_WAVE_SKILL)
+    assert "only if non-null" in body, (
+        "close-wave SKILL.md Step 5b must guard artifacts.learnings with 'only "
+        "if non-null'. T-329 sets learnings=null; opening a null path crashes the "
+        "consolidation step. Legacy/backstop agents still emit a real path so the "
+        "guard must be conditional, not a removal."
+    )
+
+
+def test_worktree_agent_spec_step6_builds_aggregate_work_log() -> None:
+    """Spec task step 6 must instruct agents to build the aggregate work-log.md.
+
+    After writing work-log-T-<NNN>.md and before emitting agent_unregistered,
+    the agent must concatenate all per-task logs into shutdown-artifacts/work-log.md.
+    That aggregate file is the artifact.work_log path in the agent_unregistered event
+    and is what close-wave Step 5b opens via the event's absolute path.
+    """
+    body = _read(WORKTREE_AGENT)
+    assert body.count("build the aggregate `shutdown-artifacts/work-log.md`") >= 2, (
+        "worktree-agent.md must instruct agents to build the aggregate "
+        "shutdown-artifacts/work-log.md from all work-log-T-*.md files. "
+        "This step must appear in BOTH the spec task step 6 and impl task step 6 "
+        "shutdown sequences (two occurrences minimum). It feeds artifacts.work_log "
+        "in the agent_unregistered event that close-wave Step 5b reads."
+    )
+
+
 # ---------------------------------------------------------------------------
 # setup SKILL.md — supervisor agent_unregistered handler
 # ---------------------------------------------------------------------------

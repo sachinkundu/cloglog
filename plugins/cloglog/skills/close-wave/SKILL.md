@@ -180,9 +180,12 @@ the helper launch is still observed (verified in
 
 Exit codes:
 - **0** — the worktree emitted `agent_unregistered`. Consolidate its
-  `shutdown-artifacts/` into the work log (read `work_log` and `learnings`
-  via the absolute paths carried in the event; the files vanish once the
-  worktree is removed in Step 7).
+  `shutdown-artifacts/` into the work log: read `artifacts.work_log` via
+  the absolute path carried in the event. Read `artifacts.learnings` only if non-null
+  — for T-329 agents `artifacts.learnings` is `null` and learnings are embedded in
+  the per-task `work-log-T-*.md` files (Step 5d); for legacy/backstop agents it is a
+  real path. Never attempt to open a null path. The files vanish once the worktree is
+  removed in Step 7.
 - **1** — timeout. Go to Step 5c (fallback). Do NOT proceed to Step 7 for
   this worktree yet.
 - **2** — inbox path wrong. Stop the whole close-wave and tell the user

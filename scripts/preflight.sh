@@ -93,6 +93,17 @@ else
     Copy the PEM key from your GitHub App settings to ~/.agent-vm/credentials/github-app.pem"
 fi
 
+if [ -n "${GH_APP_ID:-}" ] && [ -n "${GH_APP_INSTALLATION_ID:-}" ]; then
+  ok "GH_APP_ID and GH_APP_INSTALLATION_ID exported"
+else
+  warn "GH_APP_ID and/or GH_APP_INSTALLATION_ID not exported — agents calling
+    plugins/cloglog/scripts/gh-app-token.py will fail with 'env var required'.
+    Add to ~/.bashrc or ~/.zshenv:
+    $(echo -e "${DIM}export GH_APP_ID=3235173${NC}")
+    $(echo -e "${DIM}export GH_APP_INSTALLATION_ID=120404294${NC}")
+    (cloglog's App and Installation IDs — not secrets, public GitHub App identifiers)"
+fi
+
 # ── Report ───────────────────────────────────────────────────────────────────
 
 echo ""

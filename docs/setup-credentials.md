@@ -105,7 +105,7 @@ under `~/.agent-vm/credentials/`:
 
 | Bot | PEM path | App-id / installation-id |
 |-----|----------|--------------------------|
-| `sakundu-claude-assistant[bot]` (code-push bot) | `~/.agent-vm/credentials/github-app.pem` | hard-coded in `src/gateway/github_token.py` |
+| `sakundu-claude-assistant[bot]` (code-push bot) | `~/.agent-vm/credentials/github-app.pem` | hard-coded in `src/gateway/github_token.py`; **agent-side minting** reads `GH_APP_ID` / `GH_APP_INSTALLATION_ID` from env (see below) |
 | `cloglog-codex-reviewer[bot]` | `~/.agent-vm/credentials/codex-reviewer.pem` | hard-coded in `src/gateway/github_token.py` |
 | `cloglog-opencode-reviewer[bot]` (**T-248**) | `~/.agent-vm/credentials/opencode-reviewer.pem` | hard-coded in `src/gateway/github_token.py` (`_OPENCODE_APP_ID`, `_OPENCODE_INSTALLATION_ID`) |
 
@@ -116,6 +116,35 @@ identifiers and live as module-level constants in
 as env vars expecting the backend to read them; `github_token.py` never
 consults env for reviewer App IDs, so env-based tweaks are silently
 ignored. Only the PEM is per-host.
+
+### Code-push bot — env vars for agent-side token minting (T-314)
+
+`src/gateway/github_token.py` hard-codes the code-push bot's IDs for
+**server-side** use only. The plugin skill script
+`plugins/cloglog/scripts/gh-app-token.py` is used by worktree agents to
+mint short-lived tokens at runtime; it reads from the exported environment
+so it can be reused in other projects without embedding cloglog-specific
+constants.
+
+**Required in every shell that launches Claude Code / agents:**
+
+```bash
+export GH_APP_ID=3235173
+export GH_APP_INSTALLATION_ID=120404294
+```
+
+Add these to `~/.bashrc`, `~/.zshenv`, or `~/.profile`. Alternatively, use
+[direnv](https://direnv.net/) with a project `.envrc`. Verify with:
+
+```bash
+printenv GH_APP_ID GH_APP_INSTALLATION_ID
+```
+
+`scripts/preflight.sh` warns when either variable is missing. If the vars
+are absent, any skill command that runs
+`plugins/cloglog/scripts/gh-app-token.py` (github-bot, close-wave,
+reconcile) will exit with `Error: GH_APP_ID environment variable is
+required`.
 
 Onboarding a new host:
 

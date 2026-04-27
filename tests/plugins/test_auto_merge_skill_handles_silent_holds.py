@@ -37,7 +37,9 @@ def test_skill_blocks_synchronously_on_ci_pending() -> None:
         "(no inbox event fires for successful CI)."
     )
     # And re-evaluates exactly once after the wait.
-    assert body.count("plugins/cloglog/scripts/auto_merge_gate.py") >= 2, (
+    # T-314: the script is referenced via ${CLAUDE_PLUGIN_ROOT}/scripts/auto_merge_gate.py
+    # since it is vendored into the plugin.
+    assert body.count("${CLAUDE_PLUGIN_ROOT}/scripts/auto_merge_gate.py") >= 2, (
         "ci_not_green path no longer re-runs the gate after `--watch` returns — "
         "the wait is pointless without a re-evaluation."
     )

@@ -57,7 +57,7 @@ The new monitor starts at end-of-file (`-n 0`), which is correct for `/clear` an
 
 **If this is a normal session start** (no prior crash): skip this step.
 
-**If you just recovered from a crash** (the previous supervisor session ended unexpectedly, you're not sure whether worktree agents finished while you were down, or close-wave is stuck waiting): inspect the inbox tail one-shot — `Read` the last 100 lines of `<current working directory>/.cloglog/inbox` and look for any line where `"type"` is `"agent_unregistered"`, `"agent_started"`, `"mcp_unavailable"`, `"mcp_tool_error"`, or `"pr_merged"`. Treat each one as if it had just arrived. (A proper offset-tracked replay — analogous to `scripts/wait_for_agent_unregistered.py` which already uses byte offsets for exactly this reason — is the durable fix and is filed as follow-up work; it's out of scope for T-294.)
+**If you just recovered from a crash** (the previous supervisor session ended unexpectedly, you're not sure whether worktree agents finished while you were down, or close-wave is stuck waiting): inspect the inbox tail one-shot — `Read` the last 100 lines of `<current working directory>/.cloglog/inbox` and look for any line where `"type"` is `"agent_unregistered"`, `"agent_started"`, `"mcp_unavailable"`, `"mcp_tool_error"`, or `"pr_merged"`. Treat each one as if it had just arrived. (A proper offset-tracked replay — analogous to `${CLAUDE_PLUGIN_ROOT}/scripts/wait_for_agent_unregistered.py` which already uses byte offsets for exactly this reason — is the durable fix and is filed as follow-up work; it's out of scope for T-294.)
 
 ### 4. Confirm
 

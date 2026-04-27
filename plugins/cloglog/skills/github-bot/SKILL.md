@@ -10,13 +10,13 @@ Every GitHub operation must use the GitHub App bot identity. The user cannot mer
 
 ## Prerequisites
 
-- `scripts/gh-app-token.py` must exist in the project root (or a known location). This script generates a short-lived installation token from the GitHub App's PEM key.
+- `${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py` is provided by the plugin and generates a short-lived installation token from the GitHub App's PEM key. Set `GH_APP_ID` and `GH_APP_INSTALLATION_ID` in your environment before calling it.
 - The PEM key must be at `~/.agent-vm/credentials/github-app.pem`.
 
 ## Getting a Bot Token
 
 ```bash
-BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
+BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests "${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py")
 ```
 
 Tokens are valid for ~1 hour. Always get a fresh one at the start of each operation sequence.
@@ -56,7 +56,7 @@ If in doubt about a file, leave it out. A missing file is easy to add in a follo
 #### Push and Create
 
 ```bash
-BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
+BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests "${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py")
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
 git remote set-url origin "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git"
 git push -u origin HEAD
@@ -114,7 +114,7 @@ See [PR Event Inbox](#pr-event-inbox) below for how to respond to each event typ
 Use this on demand — after receiving a `review_submitted` inbox event to pull the full comment threads, or after re-registering to reconcile state missed while offline. This is NOT a polling replacement for the webhook inbox; it is a drill-down for details the event message truncates. Check all five sources — merge state, CI, inline comments, issue comments, and review state:
 
 ```bash
-BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
+BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests "${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py")
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
 
 # Merge state
@@ -174,7 +174,7 @@ If the inbox monitor is not running, events pile up silently in the file and not
 
 1. Re-register, then run the dedupe-aware idempotent restart from the launch skill's Inbox section (TaskList → match suffix `<WORKTREE_PATH>/.cloglog/inbox` → reuse / spawn / keep-oldest).
 2. **Reconcile PR webhook events** by running *Check PR Status* below — drills into current PR merge state, CI, comments, and reviews via `gh`. The branch-name fallback path also excludes offline worktrees, so events that fired before your task had a `pr_url` set (e.g., the first CI run after `git push` but before `update_task_status`) may have been dropped at the producer side too; this drill-down covers both gaps.
-3. **Reconcile control events** — webhook events have a GitHub-side source of truth, but supervisor-driven control lines do NOT and the only durable record is the inbox file itself. `request_shutdown` writes a `{"type":"shutdown"}` line to your worktree inbox (`src/agent/services.py:183-223`) and the DB `shutdown_requested` bit is no longer surfaced on heartbeat (`tests/agent/test_unit.py:1253-1357`), so a missed shutdown means the agent silently resumes work after a crash. Inspect the inbox tail one-shot — `Read` the tail of `<WORKTREE_PATH>/.cloglog/inbox` (e.g., last 50 lines) and grep for any line where `"type"` is `"shutdown"`, `"mcp_tool_error"`, `"resume"`, or other supervisor-issued control messages. Act on each one as if it had just arrived. (A proper offset-tracked replay — analogous to `scripts/wait_for_agent_unregistered.py` — is the durable fix and is filed as follow-up work.)
+3. **Reconcile control events** — webhook events have a GitHub-side source of truth, but supervisor-driven control lines do NOT and the only durable record is the inbox file itself. `request_shutdown` writes a `{"type":"shutdown"}` line to your worktree inbox (`src/agent/services.py:183-223`) and the DB `shutdown_requested` bit is no longer surfaced on heartbeat (`tests/agent/test_unit.py:1253-1357`), so a missed shutdown means the agent silently resumes work after a crash. Inspect the inbox tail one-shot — `Read` the tail of `<WORKTREE_PATH>/.cloglog/inbox` (e.g., last 50 lines) and grep for any line where `"type"` is `"shutdown"`, `"mcp_tool_error"`, `"resume"`, or other supervisor-issued control messages. Act on each one as if it had just arrived. (A proper offset-tracked replay — analogous to `${CLAUDE_PLUGIN_ROOT}/scripts/wait_for_agent_unregistered.py` — is the durable fix and is filed as follow-up work.)
 
 ### Auto-Merge on Codex Pass
 
@@ -191,7 +191,7 @@ After a `review_submitted` inbox event, the worktree agent decides whether to me
 **Invocation:**
 
 ```bash
-BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
+BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests "${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py")
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
 PR_NUM=<the PR number from the inbox event>
 
@@ -228,7 +228,7 @@ PAYLOAD=$(jq -nc \
     has_human_changes_requested: ($has_human_cr == "true")
   }')
 
-REASON=$(printf '%s' "$PAYLOAD" | python3 plugins/cloglog/scripts/auto_merge_gate.py)
+REASON=$(printf '%s' "$PAYLOAD" | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/auto_merge_gate.py")
 GATE_RC=$?
 
 if [[ "$GATE_RC" == "0" ]]; then
@@ -264,7 +264,7 @@ else
         --argjson checks "$CHECKS" \
         --argjson labels "$LABELS" \
         '{reviewer: $reviewer, body: $body, checks: $checks, labels: $labels, has_human_changes_requested: ($has_human_cr == "true")}')
-      REASON=$(printf '%s' "$PAYLOAD" | python3 plugins/cloglog/scripts/auto_merge_gate.py)
+      REASON=$(printf '%s' "$PAYLOAD" | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/auto_merge_gate.py")
       if [[ "$REASON" == "merge" ]]; then
         GH_TOKEN="$BOT_TOKEN" gh pr merge "$PR_NUM" --squash --delete-branch
       fi
@@ -312,7 +312,7 @@ Always reply to comments you address. Do NOT resolve threads — that's the revi
 **Important:** The `/pulls/comments/{id}/replies` endpoint only works for standalone diff comments ("Add single comment"). Review comments created via "Start a Review" return 404 on that endpoint. Use an issue-style comment instead to address all review feedback:
 
 ```bash
-BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
+BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests "${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py")
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
 
 # Post a summary reply addressing review comments (works for all comment types)
@@ -329,7 +329,7 @@ GH_TOKEN="$BOT_TOKEN" gh api repos/${REPO}/pulls/comments/<COMMENT_ID>/replies \
 ### CI Failure Recovery
 
 ```bash
-BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
+BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests "${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py")
 
 # Find the failed run
 RUN_ID=$(GH_TOKEN="$BOT_TOKEN" gh run list --branch <BRANCH> --workflow ci.yml -L 1 \

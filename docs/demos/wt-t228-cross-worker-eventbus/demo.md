@@ -96,7 +96,7 @@ PY
 publisher-echo dedupe: OK
 ```
 
-Secondary fix (same PR): the SSE stream now emits a connected event the moment the subscription completes, instead of staying silent until the first business event arrives. Browsers and proxies see traffic immediately and idle timeouts no longer reap the stream during quiet periods. The proof creates a project, opens the SSE stream, reads bytes for one second, and reports the first event's name.
+Secondary fix (same PR): the SSE stream now emits a connected event the moment the subscription completes, instead of staying silent until the first business event arrives. Browsers and proxies see traffic immediately and idle timeouts no longer reap the stream during quiet periods. The proof drives the `_event_generator` directly (the unit FastAPI streams), pulls the first frame, and reports its event name. Generator-direct rather than HTTP because `showboat verify` re-runs every `exec` block in a clean shell with no live backend; the generator IS the user-observable unit so the claim is preserved without coupling the proof to backend lifecycle.
 
 ```bash
 # Drive the SSE generator directly — backend HTTP would require the dev

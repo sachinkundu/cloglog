@@ -6,6 +6,41 @@ machinery it ships against (`mcp-server/`, `.cloglog/`, `scripts/`, root docs)
 is implicitly bound to the cloglog repo itself, when the product premise is
 that `/cloglog init` should onboard *any* project.
 
+## User direction (2026-04-27)
+
+After review, the user confirmed these design decisions, which override
+several recommendations earlier in this audit:
+
+- **Bots are shared across projects.** All projects use the same supervisor
+  + reviewer Apps; the backend routes events to the correct project agent /
+  worktree by project_id. Per-project bot setup is a *later* extension; for
+  now we accept the shared-bot model.
+- **Bot credentials live out-of-source in `~/.agent-vm/credentials/`** and
+  are shared. Acceptable as-is.
+- **Codex reviewer prompt should be project-agnostic** but each project's
+  architecture is its own — leaving some review-prompt customisation to the
+  user is correct.
+- **Skills and the plugin must contain zero references to cloglog internals**
+  — sources, paths, or architecture. Not every project is DDD. (This
+  reaffirms §1's "skills cite cloglog source paths as authoritative"
+  finding as a hard rule, not a nice-to-have.)
+- **There is no agent-vm port allocation yet.** All references to agent-vm
+  sandboxes / per-worktree port allocation in this audit are stale and
+  should be ignored — that infrastructure does not exist.
+- **Default `backend_url` should be `http://localhost:8001` (prod).** Port
+  8000 is cloglog's own development server. Other projects always talk to
+  the prod backend on 8001.
+- **One MCP server, one backend.** The MCP server is found on first
+  registration; no per-project MCP install/discovery is needed.
+- **Plugin install is local-folder for now** (so changes are picked up
+  without re-install). Marketplace publishing happens later when the
+  plugin is ready.
+
+The findings tables below are kept as the original evidence trail; the
+**Recommended sequence** and **Open questions** sections have been pruned
+to match these directions. Where a row's proposed fix conflicts with the
+direction above, the direction above wins.
+
 The product premise is that the **plugin** is the reusable surface and the
 cloglog repo is just its first dogfood project. In practice we have built and
 exercised the plugin only against this one repo; the audit below catalogues
@@ -60,19 +95,20 @@ working multi-agent project on a fresh repo, end-to-end.
    `${REPO_ROOT}/scripts/worktree-infra.sh` (a cloglog-only file) and
    `curl /api/v1/agents/close-off-task` against a backend that may not be
    running. The init skill emits scaffolding for `on-worktree-create.sh`
-   based on `pyproject.toml`/`package.json`/`Cargo.toml`, but the result is
-   `uv sync` / `npm install` only — none of the agent-vm port allocation,
-   per-worktree Postgres, or close-off-task plumbing that a real cloglog
-   project depends on for `/cloglog launch` to work.
-5. **GitHub App identity is single-tenant by design.** Both reviewer Apps and
-   the cloglog-bot App are addressed by name in `src/gateway/github_token.py`
-   (`_OPENCODE_APP_ID`, `_OPENCODE_INSTALLATION_ID`), `scripts/gh-app-token.py`
-   is project-checked-in (init copies it from `~/code/*` if found — a fragile
-   global filesystem search), and PEMs live in `~/.agent-vm/credentials/<bot>.pem`
-   with hardcoded names (`codex-reviewer.pem`, `opencode-reviewer.pem`,
-   `github-app.pem`). A second project either reuses this exact App (cross-org
-   permissions issues) or stands up its own and has to fork the
-   `_OPENCODE_*` constants. Neither story is documented anywhere.
+   based on `pyproject.toml`/`package.json`/`Cargo.toml`, and the result is
+   `uv sync` / `npm install` only — which is correct per the design
+   contract. Cloglog's own per-worktree Postgres and close-off-task
+   plumbing are project-specific extensions a downstream project opts into.
+5. ~~**GitHub App identity is single-tenant by design.**~~ **Resolved per
+   user direction (2026-04-27):** all projects share the same bots; the
+   backend routes events to the correct agent/worktree by project_id. Bot
+   credentials live in `~/.agent-vm/credentials/` out-of-source and are
+   shared across projects. The cross-org Repository-access flow (cloglog
+   org admin invites the App into the consumer repo) covers a non-cloglog
+   project's repository. No per-project App story needs to land for the
+   first new project onboarding. The original finding is preserved in the
+   §9 evidence trail; do not action it. *(Per-project bot identities is a
+   later extension once cloglog has multiple production tenants.)*
 
 ## Findings by category
 
@@ -85,7 +121,7 @@ Citations are `file:line` against this worktree (HEAD of
 |---|---|---|---|
 | `plugins/cloglog/.claude-plugin/plugin.json:2-3` | name `cloglog`, description `cloglog-managed projects` | Cosmetic; reads as a cloglog-specific tool | Reframe description as project-agnostic ("multi-agent kanban workflow") |
 | `plugins/cloglog/.claude-plugin/marketplace.json:2,8-9` | Marketplace name `cloglog-dev` | Reads as one-org marketplace | OK if intent is single-source; otherwise rename `cloglog-marketplace` |
-| `plugins/cloglog/skills/init/SKILL.md:43,387` | Default `backend_url: http://localhost:8000`; "Start the cloglog backend if not running" | Implies one backend per host. On a host that already runs the cloglog backend on :8000, a second project's MCP server collides | Document that backend is *one shared service* across projects; the project_id discriminates rows. Otherwise document port-per-project setup |
+| `plugins/cloglog/skills/init/SKILL.md:43,387` | Default `backend_url: http://localhost:8000` | Wrong default for non-cloglog consumers. Per user direction (2026-04-27) the prod backend lives on `http://localhost:8001`; port 8000 is reserved for cloglog's own dev server. A new project initialised today against :8000 will silently miss the prod backend | Change init's default to `http://localhost:8001`. Document that :8000 is cloglog-internal dev only |
 | `plugins/cloglog/skills/init/SKILL.md:62-77` | MCP server entry uses `"args": ["/path/to/mcp-server/dist/index.js"]` placeholder; SessionStart hook uses `<absolute-path-to-project>/plugins/cloglog/hooks/session-bootstrap.sh` | Placeholder — init never actually resolves these paths. Operator gets a settings.json with literal `/path/to/mcp-server/dist/index.js` and `<absolute-path-to-project>` markers | Generate concrete paths at init time using `${CLAUDE_PLUGIN_ROOT}` for the hook (acknowledged not to resolve) — or copy the bootstrap into the project as part of init |
 | `plugins/cloglog/skills/init/SKILL.md:209-223` | "Look for `~/.agent-vm/credentials/github-app.pem` on disk" + `find ~/code -path "*/scripts/gh-app-token.py"` | Searches the operator's whole `~/code` tree for a script. Brittle, surprising, and silently no-ops if user keeps repos elsewhere | Vendor `gh-app-token.py` as a plugin-shipped script (`plugins/cloglog/scripts/gh-app-token.py`) so init copies from a known location |
 | `plugins/cloglog/skills/init/SKILL.md:234` | `Name: something like "cloglog-bot"` | Suggests every project name its bot after cloglog | Rename guidance to `<project>-bot` |
@@ -158,7 +194,7 @@ What exists today vs. what `/cloglog init` would generate on a fresh repo:
 | File | This repo (cloglog) | Init output (fresh repo) | Gap |
 |---|---|---|---|
 | `config.yaml` | `project: cloglog`, `project_id: <uuid>`, `backend_url: http://127.0.0.1:8001`, `prod_worktree_path: ../cloglog-prod`, `quality_command: make quality`, `worktree_scopes: {board, agent, document, gateway, frontend, mcp, assign, e2e}` | `project_name`, `backend_url`, `quality_command` only (no `project_id`, no `prod_worktree_path`, no `worktree_scopes`) | Init does not produce the scopes the protect-worktree-writes hook needs; `project_id` is also absent — agent registration succeeds because the backend resolves project by API key, but skills that read `project_id` from config (e.g., `scripts/sync_mcp_dist.py:151`) would fail |
-| `on-worktree-create.sh` | 145 lines: shutdown-artifacts reset, `worktree-infra.sh up`, `uv sync --extra dev`, frontend install conditional on `wt-frontend*`, `mcp-server` install conditional on `mcp-server/package.json`, close-off-task POST to backend with project API key, env-driven `_resolve_backend_url`/`_resolve_api_key` helpers | Init produces ~5 lines: `cd $WORKTREE_PATH; uv sync` (or `npm install`, etc.) | Init's output is correct as a *minimal* setup but does not file the close-off task or stand up per-worktree Postgres / port allocation. Multi-worktree projects without these would collide on a single dev DB |
+| `on-worktree-create.sh` | 145 lines: shutdown-artifacts reset, `worktree-infra.sh up`, `uv sync --extra dev`, frontend install conditional on `wt-frontend*`, `mcp-server` install conditional on `mcp-server/package.json`, close-off-task POST to backend with project API key, env-driven `_resolve_backend_url`/`_resolve_api_key` helpers | Init produces ~5 lines: `cd $WORKTREE_PATH; uv sync` (or `npm install`, etc.) | Init's minimal output matches the design contract — the heavyweight content here is cloglog-specific. Close-off-task POST and per-worktree Postgres are project-specific opt-ins; the agent-vm port allocation referenced in earlier drafts of this row does **not exist yet** (per user direction 2026-04-27) — disregard those references |
 | `on-worktree-destroy.sh` | Calls `worktree-infra.sh down` | Init produces an empty stub | Same gap |
 | `launch.sh` | Auto-generated by the launch skill per worktree; on this worktree the file embeds absolute `/home/sachin/code/cloglog/...` paths in `WORKTREE_PATH` and `PROJECT_ROOT` (lines 3-4) | Skill generates per-worktree at launch time | Already gitignored at `.gitignore:17`, so it's not a *tracked* leak — but the **runtime contents are still operator-host-specific** and any tooling that reads it from a different host won't find the right paths. Document that `launch.sh` is regenerated per-host and must not be copied between operators. |
 | `inbox` | Runtime state, gitignored (`init` Step 8 adds it) | Same | OK |
@@ -188,7 +224,7 @@ recommend vendoring the plugin or universalising cloglog's worktree-infra.
 | (prereq) | Plugin installed via `claude plugins install` | The skill assumes the plugin is reachable through `${CLAUDE_PLUGIN_ROOT}` (`plugins/cloglog/settings.json:9-20,42-43,69-70,89-90`). Confirmed working architecture; gap below is in what the init skill emits, not in the install model |
 | 1a | Detect project name from `basename $(pwd)` | Works |
 | 1b | Detect quality command (Makefile/package.json/Cargo/pyproject) | Works for the four detected stacks; fails closed for anything else (asks user) |
-| 1c | Default backend_url `http://localhost:8000` | Works *if* the operator already runs the cloglog backend. Otherwise the rest of the flow succeeds, but the agent will fail at first MCP call |
+| 1c | Default backend_url `http://localhost:8000` | **Wrong default** — per user direction (2026-04-27) prod is :8001 and :8000 is reserved for cloglog's own dev server. Init should default to `http://localhost:8001` |
 | 2 | Call `mcp__cloglog__get_board` to check project exists | **Cannot run before MCP is configured (Step 3).** Step 2 is out of order — at step 2 the MCP server has not been configured for this project, and the project API key is not yet in `~/.cloglog/credentials`. The MCP tool will not be loaded. The skill papers over this with "the user will need to register it through the backend API or MCP tools" — i.e., manual |
 | 3 | Inject `cloglog` MCP server into `.claude/settings.json` with placeholder `"args": ["/path/to/mcp-server/dist/index.js"]` | The placeholder is **literal**. The skill never asks the operator where their MCP server build lives. On first session restart the MCP server fails to start, the agent has no `mcp__cloglog__*` tools, and the SessionStart hook prints "Run /cloglog setup" — which then fails the same way |
 | 4a | Write `.cloglog/config.yaml` with project_name/backend_url/quality_command | Misses `project_id`, `worktree_scopes`, `prod_worktree_path`. See gap in §4 |
@@ -337,69 +373,71 @@ Phase 2 — **make `/cloglog init` actually work on a fresh repo**:
    are project-specific extensions and stay in cloglog's hand-written
    copy; downstream projects opt in by editing their own script.
 
-Phase 3 — **multi-tenant GitHub App story**:
+~~Phase 3 — multi-tenant GitHub App story~~ — **Dropped per user direction
+(2026-04-27).** All projects share the cloglog supervisor + reviewer Apps;
+the backend already routes by `project_id`, and bot credentials live
+out-of-source in `~/.agent-vm/credentials/` shared across projects. The
+cross-org Repository-access flow covers consumer repos. Per-project bot
+identities are a *later* extension once cloglog has multiple production
+tenants — file then, not now.
 
-9. Document the "reuse the cloglog Apps" vs. "stand up your own" decision
-   tree.
-10. Move reviewer App constants out of `src/gateway/github_token.py` into a
-    backend config table keyed by project. Add MCP tools or admin endpoints
-    to register reviewer Apps per project.
-11. Make the webhook tunnel + reviewer bot login per-project (already
-    proposed in #3).
+Phase 3 — **pin tests** (was Phase 4):
 
-Phase 4 — **pin tests**:
-
-12. Add the two pin tests catalogued in §8.
-13. Wire fresh-repo init into CI as a smoke job (creates `tmp_path` repo,
-    runs init, asserts placeholders are resolved).
+10. Add the two pin tests catalogued in §8 (fresh-repo `/cloglog init`
+    smoke + `plugins/cloglog/` regression grep). Excluded from both:
+    brand-surface literals (intentional) and `.cloglog/launch.sh`
+    (intentional absolute paths).
+11. Wire fresh-repo init into CI as a smoke job (creates `tmp_path` repo,
+    runs init non-interactively, asserts placeholders are resolved and
+    no host-specific literals leak).
 
 **Smallest "first new project onboarded" milestone:** Phase 1 + steps 5/6/7
 of Phase 2. That gets a self-contained plugin and an init that produces a
-runnable `.cloglog/` for any project that already has the cloglog backend
-+ MCP server reachable. Phase 3 (multi-tenant Apps) and Phase 4 (pin tests)
-can land in parallel after the first project is onboarded and exposes the
-real friction, rather than the friction we're guessing at.
+runnable `.cloglog/` for any project that talks to the prod backend on
+:8001 with a project API key. Phase 3 (pin tests) follows.
 
 **Parallelizable:** Phase 1 steps 1, 2, 3, 4 are independent of each other.
-Phase 2 step 5 unblocks 6, 7, 8 but 6/7/8 are independent of each other once
-5 lands. Phase 3 is independent of Phases 1–2. Phase 4 follows everything.
+Phase 2 step 5 unblocks 6, 7, 8, 9 but those four are independent of each
+other once 5 lands. Phase 3 follows everything.
 
 ## Open questions
 
-1. **Plugin install ergonomics.** The design spec is explicit: `claude
-   plugins install` is the install model and `${CLAUDE_PLUGIN_ROOT}` is the
-   discovery path. Open question is the marketplace UX — does cloglog
-   publish the marketplace publicly, or is install via a private/local
-   marketplace path? Phase 2 docs need a concrete one-line install command
-   for `README.md`.
-2. **Backend topology — one shared or one per project?** Today there's one
-   cloglog backend. If a second project uses the same backend, project_id
-   discriminates rows — but `make prod`, the cloudflared tunnel, and the
-   reviewer Apps are single-tenant. If projects each run their own backend,
-   the operator needs to manage multiple backends, multiple tunnels, multiple
-   credential files. Document the chosen topology, then make the rest follow.
-3. **Credential location for non-cloglog projects.** The MCP server reads
-   `~/.cloglog/credentials`. For a multi-project operator, do all projects
-   share that file (one `CLOGLOG_API_KEY` per project, keyed by project name)?
-   Today the file holds a single value. Either move to a per-project
-   credentials file or change the format to a key-per-project map.
-4. **Agent-vm sandbox assumption.** The `agent-vm` story (separate sandboxes
-   per agent) is referenced in CLAUDE.md but not in plugin docs. Clarify:
-   does `/cloglog init` need to set up agent-vm, or is that a separate
-   operator concern handled before init runs?
-5. **Reviewer-bot identity per project vs. shared.** Cloglog ships two
-   reviewer Apps. Should every new project stand up its own reviewer Apps
-   (App-create friction), or should the plugin support pointing at an
-   already-installed reviewer App by login? Affects whether
-   `reviewer_bot_logins` ends up a string list (shared) or a list of
-   `{login, app_id, installation_id}` (per project).
-6. **Should `mcp__cloglog__*` be renamed?** The MCP server name leaks the
+Most original questions resolved by user direction (2026-04-27); see the
+preamble. Remaining:
+
+1. **Marketplace publishing timeline.** Install is local-folder for now so
+   plugin edits are picked up live. Open: when does cloglog publish to a
+   marketplace, what marketplace, and does the install command in init
+   docs change at that point? Defer until after the first new project
+   onboards.
+2. **Codex review-prompt customisation surface.** User direction is that
+   the reviewer prompt should be project-agnostic *but* each project has
+   its own architecture, so some customisation must be left to the user.
+   Open: what's the minimum-viable customisation API — a single
+   `.github/codex/prompts/review.md` the project hand-writes (today's
+   model), or a config-driven set of stack-specific fragments the plugin
+   composes? Defer until at least one non-cloglog project has run codex
+   review.
+3. **Credential format for multi-project operator.** Today
+   `~/.cloglog/credentials` holds a single `CLOGLOG_API_KEY`. If one
+   operator runs two projects against the shared backend, they need two
+   keys. Open: per-project credentials file (`~/.cloglog/credentials.<project>`),
+   or single-file map (`CLOGLOG_API_KEY_<project>=...`)? Lean towards
+   per-project files for permission isolation.
+4. **Should `mcp__cloglog__*` be renamed?** The MCP server name leaks the
    cloglog brand into every tool the agent sees. The cost of renaming is
-   high (every skill greps `mcp__cloglog__`); the benefit is brand neutrality.
-   Default recommendation: keep, treat "cloglog" as the system brand.
+   high (every skill greps `mcp__cloglog__`); the benefit is brand
+   neutrality. Default recommendation: **keep**, treat "cloglog" as the
+   system brand. (User direction confirms this — brand surface like
+   `mcp__cloglog__*` is intentionally retained.)
+
+Resolved per 2026-04-27 user direction (recorded for posterity, not
+re-debated):
+- ~~Plugin install model~~ → local-folder install for now; marketplace later.
+- ~~Backend topology~~ → one shared backend, project_id-scoped.
+- ~~Agent-vm assumption~~ → no agent-vm yet; references in this audit are stale.
+- ~~Reviewer-bot identity per project~~ → all projects share the same bots.
 
 ---
 
-*Prepared for T-307 (F-52). Review the recommendations, decide on the
-install/topology/credential model in §Open questions, and follow-up tasks
-will be filed against the Phase 1–4 sequence.*
+*Prepared for T-307 (F-52). Follow-up tasks file against Phase 0 → 3.*

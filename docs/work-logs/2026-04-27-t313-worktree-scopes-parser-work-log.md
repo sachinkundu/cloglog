@@ -20,11 +20,15 @@ construct loudly with a line-numbered `parse error`, and preserves the
 exact-match-then-longest-prefix scope lookup the original snippet did.
 
 The hook now does the path-prefix check in pure bash and **fails closed** on
-any parser non-zero exit (parse error, missing config, usage error). The
-first cut had `ALLOWED=$(parser …) || exit 0`, which preserved the silent
-allow-all bypass T-313 was meant to remove — Codex round 1 flagged that as a
-real safety regression and round 2 caught the literal `import yaml` token I
-inadvertently put back into a safety comment.
+any parser non-zero exit *once a config file is found* (parse error, usage
+error). Missing config remains fail-open — `find_config` returns non-zero
+and `plugins/cloglog/hooks/protect-worktree-writes.sh:52` early-exits before
+the parser runs; closing that path is filed as a follow-up to F-53
+(see PR-review feedback on PR #240). The first cut also had
+`ALLOWED=$(parser …) || exit 0`, which preserved the silent allow-all bypass
+T-313 was meant to remove for the config-found path — Codex round 1 flagged
+that as a real safety regression, and round 2 caught the literal
+`import yaml` token I inadvertently put back into a safety comment.
 
 ## Commits
 

@@ -32,13 +32,12 @@ find_config() {
 CONFIG=$(find_config "$WORKTREE_PATH") || exit 0
 CONFIG_DIR=$(dirname "$CONFIG")
 
-# Read backend_url and project from config
-eval "$(python3 -c "
-import yaml
-cfg = yaml.safe_load(open('$CONFIG'))
-print('BACKEND_URL=' + repr(cfg.get('backend_url', 'http://localhost:8000')))
-print('PROJECT_NAME=' + repr(cfg.get('project', '')))
-" 2>/dev/null)" || exit 0
+# T-312: parse via shared stdlib helper, NEVER the python YAML lib.
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/parse-yaml-scalar.sh
+source "${HOOK_DIR}/lib/parse-yaml-scalar.sh"
+BACKEND_URL=$(read_yaml_scalar "$CONFIG" "backend_url" "http://localhost:8000")
+PROJECT_NAME=$(read_yaml_scalar "$CONFIG" "project" "")
 
 # --- Resolve API key ---
 # T-214: read from env or ~/.cloglog/credentials only. Per-worktree files

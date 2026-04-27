@@ -35,12 +35,11 @@ find_config() {
 
 CONFIG=$(find_config "$CWD") || exit 0
 
-# Read quality_command from config
-QUALITY_CMD=$(python3 -c "
-import yaml, sys
-cfg = yaml.safe_load(open('$CONFIG'))
-print(cfg.get('quality_command', 'make quality'))
-" 2>/dev/null) || QUALITY_CMD="make quality"
+# T-312: parse via shared stdlib helper, NEVER the python YAML lib.
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/parse-yaml-scalar.sh
+source "${HOOK_DIR}/lib/parse-yaml-scalar.sh"
+QUALITY_CMD=$(read_yaml_scalar "$CONFIG" "quality_command" "make quality")
 
 # Run quality checks
 cd "$CWD" || exit 0

@@ -88,6 +88,29 @@ def test_launch_skill_4c_has_no_relative_invocation_or_cd() -> None:
     )
 
 
+def test_launch_skill_backend_url_block_uses_grep_sed_not_yaml() -> None:
+    """T-312: _backend_url() in the rendered launch.sh must use grep+sed.
+
+    `python3 -c 'import yaml'` violates docs/invariants.md:76 — the system
+    python3 launch.sh runs under typically lacks PyYAML, so the previous
+    snippet silently swallowed ImportError and returned the default port,
+    breaking unregister-by-path on portable hosts.
+    """
+    body = _read(LAUNCH_SKILL)
+    fn_match = re.search(r"_backend_url\(\)\s*\{(.*?)\n\}", body, flags=re.DOTALL)
+    assert fn_match, "_backend_url() block missing from launch SKILL.md"
+    fn_body = fn_match.group(1)
+
+    assert "import yaml" not in fn_body, (
+        "_backend_url() must not embed `python3 -c 'import yaml'` — see "
+        "docs/invariants.md:76 and plugins/cloglog/hooks/lib/parse-yaml-scalar.sh."
+    )
+    assert "grep '^backend_url:'" in fn_body, (
+        "_backend_url() must read backend_url via the grep+sed shape that "
+        "mirrors plugins/cloglog/hooks/lib/parse-yaml-scalar.sh."
+    )
+
+
 def test_launch_skill_4c_warns_against_cd_into_worktree() -> None:
     """The fix is structural; the prose must also state the discipline.
 

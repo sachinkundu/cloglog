@@ -48,6 +48,10 @@ For each feature (F-*), ensure the three pipeline tasks exist:
 
 Use `mcp__cloglog__create_task` to create any missing pipeline tasks. The state machine guards enforce ordering — the agent cannot start plan until spec is done, cannot start impl until plan is done.
 
+**Model assignment for pipeline tasks:** Assign models when creating tasks — spec and plan are reasoning-heavy and should use `claude-opus-4-7`; impl is mechanical and should use `claude-sonnet-4-6`. Pass `model` to `mcp__cloglog__create_task`. If the task already exists (returned by search), its model field is already set from prior creation and you do not need to update it.
+
+After ensuring all pipeline tasks exist, resolve `TASK_MODEL` for the launch step: call `mcp__cloglog__get_active_tasks` (or re-use the search result from Step 1b) to find the first backlog/in-progress pipeline task for this feature, and capture its `model` field as `TASK_MODEL`. This ensures `TASK_MODEL` is set correctly even for feature launches where Step 1b only resolved the F-* identifier.
+
 For standalone tasks (T-*), skip this step — they are executed directly.
 
 ## Step 3: Assemble Agent Prompt

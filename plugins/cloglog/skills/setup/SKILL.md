@@ -108,7 +108,7 @@ Worktree agents now exit after each PR merge (one task per session). When you re
    WORKTREE_NAME="<wt-name>"
    WORKTREE_PATH="<abs/path/to/worktree>"  # from the board or the event's artifacts paths
    zellij action go-to-tab-by-name "${WORKTREE_NAME}"
-   zellij action write-chars "claude --dangerously-skip-permissions 'Read ${WORKTREE_PATH}/AGENT_PROMPT.md and all shutdown-artifacts/work-log-T-*.md files in ${WORKTREE_PATH}, then begin the next task.'"
+   zellij action write-chars "bash '${WORKTREE_PATH}/.cloglog/launch.sh' 'Read ${WORKTREE_PATH}/AGENT_PROMPT.md and all shutdown-artifacts/work-log-T-*.md files in ${WORKTREE_PATH}, then begin the next task.'"
    zellij action write "13"
    ```
    The new session reads the prior work logs (see worktree-agent **Work-Log Bootstrap**), registers, and starts the next backlog task.

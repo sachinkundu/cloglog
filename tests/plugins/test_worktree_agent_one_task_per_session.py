@@ -307,3 +307,58 @@ def test_supervisor_relaunch_uses_get_active_tasks_not_get_my_tasks() -> None:
             f"failure mode where the supervisor queries its own queue instead of "
             f"the unregistered worktree's."
         )
+
+
+# ---------------------------------------------------------------------------
+# Supervisor relaunch must go through launch.sh (not raw claude)
+# ---------------------------------------------------------------------------
+
+
+def test_supervisor_relaunch_goes_through_launch_sh() -> None:
+    """Continuation sessions must relaunch via launch.sh, not raw claude.
+
+    launch.sh has a TERM/HUP/INT signal trap that calls _unregister_fallback
+    via curl if the process is killed. Raw 'claude --dangerously-skip-permissions'
+    misses this trap, so crash/close-tab in a continuation session leaves the
+    worktree row dangling until heartbeat timeout. Always relaunch through the
+    wrapper.
+    """
+    for skill_path, label in [
+        (LAUNCH_SKILL, "launch SKILL.md Supervisor Relaunch Flow"),
+        (SETUP_SKILL, "setup SKILL.md agent_unregistered handler"),
+    ]:
+        body = _read(skill_path)
+        assert "launch.sh'" in body, (
+            f"{label} must relaunch continuation sessions via "
+            f"\"bash '.../.cloglog/launch.sh' '<prompt>'\" to preserve the "
+            f"signal trap and _unregister_fallback path. Raw "
+            f"'claude --dangerously-skip-permissions' bypasses the wrapper."
+        )
+
+
+# ---------------------------------------------------------------------------
+# remind-pr-update.sh hook must use task number, not PR number
+# ---------------------------------------------------------------------------
+
+
+def test_remind_hook_uses_task_num_not_pr_num() -> None:
+    """The remind-pr-update hook must use task number, not PR number, for work-log naming.
+
+    Task T-42 and PR #317 are different numbers. The work log must be named
+    work-log-T-42.md (task identity), not work-log-T-317.md (PR number).
+    The hook previously used ${PR_NUM} (extracted from the PR URL), which
+    would produce wrong file names whenever T-number != PR-number.
+    """
+    hook = REPO_ROOT / "plugins/cloglog/hooks/remind-pr-update.sh"
+    body = _read(hook)
+    assert "work-log-T-${PR_NUM}" not in body, (
+        "remind-pr-update.sh must not use ${PR_NUM} for work-log file naming. "
+        "PR numbers and task numbers are unrelated integers — T-42 is reviewed "
+        "in PR #317. The hook must use a <TASK_NUM> placeholder and instruct "
+        "agents to derive it from the active task's 'number' field."
+    )
+    assert "TASK_NUM" in body, (
+        "remind-pr-update.sh must reference TASK_NUM (task number) rather than "
+        "PR_NUM for the work-log filename. The task number comes from "
+        "get_my_tasks()/start_task() response's 'number' field."
+    )

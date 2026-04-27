@@ -162,7 +162,7 @@ Read /abs/path/to/worktree/AGENT_PROMPT.md and all shutdown-artifacts/work-log-T
 
 The initial AGENT_PROMPT.md is already in the worktree from the original launch — do not rewrite it. The prior work logs carry the context the new session needs. The new session bootstraps by reading the work logs (see the worktree-agent template's **Work-Log Bootstrap** step), then loads MCP tools, registers, starts the next backlog task, and proceeds normally.
 
-**The launch SKILL writes the initial prompt; the supervisor writes continuation prompts.** Do not encode continuation logic in the launch.sh template — the launcher is dumb bash, and detecting "more tasks remain" requires MCP access the supervisor already has.
+**The launch SKILL writes the initial prompt; the supervisor writes continuation prompts.** Continuation sessions reuse `.cloglog/launch.sh` by passing the prompt as `$1` — this preserves the TERM/HUP signal trap and `_unregister_fallback` path from the initial launch. Do not invoke `claude` directly for relaunches; always go through `launch.sh` so crash/close-tab cleanup works identically for initial and continuation sessions.
 
 ## Supervisor Relaunch Flow
 
@@ -176,7 +176,7 @@ When the supervisor inbox receives `agent_unregistered` from a worktree agent:
    zellij action go-to-tab-by-name "${WORKTREE_NAME}"
    # Issue the continuation prompt — the tab's current process has exited,
    # so the shell is at the prompt again
-   zellij action write-chars "claude --dangerously-skip-permissions 'Read ${WORKTREE_PATH}/AGENT_PROMPT.md and all shutdown-artifacts/work-log-T-*.md files in ${WORKTREE_PATH}, then begin the next task.'"
+   zellij action write-chars "bash '${WORKTREE_PATH}/.cloglog/launch.sh' 'Read ${WORKTREE_PATH}/AGENT_PROMPT.md and all shutdown-artifacts/work-log-T-*.md files in ${WORKTREE_PATH}, then begin the next task.'"
    zellij action write "13"   # send Enter
    ```
 4. **If no backlog tasks remain** → invoke the `cloglog:close-wave` skill for this worktree.
@@ -327,7 +327,10 @@ trap '_on_signal HUP' HUP
 trap '_on_signal INT' INT
 
 cd "\$WORKTREE_PATH"
-claude --dangerously-skip-permissions 'Read '"\$WORKTREE_PATH"'/AGENT_PROMPT.md and begin.' &
+# Optional \$1: continuation prompt string from supervisor relaunch.
+# When absent, fall back to reading AGENT_PROMPT.md (initial launch).
+_CLAUDE_PROMPT="\${1:-Read ${WORKTREE_PATH}/AGENT_PROMPT.md and begin.}"
+claude --dangerously-skip-permissions "\$_CLAUDE_PROMPT" &
 CLAUDE_PID=\$!
 wait "\$CLAUDE_PID"
 EOF

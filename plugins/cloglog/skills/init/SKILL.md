@@ -40,11 +40,207 @@ If auto-detection finds something, present it and ask the user to confirm or ove
 
 ### 1c. Detect backend URL
 
-Check if a cloglog backend is already running or configured. Default to `http://localhost:8000`.
+Check if a cloglog backend is already running or configured. Default to `http://127.0.0.1:8001` (the prod backend). Use `127.0.0.1` rather than `localhost` — on IPv6-first hosts `localhost` resolves to `::1` and the Node MCP server fails with `ECONNREFUSED`. Port 8000 is reserved for cloglog's own dev server.
 
-## Step 2: Register Project on Board
+## Step 2: Bootstrap Project on Backend (Two-Phase)
 
-Call `mcp__cloglog__get_board` to check if the project already exists. If not, the user will need to register it through the backend API or MCP tools.
+On a fresh project the MCP server has no credentials yet, so `mcp__cloglog__*` tools are
+unavailable. This step uses a direct HTTP call to create the project and write credentials
+before restarting. On a subsequent run (after restart) it detects the repo-local `project_id`
+and skips straight to Step 3.
+
+### Phase 1 — detect existing bootstrap
+
+```bash
+BACKEND_URL="${CLOGLOG_BACKEND_URL:-http://127.0.0.1:8001}"
+
+# Use project-local config if already written.
+# Use the canonical scalar-parser pipeline from plugins/cloglog/hooks/lib/parse-yaml-scalar.sh:
+# strips surrounding quotes and trailing comments, takes first match.
+if [ -f .cloglog/config.yaml ]; then
+  _cfg_backend=$(grep '^backend_url:' .cloglog/config.yaml 2>/dev/null | head -n1 \
+    | sed 's/^backend_url:[[:space:]]*//' \
+    | sed 's/[[:space:]]*#.*$//' \
+    | tr -d '"'"'")
+  [ -n "$_cfg_backend" ] && BACKEND_URL="$_cfg_backend"
+fi
+
+# Check for a repo-local project_id — this is the repo-scoped identity signal.
+# NOTE: we also check for credentials below. project_id alone is not enough because
+# cloning a repo that has .cloglog/config.yaml checked in (with project_id) but no
+# local ~/.cloglog/credentials would cause the MCP server to hard-fail at startup.
+EXISTING_PROJECT_ID=""
+if [ -f .cloglog/config.yaml ]; then
+  EXISTING_PROJECT_ID=$(grep '^project_id:' .cloglog/config.yaml | sed 's/^project_id: *//')
+fi
+
+# Check for credentials (env var takes priority over file, matching MCP server resolution).
+EXISTING_CREDS=""
+if [ -n "${CLOGLOG_API_KEY:-}" ]; then
+  EXISTING_CREDS="env"
+elif [ -f ~/.cloglog/credentials ] && grep -q '^CLOGLOG_API_KEY=' ~/.cloglog/credentials; then
+  EXISTING_CREDS="file"
+fi
+```
+
+**If both `EXISTING_PROJECT_ID` is non-empty AND `EXISTING_CREDS` is non-empty**, this
+project is fully bootstrapped. Skip to Step 3 — the MCP server picked up the key at startup
+and `mcp__cloglog__*` tools are available.
+
+**If `EXISTING_PROJECT_ID` is non-empty but `EXISTING_CREDS` is empty** (e.g. the repo was
+cloned to a new machine), stop with a repair instruction:
+
+> **Credentials missing for an existing project.**
+>
+> `.cloglog/config.yaml` has `project_id: <id>` but no `CLOGLOG_API_KEY` is available.
+> The MCP server cannot start without the project API key.
+>
+> To repair:
+> 1. Obtain the project API key (rotate with `scripts/rotate-project-key.py` if lost).
+> 2. Write it: `printf 'CLOGLOG_API_KEY=<key>\n' > ~/.cloglog/credentials && chmod 600 ~/.cloglog/credentials`
+> 3. Restart Claude Code, then run `/cloglog init` again.
+>
+> Do NOT re-run the bootstrap (Phase 2) — the project already exists; creating another
+> one will register a duplicate.
+
+### Phase 2 — create project via admin HTTP (fresh setup only)
+
+If no repo-local `project_id` exists, create the project directly against the backend.
+
+**Single-slot credentials check.** The MCP loader supports only one global `CLOGLOG_API_KEY`.
+If `~/.cloglog/credentials` already holds a key, the bootstrap still creates the project
+but prints the new key for the operator to export rather than overwriting the file:
+
+```bash
+MULTI_PROJECT=false
+if [ -z "${CLOGLOG_API_KEY:-}" ] && [ -f ~/.cloglog/credentials ] \
+    && grep -q '^CLOGLOG_API_KEY=' ~/.cloglog/credentials; then
+  MULTI_PROJECT=true
+  echo "NOTE: ~/.cloglog/credentials already has a CLOGLOG_API_KEY (another project)."
+  echo "Existing credentials will be preserved. The new project API key will be printed"
+  echo "for you to export as CLOGLOG_API_KEY before restarting Claude Code."
+fi
+```
+
+Proceed:
+
+1. **Locate the dashboard key.** The backend validates it against the `DASHBOARD_SECRET`
+   setting (see `src/shared/config.py`). Read it from the environment — the variable name
+   must match whatever the operator set as `DASHBOARD_SECRET` in their backend's `.env`:
+
+   ```bash
+   DASHBOARD_KEY="${DASHBOARD_SECRET:-}"
+   ```
+
+   If it is empty, ask the operator:
+
+   > **Admin credential required.** To bootstrap this project on the cloglog backend,
+   > provide your dashboard key (the value of `DASHBOARD_SECRET` in your backend's
+   > environment). This is a one-time step — after setup the MCP server authenticates
+   > automatically.
+
+2. **Create the project:**
+
+   ```bash
+   PROJECT_NAME="<name from Step 1>"
+
+   RESPONSE=$(curl -sf -X POST \
+     -H "Content-Type: application/json" \
+     -H "X-Dashboard-Key: ${DASHBOARD_KEY}" \
+     -d "{\"name\": \"${PROJECT_NAME}\", \"description\": \"\"}" \
+     "${BACKEND_URL}/api/v1/projects")
+
+   if [ $? -ne 0 ] || [ -z "$RESPONSE" ]; then
+     echo "ERROR: Could not reach backend at ${BACKEND_URL}. Is it running?"
+     exit 1
+   fi
+
+   PROJECT_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['id'])")
+   API_KEY=$(echo "$RESPONSE"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['api_key'])")
+   ```
+
+   > **Note:** Each call to `POST /api/v1/projects` creates a new project. If init is
+   > re-run after a partial bootstrap (e.g., credentials were written but the operator
+   > never restarted), detect the existing project via `EXISTING_PROJECT_ID` above and
+   > skip this step — do not re-post the same project name.
+
+3. **Write credentials** (shown once — backend stores only a hash):
+
+   ```bash
+   if [ "$MULTI_PROJECT" = "false" ]; then
+     mkdir -p ~/.cloglog
+     printf 'CLOGLOG_API_KEY=%s\n' "$API_KEY" > ~/.cloglog/credentials
+     chmod 600 ~/.cloglog/credentials
+   fi
+   ```
+
+4. **Write `project_id` and `backend_url` to config.** Seeding both now ensures the
+   second run reads the correct backend URL from config (not only from `$CLOGLOG_BACKEND_URL`
+   which may not be set after restart). Step 4a will write the full config later; these two
+   keys bootstrap the re-run detection:
+
+   ```bash
+   mkdir -p .cloglog
+
+   # project_id — update in place or append (never use >> alone: scalar parser
+   # returns first match, so a duplicate key silently shadows the new value).
+   if [ -f .cloglog/config.yaml ] && grep -q '^project_id:' .cloglog/config.yaml; then
+     sed -i "s/^project_id:.*/project_id: ${PROJECT_ID}/" .cloglog/config.yaml
+   else
+     printf 'project_id: %s\n' "$PROJECT_ID" >> .cloglog/config.yaml
+   fi
+
+   # backend_url — persist so Step 3/4 and hooks use the same URL after restart
+   if [ -f .cloglog/config.yaml ] && grep -q '^backend_url:' .cloglog/config.yaml; then
+     sed -i "s|^backend_url:.*|backend_url: ${BACKEND_URL}|" .cloglog/config.yaml
+   else
+     printf 'backend_url: %s\n' "$BACKEND_URL" >> .cloglog/config.yaml
+   fi
+   ```
+
+5. **Request restart.** Tell the operator:
+
+   If `MULTI_PROJECT=false` (single-project machine — key written to `~/.cloglog/credentials`):
+
+   > **Project created successfully.**
+   >
+   > | Field | Value |
+   > |-------|-------|
+   > | Project ID | `<project_id>` |
+   > | API key | written to `~/.cloglog/credentials` |
+   >
+   > **Next step: restart Claude Code.**
+   >
+   > The MCP server reads credentials at startup. Please:
+   > 1. Exit this Claude Code session (`/exit`)
+   > 2. Restart Claude Code in this directory
+   > 3. Run `/cloglog init` again — the remaining steps (MCP config, `.cloglog/`,
+   >    CLAUDE.md, GitHub bot) will complete on the second run.
+
+   If `MULTI_PROJECT=true` (existing credentials preserved — key printed, not written):
+
+   > **Project created successfully (multi-project machine).**
+   >
+   > | Field | Value |
+   > |-------|-------|
+   > | Project ID | `<project_id>` |
+   > | API key | **`<api_key>`** — shown once, not written to file |
+   >
+   > Your existing `~/.cloglog/credentials` was NOT modified. Before restarting,
+   > export the new key so the MCP server picks it up at startup:
+   >
+   > ```bash
+   > export CLOGLOG_API_KEY=<api_key>
+   > ```
+   >
+   > Add that line to your shell RC (`~/.bashrc`, `~/.zshenv`) or a project
+   > `.envrc` (direnv). Then:
+   > 1. Exit this Claude Code session (`/exit`)
+   > 2. Open a shell with the exported key and restart Claude Code
+   > 3. Run `/cloglog init` again — the remaining steps complete on the second run.
+
+   **Stop here.** Do not proceed to Step 3 — the MCP server is not yet loaded and the
+   remaining steps require it or write files that depend on having a valid project_id.
 
 ## Step 3: Configure MCP Server
 
@@ -71,7 +267,7 @@ Check if `.claude/settings.json` exists in the project. If the cloglog MCP serve
       "command": "node",
       "args": ["/path/to/mcp-server/dist/index.js"],
       "env": {
-        "CLOGLOG_URL": "http://localhost:8000"
+        "CLOGLOG_URL": "<BACKEND_URL detected in Step 1c — e.g. http://127.0.0.1:8001>"
       }
     }
   }
@@ -92,9 +288,14 @@ If the file already has a cloglog MCP entry or SessionStart hook, update rather 
 
 ```yaml
 project_name: <name>
-backend_url: http://localhost:8000
+backend_url: <BACKEND_URL detected in Step 1c — e.g. http://127.0.0.1:8001>
 quality_command: <detected or user-provided command>
 ```
+
+**Important:** Use the `BACKEND_URL` detected in Step 1c (or read from `.cloglog/config.yaml`
+which was seeded in Step 2). Do not hard-code `127.0.0.1:8001` — non-default backends must
+survive the restart. If Step 2 already wrote `backend_url`, preserve it rather than overwriting
+with the default.
 
 If `.cloglog/config.yaml` already exists, update fields rather than overwriting.
 

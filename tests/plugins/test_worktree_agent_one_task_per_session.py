@@ -246,8 +246,8 @@ def test_worktree_agent_documents_standalone_no_pr_exit_path() -> None:
 
 def test_lifecycle_doc_trigger_b_has_standalone_no_pr_branch() -> None:
     """docs/design/agent-lifecycle.md Trigger B must cover standalone no-PR tasks."""
-    LIFECYCLE = REPO_ROOT / "docs/design/agent-lifecycle.md"
-    body = _read(LIFECYCLE)
+    lifecycle = REPO_ROOT / "docs/design/agent-lifecycle.md"
+    body = _read(lifecycle)
     assert "standalone no-PR task" in body, (
         "docs/design/agent-lifecycle.md Trigger B must document the standalone "
         "no-PR branch (docs, research, prototypes) alongside the plan branch. "
@@ -268,8 +268,8 @@ def test_lifecycle_doc_event_shape_learnings_null() -> None:
     learnings.md is superseded. The canonical lifecycle doc must reflect this
     so supervisors reading the lifecycle doc get the current event shape.
     """
-    LIFECYCLE = REPO_ROOT / "docs/design/agent-lifecycle.md"
-    body = _read(LIFECYCLE)
+    lifecycle = REPO_ROOT / "docs/design/agent-lifecycle.md"
+    body = _read(lifecycle)
     assert '"learnings": null' in body, (
         "docs/design/agent-lifecycle.md agent_unregistered event shape must "
         "show 'learnings': null. T-329 embeds learnings in per-task work-log "

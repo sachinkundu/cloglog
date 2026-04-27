@@ -123,7 +123,7 @@ if [ -z "${CLOGLOG_API_KEY:-}" ] && [ -f ~/.cloglog/credentials ] \
   echo "  1. Use a per-session env var for this project:"
   echo "     export CLOGLOG_API_KEY=<new-project-key>"
   echo "     (obtain the key by running init on the backend host or via"
-  echo "      the admin bootstrap below with a temporary CLOGLOG_DASHBOARD_KEY)"
+  echo "      the admin bootstrap below using your DASHBOARD_SECRET)"
   echo ""
   echo "  2. If this machine is dedicated to this new project, remove the old"
   echo "     credentials first: rm ~/.cloglog/credentials"

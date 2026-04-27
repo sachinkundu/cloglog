@@ -77,11 +77,12 @@ If you need to create the project manually (e.g. scripted provisioning):
 
 ```bash
 # 1. Create the project and capture the API key (shown once)
+BACKEND_URL="${CLOGLOG_BACKEND_URL:-http://127.0.0.1:8001}"
 RESPONSE=$(curl -sf -X POST \
   -H "Content-Type: application/json" \
   -H "X-Dashboard-Key: ${DASHBOARD_SECRET}" \
   -d '{"name": "my-project", "description": ""}' \
-  http://127.0.0.1:8001/api/v1/projects)
+  "${BACKEND_URL}/api/v1/projects")
 
 API_KEY=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['api_key'])")
 PROJECT_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['id'])")
@@ -91,14 +92,19 @@ mkdir -p ~/.cloglog
 printf 'CLOGLOG_API_KEY=%s\n' "$API_KEY" > ~/.cloglog/credentials
 chmod 600 ~/.cloglog/credentials
 
-# 3. Store project_id (update in place if already present; append if not).
+# 3. Store project_id and backend_url (update in place if already present; append if not).
 # Never use >> alone — the scalar parser reads the first matching key, so a
-# duplicate project_id: line silently shadows the new value on re-runs.
+# duplicate line silently shadows the new value on re-runs.
 mkdir -p .cloglog
 if [ -f .cloglog/config.yaml ] && grep -q '^project_id:' .cloglog/config.yaml; then
   sed -i "s/^project_id:.*/project_id: ${PROJECT_ID}/" .cloglog/config.yaml
 else
   printf 'project_id: %s\n' "$PROJECT_ID" >> .cloglog/config.yaml
+fi
+if [ -f .cloglog/config.yaml ] && grep -q '^backend_url:' .cloglog/config.yaml; then
+  sed -i "s|^backend_url:.*|backend_url: ${BACKEND_URL}|" .cloglog/config.yaml
+else
+  printf 'backend_url: %s\n' "$BACKEND_URL" >> .cloglog/config.yaml
 fi
 ```
 

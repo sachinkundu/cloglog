@@ -219,3 +219,33 @@ def test_setup_skill_relaunch_uses_continuation_prompt() -> None:
         "setup SKILL.md's relaunch instruction must include work-log-T-*.md in "
         "the continuation prompt so the new session bootstraps with prior context."
     )
+
+
+def test_supervisor_relaunch_uses_get_active_tasks_not_get_my_tasks() -> None:
+    """Supervisor relaunch flow must use get_active_tasks (board-scoped) not get_my_tasks.
+
+    get_my_tasks is scoped to the supervisor's own worktree registration — it
+    cannot answer "does wt-A still have backlog tasks?" The supervisor must use
+    get_active_tasks and filter by the unregistered agent's worktree_id.
+    """
+    for skill_path, label in [
+        (LAUNCH_SKILL, "launch SKILL.md Supervisor Relaunch Flow"),
+        (SETUP_SKILL, "setup SKILL.md agent_unregistered handler"),
+    ]:
+        body = _read(skill_path)
+        # Positive: must instruct get_active_tasks
+        assert "get_active_tasks" in body, (
+            f"{label} must instruct the supervisor to call get_active_tasks "
+            f"(board-scoped, includes worktree_id) to check remaining backlog tasks. "
+            f"get_my_tasks is scoped to the supervisor's own registration and cannot "
+            f"answer questions about another worktree's task queue."
+        )
+        # Negative: must not instruct get_my_tasks for the continuation check
+        # (get_my_tasks may appear in other contexts like prs-map build, so we
+        # check only in the relaunch decision context)
+        assert "Do NOT use `mcp__cloglog__get_my_tasks`" in body, (
+            f"{label} must explicitly warn that get_my_tasks cannot be used for "
+            f"the supervisor's worktree-backlog check. This prevents the silent "
+            f"failure mode where the supervisor queries its own queue instead of "
+            f"the unregistered worktree's."
+        )

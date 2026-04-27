@@ -142,10 +142,23 @@ def test_missing_frontmatter_entirely_fails() -> None:
 def _find_committed_work_logs() -> list[Path]:
     """Find work-log-T-*.md files tracked in the repo tree.
 
-    These are rare (work logs normally live in gitignored worktrees), but
-    any fixture files or accidentally committed logs must pass validation.
+    Uses ``git ls-files`` so only files actually committed to the repo are
+    returned — ``rglob`` would traverse gitignored directories like
+    ``.claude/worktrees/`` and ``shutdown-artifacts/``, causing spurious
+    failures when stale work-log files exist under active or old worktrees.
     """
-    return list(REPO_ROOT.rglob("work-log-T-*.md"))
+    import subprocess
+
+    try:
+        out = subprocess.check_output(
+            ["git", "ls-files", "*.md"],
+            cwd=REPO_ROOT,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError:
+        return []
+    return [REPO_ROOT / p for p in out.splitlines() if "work-log-T-" in p]
 
 
 COMMITTED_LOGS = _find_committed_work_logs()

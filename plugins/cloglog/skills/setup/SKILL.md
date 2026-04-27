@@ -101,8 +101,8 @@ You are the supervisor. Worktree agents write to your inbox when they need help 
 
 Worktree agents now exit after each PR merge (one task per session). When you receive `agent_unregistered` from a worktree agent, **immediately** decide whether to relaunch or hand off to close-wave:
 
-1. Extract the worktree name (`worktree` field) and completed task IDs (`tasks_completed`) from the event.
-2. Call `mcp__cloglog__get_my_tasks` (or query the board) to check whether any task assigned to that worktree still has `status: "backlog"`.
+1. Extract the `worktree_id` and `worktree` (name) fields from the `agent_unregistered` event.
+2. Call `mcp__cloglog__get_active_tasks` and filter for tasks where `worktree_id` matches the unregistered agent's UUID AND `status == "backlog"`. **Do NOT use `mcp__cloglog__get_my_tasks`** — that is scoped to the supervisor's own registration and returns the supervisor's tasks, not the worktree that just unregistered.
 3. **If backlog tasks remain** → relaunch in the same zellij tab using the continuation prompt:
    ```bash
    WORKTREE_NAME="<wt-name>"

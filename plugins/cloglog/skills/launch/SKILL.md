@@ -168,8 +168,8 @@ The initial AGENT_PROMPT.md is already in the worktree from the original launch 
 
 When the supervisor inbox receives `agent_unregistered` from a worktree agent:
 
-1. Call `mcp__cloglog__get_my_tasks` (or inspect the `agent_unregistered` event's `tasks_completed` list).
-2. Check whether any task assigned to this worktree still has `status: "backlog"`.
+1. Extract the `worktree_id` from the `agent_unregistered` event.
+2. Call `mcp__cloglog__get_active_tasks` to get all non-done tasks in the project. Filter the result to tasks where `worktree_id == <unregistered worktree's uuid>` AND `status == "backlog"`. **Do NOT use `mcp__cloglog__get_my_tasks`** — that returns tasks scoped to the supervisor's own worktree registration, not the worktree that just unregistered.
 3. **If backlog tasks remain** → relaunch in the same zellij tab:
    ```bash
    # Go to the worktree's tab (same tab name as WORKTREE_NAME)

@@ -36,22 +36,21 @@
 
 ### Feature Pipeline Continuity
 
-- **Create ALL three pipeline tasks upfront** when launching an agent for a feature. The state machine enforces ordering; having all tasks assigned means the agent knows its full workload and won't exit prematurely.
-- **Agents must complete the full pipeline:** spec (PR, wait for merge) → plan (write and proceed) → impl (PR, wait for merge).
-- **After each PR merges, call `get_my_tasks`.** If there are more tasks assigned, start the next one.
-- **Never exit after just the spec task.** If `get_my_tasks` returns tasks, you have more work to do.
+- **Create ALL three pipeline tasks upfront** when launching an agent for a feature. The state machine enforces ordering; having all tasks assigned means the board reflects the full workload.
+- **Agents execute one task per session (T-329).** When a task's PR merges, the agent writes a per-task work log (`shutdown-artifacts/work-log-T-<NNN>.md`), emits `agent_unregistered`, and exits. The supervisor relaunches in the same zellij tab for the next backlog task (if any) using the continuation prompt, or triggers close-wave if none remain. Do NOT call `get_my_tasks` after `pr_merged` to start the next task — the supervisor handles continuation.
+- **Exception: plan → impl pipeline.** A plan task (no PR) immediately starts the following impl task in the same session. The session exits when the impl PR merges.
 
 ### Worktree Hygiene
 
 - **Commit or stash all pending changes before creating worktrees.** Worktrees inherit uncommitted changes from the working tree — agents will see those diffs and mistakenly treat them as their own work.
 - **Task lifecycle:** Move tasks through `in_progress → review` using the `update_task_status` MCP tool. Before moving to review, add a structured test report via `add_task_note` covering: (1) pre-existing tests, (2) modified tests, (3) new tests, (4) testing strategy, (5) results with clear delta. This demonstrates testing judgment, not just a pass count.
-- **PR polling and CI recovery:** Use the `github-bot` skill — it has the exact commands and polling loop. When merged: **first emit `pr_merged_notification` to `<project_root>/.cloglog/inbox`** (T-262 — surfaces the merge to the supervisor and any parallel worktree blocked on this PR; the `pr_merged` webhook only reaches the merging worktree's own inbox), then call `mark_pr_merged` with the task_id, then for spec/plan tasks call `report_artifact`, then start the next task immediately.
+- **PR polling and CI recovery:** Use the `github-bot` skill — it has the exact commands and event responses. When merged: **first emit `pr_merged_notification` to `<project_root>/.cloglog/inbox`** (T-262), then call `mark_pr_merged`, then for spec/plan tasks call `report_artifact`, then write the per-task work log, emit `agent_unregistered`, call `unregister_agent`, and exit.
 - **Report artifacts after PR merge (enforced by state machine):** When a spec or plan PR merges, call `report_artifact` MCP tool with the repo-relative path to the document file. The pipeline guard blocks downstream tasks until the predecessor's artifact is attached. Only spec and plan tasks produce artifacts; impl and standalone tasks do not.
 
 ### Agent Shutdown
 
-- **Agents deregister themselves.** Exit condition: `get_my_tasks` returns no task with status `backlog` for this worktree. That is the single authoritative signal — do NOT wait for `done` (administrative, user-driven, no push notification) and do NOT gate on a derived "feature pipeline is complete" condition.
-- **Before `unregister_agent`, emit an `agent_unregistered` event to `<project_root>/.cloglog/inbox`** carrying `worktree`, `worktree_id`, `ts`, `tasks_completed`, the `prs` map (T-262 — `T-NNN -> PR URL` for tasks that had a PR; build it by walking `get_my_tasks()` and reading each row's `pr_url`; omit tasks without a PR), absolute paths to `shutdown-artifacts/work-log.md` and `shutdown-artifacts/learnings.md`, and `reason`. This is how the main agent's close-wave flow learns you are done. The SessionEnd hook writes a best-effort fallback only.
+- **Agents deregister themselves on `pr_merged` (T-329 — one task per session).** Exit condition: the `pr_merged` inbox event fires. Do NOT wait for empty `get_my_tasks` backlog — the supervisor handles relaunching for subsequent tasks.
+- **Before `unregister_agent`, write `shutdown-artifacts/work-log-T-<NNN>.md`** (per-task work log) and emit an `agent_unregistered` event to `<project_root>/.cloglog/inbox` carrying `worktree`, `worktree_id`, `ts`, `tasks_completed`, the `prs` map (T-262 — `T-NNN -> PR URL`; build by walking `get_my_tasks()` for `pr_url`; omit tasks without a PR), and `reason: "pr_merged"`. The `artifacts.work_log` field must carry an absolute path to `shutdown-artifacts/work-log.md` (the aggregate of all per-task logs). The SessionEnd hook writes a best-effort fallback only.
 - **Three-tier shutdown:** (1) Cooperative — main agent calls `request_shutdown`; agent finishes the current MCP call, runs the full shutdown sequence, unregisters. (2) Force unregister — main agent calls `force_unregister` (project-scoped admin tool); the backend unregisters unconditionally and the agent's next MCP call fails with auth rejection — a runtime tool error per §4.1, so the agent writes `mcp_tool_error` and waits (main initiated the force and can ignore the event). (3) Heartbeat timeout — server-side sweep at 180 s marks stale sessions offline; catch-all for crashes, not a cooperative signal.
 - **Artifact handoff is explicit.** The `agent_unregistered` event carries absolute paths so the main agent can read them after the worktree is torn down.
 

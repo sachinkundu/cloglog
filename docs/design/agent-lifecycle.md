@@ -17,21 +17,27 @@ doc, not a tutorial.
 
 ## 1. Exit condition
 
-**An agent's work is done when `get_my_tasks` returns no task in `backlog`
-status for this worktree.** That is the single, authoritative exit signal.
+**An agent's session ends on `pr_merged`.** Each worktree agent handles exactly
+one task (or a plan+impl pair) per session. When a task's PR merges, the agent
+writes a per-task work log, emits `agent_unregistered`, and exits — regardless
+of whether more backlog tasks remain on the worktree. The supervisor handles
+relaunching the same worktree for subsequent tasks.
 
 Corollary — things that are NOT exit signals:
 
 | Signal | Why it is not the exit signal |
 | --- | --- |
-| A single PR merged | The agent may have further `backlog` tasks queued. `pr_merged` only fires the "maybe start next task" flow. |
-| The task shows `done` on the board | `done` is administrative and user-driven. No push notification fires when a task moves `review` → `done`. `task_status_changed` is emitted on the SSE event bus (dashboard consumer only) and never reaches the worktree inbox. An agent that waits for `done` deadlocks forever. |
-| The "feature pipeline" is complete | Prior docs spoke of spec → plan → impl as the unit of completion. That concept is retired. Only `get_my_tasks` is authoritative; pipeline-level state is derived, not awaited. |
+| Empty `get_my_tasks()` backlog | The per-task exit fires on `pr_merged`, before checking backlog. `get_my_tasks` is used to build the `prs` map in the shutdown artifact, not to decide when to exit. |
+| The task shows `done` on the board | `done` is administrative and user-driven. No push notification fires when a task moves `review` → `done`. An agent that waits for `done` deadlocks forever. |
+| The "feature pipeline" is complete | Pipeline-level state is derived, not awaited. `pr_merged` is the per-task exit trigger; the supervisor decides whether more tasks follow. |
 
 A task that is `review` with `pr_merged = True` is **finished from the agent's
 side.** The task still needs a human to drag it to `done`, but the agent has no
-further responsibility for it. The agent does not monitor, reply to, or block
-on such tasks.
+further responsibility for it.
+
+**Exception: plan → impl pipeline.** A plan task (no PR — committed locally via
+`skip_pr=True`) does not trigger a session exit. The agent starts the following
+impl task within the same session. The exit fires when the impl task's PR merges.
 
 ### Decision algorithm
 
@@ -40,9 +46,8 @@ The algorithm fires at each of two triggers:
 - **Trigger A — `pr_merged` inbox event.** Used by tasks with a PR (spec, impl,
   standalone-with-code).
 - **Trigger B — local commit of the artifact is done.** Used by tasks with NO
-  PR (plan tasks, and any docs/research task that finishes without opening a
-  PR). The agent itself decides when to run this trigger; there is no
-  webhook.
+  PR (plan tasks). The agent itself decides when to run this trigger; there is no
+  webhook. Plan tasks immediately start the following impl task (no exit).
 
 ```
 on trigger A (pr_merged):
@@ -54,24 +59,19 @@ on trigger A (pr_merged):
     1. mark_pr_merged(task_id, worktree_id)
     2. if task_type in (spec, plan):
            report_artifact(task_id, worktree_id, artifact_path)
+    3. write shutdown-artifacts/work-log-T-<NNN>.md  (per-task work log)
+    4. build aggregate shutdown-artifacts/work-log.md from all work-log-T-*.md
+    5. emit agent_unregistered to <project_root>/.cloglog/inbox
+       (reason: "pr_merged"; artifacts.work_log: absolute path; prs map per T-262)
+    6. call unregister_agent and exit
+    → Supervisor decides: more backlog tasks → relaunch; none → close-wave.
 
-on trigger B (no-PR task finished):
+on trigger B (plan task finished, no-PR):
     1. update_task_status(task_id, "review", skip_pr=True)
-    2. if task_type in (spec, plan):
-           report_artifact(task_id, worktree_id, artifact_path)
-
-continuation (both triggers):
-    3. tasks = get_my_tasks()
-    4. next = first task in tasks with status == backlog
-    5. if next exists:
-           start_task(next.id) and continue working
-       else:
-           run the Section 2 shutdown sequence
+    2. report_artifact(task_id, worktree_id, artifact_path)
+    3. start_task(impl_task_id) and continue in the same session
+    → No exit here; the session ends when the impl task's PR merges (trigger A).
 ```
-
-Step 5 has no third branch. An empty backlog means shut down — regardless of
-how many `review` tasks still sit on the board with the agent's `worktree_id`
-attached.
 
 **Note on the plan-task path.** Trigger B assumes the agent can move to
 `review` without a PR. The backend today accepts that via `skip_pr=True` in
@@ -257,7 +257,7 @@ Webhook and supervisor events. The agent's required response is listed.
 | `review_comment` | webhook | Inline PR comment. If actionable, address it like `review_submitted`; otherwise reply via the github-bot skill's comment path. |
 | `issue_comment` | webhook | Issue-style PR comment. Same rule: actionable → fix; informational → reply or ignore. |
 | `ci_failed` | webhook | Follow the github-bot skill's CI recovery flow. Fix the failure, push. CI re-runs on push; next `check_run` webhook delivers the result. |
-| `pr_merged` | webhook | Run the Section 1 decision algorithm. `mark_pr_merged` → `report_artifact` (if applicable) → `get_my_tasks` → `start_task` or shutdown. |
+| `pr_merged` | webhook | Run the Section 1 Trigger A algorithm: `mark_pr_merged` → `report_artifact` (if applicable) → write per-task work log → emit `agent_unregistered` → `unregister_agent` → exit. Supervisor handles continuation. |
 | `pr_closed` | webhook | The PR closed without merging. Stop work on this task. Do not re-open the PR. Write a note to the main inbox describing the closure and wait for guidance. |
 | `shutdown` | backend (`request_shutdown`) | Finish the current MCP call, then run the full Section 2 shutdown sequence. Do not start new work. |
 | `mcp_tools_updated` | main agent (T-244) | Inspect the `added`/`removed` list. If the currently active task depends on the change, emit `need_session_restart` to the main inbox, pause, wait for the main agent to close and relaunch the tab (Section 6). Otherwise continue — the current session's MCP tool list is frozen at start and cannot hot-reload. |

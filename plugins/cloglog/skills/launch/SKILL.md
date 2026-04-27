@@ -150,7 +150,7 @@ When you receive a message, read it and act on the instruction. The main agent m
       Absolute paths are required. `tasks_completed` is a flat list of task UUIDs; build the `prs` map by calling `mcp__cloglog__get_my_tasks()` and, for each row with a non-null `pr_url`, keying the map at `T-{row.number}` (the `TaskInfo` schema exposes both `number` and `pr_url`). Plan tasks (no `pr_url`) MUST be omitted from `prs`. This event is authoritative — do not rely on the SessionEnd hook.
     - Call `mcp__cloglog__unregister_agent` and **exit**. Do NOT call `get_my_tasks` or start the next task — the supervisor handles that.
 
-**One task per session.** Each session ends after one PR merge (or after a plan+impl pair where the impl PR merges). The supervisor sees `agent_unregistered`, checks for remaining backlog tasks on this worktree, and either relaunches with the continuation prompt (see **Continuation Prompt** below) or triggers close-wave if no tasks remain.
+**One task per session.** Each session ends after one PR merge (or after a plan+impl pair where the impl PR merges). Standalone no-PR tasks (docs, research, prototypes using `skip_pr=True`) also exit after completing — they run the same per-task shutdown sequence with `reason: "no_pr_task_complete"` instead of `"pr_merged"`, skipping `mark_pr_merged` and `pr_merged_notification`. Plan tasks are the only exception: they immediately start the following impl task in the same session. The supervisor sees `agent_unregistered`, checks for remaining backlog tasks on this worktree, and either relaunches with the continuation prompt (see **Continuation Prompt** below) or triggers close-wave if no tasks remain.
 
 ## Continuation Prompt
 

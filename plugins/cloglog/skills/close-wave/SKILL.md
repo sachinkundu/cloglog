@@ -114,7 +114,7 @@ Create a work log file (location configurable, default `docs/work-logs/<date>-<w
 For each worktree, run the **tier-1 → tier-2** sequence from
 `docs/design/agent-lifecycle.md` §5. Cooperative shutdown lets the worktree
 agent run its own Section 2 sequence — emit `agent_unregistered` with
-absolute paths to `shutdown-artifacts/{work-log.md,learnings.md}`, call
+absolute path to `shutdown-artifacts/work-log.md` (`artifacts.learnings` is `null` for T-329 agents — learnings are embedded in per-task work logs), call
 `unregister_agent`, and stop — so the close-wave flow gets a usable work log
 and a clean backend state.
 

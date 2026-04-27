@@ -221,6 +221,64 @@ def test_setup_skill_relaunch_uses_continuation_prompt() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Standalone no-PR task exit path (docs/research/prototypes using skip_pr=True)
+# ---------------------------------------------------------------------------
+
+
+def test_worktree_agent_documents_standalone_no_pr_exit_path() -> None:
+    """Standalone no-PR tasks must have a documented exit path (T-329 codex finding).
+
+    Trigger B used to be plan-only (continue to impl, no exit). That left
+    docs/research/prototype tasks stranded — they use skip_pr=True but are
+    neither plan tasks nor PR-based tasks, so they had no exit trigger.
+    The fix documents a separate Trigger B branch for standalone no-PR tasks
+    that runs the per-task shutdown sequence with reason='no_pr_task_complete'.
+    """
+    body = _read(WORKTREE_AGENT)
+    assert "no_pr_task_complete" in body, (
+        "worktree-agent.md must document the standalone no-PR task exit path "
+        "with reason: 'no_pr_task_complete'. Docs/research/prototype tasks use "
+        "skip_pr=True but are not plan tasks — they need their own Trigger B "
+        "branch that runs the per-task shutdown sequence without mark_pr_merged."
+    )
+
+
+def test_lifecycle_doc_trigger_b_has_standalone_no_pr_branch() -> None:
+    """docs/design/agent-lifecycle.md Trigger B must cover standalone no-PR tasks."""
+    LIFECYCLE = REPO_ROOT / "docs/design/agent-lifecycle.md"
+    body = _read(LIFECYCLE)
+    assert "standalone no-PR task" in body, (
+        "docs/design/agent-lifecycle.md Trigger B must document the standalone "
+        "no-PR branch (docs, research, prototypes) alongside the plan branch. "
+        "Without this, agents assigned docs-only tasks have no exit path under "
+        "the T-329 one-task-per-session contract."
+    )
+    assert "no_pr_task_complete" in body, (
+        "docs/design/agent-lifecycle.md must use reason 'no_pr_task_complete' "
+        "for standalone no-PR task exits so supervisors can distinguish them "
+        "from PR-merged exits ('pr_merged')."
+    )
+
+
+def test_lifecycle_doc_event_shape_learnings_null() -> None:
+    """docs/design/agent-lifecycle.md agent_unregistered example must use learnings: null.
+
+    T-329 embeds learnings in per-task work-log-T-NNN.md files. The separate
+    learnings.md is superseded. The canonical lifecycle doc must reflect this
+    so supervisors reading the lifecycle doc get the current event shape.
+    """
+    LIFECYCLE = REPO_ROOT / "docs/design/agent-lifecycle.md"
+    body = _read(LIFECYCLE)
+    assert '"learnings": null' in body, (
+        "docs/design/agent-lifecycle.md agent_unregistered event shape must "
+        "show 'learnings': null. T-329 embeds learnings in per-task work-log "
+        "files; the legacy learnings.md is no longer written by cooperative "
+        "shutdown. Keeping the old shape creates split-brain where some docs "
+        "describe the new shape and others describe the legacy shape."
+    )
+
+
 def test_supervisor_relaunch_uses_get_active_tasks_not_get_my_tasks() -> None:
     """Supervisor relaunch flow must use get_active_tasks (board-scoped) not get_my_tasks.
 

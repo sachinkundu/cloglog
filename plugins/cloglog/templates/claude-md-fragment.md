@@ -39,6 +39,7 @@
 - **Create ALL three pipeline tasks upfront** when launching an agent for a feature. The state machine enforces ordering; having all tasks assigned means the board reflects the full workload.
 - **Agents execute one task per session (T-329).** When a task's PR merges, the agent writes a per-task work log (`shutdown-artifacts/work-log-T-<NNN>.md`), emits `agent_unregistered`, and exits. The supervisor relaunches in the same zellij tab for the next backlog task (if any) using the continuation prompt, or triggers close-wave if none remain. Do NOT call `get_my_tasks` after `pr_merged` to start the next task — the supervisor handles continuation.
 - **Exception: plan → impl pipeline.** A plan task (no PR) immediately starts the following impl task in the same session. The session exits when the impl PR merges.
+- **Standalone no-PR tasks also exit after completion.** A docs/research/prototype task that uses `skip_pr=True` (but is not a plan task) runs the per-task shutdown sequence with `reason: "no_pr_task_complete"` — skipping `mark_pr_merged` and `pr_merged_notification`. The supervisor then relaunches or triggers close-wave identically.
 
 ### Worktree Hygiene
 

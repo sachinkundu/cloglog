@@ -62,9 +62,9 @@ def _unregistered_event(
         "tasks_completed": tasks_completed or ["T-220"],
         "artifacts": {
             "work_log": "/tmp/wt-coop/shutdown-artifacts/work-log.md",
-            "learnings": "/tmp/wt-coop/shutdown-artifacts/learnings.md",
+            "learnings": None,
         },
-        "reason": "all_assigned_tasks_complete",
+        "reason": "pr_merged",
     }
     return json.dumps(event)
 

@@ -195,7 +195,7 @@ first.
 
 ## Per-Task Work-Log Schema
 
-Each task that produces a merged PR requires a per-task work log written to `shutdown-artifacts/work-log-T-<NNN>.md` before the agent exits. This file is the durable, structured handoff between sessions on the same worktree.
+Each task that exits — whether via PR merge (Trigger A) or standalone no-PR completion (Trigger B) — requires a per-task work log written to `shutdown-artifacts/work-log-T-<NNN>.md` before the agent exits. This file is the durable, structured handoff between sessions on the same worktree.
 
 ```yaml
 ---
@@ -222,15 +222,26 @@ The **Residual TODOs / context the next task should know** section is load-beari
 
 ## Shutdown
 
-Exit condition: **on `pr_merged`** — each merged PR triggers a per-task shutdown. Agents exit after every PR merge, regardless of whether more backlog tasks remain. The supervisor coordinates relaunching the same worktree for subsequent tasks.
+Exit conditions — one task per session:
 
-Shutdown sequence on `pr_merged` (in order):
+- **Trigger A (`pr_merged`)**: Each merged PR triggers per-task shutdown. Agents exit after every PR merge regardless of remaining backlog. Supervisor relaunches for subsequent tasks.
+- **Trigger B (standalone no-PR task complete)**: A docs/research/prototype task that uses `skip_pr=True` also exits after marking complete. The plan→impl exception applies only to plan tasks (see `### One Task Per Session` below).
+
+**Shutdown sequence — Trigger A (`pr_merged`):**
 
 1. Emit `pr_merged_notification` to `<project_root>/.cloglog/inbox` (T-262 — surfaces the merge to the supervisor).
 2. Call `mcp__cloglog__mark_pr_merged(task_id, worktree_id)`.
 3. For `spec` tasks: call `mcp__cloglog__report_artifact(task_id, worktree_id, artifact_path)`.
-4. Write `shutdown-artifacts/work-log-T-<NNN>.md` using the schema above. Use absolute paths.
-5. Build the aggregate `shutdown-artifacts/work-log.md` by concatenating all `work-log-T-*.md` files in chronological order, plus a one-line envelope header. This preserves backward compat with close-wave Step 5d which reads `artifacts.work_log`.
-6. **Emit `agent_unregistered` to the main agent inbox** (`<project_root>/.cloglog/inbox`) *before* calling `unregister_agent`. Required fields: `type`, `worktree`, `worktree_id`, `ts`, `tasks_completed`, `prs` (T-262), `artifacts.work_log` (absolute path to `shutdown-artifacts/work-log.md`), `artifacts.learnings` (omit or set to `null` — learnings now live inside per-task logs), `reason: "pr_merged"`. Artifact paths MUST be absolute.
-7. Call `mcp__cloglog__unregister_agent`.
-8. Exit.
+4. Write `shutdown-artifacts/work-log-T-<NNN>.md` using the schema above.
+5. Build the aggregate `shutdown-artifacts/work-log.md` by concatenating all `work-log-T-*.md` files in chronological order, plus a one-line envelope header. Preserves backward compat with close-wave Step 5d.
+6. **Emit `agent_unregistered`** to `<project_root>/.cloglog/inbox` *before* calling `unregister_agent`. Shape: `type`, `worktree`, `worktree_id`, `ts`, `tasks_completed`, `prs` (T-262), `artifacts.work_log` (absolute path to `shutdown-artifacts/work-log.md`), `artifacts.learnings: null`, `reason: "pr_merged"`. Artifact paths MUST be absolute.
+7. Call `mcp__cloglog__unregister_agent`, and exit.
+
+**Shutdown sequence — Trigger B (standalone no-PR task):**
+
+1. Call `mcp__cloglog__update_task_status(task_id, "review", skip_pr=True)`.
+2. If the task type requires an artifact: call `mcp__cloglog__report_artifact(task_id, worktree_id, artifact_path)`.
+3. Write `shutdown-artifacts/work-log-T-<NNN>.md` using the schema above (use `pr: null` and `merged_at: null`).
+4. Build the aggregate `shutdown-artifacts/work-log.md`.
+5. **Emit `agent_unregistered`** with `reason: "no_pr_task_complete"`, `artifacts.learnings: null`, and `artifacts.work_log` absolute path.
+6. Call `mcp__cloglog__unregister_agent`, and exit.

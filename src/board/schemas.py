@@ -117,6 +117,7 @@ class TaskCreate(BaseModel):
     priority: str = "normal"
     position: int = 0
     task_type: str = "task"
+    model: str | None = None
 
 
 class TaskUpdate(BaseModel):
@@ -130,6 +131,7 @@ class TaskUpdate(BaseModel):
     retired: bool | None = None
     pr_url: str | None = None
     pr_merged: bool | None = None
+    model: str | None = None
 
 
 class TaskResponse(BaseModel):
@@ -142,6 +144,7 @@ class TaskResponse(BaseModel):
     status: str
     priority: str
     task_type: str
+    model: str | None = None
     pr_url: str | None
     pr_merged: bool
     artifact_path: str | None = None
@@ -255,6 +258,7 @@ class SearchResult(BaseModel):
     epic_title: str | None = None
     epic_color: str | None = None
     feature_title: str | None = None
+    model: str | None = None  # populated for tasks only
 
 
 class SearchResponse(BaseModel):

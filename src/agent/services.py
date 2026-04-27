@@ -409,7 +409,7 @@ class AgentService:
             )
         )
 
-        return {"task_id": task_id, "status": "in_progress"}
+        return {"task_id": task_id, "status": "in_progress", "model": task.model}
 
     async def complete_task(
         self, worktree_id: UUID, task_id: UUID, pr_url: str | None = None

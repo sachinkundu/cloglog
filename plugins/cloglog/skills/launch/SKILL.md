@@ -24,7 +24,7 @@ Run `git status`. If there are uncommitted changes, STOP and commit or stash the
 
 ### 1b. Resolve entity IDs
 
-Parse `$ARGUMENTS` to extract feature/task identifiers (F-*, T-*) — `/cloglog launch` only accepts features and standalone tasks; epics (`E-*`) are containers and have no launch semantics in Steps 2-4 or the agent template. For each identifier, call `mcp__cloglog__search` with the entity-number token (e.g. `T-45`, `F-12`) — a single call returns the matching `id`/`type`/`number`/`title`/`status` (and parent epic + feature for tasks), so you never have to page the full board to turn `T-NNN` into a UUID.
+Parse `$ARGUMENTS` to extract feature/task identifiers (F-*, T-*) — `/cloglog launch` only accepts features and standalone tasks; epics (`E-*`) are containers and have no launch semantics in Steps 2-4 or the agent template. For each identifier, call `mcp__cloglog__search` with the entity-number token (e.g. `T-45`, `F-12`) — a single call returns the matching `id`/`type`/`number`/`title`/`status`/`model` (and parent epic + feature for tasks), so you never have to page the full board to turn `T-NNN` into a UUID. For tasks, capture the `model` field — it drives the `--model` flag passed to claude at launch (e.g. `claude-opus-4-7` for reasoning-heavy spec/plan tasks, `claude-sonnet-4-6` for implementation).
 
 Fall back to `mcp__cloglog__get_board` / `mcp__cloglog__list_features` / `mcp__cloglog__get_active_tasks` only when you genuinely need to *enumerate* (e.g. "list every backlog task in this feature") rather than resolve a known number.
 
@@ -172,6 +172,11 @@ When the supervisor inbox receives `agent_unregistered` from a worktree agent:
 2. Call `mcp__cloglog__get_active_tasks` to get all non-done tasks in the project. Filter the result to tasks where `worktree_id == <unregistered worktree's uuid>` AND `status == "backlog"`. **Do NOT use `mcp__cloglog__get_my_tasks`** — that returns tasks scoped to the supervisor's own worktree registration, not the worktree that just unregistered.
 3. **If backlog tasks remain** → relaunch in the same zellij tab:
    ```bash
+   # Update task-model for the next task (T-332) — launch.sh reads this at
+   # runtime, so writing it before relaunch gives the new session its correct model.
+   # NEXT_TASK_MODEL comes from the backlog task's `model` field in get_active_tasks.
+   printf '%s\n' "${NEXT_TASK_MODEL:-}" > "${WORKTREE_PATH}/.cloglog/task-model"
+
    # Go to the worktree's tab (same tab name as WORKTREE_NAME)
    zellij action go-to-tab-by-name "${WORKTREE_NAME}"
    # Issue the continuation prompt — the tab's current process has exited,
@@ -234,6 +239,10 @@ CURRENT_TAB_ID=$(zellij action current-tab-info 2>&1 | awk '/^id:/ {print $2}')
 # Resolve the project root so the launcher can read backend_url and (as a
 # fallback) the MCP API key. Falls back to the current repo.
 PROJECT_ROOT="$(git rev-parse --show-toplevel)"
+
+# Write task model for launch.sh — update before each relaunch with the next task's model
+# TASK_MODEL comes from the task's `model` field resolved in Step 1b (may be empty)
+printf '%s\n' "${TASK_MODEL:-}" > "${WORKTREE_PATH}/.cloglog/task-model"
 
 # Write a launcher script — unquoted EOF expands ${WORKTREE_PATH} / ${PROJECT_ROOT}
 # at write time, baking the absolute paths in. T-217: we do NOT use `exec claude`
@@ -327,10 +336,16 @@ trap '_on_signal HUP' HUP
 trap '_on_signal INT' INT
 
 cd "\$WORKTREE_PATH"
+# Read per-task model from .cloglog/task-model — written by the launch skill (T-332).
+# The supervisor rewrites this file before each continuation relaunch so the
+# correct model is used for every task, not just the initial one.
+_MODEL_FLAG=""
+_TASK_MODEL=\$(cat "\$WORKTREE_PATH/.cloglog/task-model" 2>/dev/null || true)
+[[ -n "\$_TASK_MODEL" ]] && _MODEL_FLAG="--model \$_TASK_MODEL"
 # Optional \$1: continuation prompt string from supervisor relaunch.
 # When absent, fall back to reading AGENT_PROMPT.md (initial launch).
 _CLAUDE_PROMPT="\${1:-Read ${WORKTREE_PATH}/AGENT_PROMPT.md and begin.}"
-claude --dangerously-skip-permissions "\$_CLAUDE_PROMPT" &
+claude --dangerously-skip-permissions \${_MODEL_FLAG:+\$_MODEL_FLAG} "\$_CLAUDE_PROMPT" &
 CLAUDE_PID=\$!
 wait "\$CLAUDE_PID"
 EOF

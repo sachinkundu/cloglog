@@ -207,18 +207,25 @@ Record in the summary: `GitHub repo: not configured`. The init can continue for 
 
 Look for:
 - `~/.agent-vm/credentials/github-app.pem` on disk
-- `GH_APP_ID` and `GH_APP_INSTALLATION_ID` set in the project environment (`.env` or exported in the shell)
+- `GH_APP_ID` and `GH_APP_INSTALLATION_ID` exported in the process environment
 
 **If the PEM exists** (bot has been set up before):
 
 The token script is provided by the plugin at `${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py`
-and reads `GH_APP_ID` / `GH_APP_INSTALLATION_ID` from the environment. Add them to the
-project `.env` if not already set:
+and reads `GH_APP_ID` / `GH_APP_INSTALLATION_ID` from the **exported environment**. A
+repo-local `.env` file is NOT automatically sourced by Claude agents or shell launchers —
+the variables must be exported in the process environment at launch time.
+
+Recommended: add to your shell RC (`~/.bashrc`, `~/.zshenv`, or `~/.profile`) so every
+shell and every Claude / agent session inherits them automatically:
 
 ```bash
-grep -q GH_APP_ID .env 2>/dev/null || echo "GH_APP_ID=<your-app-id>" >> .env
-grep -q GH_APP_INSTALLATION_ID .env 2>/dev/null || echo "GH_APP_INSTALLATION_ID=<your-installation-id>" >> .env
+export GH_APP_ID=<your-app-id>
+export GH_APP_INSTALLATION_ID=<your-installation-id>
 ```
+
+Alternatively, use [direnv](https://direnv.net/) with a project `.envrc`. Verify with
+`printenv GH_APP_ID GH_APP_INSTALLATION_ID` in a fresh shell before continuing.
 
 **If the PEM does not exist** (first-time setup):
 
@@ -232,7 +239,7 @@ grep -q GH_APP_INSTALLATION_ID .env 2>/dev/null || echo "GH_APP_INSTALLATION_ID=
 >    - Permissions: Contents (read/write), Pull requests (read/write), Issues (read/write)
 >    - Install it on the repositories you want to manage
 > 2. Generate a private key and save it to `~/.agent-vm/credentials/github-app.pem`
-> 3. Note the App ID and Installation ID — set `GH_APP_ID` and `GH_APP_INSTALLATION_ID` in your project `.env` accordingly
+> 3. Note the App ID and Installation ID — export `GH_APP_ID=<id>` and `GH_APP_INSTALLATION_ID=<id>` in your shell RC (`~/.bashrc`, `~/.zshenv`) or via direnv so all Claude/agent processes inherit them
 >
 > Run `/cloglog init` again once the bot is set up.
 

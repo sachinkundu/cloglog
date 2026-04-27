@@ -54,9 +54,14 @@ and skips straight to Step 3.
 ```bash
 BACKEND_URL="${CLOGLOG_BACKEND_URL:-http://127.0.0.1:8001}"
 
-# Use project-local config if already written
+# Use project-local config if already written.
+# Use the canonical scalar-parser pipeline from plugins/cloglog/hooks/lib/parse-yaml-scalar.sh:
+# strips surrounding quotes and trailing comments, takes first match.
 if [ -f .cloglog/config.yaml ]; then
-  _cfg_backend=$(grep '^backend_url:' .cloglog/config.yaml | sed 's/^backend_url: *//')
+  _cfg_backend=$(grep '^backend_url:' .cloglog/config.yaml 2>/dev/null | head -n1 \
+    | sed 's/^backend_url:[[:space:]]*//' \
+    | sed 's/[[:space:]]*#.*$//' \
+    | tr -d '"'"'")
   [ -n "$_cfg_backend" ] && BACKEND_URL="$_cfg_backend"
 fi
 
@@ -101,6 +106,33 @@ cloned to a new machine), stop with a repair instruction:
 ### Phase 2 — create project via admin HTTP (fresh setup only)
 
 If no repo-local `project_id` exists, create the project directly against the backend.
+
+**Single-slot credentials guard.** Before creating, check whether `~/.cloglog/credentials`
+already holds a key for a different project. The MCP loader supports only one global
+`CLOGLOG_API_KEY`; overwriting it displaces the previously registered project:
+
+```bash
+if [ -z "${CLOGLOG_API_KEY:-}" ] && [ -f ~/.cloglog/credentials ] \
+    && grep -q '^CLOGLOG_API_KEY=' ~/.cloglog/credentials; then
+  echo "ERROR: ~/.cloglog/credentials already contains a CLOGLOG_API_KEY."
+  echo ""
+  echo "The MCP loader has one global credentials slot. Overwriting it will"
+  echo "displace your existing project's key and break that project's MCP."
+  echo ""
+  echo "Options:"
+  echo "  1. Use a per-session env var for this project:"
+  echo "     export CLOGLOG_API_KEY=<new-project-key>"
+  echo "     (obtain the key by running init on the backend host or via"
+  echo "      the admin bootstrap below with a temporary CLOGLOG_DASHBOARD_KEY)"
+  echo ""
+  echo "  2. If this machine is dedicated to this new project, remove the old"
+  echo "     credentials first: rm ~/.cloglog/credentials"
+  echo "     Then re-run /cloglog init."
+  exit 1
+fi
+```
+
+If the guard passes (no prior credentials), proceed:
 
 1. **Locate the dashboard key.** The backend validates it against the `DASHBOARD_SECRET`
    setting (see `src/shared/config.py`). Read it from the environment — the variable name
@@ -150,20 +182,27 @@ If no repo-local `project_id` exists, create the project directly against the ba
    chmod 600 ~/.cloglog/credentials
    ```
 
-4. **Write `project_id` to config** (Step 4a will write the full config, but seed the ID
-   now so subsequent re-runs detect the existing project):
+4. **Write `project_id` and `backend_url` to config.** Seeding both now ensures the
+   second run reads the correct backend URL from config (not only from `$CLOGLOG_BACKEND_URL`
+   which may not be set after restart). Step 4a will write the full config later; these two
+   keys bootstrap the re-run detection:
 
    ```bash
    mkdir -p .cloglog
-   if [ -f .cloglog/config.yaml ]; then
-     # Update or append project_id
-     if grep -q '^project_id:' .cloglog/config.yaml; then
-       sed -i "s/^project_id:.*/project_id: ${PROJECT_ID}/" .cloglog/config.yaml
-     else
-       printf 'project_id: %s\n' "$PROJECT_ID" >> .cloglog/config.yaml
-     fi
+
+   # project_id — update in place or append (never use >> alone: scalar parser
+   # returns first match, so a duplicate key silently shadows the new value).
+   if [ -f .cloglog/config.yaml ] && grep -q '^project_id:' .cloglog/config.yaml; then
+     sed -i "s/^project_id:.*/project_id: ${PROJECT_ID}/" .cloglog/config.yaml
    else
-     printf 'project_id: %s\n' "$PROJECT_ID" > .cloglog/config.yaml
+     printf 'project_id: %s\n' "$PROJECT_ID" >> .cloglog/config.yaml
+   fi
+
+   # backend_url — persist so Step 3/4 and hooks use the same URL after restart
+   if [ -f .cloglog/config.yaml ] && grep -q '^backend_url:' .cloglog/config.yaml; then
+     sed -i "s|^backend_url:.*|backend_url: ${BACKEND_URL}|" .cloglog/config.yaml
+   else
+     printf 'backend_url: %s\n' "$BACKEND_URL" >> .cloglog/config.yaml
    fi
    ```
 
@@ -215,7 +254,7 @@ Check if `.claude/settings.json` exists in the project. If the cloglog MCP serve
       "command": "node",
       "args": ["/path/to/mcp-server/dist/index.js"],
       "env": {
-        "CLOGLOG_URL": "http://127.0.0.1:8001"
+        "CLOGLOG_URL": "<BACKEND_URL detected in Step 1c — e.g. http://127.0.0.1:8001>"
       }
     }
   }
@@ -236,9 +275,14 @@ If the file already has a cloglog MCP entry or SessionStart hook, update rather 
 
 ```yaml
 project_name: <name>
-backend_url: http://127.0.0.1:8001
+backend_url: <BACKEND_URL detected in Step 1c — e.g. http://127.0.0.1:8001>
 quality_command: <detected or user-provided command>
 ```
+
+**Important:** Use the `BACKEND_URL` detected in Step 1c (or read from `.cloglog/config.yaml`
+which was seeded in Step 2). Do not hard-code `127.0.0.1:8001` — non-default backends must
+survive the restart. If Step 2 already wrote `backend_url`, preserve it rather than overwriting
+with the default.
 
 If `.cloglog/config.yaml` already exists, update fields rather than overwriting.
 

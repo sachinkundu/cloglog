@@ -43,8 +43,8 @@ and runs a two-phase bootstrap:
 1. **Phase 1 (pre-MCP):** calls `POST /api/v1/projects` directly against
    the backend using your `DASHBOARD_SECRET`. It creates the project,
    writes the returned API key to `~/.cloglog/credentials`, writes the
-   `project_id` to `.cloglog/config.yaml`, then asks you to restart Claude
-   Code.
+   `project_id` **and** `backend_url` to `.cloglog/config.yaml`, then
+   asks you to restart Claude Code.
 
 2. **Phase 2 (post-restart):** on the second `/cloglog init` run the MCP
    server finds the credentials and `project_id` is already in
@@ -59,6 +59,17 @@ and runs a two-phase bootstrap:
 ```bash
 export DASHBOARD_SECRET=<value from your backend's DASHBOARD_SECRET setting>
 ```
+
+> **Single-slot credentials warning.** The MCP loader reads exactly one
+> `CLOGLOG_API_KEY` from env or `~/.cloglog/credentials`. If you use the same
+> machine for multiple cloglog projects, the `/cloglog init` bootstrap will stop
+> if `~/.cloglog/credentials` already holds a key and ask you to choose:
+>
+> - **Per-session env var** (recommended for multi-project machines):
+>   `export CLOGLOG_API_KEY=<new-project-key>` — MCP picks this up at startup;
+>   credentials files for the other project are untouched.
+> - **Dedicated machine**: `rm ~/.cloglog/credentials` then re-run init — the
+>   old project loses its credentials on this machine.
 
 ## First-time setup — manual
 

@@ -107,32 +107,22 @@ cloned to a new machine), stop with a repair instruction:
 
 If no repo-local `project_id` exists, create the project directly against the backend.
 
-**Single-slot credentials guard.** Before creating, check whether `~/.cloglog/credentials`
-already holds a key for a different project. The MCP loader supports only one global
-`CLOGLOG_API_KEY`; overwriting it displaces the previously registered project:
+**Single-slot credentials check.** The MCP loader supports only one global `CLOGLOG_API_KEY`.
+If `~/.cloglog/credentials` already holds a key, the bootstrap still creates the project
+but prints the new key for the operator to export rather than overwriting the file:
 
 ```bash
+MULTI_PROJECT=false
 if [ -z "${CLOGLOG_API_KEY:-}" ] && [ -f ~/.cloglog/credentials ] \
     && grep -q '^CLOGLOG_API_KEY=' ~/.cloglog/credentials; then
-  echo "ERROR: ~/.cloglog/credentials already contains a CLOGLOG_API_KEY."
-  echo ""
-  echo "The MCP loader has one global credentials slot. Overwriting it will"
-  echo "displace your existing project's key and break that project's MCP."
-  echo ""
-  echo "Options:"
-  echo "  1. Use a per-session env var for this project:"
-  echo "     export CLOGLOG_API_KEY=<new-project-key>"
-  echo "     (obtain the key by running init on the backend host or via"
-  echo "      the admin bootstrap below using your DASHBOARD_SECRET)"
-  echo ""
-  echo "  2. If this machine is dedicated to this new project, remove the old"
-  echo "     credentials first: rm ~/.cloglog/credentials"
-  echo "     Then re-run /cloglog init."
-  exit 1
+  MULTI_PROJECT=true
+  echo "NOTE: ~/.cloglog/credentials already has a CLOGLOG_API_KEY (another project)."
+  echo "Existing credentials will be preserved. The new project API key will be printed"
+  echo "for you to export as CLOGLOG_API_KEY before restarting Claude Code."
 fi
 ```
 
-If the guard passes (no prior credentials), proceed:
+Proceed:
 
 1. **Locate the dashboard key.** The backend validates it against the `DASHBOARD_SECRET`
    setting (see `src/shared/config.py`). Read it from the environment — the variable name
@@ -177,9 +167,11 @@ If the guard passes (no prior credentials), proceed:
 3. **Write credentials** (shown once — backend stores only a hash):
 
    ```bash
-   mkdir -p ~/.cloglog
-   printf 'CLOGLOG_API_KEY=%s\n' "$API_KEY" > ~/.cloglog/credentials
-   chmod 600 ~/.cloglog/credentials
+   if [ "$MULTI_PROJECT" = "false" ]; then
+     mkdir -p ~/.cloglog
+     printf 'CLOGLOG_API_KEY=%s\n' "$API_KEY" > ~/.cloglog/credentials
+     chmod 600 ~/.cloglog/credentials
+   fi
    ```
 
 4. **Write `project_id` and `backend_url` to config.** Seeding both now ensures the
@@ -208,6 +200,8 @@ If the guard passes (no prior credentials), proceed:
 
 5. **Request restart.** Tell the operator:
 
+   If `MULTI_PROJECT=false` (single-project machine — key written to `~/.cloglog/credentials`):
+
    > **Project created successfully.**
    >
    > | Field | Value |
@@ -222,9 +216,28 @@ If the guard passes (no prior credentials), proceed:
    > 2. Restart Claude Code in this directory
    > 3. Run `/cloglog init` again — the remaining steps (MCP config, `.cloglog/`,
    >    CLAUDE.md, GitHub bot) will complete on the second run.
+
+   If `MULTI_PROJECT=true` (existing credentials preserved — key printed, not written):
+
+   > **Project created successfully (multi-project machine).**
    >
-   > After restart the `mcp__cloglog__*` tools will be available and the board is
-   > ready to use.
+   > | Field | Value |
+   > |-------|-------|
+   > | Project ID | `<project_id>` |
+   > | API key | **`<api_key>`** — shown once, not written to file |
+   >
+   > Your existing `~/.cloglog/credentials` was NOT modified. Before restarting,
+   > export the new key so the MCP server picks it up at startup:
+   >
+   > ```bash
+   > export CLOGLOG_API_KEY=<api_key>
+   > ```
+   >
+   > Add that line to your shell RC (`~/.bashrc`, `~/.zshenv`) or a project
+   > `.envrc` (direnv). Then:
+   > 1. Exit this Claude Code session (`/exit`)
+   > 2. Open a shell with the exported key and restart Claude Code
+   > 3. Run `/cloglog init` again — the remaining steps complete on the second run.
 
    **Stop here.** Do not proceed to Step 3 — the MCP server is not yet loaded and the
    remaining steps require it or write files that depend on having a valid project_id.

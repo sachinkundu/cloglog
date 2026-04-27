@@ -60,16 +60,14 @@ and runs a two-phase bootstrap:
 export DASHBOARD_SECRET=<value from your backend's DASHBOARD_SECRET setting>
 ```
 
-> **Single-slot credentials warning.** The MCP loader reads exactly one
+> **Single-slot credentials note.** The MCP loader reads exactly one
 > `CLOGLOG_API_KEY` from env or `~/.cloglog/credentials`. If you use the same
-> machine for multiple cloglog projects, the `/cloglog init` bootstrap will stop
-> if `~/.cloglog/credentials` already holds a key and ask you to choose:
->
-> - **Per-session env var** (recommended for multi-project machines):
->   `export CLOGLOG_API_KEY=<new-project-key>` — MCP picks this up at startup;
->   credentials files for the other project are untouched.
-> - **Dedicated machine**: `rm ~/.cloglog/credentials` then re-run init — the
->   old project loses its credentials on this machine.
+> machine for multiple cloglog projects, the `/cloglog init` bootstrap detects
+> an existing key in `~/.cloglog/credentials` and handles it automatically:
+> it still creates the project but prints the new API key rather than overwriting
+> the file, then asks you to `export CLOGLOG_API_KEY=<new-key>` before restarting.
+> Add that export to your shell RC or a project `.envrc` so the MCP server picks
+> it up at startup without touching the other project's credentials file.
 
 ## First-time setup — manual
 
@@ -87,10 +85,17 @@ RESPONSE=$(curl -sf -X POST \
 API_KEY=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['api_key'])")
 PROJECT_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['id'])")
 
-# 2. Store credentials
-mkdir -p ~/.cloglog
-printf 'CLOGLOG_API_KEY=%s\n' "$API_KEY" > ~/.cloglog/credentials
-chmod 600 ~/.cloglog/credentials
+# 2. Store credentials (single-project machine: write to file;
+#    multi-project machine: preserve existing file and export the key instead).
+if [ -z "${CLOGLOG_API_KEY:-}" ] && ! ([ -f ~/.cloglog/credentials ] && grep -q '^CLOGLOG_API_KEY=' ~/.cloglog/credentials); then
+  mkdir -p ~/.cloglog
+  printf 'CLOGLOG_API_KEY=%s\n' "$API_KEY" > ~/.cloglog/credentials
+  chmod 600 ~/.cloglog/credentials
+else
+  echo "Multi-project machine: ~/.cloglog/credentials not modified."
+  echo "Run the following before restarting Claude Code:"
+  echo "  export CLOGLOG_API_KEY=${API_KEY}"
+fi
 
 # 3. Store project_id and backend_url (update in place if already present; append if not).
 # Never use >> alone — the scalar parser reads the first matching key, so a

@@ -96,20 +96,32 @@ def test_step2_uses_curl_to_create_project() -> None:
 
 
 def test_step2_posts_to_projects_endpoint() -> None:
-    """Step 2 must POST to /api/v1/board/projects."""
+    """Step 2 must POST to /api/v1/projects (not /api/v1/board/projects).
+
+    The board router mounts at /api/v1 with no additional prefix, so
+    @router.post('/projects') maps to /api/v1/projects.
+    """
     step2 = _step2_body(_read())
-    assert "/api/v1/board/projects" in step2, (
-        "Step 2 must POST to /api/v1/board/projects to create the project "
+    assert "/api/v1/projects" in step2, (
+        "Step 2 must POST to /api/v1/projects to create the project "
         "without requiring pre-existing MCP credentials."
+    )
+    assert "/api/v1/board/projects" not in step2, (
+        "Step 2 must NOT reference /api/v1/board/projects — that path does not exist "
+        "(the board router mounts at /api/v1 with no extra prefix)."
     )
 
 
 def test_step2_uses_dashboard_key_auth() -> None:
-    """Step 2 must authenticate using the X-Dashboard-Key header."""
+    """Step 2 must authenticate using the X-Dashboard-Key header with DASHBOARD_SECRET."""
     step2 = _step2_body(_read())
     assert "X-Dashboard-Key" in step2, (
         "Step 2 must pass the dashboard key via -H 'X-Dashboard-Key: ...' "
         "so the operator can bootstrap without an existing project API key."
+    )
+    assert "DASHBOARD_SECRET" in step2, (
+        "Step 2 must read the key from $DASHBOARD_SECRET (the env var the backend "
+        "validates against, per src/shared/config.py). Not CLOGLOG_DASHBOARD_KEY."
     )
 
 
@@ -141,10 +153,19 @@ def test_step2_requests_restart() -> None:
     )
 
 
-def test_step2_detects_existing_credentials() -> None:
-    """Step 2 must check for existing ~/.cloglog/credentials to skip Phase 2 on re-runs."""
+def test_step2_detects_existing_project_id_not_credentials() -> None:
+    """Step 2 must use repo-local project_id as the skip condition, not ~/.cloglog/credentials.
+
+    ~/.cloglog/credentials is global (shared across all projects on the machine).
+    Using it as a skip condition would cause a machine with credentials for project A
+    to silently skip Phase 2 when initializing project B, reusing A's key.
+
+    The canonical "already bootstrapped" signal is project_id in .cloglog/config.yaml,
+    which is repo-scoped.
+    """
     step2 = _step2_body(_read())
-    assert "~/.cloglog/credentials" in step2, (
-        "Step 2 must check for an existing ~/.cloglog/credentials file to "
-        "detect that the project was already bootstrapped and skip Phase 2."
+    assert "project_id" in step2, (
+        "Step 2 must check for project_id in .cloglog/config.yaml as the "
+        "repo-scoped 'already bootstrapped' signal. ~/.cloglog/credentials is "
+        "a global file and must not be used as the skip condition."
     )

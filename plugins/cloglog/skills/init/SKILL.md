@@ -46,10 +46,10 @@ Check if a cloglog backend is already running or configured. Default to `http://
 
 On a fresh project the MCP server has no credentials yet, so `mcp__cloglog__*` tools are
 unavailable. This step uses a direct HTTP call to create the project and write credentials
-before restarting. On a subsequent run (after restart) it detects existing credentials and
-skips straight to Step 3.
+before restarting. On a subsequent run (after restart) it detects the repo-local `project_id`
+and skips straight to Step 3.
 
-### Phase 1 — detect existing credentials
+### Phase 1 — detect existing bootstrap
 
 ```bash
 BACKEND_URL="${CLOGLOG_BACKEND_URL:-http://localhost:8001}"
@@ -60,35 +60,40 @@ if [ -f .cloglog/config.yaml ]; then
   [ -n "$_cfg_backend" ] && BACKEND_URL="$_cfg_backend"
 fi
 
-# Check for an existing project API key
-EXISTING_KEY=""
-if [ -f ~/.cloglog/credentials ]; then
-  EXISTING_KEY=$(grep '^CLOGLOG_API_KEY=' ~/.cloglog/credentials | sed 's/^CLOGLOG_API_KEY=//')
+# Check for a repo-local project_id — this is the canonical "already bootstrapped" signal.
+# ~/.cloglog/credentials is NOT used here: it is a global file shared across all projects
+# on the machine. Using it as a skip condition would cause a machine that already has
+# credentials for project A to silently skip Phase 2 when initializing project B.
+EXISTING_PROJECT_ID=""
+if [ -f .cloglog/config.yaml ]; then
+  EXISTING_PROJECT_ID=$(grep '^project_id:' .cloglog/config.yaml | sed 's/^project_id: *//')
 fi
 ```
 
-**If `EXISTING_KEY` is non-empty**, the project was already bootstrapped. Skip to Step 3 —
-the MCP server picked up the key at startup and `mcp__cloglog__*` tools are available.
+**If `EXISTING_PROJECT_ID` is non-empty**, this project was already bootstrapped. Skip to
+Step 3 — the MCP server picked up the key at startup and `mcp__cloglog__*` tools are
+available.
 
 ### Phase 2 — create project via admin HTTP (fresh setup only)
 
-If no credentials exist, create the project directly against the backend.
+If no repo-local `project_id` exists, create the project directly against the backend.
 
-1. **Locate the dashboard key.** The operator's backend uses `CLOGLOG_DASHBOARD_KEY` (set
-   in their shell RC or `.env`). Read it from the environment:
+1. **Locate the dashboard key.** The backend validates it against the `DASHBOARD_SECRET`
+   setting (see `src/shared/config.py`). Read it from the environment — the variable name
+   must match whatever the operator set as `DASHBOARD_SECRET` in their backend's `.env`:
 
    ```bash
-   DASHBOARD_KEY="${CLOGLOG_DASHBOARD_KEY:-}"
+   DASHBOARD_KEY="${DASHBOARD_SECRET:-}"
    ```
 
    If it is empty, ask the operator:
 
    > **Admin credential required.** To bootstrap this project on the cloglog backend,
-   > provide your dashboard key (the value of `CLOGLOG_DASHBOARD_KEY` in your backend's
+   > provide your dashboard key (the value of `DASHBOARD_SECRET` in your backend's
    > environment). This is a one-time step — after setup the MCP server authenticates
    > automatically.
 
-2. **Create the project** (idempotent: creates a new project with the given name):
+2. **Create the project:**
 
    ```bash
    PROJECT_NAME="<name from Step 1>"
@@ -97,7 +102,7 @@ If no credentials exist, create the project directly against the backend.
      -H "Content-Type: application/json" \
      -H "X-Dashboard-Key: ${DASHBOARD_KEY}" \
      -d "{\"name\": \"${PROJECT_NAME}\", \"description\": \"\"}" \
-     "${BACKEND_URL}/api/v1/board/projects")
+     "${BACKEND_URL}/api/v1/projects")
 
    if [ $? -ne 0 ] || [ -z "$RESPONSE" ]; then
      echo "ERROR: Could not reach backend at ${BACKEND_URL}. Is it running?"
@@ -107,6 +112,11 @@ If no credentials exist, create the project directly against the backend.
    PROJECT_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['id'])")
    API_KEY=$(echo "$RESPONSE"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['api_key'])")
    ```
+
+   > **Note:** Each call to `POST /api/v1/projects` creates a new project. If init is
+   > re-run after a partial bootstrap (e.g., credentials were written but the operator
+   > never restarted), detect the existing project via `EXISTING_PROJECT_ID` above and
+   > skip this step — do not re-post the same project name.
 
 3. **Write credentials** (shown once — backend stores only a hash):
 

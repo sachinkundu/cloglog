@@ -37,24 +37,27 @@ easiest path is:
 /cloglog init
 ```
 
-The init skill's **Step 2** detects that `~/.cloglog/credentials` is absent
+The init skill's **Step 2** detects that `.cloglog/config.yaml` has no `project_id`
 and runs a two-phase bootstrap:
 
-1. **Phase 1 (pre-MCP):** calls `POST /api/v1/board/projects` directly against
-   the backend using your `CLOGLOG_DASHBOARD_KEY`. It creates the project,
+1. **Phase 1 (pre-MCP):** calls `POST /api/v1/projects` directly against
+   the backend using your `DASHBOARD_SECRET`. It creates the project,
    writes the returned API key to `~/.cloglog/credentials`, writes the
    `project_id` to `.cloglog/config.yaml`, then asks you to restart Claude
    Code.
 
 2. **Phase 2 (post-restart):** on the second `/cloglog init` run the MCP
-   server finds the credentials, loads normally, and the remaining setup steps
-   (MCP config, `.cloglog/`, CLAUDE.md, GitHub bot) complete via MCP tools.
+   server finds the credentials and `project_id` is already in
+   `.cloglog/config.yaml`, so the bootstrap is skipped and the remaining
+   setup steps (MCP config, `.cloglog/`, CLAUDE.md, GitHub bot) complete
+   via MCP tools.
 
-**Prerequisite:** export `CLOGLOG_DASHBOARD_KEY` in your shell RC
+**Prerequisite:** the init skill reads the dashboard key from `$DASHBOARD_SECRET`
+(the same variable your backend's `.env` sets). Export it in your shell RC
 (`~/.bashrc`, `~/.zshenv`) so the init skill can read it without prompting:
 
 ```bash
-export CLOGLOG_DASHBOARD_KEY=<value from your backend's CLOGLOG_DASHBOARD_KEY setting>
+export DASHBOARD_SECRET=<value from your backend's DASHBOARD_SECRET setting>
 ```
 
 ## First-time setup — manual
@@ -65,9 +68,9 @@ If you need to create the project manually (e.g. scripted provisioning):
 # 1. Create the project and capture the API key (shown once)
 RESPONSE=$(curl -sf -X POST \
   -H "Content-Type: application/json" \
-  -H "X-Dashboard-Key: ${CLOGLOG_DASHBOARD_KEY}" \
+  -H "X-Dashboard-Key: ${DASHBOARD_SECRET}" \
   -d '{"name": "my-project", "description": ""}' \
-  http://localhost:8001/api/v1/board/projects)
+  http://localhost:8001/api/v1/projects)
 
 API_KEY=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['api_key'])")
 PROJECT_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['id'])")

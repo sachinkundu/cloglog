@@ -73,15 +73,28 @@ predicate — don't re-derive it.
 
 ## Hooks / infra
 
-### Hook scripts parse `.cloglog/config.yaml` with `grep`+`sed`
+### Hook scripts parse `.cloglog/config.yaml` without `import yaml`
 
 Hook scripts run under the system `python3`, which has no PyYAML. A
 `python3 -c 'import yaml'` snippet silently swallows `ImportError` and
 returns the default `http://localhost:8000`, sending POSTs to the wrong
-port with every caller appearing to succeed. Use `grep '^key:'` + `sed`
-(precedent: `plugins/cloglog/hooks/agent-shutdown.sh:64-68`).
+port with every caller appearing to succeed. Two parsers ship with the
+plugin, picked by the shape of the value being read:
 
-**Pin:** `tests/test_on_worktree_create_backend_url.py::test_hook_does_not_invoke_python_yaml`
+- **Top-level scalar keys** (`backend_url`, `quality_command`, `project`,
+  `project_id`) — use `plugins/cloglog/hooks/lib/parse-yaml-scalar.sh` or
+  the inline `grep '^key:'` + `sed` shape it canonicalises (precedent:
+  `plugins/cloglog/hooks/agent-shutdown.sh:64-68`).
+- **Nested `worktree_scopes:` mapping** — use
+  `plugins/cloglog/hooks/lib/parse-worktree-scopes.py` (stdlib-only). The
+  nested shape can't be represented by `grep+sed`; the dedicated parser
+  exists precisely so `protect-worktree-writes.sh` doesn't fall back to
+  `import yaml`.
+
+**Pins:**
+- `tests/test_on_worktree_create_backend_url.py::test_hook_does_not_invoke_python_yaml`
+- `tests/plugins/test_no_python_yaml_in_scalar_hooks.py`
+- `tests/plugins/test_parse_worktree_scopes.py`
 
 ### `CLOGLOG_API_KEY` never in `.mcp.json`
 

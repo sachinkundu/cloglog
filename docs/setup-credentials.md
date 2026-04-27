@@ -70,7 +70,7 @@ RESPONSE=$(curl -sf -X POST \
   -H "Content-Type: application/json" \
   -H "X-Dashboard-Key: ${DASHBOARD_SECRET}" \
   -d '{"name": "my-project", "description": ""}' \
-  http://localhost:8001/api/v1/projects)
+  http://127.0.0.1:8001/api/v1/projects)
 
 API_KEY=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['api_key'])")
 PROJECT_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['id'])")
@@ -80,9 +80,15 @@ mkdir -p ~/.cloglog
 printf 'CLOGLOG_API_KEY=%s\n' "$API_KEY" > ~/.cloglog/credentials
 chmod 600 ~/.cloglog/credentials
 
-# 3. Store project_id (init writes the full config, but seed it now)
+# 3. Store project_id (update in place if already present; append if not).
+# Never use >> alone — the scalar parser reads the first matching key, so a
+# duplicate project_id: line silently shadows the new value on re-runs.
 mkdir -p .cloglog
-printf 'project_id: %s\n' "$PROJECT_ID" >> .cloglog/config.yaml
+if [ -f .cloglog/config.yaml ] && grep -q '^project_id:' .cloglog/config.yaml; then
+  sed -i "s/^project_id:.*/project_id: ${PROJECT_ID}/" .cloglog/config.yaml
+else
+  printf 'project_id: %s\n' "$PROJECT_ID" >> .cloglog/config.yaml
+fi
 ```
 
 Store the key in your password manager; the backend keeps only a SHA-256

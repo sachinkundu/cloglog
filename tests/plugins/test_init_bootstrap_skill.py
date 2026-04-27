@@ -60,23 +60,37 @@ def test_step2_does_not_call_mcp_get_board() -> None:
     )
 
 
-def test_skill_does_not_use_localhost_8000_as_default() -> None:
-    """Default backend URL must be http://localhost:8001, not :8000.
+def test_skill_uses_127_0_0_1_not_localhost_as_default() -> None:
+    """Default backend URL must use 127.0.0.1, not localhost.
 
-    Per the portability audit (2026-04-27), port 8000 is reserved for
-    cloglog's own dev server. Other projects talk to the prod backend on 8001.
+    On IPv6-first hosts, 'localhost' resolves to '::1' and the Node MCP server
+    fails with ECONNREFUSED (fixed in T-247, documented in
+    docs/demos/wt-fix-localhost/demo.md). Port 8000 is also forbidden as a default
+    (reserved for cloglog's own dev server).
     """
     body = _read()
-    # Allow :8000 only in comments/notes that explicitly mention the dev-server
-    # exception; disallow it as a bare default value.
+    step2 = _step2_body(body)
+    # Step 2 default must use 127.0.0.1:8001
+    assert "127.0.0.1:8001" in step2, (
+        "Step 2 default BACKEND_URL must be http://127.0.0.1:8001, not localhost:8001. "
+        "On IPv6-first hosts localhost resolves to ::1 and the MCP server fails."
+    )
+    # Forbid localhost in Step 2 default (comments explaining the fix are fine)
+    for line in step2.splitlines():
+        stripped = line.strip()
+        if "localhost:8001" in stripped:
+            assert stripped.startswith("#") or stripped.startswith(">"), (
+                f"Step 2 references localhost:8001 outside a comment/note:\n"
+                f"  {line!r}\n"
+                "Use 127.0.0.1:8001 to avoid IPv6 resolution failures."
+            )
+    # Port :8000 must not appear as a bare default anywhere in the skill
     for line in body.splitlines():
         stripped = line.strip()
-        if "localhost:8000" in stripped:
-            # Fine if the line is a comment explaining the exception
+        if "localhost:8000" in stripped or "127.0.0.1:8000" in stripped:
             assert stripped.startswith("#") or stripped.startswith(">"), (
-                f"init SKILL.md references localhost:8000 outside a comment/note:\n"
+                f"init SKILL.md references :8000 outside a comment/note:\n"
                 f"  {line!r}\n"
-                "The default backend URL must be http://localhost:8001. "
                 "Port 8000 is cloglog's own dev server only."
             )
 
@@ -150,6 +164,22 @@ def test_step2_requests_restart() -> None:
     assert restart_mentioned, (
         "Step 2 must tell the operator to restart Claude Code after writing "
         "credentials — the MCP server reads the API key only at startup."
+    )
+
+
+def test_step2_checks_credentials_alongside_project_id() -> None:
+    """Phase 1 must verify BOTH project_id AND credentials before skipping to Step 3.
+
+    A repo with .cloglog/config.yaml checked in (project_id present) but no
+    ~/.cloglog/credentials on a fresh machine must NOT skip Phase 2 — the MCP
+    server hard-exits at startup without the API key (mcp-server/src/credentials.ts).
+    """
+    step2 = _step2_body(_read())
+    # Both conditions must be mentioned
+    assert "CLOGLOG_API_KEY" in step2 or "credentials" in step2.lower(), (
+        "Step 2 Phase 1 must check for credentials (CLOGLOG_API_KEY or "
+        "~/.cloglog/credentials) in addition to project_id, so a cloned repo "
+        "with no local credentials gets the repair path, not a broken MCP startup."
     )
 
 

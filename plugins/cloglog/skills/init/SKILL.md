@@ -40,7 +40,7 @@ If auto-detection finds something, present it and ask the user to confirm or ove
 
 ### 1c. Detect backend URL
 
-Check if a cloglog backend is already running or configured. Default to `http://localhost:8001` (the prod backend). Port 8000 is reserved for cloglog's own dev server — other projects always use 8001.
+Check if a cloglog backend is already running or configured. Default to `http://127.0.0.1:8001` (the prod backend). Use `127.0.0.1` rather than `localhost` — on IPv6-first hosts `localhost` resolves to `::1` and the Node MCP server fails with `ECONNREFUSED`. Port 8000 is reserved for cloglog's own dev server.
 
 ## Step 2: Bootstrap Project on Backend (Two-Phase)
 
@@ -52,7 +52,7 @@ and skips straight to Step 3.
 ### Phase 1 — detect existing bootstrap
 
 ```bash
-BACKEND_URL="${CLOGLOG_BACKEND_URL:-http://localhost:8001}"
+BACKEND_URL="${CLOGLOG_BACKEND_URL:-http://127.0.0.1:8001}"
 
 # Use project-local config if already written
 if [ -f .cloglog/config.yaml ]; then
@@ -60,19 +60,43 @@ if [ -f .cloglog/config.yaml ]; then
   [ -n "$_cfg_backend" ] && BACKEND_URL="$_cfg_backend"
 fi
 
-# Check for a repo-local project_id — this is the canonical "already bootstrapped" signal.
-# ~/.cloglog/credentials is NOT used here: it is a global file shared across all projects
-# on the machine. Using it as a skip condition would cause a machine that already has
-# credentials for project A to silently skip Phase 2 when initializing project B.
+# Check for a repo-local project_id — this is the repo-scoped identity signal.
+# NOTE: we also check for credentials below. project_id alone is not enough because
+# cloning a repo that has .cloglog/config.yaml checked in (with project_id) but no
+# local ~/.cloglog/credentials would cause the MCP server to hard-fail at startup.
 EXISTING_PROJECT_ID=""
 if [ -f .cloglog/config.yaml ]; then
   EXISTING_PROJECT_ID=$(grep '^project_id:' .cloglog/config.yaml | sed 's/^project_id: *//')
 fi
+
+# Check for credentials (env var takes priority over file, matching MCP server resolution).
+EXISTING_CREDS=""
+if [ -n "${CLOGLOG_API_KEY:-}" ]; then
+  EXISTING_CREDS="env"
+elif [ -f ~/.cloglog/credentials ] && grep -q '^CLOGLOG_API_KEY=' ~/.cloglog/credentials; then
+  EXISTING_CREDS="file"
+fi
 ```
 
-**If `EXISTING_PROJECT_ID` is non-empty**, this project was already bootstrapped. Skip to
-Step 3 — the MCP server picked up the key at startup and `mcp__cloglog__*` tools are
-available.
+**If both `EXISTING_PROJECT_ID` is non-empty AND `EXISTING_CREDS` is non-empty**, this
+project is fully bootstrapped. Skip to Step 3 — the MCP server picked up the key at startup
+and `mcp__cloglog__*` tools are available.
+
+**If `EXISTING_PROJECT_ID` is non-empty but `EXISTING_CREDS` is empty** (e.g. the repo was
+cloned to a new machine), stop with a repair instruction:
+
+> **Credentials missing for an existing project.**
+>
+> `.cloglog/config.yaml` has `project_id: <id>` but no `CLOGLOG_API_KEY` is available.
+> The MCP server cannot start without the project API key.
+>
+> To repair:
+> 1. Obtain the project API key (rotate with `scripts/rotate-project-key.py` if lost).
+> 2. Write it: `printf 'CLOGLOG_API_KEY=<key>\n' > ~/.cloglog/credentials && chmod 600 ~/.cloglog/credentials`
+> 3. Restart Claude Code, then run `/cloglog init` again.
+>
+> Do NOT re-run the bootstrap (Phase 2) — the project already exists; creating another
+> one will register a duplicate.
 
 ### Phase 2 — create project via admin HTTP (fresh setup only)
 
@@ -191,7 +215,7 @@ Check if `.claude/settings.json` exists in the project. If the cloglog MCP serve
       "command": "node",
       "args": ["/path/to/mcp-server/dist/index.js"],
       "env": {
-        "CLOGLOG_URL": "http://localhost:8001"
+        "CLOGLOG_URL": "http://127.0.0.1:8001"
       }
     }
   }
@@ -212,7 +236,7 @@ If the file already has a cloglog MCP entry or SessionStart hook, update rather 
 
 ```yaml
 project_name: <name>
-backend_url: http://localhost:8001
+backend_url: http://127.0.0.1:8001
 quality_command: <detected or user-provided command>
 ```
 

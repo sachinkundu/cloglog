@@ -96,7 +96,7 @@ REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git re
 For each worktree, check if its PR has been merged:
 
 ```bash
-BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
+BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests "${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py")
 GH_TOKEN="$BOT_TOKEN" gh pr list --state merged --head <branch> --json number,title
 ```
 
@@ -166,7 +166,7 @@ Record the request timestamp per worktree so the work log can cite it.
 ### Step 5b — Wait for `agent_unregistered` (up to 120 s per worktree)
 
 ```bash
-uv run python scripts/wait_for_agent_unregistered.py \
+uv run python "${CLAUDE_PLUGIN_ROOT}/scripts/wait_for_agent_unregistered.py" \
     --worktree "<wt-name>" \
     --inbox "$MAIN_INBOX" \
     --since-offset "$SINCE_OFFSET" \
@@ -250,7 +250,7 @@ Verify with `git worktree list`.
 For each worktree branch, delete the remote branch using the bot identity:
 
 ```bash
-BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
+BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests "${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py")
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
 git push "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git" --delete <branch>
 ```
@@ -299,7 +299,7 @@ git checkout -b wt-close-<date>-<wave-name>
 
 Use today's date (`$(date -I)`) and the wave name from Step 1 (e.g., `wt-close-2026-04-26-wave-3` or `wt-close-2026-04-26-reconcile-wt-foo` for reconcile-delegated runs). All Step 11/12/13 edits (quality-gate fixes, work log, learnings) land on this branch — never on `main`.
 
-The dev clone's pre-commit hook (installed once via `scripts/install-dev-hooks.sh`) rejects commits on `main` unless `ALLOW_MAIN_COMMIT=1` is set. If you find yourself reaching for that override here, stop — the right answer is the branch above.
+The dev clone's pre-commit hook (installed once via `${CLAUDE_PLUGIN_ROOT}/scripts/install-dev-hooks.sh`) rejects commits on `main` unless `ALLOW_MAIN_COMMIT=1` is set. If you find yourself reaching for that override here, stop — the right answer is the branch above.
 
 ## Step 10.5: Run Quality Gate
 
@@ -337,7 +337,7 @@ Fill in "State After This Wave" with what's now implemented and verified working
 Commit all fixes, work log, and CLAUDE.md updates to the `wt-close-<date>-<wave-name>` branch from Step 10. Push the branch and open a PR against `main` using the **exact `Push + Create PR` sequence** from `plugins/cloglog/skills/github-bot/SKILL.md` — every `git push` and every `gh` invocation MUST go through the bot identity. A bare `gh pr create` falls back to the operator's personal `gh auth` and breaks the bot-identity invariant the github-bot skill exists to enforce; only the bot-authenticated form below is correct:
 
 ```bash
-BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
+BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests "${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py")
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
 git remote set-url origin "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git"
 git push -u origin HEAD
@@ -357,7 +357,7 @@ git branch -D wt-close-<date>-<wave-name>
 
 A non-fast-forward state means real divergence — investigate, do not paper over with a merge commit.
 
-Never commit directly to `main`. The dev clone's pre-commit hook (`scripts/install-dev-hooks.sh`) blocks that path; the `ALLOW_MAIN_COMMIT=1` override exists only for emergency-rollback cherry-picks, not for close-wave.
+Never commit directly to `main`. The dev clone's pre-commit hook (`${CLAUDE_PLUGIN_ROOT}/scripts/install-dev-hooks.sh`) blocks that path; the `ALLOW_MAIN_COMMIT=1` override exists only for emergency-rollback cherry-picks, not for close-wave.
 
 ## Step 14: Summary
 

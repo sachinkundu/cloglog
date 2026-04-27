@@ -207,20 +207,17 @@ Record in the summary: `GitHub repo: not configured`. The init can continue for 
 
 Look for:
 - `~/.agent-vm/credentials/github-app.pem` on disk
-- `scripts/gh-app-token.py` in this project OR in any other project under `~/code/`
+- `GH_APP_ID` and `GH_APP_INSTALLATION_ID` set in the project environment (`.env` or exported in the shell)
 
 **If the PEM exists** (bot has been set up before):
 
-Copy the token script if this project doesn't have it yet:
+The token script is provided by the plugin at `${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py`
+and reads `GH_APP_ID` / `GH_APP_INSTALLATION_ID` from the environment. Add them to the
+project `.env` if not already set:
+
 ```bash
-if [[ ! -f scripts/gh-app-token.py ]]; then
-  OTHER=$(find ~/code -path "*/scripts/gh-app-token.py" -not -path "$(pwd)/*" 2>/dev/null | head -1)
-  if [[ -n "$OTHER" ]]; then
-    mkdir -p scripts
-    cp "$OTHER" scripts/gh-app-token.py
-    chmod +x scripts/gh-app-token.py
-  fi
-fi
+grep -q GH_APP_ID .env 2>/dev/null || echo "GH_APP_ID=<your-app-id>" >> .env
+grep -q GH_APP_INSTALLATION_ID .env 2>/dev/null || echo "GH_APP_INSTALLATION_ID=<your-installation-id>" >> .env
 ```
 
 **If the PEM does not exist** (first-time setup):
@@ -235,7 +232,7 @@ fi
 >    - Permissions: Contents (read/write), Pull requests (read/write), Issues (read/write)
 >    - Install it on the repositories you want to manage
 > 2. Generate a private key and save it to `~/.agent-vm/credentials/github-app.pem`
-> 3. Note the App ID and Installation ID — update `scripts/gh-app-token.py` accordingly
+> 3. Note the App ID and Installation ID — set `GH_APP_ID` and `GH_APP_INSTALLATION_ID` in your project `.env` accordingly
 >
 > Run `/cloglog init` again once the bot is set up.
 
@@ -246,7 +243,7 @@ Record in the summary: `GitHub bot: needs setup`. The init can continue — agen
 Only run this if both the remote and the bot exist:
 
 ```bash
-BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py 2>/dev/null)
+BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests "${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py" 2>/dev/null)
 if [[ -n "$BOT_TOKEN" ]]; then
   REPO=$(git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
   if GH_TOKEN="$BOT_TOKEN" gh repo view "$REPO" --json name -q .name 2>/dev/null; then
@@ -363,7 +360,7 @@ Then stage the config files:
 git add .cloglog/ .github/codex/ .gitignore
 ```
 
-If CLAUDE.md/AGENTS.md was modified, add that too. If `scripts/gh-app-token.py` was created, add that too. Do not commit automatically — let the user decide when to commit.
+If CLAUDE.md/AGENTS.md was modified, add that too. Do not commit automatically — let the user decide when to commit.
 
 ## Step 9: Summary
 

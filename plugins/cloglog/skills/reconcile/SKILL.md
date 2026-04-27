@@ -128,7 +128,7 @@ correct:
 ```bash
 git checkout -b wt-reconcile-<date>-<topic>
 # edits + commit
-BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests scripts/gh-app-token.py)
+BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests "${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py")
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
 git remote set-url origin "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git"
 git push -u origin HEAD
@@ -140,7 +140,7 @@ git checkout main && git fetch origin && git merge --ff-only origin/main
 git branch -D wt-reconcile-<date>-<topic>
 ```
 
-The dev clone's pre-commit hook (`scripts/install-dev-hooks.sh`)
+The dev clone's pre-commit hook (`${CLAUDE_PLUGIN_ROOT}/scripts/install-dev-hooks.sh`)
 rejects commits on `main` unless `ALLOW_MAIN_COMMIT=1` is set; treat
 that override as emergency-rollback-only, not as a reconcile shortcut.
 
@@ -260,7 +260,7 @@ SINCE_OFFSET=$(stat -c %s "$MAIN_INBOX" 2>/dev/null || echo 0)
 1. `mcp__cloglog__request_shutdown(worktree_id)`.
 2. Wait up to 120 s for `agent_unregistered` on the main inbox:
    ```bash
-   uv run python scripts/wait_for_agent_unregistered.py \
+   uv run python "${CLAUDE_PLUGIN_ROOT}/scripts/wait_for_agent_unregistered.py" \
        --worktree "<wt-name>" \
        --inbox "$MAIN_INBOX" \
        --since-offset "$SINCE_OFFSET" \
@@ -283,7 +283,7 @@ SINCE_OFFSET=$(stat -c %s "$MAIN_INBOX" 2>/dev/null || echo 0)
 1. `mcp__cloglog__request_shutdown(worktree_id)`.
 2. Wait up to 30 s:
    ```bash
-   uv run python scripts/wait_for_agent_unregistered.py \
+   uv run python "${CLAUDE_PLUGIN_ROOT}/scripts/wait_for_agent_unregistered.py" \
        --worktree "<wt-name>" \
        --inbox "$MAIN_INBOX" \
        --since-offset "$SINCE_OFFSET" \

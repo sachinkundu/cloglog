@@ -40,11 +40,121 @@ If auto-detection finds something, present it and ask the user to confirm or ove
 
 ### 1c. Detect backend URL
 
-Check if a cloglog backend is already running or configured. Default to `http://localhost:8000`.
+Check if a cloglog backend is already running or configured. Default to `http://localhost:8001` (the prod backend). Port 8000 is reserved for cloglog's own dev server — other projects always use 8001.
 
-## Step 2: Register Project on Board
+## Step 2: Bootstrap Project on Backend (Two-Phase)
 
-Call `mcp__cloglog__get_board` to check if the project already exists. If not, the user will need to register it through the backend API or MCP tools.
+On a fresh project the MCP server has no credentials yet, so `mcp__cloglog__*` tools are
+unavailable. This step uses a direct HTTP call to create the project and write credentials
+before restarting. On a subsequent run (after restart) it detects existing credentials and
+skips straight to Step 3.
+
+### Phase 1 — detect existing credentials
+
+```bash
+BACKEND_URL="${CLOGLOG_BACKEND_URL:-http://localhost:8001}"
+
+# Use project-local config if already written
+if [ -f .cloglog/config.yaml ]; then
+  _cfg_backend=$(grep '^backend_url:' .cloglog/config.yaml | sed 's/^backend_url: *//')
+  [ -n "$_cfg_backend" ] && BACKEND_URL="$_cfg_backend"
+fi
+
+# Check for an existing project API key
+EXISTING_KEY=""
+if [ -f ~/.cloglog/credentials ]; then
+  EXISTING_KEY=$(grep '^CLOGLOG_API_KEY=' ~/.cloglog/credentials | sed 's/^CLOGLOG_API_KEY=//')
+fi
+```
+
+**If `EXISTING_KEY` is non-empty**, the project was already bootstrapped. Skip to Step 3 —
+the MCP server picked up the key at startup and `mcp__cloglog__*` tools are available.
+
+### Phase 2 — create project via admin HTTP (fresh setup only)
+
+If no credentials exist, create the project directly against the backend.
+
+1. **Locate the dashboard key.** The operator's backend uses `CLOGLOG_DASHBOARD_KEY` (set
+   in their shell RC or `.env`). Read it from the environment:
+
+   ```bash
+   DASHBOARD_KEY="${CLOGLOG_DASHBOARD_KEY:-}"
+   ```
+
+   If it is empty, ask the operator:
+
+   > **Admin credential required.** To bootstrap this project on the cloglog backend,
+   > provide your dashboard key (the value of `CLOGLOG_DASHBOARD_KEY` in your backend's
+   > environment). This is a one-time step — after setup the MCP server authenticates
+   > automatically.
+
+2. **Create the project** (idempotent: creates a new project with the given name):
+
+   ```bash
+   PROJECT_NAME="<name from Step 1>"
+
+   RESPONSE=$(curl -sf -X POST \
+     -H "Content-Type: application/json" \
+     -H "X-Dashboard-Key: ${DASHBOARD_KEY}" \
+     -d "{\"name\": \"${PROJECT_NAME}\", \"description\": \"\"}" \
+     "${BACKEND_URL}/api/v1/board/projects")
+
+   if [ $? -ne 0 ] || [ -z "$RESPONSE" ]; then
+     echo "ERROR: Could not reach backend at ${BACKEND_URL}. Is it running?"
+     exit 1
+   fi
+
+   PROJECT_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['id'])")
+   API_KEY=$(echo "$RESPONSE"    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['api_key'])")
+   ```
+
+3. **Write credentials** (shown once — backend stores only a hash):
+
+   ```bash
+   mkdir -p ~/.cloglog
+   printf 'CLOGLOG_API_KEY=%s\n' "$API_KEY" > ~/.cloglog/credentials
+   chmod 600 ~/.cloglog/credentials
+   ```
+
+4. **Write `project_id` to config** (Step 4a will write the full config, but seed the ID
+   now so subsequent re-runs detect the existing project):
+
+   ```bash
+   mkdir -p .cloglog
+   if [ -f .cloglog/config.yaml ]; then
+     # Update or append project_id
+     if grep -q '^project_id:' .cloglog/config.yaml; then
+       sed -i "s/^project_id:.*/project_id: ${PROJECT_ID}/" .cloglog/config.yaml
+     else
+       printf 'project_id: %s\n' "$PROJECT_ID" >> .cloglog/config.yaml
+     fi
+   else
+     printf 'project_id: %s\n' "$PROJECT_ID" > .cloglog/config.yaml
+   fi
+   ```
+
+5. **Request restart.** Tell the operator:
+
+   > **Project created successfully.**
+   >
+   > | Field | Value |
+   > |-------|-------|
+   > | Project ID | `<project_id>` |
+   > | API key | written to `~/.cloglog/credentials` |
+   >
+   > **Next step: restart Claude Code.**
+   >
+   > The MCP server reads credentials at startup. Please:
+   > 1. Exit this Claude Code session (`/exit`)
+   > 2. Restart Claude Code in this directory
+   > 3. Run `/cloglog init` again — the remaining steps (MCP config, `.cloglog/`,
+   >    CLAUDE.md, GitHub bot) will complete on the second run.
+   >
+   > After restart the `mcp__cloglog__*` tools will be available and the board is
+   > ready to use.
+
+   **Stop here.** Do not proceed to Step 3 — the MCP server is not yet loaded and the
+   remaining steps require it or write files that depend on having a valid project_id.
 
 ## Step 3: Configure MCP Server
 
@@ -71,7 +181,7 @@ Check if `.claude/settings.json` exists in the project. If the cloglog MCP serve
       "command": "node",
       "args": ["/path/to/mcp-server/dist/index.js"],
       "env": {
-        "CLOGLOG_URL": "http://localhost:8000"
+        "CLOGLOG_URL": "http://localhost:8001"
       }
     }
   }
@@ -92,7 +202,7 @@ If the file already has a cloglog MCP entry or SessionStart hook, update rather 
 
 ```yaml
 project_name: <name>
-backend_url: http://localhost:8000
+backend_url: http://localhost:8001
 quality_command: <detected or user-provided command>
 ```
 

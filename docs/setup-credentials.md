@@ -28,17 +28,63 @@ diagnostic to stderr and exits with status `78` (`EX_CONFIG`). Claude Code's
 MCP loader will then mark the server as failed; agents inside the worktree
 will see no `mcp__cloglog__*` tools at startup.
 
-## First-time setup
+## First-time setup — new project via `/cloglog init`
 
-```bash
-mkdir -p ~/.cloglog
-printf 'CLOGLOG_API_KEY=<your-project-key>\n' > ~/.cloglog/credentials
-chmod 600 ~/.cloglog/credentials
+If you are adding a **new project** to an existing cloglog backend, the
+easiest path is:
+
+```
+/cloglog init
 ```
 
-Get the project key via `scripts/rotate-project-key.py` — it prints the
-plaintext key once after rotation. Store the key in your password manager;
-the backend keeps only a SHA-256 hash, so it cannot show it again.
+The init skill's **Step 2** detects that `~/.cloglog/credentials` is absent
+and runs a two-phase bootstrap:
+
+1. **Phase 1 (pre-MCP):** calls `POST /api/v1/board/projects` directly against
+   the backend using your `CLOGLOG_DASHBOARD_KEY`. It creates the project,
+   writes the returned API key to `~/.cloglog/credentials`, writes the
+   `project_id` to `.cloglog/config.yaml`, then asks you to restart Claude
+   Code.
+
+2. **Phase 2 (post-restart):** on the second `/cloglog init` run the MCP
+   server finds the credentials, loads normally, and the remaining setup steps
+   (MCP config, `.cloglog/`, CLAUDE.md, GitHub bot) complete via MCP tools.
+
+**Prerequisite:** export `CLOGLOG_DASHBOARD_KEY` in your shell RC
+(`~/.bashrc`, `~/.zshenv`) so the init skill can read it without prompting:
+
+```bash
+export CLOGLOG_DASHBOARD_KEY=<value from your backend's CLOGLOG_DASHBOARD_KEY setting>
+```
+
+## First-time setup — manual
+
+If you need to create the project manually (e.g. scripted provisioning):
+
+```bash
+# 1. Create the project and capture the API key (shown once)
+RESPONSE=$(curl -sf -X POST \
+  -H "Content-Type: application/json" \
+  -H "X-Dashboard-Key: ${CLOGLOG_DASHBOARD_KEY}" \
+  -d '{"name": "my-project", "description": ""}' \
+  http://localhost:8001/api/v1/board/projects)
+
+API_KEY=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['api_key'])")
+PROJECT_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['id'])")
+
+# 2. Store credentials
+mkdir -p ~/.cloglog
+printf 'CLOGLOG_API_KEY=%s\n' "$API_KEY" > ~/.cloglog/credentials
+chmod 600 ~/.cloglog/credentials
+
+# 3. Store project_id (init writes the full config, but seed it now)
+mkdir -p .cloglog
+printf 'project_id: %s\n' "$PROJECT_ID" >> .cloglog/config.yaml
+```
+
+Store the key in your password manager; the backend keeps only a SHA-256
+hash and cannot show it again. You can rotate it at any time with
+`scripts/rotate-project-key.py`.
 
 ## Migration from the old `.mcp.json` layout
 

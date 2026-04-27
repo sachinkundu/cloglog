@@ -255,8 +255,7 @@ class BoardRepository:
         if task is None:
             return None
         for key, value in fields.items():
-            if value is not None:
-                setattr(task, key, value)
+            setattr(task, key, value)
         await self._session.commit()
         await self._session.refresh(task)
         return task

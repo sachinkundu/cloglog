@@ -230,6 +230,7 @@ class BoardRepository:
         position: int,
         number: int = 0,
         task_type: str = "task",
+        model: str | None = None,
     ) -> Task:
         task = Task(
             feature_id=feature_id,
@@ -239,6 +240,7 @@ class BoardRepository:
             position=position,
             number=number,
             task_type=task_type,
+            model=model,
         )
         self._session.add(task)
         await self._session.commit()
@@ -253,8 +255,7 @@ class BoardRepository:
         if task is None:
             return None
         for key, value in fields.items():
-            if value is not None:
-                setattr(task, key, value)
+            setattr(task, key, value)
         await self._session.commit()
         await self._session.refresh(task)
         return task
@@ -628,6 +629,7 @@ class BoardRepository:
         epic_select = """
             SELECT e.id, 'epic' AS type, e.title, e.number, e.status,
                    NULL AS epic_title, NULL AS epic_color, NULL AS feature_title,
+                   NULL AS model,
                    1 AS type_priority
             FROM epics e
             WHERE e.project_id = :project_id
@@ -637,6 +639,7 @@ class BoardRepository:
         feature_select = """
             SELECT f.id, 'feature' AS type, f.title, f.number, f.status,
                    e.title AS epic_title, e.color AS epic_color, NULL AS feature_title,
+                   NULL AS model,
                    2 AS type_priority
             FROM features f
             JOIN epics e ON f.epic_id = e.id
@@ -647,6 +650,7 @@ class BoardRepository:
         task_select = f"""
             SELECT t.id, 'task' AS type, t.title, t.number, t.status,
                    e.title AS epic_title, e.color AS epic_color, f.title AS feature_title,
+                   t.model AS model,
                    3 AS type_priority
             FROM tasks t
             JOIN features f ON t.feature_id = f.id
@@ -676,7 +680,7 @@ class BoardRepository:
 
         # Results query with ordering and limit
         results_sql = f"""
-            SELECT id, type, title, number, status, epic_title, epic_color, feature_title
+            SELECT id, type, title, number, status, epic_title, epic_color, feature_title, model
             FROM ({union_sql}) AS search_results
             ORDER BY type_priority, title
             LIMIT :limit
@@ -697,6 +701,7 @@ class BoardRepository:
                 "epic_title": row[5],
                 "epic_color": row[6],
                 "feature_title": row[7],
+                "model": row[8],
             }
             for row in rows
         ]

@@ -282,6 +282,7 @@ async def create_task(
         body.position,
         number=number,
         task_type=body.task_type,
+        model=body.model,
     )
     epic = await service._repo.get_epic(feature.epic_id)
     assert epic is not None

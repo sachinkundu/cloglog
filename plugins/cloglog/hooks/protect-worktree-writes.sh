@@ -58,7 +58,7 @@ CONFIG=$(find_config "$CWD") || exit 0
 #
 # Fail closed on parser failure: a malformed config (mid-edit, merge
 # conflict markers, unsupported YAML construct) must BLOCK writes, not
-# silently allow them. The previous `import yaml` snippet swallowed
+# silently allow them. The previous PyYAML-based snippet swallowed
 # ImportError into allow-all; preserving that fallthrough here would
 # defeat the whole point of T-313.
 PARSER_STDERR=$(mktemp)

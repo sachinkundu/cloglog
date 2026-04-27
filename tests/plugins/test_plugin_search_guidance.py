@@ -1,8 +1,11 @@
 """Backstop: T-309.
 
 T-164 (PR #221) shipped ``mcp__cloglog__search`` which resolves any
-``T-NNN``/``F-NN``/``E-N`` reference to a UUID in one call. The launch
-skill is the canonical entry point for both the user-invoked
+entity-number reference to a UUID in one call. ``/cloglog launch``
+itself only accepts ``T-*`` and ``F-*`` (epics have no launch
+semantics — see Step 1b of the launch skill); the resolver tool is
+broader than the workflow command's accepted input. The launch skill
+is the canonical entry point for both the user-invoked
 ``/cloglog launch`` flow and the prompt template every spawned agent
 inherits — if either surface still steers operators or agents at
 ``get_board``/``list_features`` for ID lookups, the team keeps
@@ -45,7 +48,7 @@ def test_step_1b_body_recommends_search() -> None:
     snippet = section.group(1)
     assert "mcp__cloglog__search" in snippet, (
         "Step 1b must point operators at mcp__cloglog__search as the "
-        "first move for resolving T-NNN/F-NN/E-N references — without "
+        "first move for resolving entity-number references — without "
         "it the next reader reaches for get_board or psql."
     )
 
@@ -57,6 +60,6 @@ def test_agent_template_toolsearch_preload_includes_search() -> None:
     assert any("mcp__cloglog__search" in lst for lst in select_lists), (
         "The agent-template ToolSearch preload must include "
         "mcp__cloglog__search so spawned agents can resolve "
-        "T-NNN/F-NN/E-N references in one call instead of paging the "
+        "entity-number references in one call instead of paging the "
         "board. Found select lists: " + " | ".join(select_lists)
     )

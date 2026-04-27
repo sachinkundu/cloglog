@@ -75,7 +75,7 @@ Key changes:
 
 ## Residual TODOs
 
-- T-NEW-b: Pipeline guard at `src/agent/services.py:237` treats `review`-status predecessor as resolved only when `pr_url` is non-empty. Plan tasks via `skip_pr=True` have no `pr_url`, so `start_task` on the impl task returns 409. This is documented in worktree-agent.md as "BACKEND GAP — T-NEW-b".
+- T-NEW-b: Pipeline guard at `src/agent/services.py::_collect_pipeline_blockers` (currently `src/agent/services.py:335-340`) treats `review`-status predecessor as resolved only when `pr_url` is non-empty. Plan tasks via `skip_pr=True` have no `pr_url`, so `start_task` on the impl task returns 409. This is documented in worktree-agent.md as "BACKEND GAP — T-NEW-b".
 - Integration test for the full relaunch flow: simulate two backlog tasks, verify agent exits after task 1, supervisor relaunches, second session reads prior work log.
 - Offset-tracked inbox replay (analogous to `wait_for_agent_unregistered.py`) for crash recovery so missed control events are replayed properly — currently filed as follow-up in the setup skill.
 

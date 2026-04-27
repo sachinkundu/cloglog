@@ -23,6 +23,6 @@ Extracted from `shutdown-artifacts/work-log-T-329.md` `## Learnings` section. Th
 
 ## Residual TODOs from T-329 (filed, not closed)
 
-- **T-NEW-b** — `src/agent/services.py:237` pipeline guard treats `review`-status predecessor as resolved only when `pr_url` is non-empty. `skip_pr=True` plan tasks have no `pr_url`, so `start_task` on the dependent impl returns 409. Documented in `worktree-agent.md` as "BACKEND GAP".
+- **T-NEW-b** — `src/agent/services.py::_collect_pipeline_blockers` (currently `src/agent/services.py:335-340`) treats `review`-status predecessor as resolved only when `pr_url` is non-empty. `skip_pr=True` plan tasks have no `pr_url`, so `start_task` on the dependent impl returns 409. Documented in `worktree-agent.md` as "BACKEND GAP".
 - Integration test for the full relaunch flow: simulate two backlog tasks, verify agent exits after task 1, supervisor relaunches, second session reads prior work log via the per-task work-log bootstrap.
 - Offset-tracked inbox replay (analogous to `wait_for_agent_unregistered.py`) for crash recovery so missed control events (`pr_merged`, `review_submitted`) are replayed properly. Filed under T-296.

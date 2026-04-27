@@ -111,6 +111,28 @@ Durable gotchas discovered during worktree tasks. Each bullet is non-obvious and
 - **`git checkout <branch> -- <path>` is path-scoped and ignores worktree locks.** A locked branch (checked out in another worktree) blocks `git checkout <branch>` (HEAD-changing) but not `git checkout <branch> -- <path>`. When reasoning about worktree-lock consequences, only HEAD-changing checkouts and pulls are affected; pathspec-scoped operations work as normal.
 - **For long-lived branches, `git merge origin/main` beats `git rebase origin/main` on conflict economics.** A 10-commit branch rebased against an advanced `main` surfaces conflicts at every replayed commit that touches a shared file; merge resolves the same conflicts once. Use rebase only for short clean linear history before first review.
 
+### EventBus / cross-worker
+
+- **Postgres `NOTIFY` echoes back to the publishing connection.** Any cross-process pub/sub layered on LISTEN/NOTIFY must dedupe by a per-process `source_id` embedded in the payload — otherwise the publisher sees every event twice (local fan-out + LISTEN echo). Pin: `tests/shared/test_event_bus_cross_worker.py::test_publisher_does_not_double_deliver_its_own_notify_echo`.
+- **Cross-worker mirrors must distinguish project subscribers from `subscribe_all()` (global) subscribers.** A global consumer that does write-side work (e.g., `notification_listener` inserting a row) runs on every gunicorn worker. Mirrored events go to project subscribers only; the originating worker handles global delivery via local fan-out. Otherwise N workers do the same write for one logical event. Pin: `test_mirrored_events_do_not_reach_global_subscribers`.
+- **Postgres `NOTIFY` payload caps at 8000 bytes.** Larger payloads silently drop at the wire. Cross-worker mirrors must size-check client-side, log WARN, and keep local fan-out — degraded delivery beats raising on the publish path. Pin: `test_oversize_payload_is_dropped_locally_logged_no_crash`.
+- **SQLAlchemy DSN ≠ asyncpg DSN.** Raw `asyncpg.connect()` rejects the `+asyncpg` suffix. Strip with `url.replace("postgresql+asyncpg://", "postgresql://", 1)` before opening LISTEN/NOTIFY connections.
+- **Defensive `.get("task_id")` on `subscribe_all()` consumers.** Cross-worker fan-in amplifies any malformed event. Consumers should early-return on missing fields, not enforce schema — the listener is the wrong layer for that.
+
+### SSE
+
+- **`EventSourceResponse(content, ping=N)` is the keepalive knob.** Don't hand-roll periodic comment yields in the generator; the library emits the comment frame outside the user content stream.
+- **SSE wire format uses CRLF; `\r` is invisible in diff output but breaks `showboat verify`'s byte-equality check.** Pipe SSE captures through `tr -d '\r'` before grep-ing for stable matches.
+- **`showboat verify` re-runs every `exec` block in a clean shell.** Blocks must source `scripts/worktree-ports.sh` *inside* the captured command (not rely on surrounding script env), and must be idempotent (GET-then-POST or UPSERT — never assume a clean DB).
+
+### Pin tests: presence vs absence
+
+- **Presence-pins survive narrowing; absence-pins catch returns.** A presence-pin asserts a load-bearing rule is *recommended* (e.g. "this skill mentions `mcp__cloglog__search`") and survives codex narrowing the example list around it. Absence-pins catch the antipattern coming back. Use presence for "this guidance must remain"; absence for "this antipattern must not return". Don't conflate them — a presence-pin doesn't catch over-broadening.
+
+### Cross-surface argument widening
+
+- **Don't promote a brief's entity-type list verbatim into the documented argument grammar of an unrelated surface.** The set of entities a *resolver tool* accepts (e.g. `mcp__cloglog__search` accepts T-/F-/E-) is not the set a *workflow command* knows how to execute (e.g. `/cloglog launch` has no epic-launch path). Audit each surface against its own downstream code paths before widening accepted input.
+
 ### Inbox monitor
 
 - **`tail -n 0 -F` is the only correct default for inbox monitors.** `tail -f` exits if the file is missing (inbox is created lazily by the first webhook write); `tail -F` truncates event history to the last 10 lines; `tail -n +1 -F` re-delivers already-handled `pr_merged` / `review_submitted` and trips the one-active-task guard. Always pre-create the file (`mkdir -p .cloglog && touch .cloglog/inbox`) and use absolute paths — relative paths evade dedupe filters that match on absolute path equality.

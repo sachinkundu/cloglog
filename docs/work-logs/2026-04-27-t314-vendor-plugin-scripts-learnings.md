@@ -21,6 +21,6 @@ When a test subprocess needs packages not in the test venv (e.g. `requests`, `Py
 
 Writing an absence pin for a string that doesn't currently appear is still correct practice — it guards against future regressions. The point is catching the antipattern if it ever comes back, not catching something today.
 
-## `replace_all` on SKILL.md edits can break other pin tests
+## `replace_all` on SKILL.md edits can break counter pins on the strings the SKILL.md references
 
-When using Edit with `replace_all=True` across a SKILL.md, check all existing pin tests that reference the same file before committing. The `test_auto_merge_skill_handles_silent_holds.py` test pinned `plugins/cloglog/scripts/auto_merge_gate.py` count ≥ 2; after replace_all changed both occurrences, the count was 0. Always grep pin tests for the file being edited.
+When using Edit with `replace_all=True` across a SKILL.md, the failure mode is not "pin tests that name the SKILL.md filename" — it's pin tests that count occurrences of a *literal cited inside* the SKILL.md. The `test_auto_merge_skill_handles_silent_holds.py` pin asserted `body.count("${CLAUDE_PLUGIN_ROOT}/scripts/auto_merge_gate.py") >= 2` against `github-bot/SKILL.md`'s body; the test does not mention `github-bot` or `SKILL` anywhere, so a filename-based grep would have missed it. After `replace_all` changed both occurrences of an unrelated rename, the count went to 0 silently. **Right grep before `replace_all`:** (a) `body.count(` / `template.count(` / `\.count(` patterns in `tests/plugins/`, then check whether each counted literal lives in the file you're editing; (b) the literal you're renaming itself (e.g., `auto_merge_gate.py`) — search every pin test for it. Filename-based grep is the wrong heuristic.

@@ -45,11 +45,12 @@ Add this to `~/.bashrc` or `~/.zshenv` so every shell (and every Claude Code ses
 
 ### 4. GitHub App credentials (optional at init time)
 
-Steps 6–7 of `/cloglog init` configure bot identity for agent PRs. You can skip this at init and complete it later, but agents won't be able to push or create PRs until it's done.
+Step 6 of `/cloglog init` configures bot identity for agent PRs. You can skip this at init and complete it later, but agents won't be able to push or create PRs until it's done.
 
-Required for bot operations:
+Required for bot operations (all three are **host-local** — they don't travel with the repo and must be present on every machine):
+
 - `~/.agent-vm/credentials/github-app.pem` — App private key
-- `GH_APP_ID` and `GH_APP_INSTALLATION_ID` exported in your shell
+- `GH_APP_ID` and `GH_APP_INSTALLATION_ID` **exported** in your shell. A repo-local `.env` file is *not* sourced by Claude Code or the bot-token script — add the `export …` lines to `~/.bashrc` / `~/.zshenv` or use direnv. Verify with `printenv GH_APP_ID GH_APP_INSTALLATION_ID` in a fresh shell.
 
 See `docs/setup-credentials.md` for detailed bot setup instructions.
 
@@ -61,16 +62,50 @@ Open Claude Code in the project directory and run:
 /cloglog init
 ```
 
-The skill walks you through:
-1. Project name and quality gate detection
-2. Backend registration (creates the project, writes `~/.cloglog/credentials`)
-3. MCP server configuration in `.claude/settings.json`
-4. `.cloglog/` directory setup (config, worktree hooks)
-5. CLAUDE.md workflow rules injection
-6. GitHub bot identity verification
-7. Codex PR review setup
+The skill walks you through nine steps:
 
-**Two-phase flow:** After Step 2 creates the project and writes credentials, the skill asks you to restart Claude Code. The MCP server reads credentials at startup. After restart, run `/cloglog init` again — the remaining steps complete automatically.
+1. **Project name and quality gate detection** — auto-detects `make quality`, `npm run lint && npm test`, `cargo clippy && cargo test`, etc. from the repo's manifests; you can override.
+2. **Backend bootstrap (two-phase)** — POSTs to `/api/v1/projects` with your `DASHBOARD_SECRET`, then writes `project_id` + `backend_url` into `.cloglog/config.yaml`. **Single-project machine**: the API key is written to `~/.cloglog/credentials` (chmod 600). **Multi-project machine**: the existing `~/.cloglog/credentials` is preserved and the new key is *printed once* — you must `export CLOGLOG_API_KEY=<key>` (or add it to `.envrc` / shell RC) before restarting. After Step 2 the skill stops and asks you to **restart Claude Code** so the MCP server reloads with the new credentials.
+3. **MCP server configuration** — merges a `cloglog` entry into `.claude/settings.json` (`mcpServers.cloglog` + a `SessionStart` hook pointing at `${CLAUDE_PLUGIN_ROOT}/hooks/session-bootstrap.sh`, both written as resolved absolute paths because `${CLAUDE_PLUGIN_ROOT}` does not expand for SessionStart hooks).
+4. **`.cloglog/` directory setup** — writes `config.yaml` (see shape below) and a tech-stack-aware `on-worktree-create.sh` (uv sync / npm install / cargo build / etc.). The `worktree_scopes:` template is emitted **commented out** because its keys must match your launcher's worktree-naming convention; uncomment and fill in once you've launched a worktree or two.
+5. **CLAUDE.md workflow rules** — appends a `## Workflow Discipline (cloglog)` section covering task lifecycle, quality-gate enforcement, worktree boundaries, and the feature pipeline (spec → plan → impl).
+6. **GitHub bot identity** — checks for the remote, the PEM, and that the App installation has access to *this* repo. Each missing piece prints the exact remediation steps and lets init continue (agent PRs just won't work until fixed).
+7. **Codex PR review setup** — copies `templates/codex-review-schema.json` to `.github/codex/review-schema.json`, generates a tech-stack-tailored `.github/codex/prompts/review.md`, and appends a `## Review guidelines` section to AGENTS.md (creating an AGENTS.md ↔ CLAUDE.md symlink if only one exists so both Claude and Codex read the same file).
+8. **Gitignore + stage** — adds `.cloglog/inbox` to `.gitignore` and `git add`s everything init produced (init never commits — you decide when).
+9. **Summary** — prints a table of what was configured and flags anything left for you (bot setup, key export, etc.).
+
+**Re-running init is safe.** It detects an existing `project_id` in `.cloglog/config.yaml` and skips the bootstrap (no duplicate project on the backend). Use re-runs to pick up new template keys, refresh paths, or finish steps you skipped on the first pass.
+
+### `.cloglog/config.yaml` shape
+
+```yaml
+project_name: my-project
+project_id: <UUID from POST /api/v1/projects>
+backend_url: http://127.0.0.1:8001
+quality_command: make quality
+
+# Consumers: auto_merge_gate.py, scripts/check-demo.sh, scripts/preflight.sh,
+# the demo / close-wave / github-bot / launch skills. Init MUST emit all four.
+dashboard_key: my-project-dashboard-dev
+webhook_tunnel_name: my-project-webhooks
+prod_worktree_path: ../my-project-prod   # only meaningful with a separate prod branch
+
+# Final-stage reviewer bots only — a two-stage opencode → codex pipeline lists
+# only the codex bot here so stage-A approvals fall through to in_progress.
+reviewer_bot_logins:
+  - cloglog-codex-reviewer[bot]
+
+# Single-line regex of paths whose changes never need a stakeholder demo.
+demo_allowlist_paths: '^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates)/|^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$'
+
+# protect-worktree-writes hook scope map. Hook strips `wt-` from the worktree
+# basename and looks up the remainder here (prefix-matched). Keys must match
+# your launcher's naming convention. Init emits commented-out — uncomment after
+# you've settled on a convention.
+# worktree_scopes:
+#   backend: [src/, tests/]
+#   frontend: [frontend/src/, frontend/tests/]
+```
 
 ## Session start
 

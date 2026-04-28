@@ -22,6 +22,7 @@ on:
       - 'alembic/**'
       - 'alembic.ini'
       - '.github/workflows/ci.yml'
+      - '.github/workflows/init-smoke.yml'
 
 concurrency:
   group: ci-${{ github.head_ref }}

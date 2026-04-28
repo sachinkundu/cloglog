@@ -124,3 +124,23 @@ def test_launch_skill_4c_warns_against_cd_into_worktree() -> None:
         "worktree from the main agent — the bash snippet alone doesn't "
         "explain *why* the absolute path matters."
     )
+
+
+def test_launch_skill_documents_launch_sh_host_specificity() -> None:
+    """T-317: launch.sh embeds operator-host absolute paths and must not be
+    copied between operators or hosts.
+
+    A future edit that removes this note leaves the next operator no
+    explanation of why a launch.sh copied from a colleague's machine fails
+    immediately — the gitignore does not communicate the constraint.
+    """
+    body = _read(LAUNCH_SKILL)
+    assert "operator-host-specific" in body, (
+        "Step 4e must state that launch.sh is operator-host-specific — "
+        "the heredoc bakes absolute WORKTREE_PATH/PROJECT_ROOT paths at "
+        "write time, so the file is invalid on any other machine."
+    )
+    assert "must not be copied between operators" in body or "Do not commit it" in body, (
+        "Step 4e must explicitly warn that launch.sh must not be copied "
+        "between operators or committed — gitignored does not mean portable."
+    )

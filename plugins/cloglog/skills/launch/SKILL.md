@@ -362,6 +362,16 @@ zellij action new-tab --name "${WORKTREE_NAME}" -- bash "${WORKTREE_PATH}/.clogl
 zellij action go-to-tab-by-id "${CURRENT_TAB_ID}"
 ```
 
+> **`launch.sh` is operator-host-specific.** The unquoted heredoc above expands
+> `${WORKTREE_PATH}` and `${PROJECT_ROOT}` at *write time*, baking absolute
+> paths that are valid only on the current operator's machine into the script.
+> The file is gitignored (`.gitignore`) so it is not a tracked source leak —
+> but gitignored does **not** mean "safe to copy". Copying `launch.sh` between
+> operators or hosts will produce a script that references non-existent paths on
+> the target machine. Each host regenerates this file at launch time from its
+> own current `WORKTREE_PATH`. Do not commit it, archive it, or hand it to
+> another operator as a working artifact.
+
 ### 4f. One agent at a time
 
 Wait briefly between each agent launch. Each needs its own zellij tab.

@@ -44,7 +44,7 @@ From `shutdown-artifacts/work-log-T-322.md`:
 - **Unknown-stack template needs the `cd` boilerplate.** Even when the body is "operator fills this in later", the boilerplate must match the other stacks because `launch.sh` runs the bootstrap script by absolute path without changing cwd. Codex caught this in round 1.
 - **Audit deliverable lists are deliberately under-specified.** The audit doc said "Go? Java/Maven? Python without uv?" — the right move was to grep the audit's own evidence trail and ship the union of obvious gaps in one round, since codex's 5/5 cap is unforgiving on factual-precision PRs.
 - **`gh-app-token.py` requires `GH_APP_ID` and `GH_APP_INSTALLATION_ID` env vars set in the shell.** Not auto-loaded from `.env` (per existing CLAUDE.md learning). Operator export: `export GH_APP_ID=3235173 GH_APP_INSTALLATION_ID=120404294`.
-- **`zellij action go-to-tab-by-name` is wrong; the correct subcommand is `go-to-tab-name`.** Affects close-wave Step 5c teardown — multiple skills cite the wrong form.
+- **`zellij action go-to-tab-by-name` is wrong; the correct subcommand is `go-to-tab-name`.** Affects the relaunch / tab-switch snippets in `plugins/cloglog/skills/launch/SKILL.md:185` and `plugins/cloglog/skills/setup/SKILL.md:110`; close-wave's Step 5c uses `query-tab-names` + `close-tab` and is unaffected. Follow-up: replace `go-to-tab-by-name` with `go-to-tab-name` in launch and setup.
 
 ## State after this wave
 

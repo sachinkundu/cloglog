@@ -153,6 +153,11 @@ run-backend: ## Start the FastAPI backend
 		--reload-exclude '__pycache__' \
 		--reload-exclude '*.pyc'
 
+# T-231: gunicorn invocations below pass --capture-output so worker stdout/stderr
+# (FastAPI tracebacks, codex CLI errors, review_engine exceptions) reach the
+# error-logfile. Without it, app stderr goes to the controlling terminal and is
+# lost in --daemon mode — we hit this on PR #260, where review_engine swallowed
+# an exception on a synchronize webhook and left no log to diagnose from.
 prod: ## Start prod server (gunicorn + vite preview, foreground — run in a zellij pane)
 	@if [ -f /tmp/cloglog-prod.pid ] && kill -0 "$$(cat /tmp/cloglog-prod.pid)" 2>/dev/null; then \
 		echo "ERROR: prod gunicorn is already running (pid $$(cat /tmp/cloglog-prod.pid)) on :8001."; \
@@ -189,6 +194,7 @@ prod: ## Start prod server (gunicorn + vite preview, foreground — run in a zel
 		    --pid /tmp/cloglog-prod.pid \
 		    --error-logfile /tmp/cloglog-prod.log \
 		    --access-logfile /tmp/cloglog-prod-access.log \
+		    --capture-output \
 		    --log-level info 2>&1 | sed -u 's/^/[backend] /') & \
 		(tail -F -n 0 /tmp/cloglog-prod.log 2>/dev/null | sed -u 's/^/[backend] /') & \
 		(cd ../cloglog-prod/frontend && npm run preview -- --port 4173 $$PREVIEW_HOST_FLAG 2>&1 | sed -u 's/^/[frontend] /' & echo $$! > /tmp/cloglog-prod-frontend.pid) & \
@@ -224,6 +230,7 @@ prod-bg: ## Start prod server in background
 		    --pid /tmp/cloglog-prod.pid \
 		    --error-logfile /tmp/cloglog-prod.log \
 		    --access-logfile /tmp/cloglog-prod-access.log \
+		    --capture-output \
 		    --log-level info \
 		    --daemon); \
 		fuser -k 4173/tcp 2>/dev/null || true; \

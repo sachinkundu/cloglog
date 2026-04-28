@@ -327,8 +327,11 @@ dashboard_key: <project>-dashboard-dev
 webhook_tunnel_name: <project>-webhooks
 prod_worktree_path: ../<project>-prod   # only meaningful if the project tracks a separate prod branch
 
+# Auto-merge-eligible *final-stage* reviewer bots only — not every reviewer.
+# A two-stage pipeline (e.g. opencode → codex) lists only the stage-B bot
+# here; stage-A approvals fall through to the standard in_progress flow.
 reviewer_bot_logins:
-  - <reviewer-bot-login>[bot]   # e.g. cloglog-codex-reviewer[bot]; one per reviewer GitHub App
+  - <final-stage-reviewer-bot>[bot]   # e.g. cloglog-codex-reviewer[bot]
 
 # Single-line regex of allowlisted paths (paths whose changes never need a
 # stakeholder demo). Same shape `scripts/check-demo.sh` parses with

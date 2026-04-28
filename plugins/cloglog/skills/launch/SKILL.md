@@ -126,7 +126,7 @@ When you receive a message, read it and act on the instruction. The main agent m
     reflecting whichever terminal state the skill reached (the skill's
     own Step 6 prints the matching PR-body template).
 12. Move task to review with PR URL via `mcp__cloglog__update_task_status`
-13. Your `.cloglog/inbox` Monitor delivers review/merge/CI events automatically — do NOT start a `/loop`. On `review_submitted` from any login listed in `.cloglog/config.yaml: reviewer_bot_logins`: run the auto-merge gate (see the github-bot skill's *Auto-Merge on Codex Pass* section). On `pr_merged`, run the per-task shutdown sequence:
+13. Your `.cloglog/inbox` Monitor delivers review/merge/CI events automatically — do NOT start a `/loop`. On `review_submitted` from any login listed in `.cloglog/config.yaml: reviewer_bot_logins` (the auto-merge-eligible final-stage reviewers — cloglog ships codex only; opencode stage-A reviews are intentionally not in that list and route through the standard in_progress flow): run the auto-merge gate (see the github-bot skill's *Auto-Merge on Codex Pass* section). On `pr_merged`, run the per-task shutdown sequence:
     - **First**, append a `pr_merged_notification` line to `<project_root>/.cloglog/inbox` so the supervisor sees the merge (T-262 — the `pr_merged` webhook only fans out to the merging worktree's own inbox):
       ```bash
       printf '{"type":"pr_merged_notification","worktree":"<wt-name>","worktree_id":"<uuid>","task":"T-NNN","task_id":"<uuid>","pr":"<pr-url>","pr_number":NNN,"ts":"%s"}\n' "$(date -Is)" \

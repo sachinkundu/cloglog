@@ -6,9 +6,13 @@ quality_command: make quality
 dashboard_key: cloglog-dashboard-dev
 webhook_tunnel_name: cloglog-webhooks
 
+# Auto-merge-eligible final-stage reviewer bots only. The two-stage review
+# pipeline (docs/design/two-stage-pr-review.md) runs opencode first (stage A)
+# then codex (stage B); only codex's `:pass:` may auto-merge. Opencode is
+# intentionally absent here — its approvals route through the standard
+# review_submitted in_progress flow.
 reviewer_bot_logins:
   - cloglog-codex-reviewer[bot]
-  - cloglog-opencode-reviewer[bot]
 
 # demo_allowlist_paths is a single regex (joined alternation) read by
 # scripts/check-demo.sh and the demo skill. Stored as a YAML scalar so the

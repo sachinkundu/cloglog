@@ -109,6 +109,39 @@ def test_close_wave_skill_does_not_hardcode_prod_worktree_path() -> None:
 # ── config keys present ───────────────────────────────────────────────
 
 
+def test_reviewer_bot_logins_excludes_stage_a_opencode() -> None:
+    """T-316 codex round 2: auto-merge eligibility is final-stage-only.
+
+    The two-stage review pipeline (``plugins/cloglog/docs/two-stage-pr-review.md``)
+    runs opencode first (stage A) then codex (stage B). Only codex's ``:pass:``
+    may auto-merge. Listing the opencode bot in ``reviewer_bot_logins`` would
+    let a stage-A approval merge a PR before codex stage B runs — the exact
+    failure mode codex flagged on PR #255 round 2. This pin keeps the
+    auto-merge-eligible set scoped to final-stage reviewers, regardless of
+    how the surrounding two-stage docs evolve.
+    """
+    body = (REPO_ROOT / ".cloglog/config.yaml").read_text(encoding="utf-8")
+    # Locate the reviewer_bot_logins block and assert opencode isn't in it.
+    in_block = False
+    block_lines: list[str] = []
+    for raw in body.splitlines():
+        if not in_block:
+            if raw.startswith("reviewer_bot_logins:"):
+                in_block = True
+            continue
+        if raw and not raw[0:1].isspace() and not raw.lstrip().startswith("#"):
+            break
+        block_lines.append(raw)
+    block = "\n".join(block_lines)
+    assert "cloglog-opencode-reviewer" not in block, (
+        "cloglog-opencode-reviewer[bot] is listed in reviewer_bot_logins. "
+        "Stage-A reviewers must not appear in the auto-merge-eligible set — "
+        "see plugins/cloglog/docs/two-stage-pr-review.md and the github-bot "
+        "skill's `Auto-Merge on Codex Pass` section. List only stage-B "
+        "(final-stage) reviewer bots here."
+    )
+
+
 def test_config_yaml_carries_the_new_keys() -> None:
     """Smoke pin: ``.cloglog/config.yaml`` continues to carry every key
     introduced by T-316. Catches an accidental key rename that would leave

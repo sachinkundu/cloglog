@@ -18,6 +18,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SMOKE_WORKFLOW = REPO_ROOT / ".github/workflows/init-smoke.yml"
+MAIN_CI_WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
 
 
 def _read_workflow() -> str:
@@ -53,6 +54,27 @@ def test_workflow_triggers_on_pull_request() -> None:
     assert "pull_request:" in body, (
         "init-smoke.yml must trigger on `pull_request` so the smoke "
         "runs against every PR before merge."
+    )
+
+
+def test_main_ci_runs_on_init_smoke_workflow_changes() -> None:
+    """Cross-coverage pin: `ci.yml` must trigger when `init-smoke.yml`
+    changes. Without this, a PR that edits `init-smoke.yml` to add a
+    self-excluding `paths:` filter would disable the smoke workflow on
+    its own modifying commit AND leave `ci.yml` idle (no `paths:` match
+    on `init-smoke.yml`). The pin tests in this file would never run on
+    the regression they exist to catch. Adding `init-smoke.yml` to
+    `ci.yml`'s paths means the pytest suite (which includes this file)
+    runs on any workflow edit and catches the self-disabling rewrite
+    before merge.
+    """
+    assert MAIN_CI_WORKFLOW.exists(), f"{MAIN_CI_WORKFLOW} missing"
+    body = MAIN_CI_WORKFLOW.read_text(encoding="utf-8")
+    assert ".github/workflows/init-smoke.yml" in body, (
+        "ci.yml's `pull_request.paths:` list must include "
+        "`.github/workflows/init-smoke.yml` so changes to the smoke "
+        "workflow trigger the main test suite (and `test_init_smoke_ci_workflow.py`). "
+        "Otherwise a self-disabling edit to init-smoke.yml could merge with no CI."
     )
 
 

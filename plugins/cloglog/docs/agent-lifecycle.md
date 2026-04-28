@@ -1,7 +1,5 @@
 # Agent Lifecycle Protocol
 
-> **Plugin mirror:** `plugins/cloglog/docs/agent-lifecycle.md` ships a copy of this doc for plugin portability. This root copy is authoritative for cloglog-internal use (`src/`, tests). When editing, update both.
-
 This document is the canonical specification for how a cloglog worktree agent
 lives and dies. Every plugin skill, agent template, and `AGENT_PROMPT.md` that
 touches shutdown, the inbox, or MCP discipline MUST defer to this document

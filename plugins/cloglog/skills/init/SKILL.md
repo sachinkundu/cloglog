@@ -40,7 +40,7 @@ export DASHBOARD_SECRET=<value from your backend's .env>
 
 Add to `~/.bashrc` or `~/.zshenv` so every Claude Code session inherits it.
 
-**4. GitHub App credentials (optional).** Steps 6–7 configure bot identity for agent PRs. You can run init without them and complete the bot setup later — agents just won't be able to push or create PRs until configured. See `docs/setup-credentials.md`.
+**4. GitHub App credentials (optional).** Steps 6–7 configure bot identity for agent PRs. You can run init without them and complete the bot setup later — agents just won't be able to push or create PRs until configured. See `${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md`.
 
 **Re-running init** is safe. If this project is already bootstrapped (`.cloglog/config.yaml` has a `project_id` and `~/.cloglog/credentials` has a key), prerequisite 3 (`DASHBOARD_SECRET`) is no longer needed — the project already exists on the backend. Prerequisite 4 (GitHub App) is **host-local** and must be satisfied independently on every machine: `~/.agent-vm/credentials/github-app.pem`, `GH_APP_ID`, and `GH_APP_INSTALLATION_ID` are not written by the bootstrap and must be present in the shell before agent PR steps will work.
 
@@ -304,7 +304,7 @@ Check if `.claude/settings.json` exists in the project. If the cloglog MCP serve
 
 > **T-214:** `CLOGLOG_API_KEY` MUST NOT be added to `.mcp.json` or any
 > per-project file. The MCP server reads it from the operator's environment
-> or from `~/.cloglog/credentials` only. See `docs/setup-credentials.md`.
+> or from `~/.cloglog/credentials` only. See `${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md`.
 
 **Important:** The `SessionStart` hook must use an absolute path to the bootstrap script — `${CLAUDE_PLUGIN_ROOT}` does not resolve for `SessionStart` hooks in plugin settings.json (only project-level settings work). This is why init injects it into the project settings.
 
@@ -614,7 +614,7 @@ Present what was configured:
 | GitHub bot | configured/needs setup |
 
 Remind the user to:
-1. Set up `~/.cloglog/credentials` with `CLOGLOG_API_KEY=<key>` and `chmod 600` (or export `CLOGLOG_API_KEY` in their shell). See `docs/setup-credentials.md`. The key MUST NOT live in `.mcp.json` or `.claude/settings.json`.
+1. Set up `~/.cloglog/credentials` with `CLOGLOG_API_KEY=<key>` and `chmod 600` (or export `CLOGLOG_API_KEY` in their shell). See `${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md`. The key MUST NOT live in `.mcp.json` or `.claude/settings.json`.
 2. **Set up the GitHub bot** if not yet configured (see Step 6 output)
 3. Run `git commit` to save the configuration
 4. Start the cloglog backend if not running

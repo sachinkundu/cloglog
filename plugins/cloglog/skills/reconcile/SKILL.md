@@ -11,7 +11,7 @@ for all board/agent operations and git/gh CLI for infrastructure checks.
 Never use curl or direct API calls.
 
 Worktree teardown during auto-fix uses the **cooperative shutdown** protocol
-from `docs/design/agent-lifecycle.md` §2 and §5 — the same tier-1 →
+from `${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md` §2 and §5 — the same tier-1 →
 tier-2 sequence the close-wave skill follows. Reconcile never kills
 launchers by PID and never closes zellij tabs before the backend session
 has ended.
@@ -157,7 +157,7 @@ during the T-268 close-out (T-270).
 
 Reconcile is the arbiter: close-wave is the clean path (cleanly-completed
 worktrees with artifacts), `force_unregister` is the dirty path (everything
-else). See `docs/design/agent-lifecycle.md` §5 for the unified-flow spec.
+else). See `${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md` §5 for the unified-flow spec.
 
 #### Completed-cleanly predicate
 
@@ -182,7 +182,7 @@ All three must hold for a worktree to be eligible for close-wave delegation:
    `close_worktree_template` output (`src/board/templates.py:20`):
    `title == f"Close worktree {wt_name}"` AND `status == "backlog"`.
 3. **Every assigned task is resolved from the agent's side.** This is
-   the project completion contract from `docs/design/agent-lifecycle.md`
+   the project completion contract from `${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md`
    §1 and the close-off template in `src/board/templates.py:24-25`
    ("all assigned tasks are done (or in review with pr_merged=true)"),
    not a stricter `pr_merged=True` everywhere check. The predicate is

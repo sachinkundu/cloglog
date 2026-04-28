@@ -6,7 +6,7 @@ shutdown wait. The skills call ``mcp__cloglog__request_shutdown`` first, then
 invoke this helper. On exit 0 the skill proceeds to tear down the worktree;
 on exit 1 it falls back to ``mcp__cloglog__force_unregister``.
 
-See ``docs/design/agent-lifecycle.md`` §2 and §5 for the protocol.
+See ``${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md`` §2 and §5 for the protocol.
 
 Usage::
 

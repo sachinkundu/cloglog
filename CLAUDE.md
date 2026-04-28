@@ -37,6 +37,13 @@ If you are working in a worktree (`wt-*` branch), you MUST only touch files in y
 
 `make quality` is mandatory before completing any task or creating a PR. The `quality-gate` plugin hook runs it automatically on `git commit`, `git push`, and `gh pr create`.
 
+## CI
+
+Two PR-blocking workflows live in `.github/workflows/`:
+
+- **`ci.yml`** — backend lint/typecheck/tests, frontend tests, MCP server tests, contract check, Playwright e2e (gateway/frontend changes only). Triggered by a `paths:` filter scoped to runtime code and tests.
+- **`init-smoke.yml`** — plugin portability gate. Runs `tests/plugins/test_init_on_fresh_repo.py` and `tests/plugins/test_plugin_no_cloglog_citations.py` on **every PR** (no paths filter) so a change anywhere — plugin SKILL.md, hooks, docs, settings — cannot ship a regression that breaks `init` on a fresh downstream repo. Pinned by `tests/plugins/test_init_smoke_ci_workflow.py`.
+
 ## Git Identity & PRs
 
 All pushes, PRs, and GitHub API calls MUST use the GitHub App bot identity. Use the `github-bot` skill — it has the exact commands for pushing, creating PRs, checking status, and replying to review comments. Never use `git push`, `gh pr`, or `gh api` without the bot token.

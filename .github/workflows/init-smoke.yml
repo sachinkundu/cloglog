@@ -1,0 +1,41 @@
+name: Init Smoke
+
+# Plugin portability gate. Runs on every PR (no paths filter) so a change
+# anywhere in the tree — plugin skills, hooks, settings, docs — cannot ship
+# a portability regression that breaks `init` on a fresh downstream repo.
+#
+# Pin tests executed:
+#   - tests/plugins/test_init_on_fresh_repo.py    (T-319/T-321 placeholder + scope-template behaviour)
+#   - tests/plugins/test_plugin_no_cloglog_citations.py (T-323 host-literal sweep)
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: init-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  init-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install Python dependencies
+        run: uv sync --all-extras
+
+      - name: Fresh-repo init smoke
+        run: |
+          uv run pytest \
+            tests/plugins/test_init_on_fresh_repo.py \
+            tests/plugins/test_plugin_no_cloglog_citations.py \
+            -v --no-cov --tb=short

@@ -394,13 +394,13 @@ demo_allowlist_paths: '^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.gi
 
 # T-321 — worktree_scopes: scope-name → list of repo-relative path prefixes
 # the protect-worktree-writes hook treats as in-scope for that worktree.
-# Auto-detected from common project layouts (see bash block below). On a
-# repo whose layout doesn't match any pattern, init emits a commented-out
-# template so the hook stays a no-op until the operator fills it in.
-worktree_scopes:
-  backend: [src/, tests/]
-  frontend: [frontend/]
-  mcp: [mcp-server/]
+# Init emits this as a *commented-out template* — the scope keys MUST match
+# the launcher's worktree-naming convention (the hook strips `wt-` from the
+# basename and looks up the remainder in this map, with prefix matching), and
+# init has no way to predict that convention. Operators uncomment and adapt
+# after wiring up their launch flow.
+# worktree_scopes:
+#   <scope>: [<path-prefix>/, ...]   # e.g. backend: [src/, tests/]
 ```
 
 **Important:** Use the `BACKEND_URL` detected in Step 1c (or read from `.cloglog/config.yaml`
@@ -414,13 +414,24 @@ scratch. The bash block below appends only the keys that are missing.
 
 If `.cloglog/config.yaml` already exists, update fields rather than overwriting. When upgrading a project that predates T-316, append the four new keys (`dashboard_key`, `webhook_tunnel_name`, `reviewer_bot_logins`, `demo_allowlist_paths`) instead of regenerating the file from scratch.
 
-#### 4a.1 — Append `worktree_scopes` (auto-detected)
+#### 4a.1 — Append commented-out `worktree_scopes` template
 
 After the scalar keys above are written, run this bash block to append a
-`worktree_scopes` mapping based on the project's top-level layout. This is
-idempotent — if the key is already present (e.g. cloglog's hand-written
-config), the block is a no-op. `project_id` was seeded by Step 2 and is
-left untouched.
+*commented-out* `worktree_scopes` template if one isn't present. The block
+is idempotent — if `worktree_scopes:` is already present (e.g. cloglog's
+hand-written config), it's a no-op. `project_id` was seeded by Step 2 and
+is left untouched.
+
+**Why init emits a commented template, not an auto-detected mapping.** The
+`protect-worktree-writes.sh` hook resolves a worktree's scope by stripping
+`wt-` from the directory basename and looking up the remainder in this
+map, with prefix matching (`wt-frontend-auth` matches scope `frontend`).
+Live keys like `backend`/`frontend`/`mcp` would never match a normal
+launched worktree such as `wt-t321-init-config-gen` — the lookup falls
+through to the hook's allow-all branch and the guard becomes a silent
+no-op. Until launch-time scope is wired through (a separate task), init's
+job is to leave the operator a clear template to fill in once they've
+chosen a naming convention for their launcher.
 
 ```bash
 mkdir -p .cloglog
@@ -434,48 +445,20 @@ grep -q '^project_id:' .cloglog/config.yaml || {
   exit 1
 }
 
-if ! grep -q '^worktree_scopes:' .cloglog/config.yaml; then
-  python3 - <<'PY'
-import pathlib
+if ! grep -q '^worktree_scopes:' .cloglog/config.yaml \
+   && ! grep -q '^# worktree_scopes:' .cloglog/config.yaml; then
+  cat >> .cloglog/config.yaml <<'YAML'
 
-cfg = pathlib.Path(".cloglog/config.yaml")
-
-# Top-level layout patterns. The first path in each tuple is the trigger;
-# all listed paths are emitted as the scope's prefix list. Order matters
-# only for deterministic output.
-candidates = [
-    ("backend", ["src/", "tests/"]),
-    ("frontend", ["frontend/"]),
-    ("mcp", ["mcp-server/"]),
-    ("app", ["app/", "tests/"]),
-]
-detected = []
-for name, paths in candidates:
-    trigger = pathlib.Path(paths[0].rstrip("/"))
-    if trigger.is_dir():
-        # Only include paths that actually exist; drop the rest.
-        present = [p for p in paths if pathlib.Path(p.rstrip("/")).is_dir()]
-        if present:
-            detected.append((name, present))
-
-if detected:
-    block = ["", "worktree_scopes:"]
-    for name, paths in detected:
-        block.append(f"  {name}: [{', '.join(paths)}]")
-else:
-    block = [
-        "",
-        "# worktree_scopes: <scope>: [<path-prefix>, ...] mapping consumed by",
-        "# the protect-worktree-writes hook. No layout pattern was detected at",
-        "# init time. Uncomment and adapt to your project's layout — until you",
-        "# do, the hook stays a no-op (every worktree write is allowed).",
-        "# worktree_scopes:",
-        "#   core: [src/, tests/]",
-    ]
-
-with cfg.open("a") as fh:
-    fh.write("\n".join(block) + "\n")
-PY
+# worktree_scopes: <scope>: [<path-prefix>, ...] mapping consumed by the
+# protect-worktree-writes hook. The hook strips `wt-` from the worktree
+# basename and looks up the remainder here (with prefix matching:
+# `wt-frontend-auth` -> `frontend`). Scope keys MUST match the
+# worktree-naming convention used by your /cloglog launch flow — keys
+# that don't match any worktree name leave the hook in allow-all mode.
+# Uncomment and adapt after you've settled on a convention.
+# worktree_scopes:
+#   <scope>: [<path-prefix>/, ...]   # e.g. backend: [src/, tests/]
+YAML
 fi
 ```
 

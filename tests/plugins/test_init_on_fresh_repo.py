@@ -1,4 +1,4 @@
-"""Pin tests: T-319 + T-321.
+"""Pin tests: T-319 + T-321 + T-323.
 
 T-319: init Steps 3 and 7a must resolve every `<...>` / `/path/to/...`
 placeholder to a concrete absolute path before writing files.
@@ -10,6 +10,16 @@ auto-generated because protect-worktree-writes derives the scope key from
 `basename(worktree) - "wt-"` and init has no way to predict the launcher's
 naming convention; live keys would silently leave the guard in allow-all
 mode (codex review on PR #260).
+
+T-323: post-init artifacts (`.claude/settings.json`, `.cloglog/config.yaml`)
+must not bake any cloglog operator-host literal into a fresh project. The
+brand surface is intentionally retained — `cloglog`, `mcp__cloglog__*`,
+the MCP server name `cloglog-mcp`, and `~/.cloglog/credentials` ship with
+the plugin and identify it on the wire. Everything else (`cloglog.voxdez.com`,
+`../cloglog-prod`, reviewer-bot logins, `/home/sachin/...`) is host- or
+project-specific and must NOT appear in init output. `.cloglog/launch.sh`
+is intentionally exempt from this check (the launcher must contain absolute
+host paths per T-284 — pinned by `tests/plugins/test_launch_skill_uses_abs_paths.py`).
 """
 
 from __future__ import annotations
@@ -335,3 +345,127 @@ def test_step4a1_fails_loudly_when_project_id_missing(tmp_path: Path) -> None:
         "worktree_scopes onto a half-bootstrapped config hides the Step 2 bug."
     )
     assert "project_id" in result.stderr or "project_id" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# T-323 — post-init outputs carry no cloglog-host literals (carve out brand)
+# ---------------------------------------------------------------------------
+
+# Strings the audit (docs/design/plugin-portability-audit.md §8) flags as
+# host- or project-specific. None of these may appear in a fresh-repo init
+# output. Listed verbatim so a regex-typo can't accidentally widen the pin.
+HOST_LITERALS = (
+    "cloglog.voxdez.com",  # webhook tunnel host
+    "cloglog-webhooks",  # cloudflared tunnel name
+    "cloglog-dashboard-dev",  # dashboard auth key
+    "../cloglog-prod",  # cloglog dev/prod sibling-clone topology
+    "cloglog-codex-reviewer[bot]",  # cloglog-deployment reviewer App
+    "cloglog-opencode-reviewer[bot]",
+    "/home/sachin",  # operator-host home path
+)
+
+# Brand surface: intentionally retained — `init` writes these on purpose so
+# the plugin identifies itself on the wire. The pins below assert these
+# survive the host-literal scan (i.e. the regex shape doesn't accidentally
+# strip them too).
+BRAND_SURFACE_SETTINGS = (
+    "cloglog",  # MCP server entry name in settings.json
+    "mcp-server/dist/index.js",  # plugin-resolved entry point
+)
+
+
+def test_step3_settings_carries_no_host_specific_literals(
+    tmp_path: Path, fake_plugin_root: Path
+) -> None:
+    """`.claude/settings.json` written by Step 3 must not embed any cloglog
+    operator-host literal. The plugin is project-agnostic; init runs in a
+    *new* project's tree, so a settings.json that names cloglog's tunnel,
+    dashboard key, prod-sibling path, reviewer bots, or the operator's
+    home directory has leaked dev-environment state into a downstream
+    project.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=x@y",
+            "-c",
+            "user.name=x",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+        cwd=repo,
+        check=True,
+    )
+
+    block = _first_bash_block(_section(_read_skill(), "## Step 3:", "## Step "))
+    env = {
+        **os.environ,
+        "CLAUDE_PLUGIN_ROOT": str(fake_plugin_root),
+        "BACKEND_URL": "http://127.0.0.1:8001",
+    }
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", block],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"Step 3 block failed: stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+
+    settings = (repo / ".claude" / "settings.json").read_text()
+    for needle in HOST_LITERALS:
+        assert needle not in settings, (
+            f".claude/settings.json contains host-specific literal {needle!r} "
+            "after Step 3 — this is operator-environment state leaking into a "
+            "fresh project. Move the value behind a config key or env var."
+        )
+
+    # Carve-out: brand surface must SURVIVE the no-literal sweep above. A
+    # future widened regex that strips `cloglog` from settings.json would
+    # rename the MCP server and break every `mcp__cloglog__*` reference.
+    for needle in BRAND_SURFACE_SETTINGS:
+        assert needle in settings, (
+            f"Step 3 lost brand-surface literal {needle!r} — a regex over-broad "
+            "enough to strip this would rename the MCP server."
+        )
+
+
+def test_step4a_config_yaml_carries_no_host_specific_literals(tmp_path: Path) -> None:
+    """The `.cloglog/config.yaml` Step 4a appends to must stay
+    project-portable. Cloglog's own config legitimately carries
+    `prod_worktree_path: ../cloglog-prod` and worktree-scope keys, but
+    that's hand-edited *after* init — init's own template/append must not
+    bake the cloglog dev/prod topology into a fresh project.
+    """
+    project_id = "11111111-2222-3333-4444-555555555555"
+    cfg = tmp_path / ".cloglog" / "config.yaml"
+    cfg.parent.mkdir()
+    cfg.write_text(
+        f"project_name: demo\nproject_id: {project_id}\nbackend_url: http://127.0.0.1:8001\n"
+    )
+
+    block = _step4a_bash_block(_read_skill())
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", block],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    body = cfg.read_text()
+    for needle in HOST_LITERALS:
+        assert needle not in body, (
+            f".cloglog/config.yaml contains host-specific literal {needle!r} "
+            "after Step 4a — operator-environment state must not leak into the "
+            "fresh project's config template."
+        )

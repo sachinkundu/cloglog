@@ -220,7 +220,7 @@ startup.
 | Inbox | Path | Resolver |
 | --- | --- | --- |
 | Worktree inbox (each worker) | `<worktree_path>/.cloglog/inbox` | `worktree_path` is the `path` column on the `worktrees` row for the session. The webhook consumer at `src/gateway/webhook_consumers.py` reads it directly from the row. Agents get the same path from `register_agent`'s return value and from `pwd` at startup (the launch skill's `launch.sh` always `cd`s into the worktree first). |
-| Main agent inbox (supervisor) | `<project_root>/.cloglog/inbox` | `<project_root>` is the directory where `cloglog:setup` was run — the top-level clone, NOT a worktree subdirectory. `plugins/cloglog/hooks/session-bootstrap.sh` creates the file at `${PROJECT_DIR}/.cloglog/inbox` when the supervisor session starts, and `plugins/cloglog/skills/setup/SKILL.md` tells the supervisor to `tail -f <cwd>/.cloglog/inbox`. An alt-checkout at (say) `/home/sachin/code/cloglog-prod` has its supervisor inbox at `/home/sachin/code/cloglog-prod/.cloglog/inbox`. |
+| Main agent inbox (supervisor) | `<project_root>/.cloglog/inbox` | `<project_root>` is the directory where `cloglog:setup` was run — the top-level clone, NOT a worktree subdirectory. `plugins/cloglog/hooks/session-bootstrap.sh` creates the file at `${PROJECT_DIR}/.cloglog/inbox` when the supervisor session starts, and `plugins/cloglog/skills/setup/SKILL.md` tells the supervisor to `tail -f <cwd>/.cloglog/inbox`. An alt-checkout at (say) `<alt-checkout-root>` has its supervisor inbox at `<alt-checkout-root>/.cloglog/inbox`. |
 
 **Worktree agents must not hardcode the main inbox path.** The launch skill
 is responsible for plumbing the project root into the worktree environment —
@@ -230,7 +230,7 @@ it as `$(git rev-parse --path-format=absolute --git-common-dir)` then the
 parent directory of `.git` (for a non-worktree clone, `--show-toplevel` also
 works; for a worktree, `--git-common-dir` points at the main clone's `.git`).
 Agents MUST NOT resolve it to a literal like
-`/home/sachin/code/cloglog/.cloglog/inbox` — different checkouts use
+`<operator-host-path>/.cloglog/inbox` — different checkouts use
 different roots and the hardcode corrupts them. Tracked as T-NEW in the
 [See also](#see-also) block.
 

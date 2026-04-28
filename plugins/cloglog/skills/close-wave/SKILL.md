@@ -79,7 +79,7 @@ delegation is a pure entry-point change, not a refactor of the pipeline.
 
 ## Step 1: Detect Worktrees
 
-1. Run `git worktree list --porcelain` to find active worktrees. **Filter to only worktrees whose path starts with `$(git rev-parse --show-toplevel)/.claude/worktrees/`.** Skip the main worktree and any worktree outside that directory (e.g., `../cloglog-prod` is the prod worktree — never touch it).
+1. Run `git worktree list --porcelain` to find active worktrees. **Filter to only worktrees whose path starts with `$(git rev-parse --show-toplevel)/.claude/worktrees/`.** Skip the main worktree and any worktree outside that directory — in particular, the prod worktree at `.cloglog/config.yaml: prod_worktree_path` must never be touched by close-wave.
 2. If `$ARGUMENTS` specifies worktree names, filter to only those.
 3. If no worktrees exist, tell the user there's nothing to close.
 4. Determine the wave name by examining existing work logs to figure out the current numbering (e.g., if `wave-1.md` exists, this is `wave-2`).

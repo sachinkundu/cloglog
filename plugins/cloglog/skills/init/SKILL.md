@@ -318,6 +318,25 @@ If the file already has a cloglog MCP entry or SessionStart hook, update rather 
 project_name: <name>
 backend_url: <BACKEND_URL detected in Step 1c — e.g. http://127.0.0.1:8001>
 quality_command: <detected or user-provided command>
+
+# T-316 keys — every consumer (auto_merge_gate.py, scripts/check-demo.sh,
+# scripts/preflight.sh, demo/close-wave/github-bot/launch skills) reads
+# from here. Init MUST emit all four; missing keys break the demo gate
+# and the auto-merge flow on a fresh repo.
+dashboard_key: <project>-dashboard-dev
+webhook_tunnel_name: <project>-webhooks
+prod_worktree_path: ../<project>-prod   # only meaningful if the project tracks a separate prod branch
+
+# Auto-merge-eligible *final-stage* reviewer bots only — not every reviewer.
+# A two-stage pipeline (e.g. opencode → codex) lists only the stage-B bot
+# here; stage-A approvals fall through to the standard in_progress flow.
+reviewer_bot_logins:
+  - <final-stage-reviewer-bot>[bot]   # e.g. cloglog-codex-reviewer[bot]
+
+# Single-line regex of allowlisted paths (paths whose changes never need a
+# stakeholder demo). Same shape `scripts/check-demo.sh` parses with
+# grep+sed. Cloglog's default below is sensible for most projects:
+demo_allowlist_paths: '^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates)/|^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$'
 ```
 
 **Important:** Use the `BACKEND_URL` detected in Step 1c (or read from `.cloglog/config.yaml`
@@ -325,7 +344,7 @@ which was seeded in Step 2). Do not hard-code `127.0.0.1:8001` — non-default b
 survive the restart. If Step 2 already wrote `backend_url`, preserve it rather than overwriting
 with the default.
 
-If `.cloglog/config.yaml` already exists, update fields rather than overwriting.
+If `.cloglog/config.yaml` already exists, update fields rather than overwriting. When upgrading a project that predates T-316, append the four new keys (`dashboard_key`, `webhook_tunnel_name`, `reviewer_bot_logins`, `demo_allowlist_paths`) instead of regenerating the file from scratch.
 
 ### 4b. `on-worktree-create.sh`
 

@@ -199,3 +199,49 @@ def test_step2_detects_existing_project_id_not_credentials() -> None:
         "repo-scoped 'already bootstrapped' signal. ~/.cloglog/credentials is "
         "a global file and must not be used as the skip condition."
     )
+
+
+# ---------------------------------------------------------------------------
+# T-316 — Step 4a must emit every config key the consumers depend on
+# ---------------------------------------------------------------------------
+
+
+def _step4a_body(body: str) -> str:
+    """Extract Step 4a (the config.yaml subsection)."""
+    lines = body.splitlines()
+    in_step4a = False
+    out: list[str] = []
+    for line in lines:
+        if line.startswith("### 4a."):
+            in_step4a = True
+            out.append(line)
+            continue
+        if in_step4a:
+            if line.startswith("### ") and not line.startswith("### 4a."):
+                break
+            out.append(line)
+    assert out, "Could not locate ### 4a. section in init SKILL.md"
+    return "\n".join(out)
+
+
+def test_step4a_documents_t316_config_keys() -> None:
+    """Step 4a must document every key T-316 consumers expect.
+
+    Without these keys ``scripts/check-demo.sh`` errors with
+    ``demo_allowlist_paths missing or empty`` and the auto-merge gate
+    matches no reviewer (``not_codex_reviewer`` for every event), so a
+    downstream project initialized exactly per this skill is broken
+    out of the box. The pin scopes to Step 4a so a future rewording
+    that drops a key from the example config trips the test.
+    """
+    step4a = _step4a_body(_read())
+    for key in (
+        "dashboard_key",
+        "webhook_tunnel_name",
+        "reviewer_bot_logins",
+        "demo_allowlist_paths",
+    ):
+        assert key in step4a, (
+            f"init Step 4a must include the {key!r} key in its example config — "
+            "T-316 consumers fail closed without it."
+        )

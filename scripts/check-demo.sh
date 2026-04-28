@@ -28,7 +28,26 @@ fi
 MERGE_BASE=$(git merge-base origin/main HEAD 2>/dev/null \
   || git merge-base main HEAD 2>/dev/null \
   || echo "main")
-CODE_CHANGES=$(git diff "$MERGE_BASE" --name-only 2>/dev/null | grep -vE '^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates)/|^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$' | head -1 || true)
+
+# Read demo_allowlist_paths from .cloglog/config.yaml. T-316 lifted the
+# literal regex out of this script so the same allowlist can be applied by
+# the demo skill (where the regex is documented for agents) without two
+# sources of truth drifting. grep+sed only — docs/invariants.md § hook
+# YAML parsing forbids `python3 -c 'import yaml'` here.
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+CONFIG_YAML="$REPO_ROOT/.cloglog/config.yaml"
+if [[ ! -f "$CONFIG_YAML" ]]; then
+  echo "  ERROR: $CONFIG_YAML not found — cannot determine demo_allowlist_paths." >&2
+  exit 1
+fi
+ALLOWLIST_REGEX=$(grep '^demo_allowlist_paths:' "$CONFIG_YAML" 2>/dev/null | head -n1 \
+                  | sed 's/^demo_allowlist_paths:[[:space:]]*//' \
+                  | sed "s/^'//; s/'\$//; s/^\"//; s/\"\$//")
+if [[ -z "$ALLOWLIST_REGEX" ]]; then
+  echo "  ERROR: demo_allowlist_paths missing or empty in $CONFIG_YAML." >&2
+  exit 1
+fi
+CODE_CHANGES=$(git diff "$MERGE_BASE" --name-only 2>/dev/null | grep -vE "$ALLOWLIST_REGEX" | head -1 || true)
 if [[ -z "$CODE_CHANGES" ]]; then
   echo "  Docs-only branch — no demo required."
   exit 0

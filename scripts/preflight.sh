@@ -67,16 +67,29 @@ fi
 
 # ── cloudflared tunnel ───────────────────────────────────────────────────────
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Read tunnel name from .cloglog/config.yaml so non-cloglog projects can ship
+# their own value without forking this script (T-316). Use the canonical
+# stdlib-only scalar reader so a missing key returns "" cleanly instead of
+# tripping `set -e` via grep's exit-1 (codex round 1 finding).
+# shellcheck source=../plugins/cloglog/hooks/lib/parse-yaml-scalar.sh
+source "$REPO_ROOT/plugins/cloglog/hooks/lib/parse-yaml-scalar.sh"
+TUNNEL_NAME=$(read_yaml_scalar "$REPO_ROOT/.cloglog/config.yaml" "webhook_tunnel_name" "")
+
 if pgrep -x cloudflared >/dev/null 2>&1; then
   ok "cloudflared tunnel running"
 else
-  fail "cloudflared tunnel not running — GitHub webhooks won't reach the app
-    $(echo -e "${DIM}cloudflared tunnel run cloglog-webhooks${NC}")"
+  if [[ -n "$TUNNEL_NAME" ]]; then
+    fail "cloudflared tunnel not running — GitHub webhooks won't reach the app
+    $(echo -e "${DIM}cloudflared tunnel run ${TUNNEL_NAME}${NC}")"
+  else
+    fail "cloudflared tunnel not running — GitHub webhooks won't reach the app
+    $(echo -e "${DIM}set webhook_tunnel_name in .cloglog/config.yaml, then: cloudflared tunnel run \$webhook_tunnel_name${NC}")"
+  fi
 fi
 
 # ── Frontend node_modules ────────────────────────────────────────────────────
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [ -d "$REPO_ROOT/frontend/node_modules" ]; then
   ok "frontend/node_modules present"
 else

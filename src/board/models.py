@@ -125,6 +125,7 @@ class Task(Base):
     status: Mapped[str] = mapped_column(String(20), default="backlog")
     priority: Mapped[str] = mapped_column(String(20), default="normal")
     task_type: Mapped[str] = mapped_column(String(20), default="task")
+    model: Mapped[str | None] = mapped_column(String(100), default=None)
     pr_url: Mapped[str | None] = mapped_column(String(500), default=None)
     pr_merged: Mapped[bool] = mapped_column(default=False)
     artifact_path: Mapped[str | None] = mapped_column(String(1000), default=None)

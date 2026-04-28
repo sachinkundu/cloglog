@@ -1003,6 +1003,8 @@ export interface components {
             task_id: string;
             /** Status */
             status: string;
+            /** Model */
+            model?: string | null;
         };
         /**
          * TaskCard
@@ -1103,6 +1105,8 @@ export interface components {
              * @default 0
              */
             position: number;
+            /** Model */
+            model?: string | null;
         };
         /** TaskInfo */
         TaskInfo: {
@@ -1125,6 +1129,8 @@ export interface components {
             pr_url?: string | null;
             /** Artifact Path */
             artifact_path?: string | null;
+            /** Model */
+            model?: string | null;
         };
         /** TaskResponse */
         TaskResponse: {
@@ -1164,6 +1170,8 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+            /** Model */
+            model?: string | null;
         };
         /** TaskUpdate */
         TaskUpdate: {
@@ -1181,6 +1189,8 @@ export interface components {
             position?: number | null;
             /** Archived */
             archived?: boolean | null;
+            /** Model */
+            model?: string | null;
         };
         /** UpdateTaskStatusRequest */
         UpdateTaskStatusRequest: {

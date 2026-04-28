@@ -44,6 +44,7 @@ class StartTaskRequest(BaseModel):
 class StartTaskResponse(BaseModel):
     task_id: UUID
     status: str
+    model: str | None = None
 
 
 class CompleteTaskRequest(BaseModel):
@@ -72,6 +73,7 @@ class TaskInfo(BaseModel):
     description: str
     status: str
     priority: str
+    model: str | None = None
     pr_url: str | None = None
     artifact_path: str | None = None
 

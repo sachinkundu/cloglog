@@ -1662,6 +1662,11 @@ components:
         status:
           type: string
           title: Status
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
       type: object
       required:
       - task_id
@@ -1788,6 +1793,11 @@ components:
           type: integer
           title: Position
           default: 0
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
       type: object
       required:
       - title
@@ -1823,6 +1833,11 @@ components:
             - type: string
             - type: 'null'
           title: Artifact Path
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
       type: object
       required:
       - id
@@ -1877,6 +1892,11 @@ components:
           type: string
           format: date-time
           title: Updated At
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
       type: object
       required:
       - id
@@ -1930,6 +1950,11 @@ components:
           - type: boolean
           - type: 'null'
           title: Archived
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
       type: object
       title: TaskUpdate
     UpdateTaskStatusRequest:

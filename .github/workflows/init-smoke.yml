@@ -19,6 +19,27 @@ concurrency:
 jobs:
   init-smoke:
     runs-on: ubuntu-latest
+
+    # tests/conftest.py has a session-autouse fixture that opens a Postgres
+    # connection before any test in the suite runs (T-324). The plugin pin
+    # tests below don't touch the DB, but pytest still triggers the fixture,
+    # so the smoke job needs a Postgres service even though the assertions
+    # themselves are static-file pins.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: cloglog
+          POSTGRES_PASSWORD: cloglog_dev
+          POSTGRES_DB: cloglog
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cloglog"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 

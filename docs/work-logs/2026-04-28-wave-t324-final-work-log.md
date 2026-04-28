@@ -15,7 +15,7 @@
 
 **T-324 — Phase 3.11: wire fresh-repo init smoke into CI** ([PR #265](https://github.com/sachinkundu/cloglog/pull/265))
 
-Plugin portability gate as a CI workflow. `.github/workflows/init-smoke.yml` runs the T-319/T-321/T-323 fresh-repo init pin tests on every PR (no `paths:` filter), so a portability regression in plugin SKILL.md, hooks, docs, or settings is merge-blocking on every downstream change.
+Plugin portability gate as a CI workflow. `.github/workflows/init-smoke.yml` runs `tests/plugins/test_init_on_fresh_repo.py` (T-319/T-321 placeholder + scope-template behaviour) and `tests/plugins/test_plugin_no_cloglog_citations.py` (T-323 host-literal sweep) on every PR (no `paths:` filter), so a portability regression in plugin SKILL.md, hooks, docs, or settings is merge-blocking on every downstream change. The T-324 self-pin file `tests/plugins/test_init_smoke_ci_workflow.py` is a separate five-assertion YAML pin executed by the main `ci.yml` suite; it inspects the workflow definitions but is not one of the smoke job's payload tests.
 
 ### Files
 - `.github/workflows/init-smoke.yml` *(new, 60 lines)* — smoke job with Postgres service.
@@ -64,5 +64,5 @@ The cloglog plugin is now portable: a downstream project running `/cloglog init`
 ## Test report
 
 - **Quality gate:** `make quality` PASSED on this branch.
-- **What was tested:** integration of T-324 against post-merge `main`; both new pin tests `test_init_smoke_ci_workflow.py` (5 tests) execute against the new workflow file. The `init-smoke.yml` job ran on PR #265 itself and on every PR after.
+- **What was tested:** integration of T-324 against post-merge `main`. `tests/plugins/test_init_smoke_ci_workflow.py` (5 tests) runs in `ci.yml` and asserts the YAML shape of `init-smoke.yml` plus the cross-coverage path in `ci.yml`. The `init-smoke.yml` job itself runs `tests/plugins/test_init_on_fresh_repo.py` and `tests/plugins/test_plugin_no_cloglog_citations.py` on PR #265 and every PR after.
 - **Strategy:** verified cooperative shutdown left no zombie state, MCP tool surface unchanged.

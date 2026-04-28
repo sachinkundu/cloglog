@@ -32,6 +32,14 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CHECK_DEMO_SH = REPO_ROOT / "scripts" / "check-demo.sh"
+# T-316: the allowlist regex now lives in .cloglog/config.yaml, not inline in
+# the script. Tests provision a copy of cloglog's default in the tmp repo so
+# check-demo.sh has a config to read.
+DEMO_ALLOWLIST_REGEX = (
+    r"^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|"
+    r"^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates)/|"
+    r"^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$"
+)
 
 
 def _run(
@@ -81,13 +89,29 @@ def _init_repo(tmp_path: Path) -> dict[str, str]:
         env,
     ).check_returncode()
     _run(["git", "checkout", "-b", "feature-branch"], tmp_path, env).check_returncode()
+    # T-316: provision .cloglog/config.yaml with the demo_allowlist_paths
+    # regex so check-demo.sh can read it. The script bails with a clear
+    # error if the config is missing — that's the correct behavior on a
+    # real repo too.
+    cloglog_dir = tmp_path / ".cloglog"
+    cloglog_dir.mkdir(exist_ok=True)
+    (cloglog_dir / "config.yaml").write_text(f"demo_allowlist_paths: '{DEMO_ALLOWLIST_REGEX}'\n")
     return env
 
 
 def _commit(repo: Path, env: dict[str, str], relpath: str, contents: str = "x\n") -> None:
     target = repo / relpath
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(contents)
+    # Special case: ``.cloglog/config.yaml`` is provisioned by ``_init_repo``
+    # with ``demo_allowlist_paths`` so check-demo.sh can read it. Overwriting
+    # it would strip the regex and trip the fail-closed branch we test
+    # separately (`test_missing_config_yaml_errors_loudly`). Append instead
+    # so the change still shows up as a diff but the regex stays intact.
+    if relpath == ".cloglog/config.yaml" and target.exists():
+        existing = target.read_text()
+        target.write_text(existing + "# touched by test\n")
+    else:
+        target.write_text(contents)
     _run(["git", "add", relpath], repo, env).check_returncode()
     _run(["git", "commit", "-m", f"touch {relpath}"], repo, env).check_returncode()
 
@@ -160,6 +184,53 @@ def test_src_change_is_not_allowlisted(tmp_path: Path) -> None:
     assert "No demo found" in combined, (
         "Expected the allowlist to reject src/ and the script to fall "
         "through to the 'no demo found' error.\n"
+        f"stdout: {result.stdout!r}\nstderr: {result.stderr!r}"
+    )
+
+
+def test_missing_config_yaml_errors_loudly(tmp_path: Path) -> None:
+    """T-316: ``check-demo.sh`` reads the allowlist regex from
+    ``.cloglog/config.yaml``. If the file is missing the script must bail
+    with a clear error rather than silently treating no allowlist as
+    "allow everything" or "allow nothing". This pins the fail-closed
+    behavior that downstream non-cloglog projects depend on when they
+    forget to provision the config key during plugin install."""
+    env = _init_repo(tmp_path)
+    (tmp_path / ".cloglog" / "config.yaml").unlink()
+    _commit(tmp_path, env, "src/gateway/routes.py", "def handler():\n    return 1\n")
+    (tmp_path / "docs" / "demos").mkdir(parents=True, exist_ok=True)
+    result = _run(["bash", str(CHECK_DEMO_SH)], tmp_path, env)
+    assert result.returncode != 0, (
+        "check-demo.sh should fail closed when .cloglog/config.yaml is missing.\n"
+        f"stdout: {result.stdout!r}\nstderr: {result.stderr!r}"
+    )
+    combined = result.stdout + result.stderr
+    assert "config.yaml" in combined, (
+        "Expected error to name the missing config file.\n"
+        f"stdout: {result.stdout!r}\nstderr: {result.stderr!r}"
+    )
+
+
+def test_config_driven_allowlist_picks_up_overrides(tmp_path: Path) -> None:
+    """T-316: the allowlist regex is config-driven — a downstream project that
+    drops paths from ``demo_allowlist_paths`` should see those paths force
+    the gate. Pin: the script reads from the config file, not a baked-in
+    constant."""
+    env = _init_repo(tmp_path)
+    # Override the config with a NARROW allowlist that does not match
+    # ``scripts/`` — under cloglog's default it would auto-exempt.
+    (tmp_path / ".cloglog" / "config.yaml").write_text("demo_allowlist_paths: '^docs/'\n")
+    _commit(tmp_path, env, "scripts/helper.sh", "#!/bin/bash\n")
+    (tmp_path / "docs" / "demos").mkdir(parents=True, exist_ok=True)
+    result = _run(["bash", str(CHECK_DEMO_SH)], tmp_path, env)
+    assert result.returncode != 0, (
+        "Narrow allowlist should NOT exempt scripts/ — config-driven path "
+        "is broken.\n"
+        f"stdout: {result.stdout!r}\nstderr: {result.stderr!r}"
+    )
+    combined = result.stdout + result.stderr
+    assert "No demo found" in combined, (
+        "Expected the narrow allowlist to force the gate.\n"
         f"stdout: {result.stdout!r}\nstderr: {result.stderr!r}"
     )
 

@@ -67,16 +67,28 @@ fi
 
 # ── cloudflared tunnel ───────────────────────────────────────────────────────
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Read tunnel name from .cloglog/config.yaml so non-cloglog projects can ship
+# their own value without forking this script (T-316). grep+sed only — no
+# Python YAML dependency (docs/invariants.md § hook YAML parsing).
+TUNNEL_NAME=$(grep '^webhook_tunnel_name:' "$REPO_ROOT/.cloglog/config.yaml" 2>/dev/null \
+              | head -n1 | sed 's/^webhook_tunnel_name:[[:space:]]*//' \
+              | sed 's/[[:space:]]*#.*$//' | tr -d '"'"'")
+
 if pgrep -x cloudflared >/dev/null 2>&1; then
   ok "cloudflared tunnel running"
 else
-  fail "cloudflared tunnel not running — GitHub webhooks won't reach the app
-    $(echo -e "${DIM}cloudflared tunnel run cloglog-webhooks${NC}")"
+  if [[ -n "$TUNNEL_NAME" ]]; then
+    fail "cloudflared tunnel not running — GitHub webhooks won't reach the app
+    $(echo -e "${DIM}cloudflared tunnel run ${TUNNEL_NAME}${NC}")"
+  else
+    fail "cloudflared tunnel not running — GitHub webhooks won't reach the app
+    $(echo -e "${DIM}set webhook_tunnel_name in .cloglog/config.yaml, then: cloudflared tunnel run \$webhook_tunnel_name${NC}")"
+  fi
 fi
 
 # ── Frontend node_modules ────────────────────────────────────────────────────
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [ -d "$REPO_ROOT/frontend/node_modules" ]; then
   ok "frontend/node_modules present"
 else

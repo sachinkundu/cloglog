@@ -31,6 +31,14 @@ def _load_module():
 
 gate = _load_module()
 
+# Hermetic reviewer-bot list — must NOT be the cloglog-specific literal so the
+# test stays portable when the plugin is consumed by a non-cloglog project
+# (T-316). The gate's ``reviewer_bot_logins`` field on ``GateInputs`` is the
+# injection seam that keeps the pure logic decoupled from
+# ``.cloglog/config.yaml`` lookup.
+_TEST_REVIEWER_BOTS = ("test-reviewer[bot]",)
+_TEST_REVIEWER = _TEST_REVIEWER_BOTS[0]
+
 
 def _green_checks() -> list[dict]:
     return [
@@ -41,11 +49,12 @@ def _green_checks() -> list[dict]:
 
 def _inputs(**overrides):
     base = dict(
-        reviewer=gate.CODEX_BOT_LOGIN,
+        reviewer=_TEST_REVIEWER,
         body=":pass: codex — session 2/5 — no further concerns",
         checks=_green_checks(),
         labels=["enhancement"],
         has_human_changes_requested=False,
+        reviewer_bot_logins=_TEST_REVIEWER_BOTS,
     )
     base.update(overrides)
     return gate.GateInputs(**base)
@@ -208,10 +217,11 @@ def test_pass_marker_substring_does_not_match() -> None:
 
 def test_cli_exits_zero_on_merge(monkeypatch, capsys) -> None:
     payload = {
-        "reviewer": gate.CODEX_BOT_LOGIN,
+        "reviewer": _TEST_REVIEWER,
         "body": ":pass: ok",
         "checks": _green_checks(),
         "labels": [],
+        "reviewer_bot_logins": list(_TEST_REVIEWER_BOTS),
     }
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
     rc = gate.main([])
@@ -221,10 +231,11 @@ def test_cli_exits_zero_on_merge(monkeypatch, capsys) -> None:
 
 def test_cli_exits_one_on_hold(monkeypatch, capsys) -> None:
     payload = {
-        "reviewer": gate.CODEX_BOT_LOGIN,
+        "reviewer": _TEST_REVIEWER,
         "body": ":pass: ok",
         "checks": _green_checks(),
         "labels": [gate.HOLD_LABEL],
+        "reviewer_bot_logins": list(_TEST_REVIEWER_BOTS),
     }
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
     rc = gate.main([])
@@ -240,7 +251,15 @@ def test_cli_handles_missing_optional_fields(monkeypatch, capsys) -> None:
     decision-table tests above pin the actual semantics."""
     monkeypatch.setattr(
         "sys.stdin",
-        io.StringIO(json.dumps({"reviewer": gate.CODEX_BOT_LOGIN, "body": ":pass:"})),
+        io.StringIO(
+            json.dumps(
+                {
+                    "reviewer": _TEST_REVIEWER,
+                    "body": ":pass:",
+                    "reviewer_bot_logins": list(_TEST_REVIEWER_BOTS),
+                }
+            )
+        ),
     )
     rc = gate.main([])
     assert rc == 0
@@ -249,13 +268,45 @@ def test_cli_handles_missing_optional_fields(monkeypatch, capsys) -> None:
 
 def test_cli_propagates_human_changes_requested(monkeypatch, capsys) -> None:
     payload = {
-        "reviewer": gate.CODEX_BOT_LOGIN,
+        "reviewer": _TEST_REVIEWER,
         "body": ":pass: ok",
         "checks": _green_checks(),
         "labels": [],
         "has_human_changes_requested": True,
+        "reviewer_bot_logins": list(_TEST_REVIEWER_BOTS),
     }
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
     rc = gate.main([])
     assert rc == 1
     assert capsys.readouterr().out.strip() == "human_changes_requested"
+
+
+def test_cli_loads_reviewer_bot_logins_from_config_when_payload_omits_it(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    """When the JSON payload does not carry ``reviewer_bot_logins``, the gate
+    walks up from CWD looking for ``.cloglog/config.yaml`` and reads the
+    list. This pins the production invocation shape from
+    ``plugins/cloglog/skills/github-bot/SKILL.md`` — the agent ships only
+    PR-shape fields in the payload and lets the helper consult the
+    project's config.
+    """
+    cfg_dir = tmp_path / ".cloglog"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text("reviewer_bot_logins:\n  - injected-via-config[bot]\n")
+    monkeypatch.setenv("CLOGLOG_CONFIG_YAML", str(cfg_dir / "config.yaml"))
+    payload = {
+        "reviewer": "injected-via-config[bot]",
+        "body": ":pass:",
+        "checks": _green_checks(),
+        "labels": [],
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    rc = gate.main([])
+    assert rc == 0
+    assert capsys.readouterr().out.strip() == "merge"
+
+
+def test_load_reviewer_bot_logins_returns_empty_when_no_config(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("CLOGLOG_CONFIG_YAML", str(tmp_path / "missing.yaml"))
+    assert gate._load_reviewer_bot_logins() == ()

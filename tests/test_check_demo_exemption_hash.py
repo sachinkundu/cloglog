@@ -77,6 +77,18 @@ def _init_repo(tmp_path: Path) -> dict[str, str]:
     head = _run(["git", "rev-parse", "HEAD"], tmp_path, env).stdout.strip()
     _run(["git", "update-ref", "refs/remotes/origin/main", head], tmp_path, env).check_returncode()
     _run(["git", "checkout", "-b", "feature-branch"], tmp_path, env).check_returncode()
+    # T-316: provision .cloglog/config.yaml with the demo_allowlist_paths
+    # regex so check-demo.sh can read it (the script no longer carries an
+    # inline regex constant).
+    cloglog_dir = tmp_path / ".cloglog"
+    cloglog_dir.mkdir(exist_ok=True)
+    (cloglog_dir / "config.yaml").write_text(
+        "demo_allowlist_paths: '"
+        r"^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|"
+        r"^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates)/|"
+        r"^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$"
+        "'\n"
+    )
     return env
 
 

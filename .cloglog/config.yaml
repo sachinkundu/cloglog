@@ -3,6 +3,18 @@ project_id: 4d9e825a-c911-4110-bcd5-9072d1887813
 backend_url: http://127.0.0.1:8001
 prod_worktree_path: ../cloglog-prod
 quality_command: make quality
+dashboard_key: cloglog-dashboard-dev
+webhook_tunnel_name: cloglog-webhooks
+
+reviewer_bot_logins:
+  - cloglog-codex-reviewer[bot]
+  - cloglog-opencode-reviewer[bot]
+
+# demo_allowlist_paths is a single regex (joined alternation) read by
+# scripts/check-demo.sh and the demo skill. Stored as a YAML scalar so the
+# scalar reader at plugins/cloglog/hooks/lib/parse-yaml-scalar.sh handles
+# it without a YAML list parser.
+demo_allowlist_paths: '^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates)/|^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$'
 
 worktree_scopes:
   board: [src/board/, tests/board/, src/alembic/]

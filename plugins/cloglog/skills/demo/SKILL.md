@@ -37,22 +37,26 @@ gate auto-exempts and you write nothing.
 ```bash
 BASE=$(git merge-base origin/main HEAD 2>/dev/null || git merge-base main HEAD)
 CHANGED=$(git diff --name-only "$BASE" HEAD)
-NONALLOWLIST=$(echo "$CHANGED" | grep -vE '^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates)/|^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$' || true)
+
+# Read demo_allowlist_paths regex from .cloglog/config.yaml. Same grep+sed
+# shape as scripts/check-demo.sh — there is no second source of truth.
+CONFIG_YAML="$(git rev-parse --show-toplevel)/.cloglog/config.yaml"
+ALLOWLIST_REGEX=$(grep '^demo_allowlist_paths:' "$CONFIG_YAML" | head -n1 \
+                  | sed 's/^demo_allowlist_paths:[[:space:]]*//' \
+                  | sed "s/^'//; s/'\$//; s/^\"//; s/\"\$//")
+
+NONALLOWLIST=$(echo "$CHANGED" | grep -vE "$ALLOWLIST_REGEX" || true)
 
 if [[ -z "$NONALLOWLIST" ]]; then
   echo "Auto-exempt: all changes are in the static allowlist."
-  # Skill exits here. No file written. scripts/check-demo.sh will reach
-  # the same conclusion with the same regex when `make quality` runs.
+  # Skill exits here. No file written. scripts/check-demo.sh reads the
+  # same `demo_allowlist_paths` value from the same config file when
+  # `make quality` runs.
   exit 0
 fi
 ```
 
-The regex **must** be kept bit-identical to the one in
-`scripts/check-demo.sh`. Drift between the two silently re-introduces
-the F-51 failure mode the skill was written to prevent — agents
-producing synthetic grep/awk demos to satisfy a gate that didn't need
-satisfying. If you edit one, edit both, and re-run
-`tests/test_check_demo_allowlist.py`.
+The allowlist regex lives only in `.cloglog/config.yaml: demo_allowlist_paths`. Both this skill and `scripts/check-demo.sh` parse it with the same grep+sed shape, so drift between the two becomes structurally impossible. If you adjust the allowlist, edit `.cloglog/config.yaml` only, then re-run `tests/test_check_demo_allowlist.py`.
 
 ---
 
@@ -227,6 +231,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../../../scripts/worktree-ports.sh"  # sets $BACKEND_PORT, $FRONTEND_PORT, $DATABASE_URL
 
+# Read dashboard_key from .cloglog/config.yaml so non-cloglog projects can
+# ship their own value without forking this skill (T-316). grep+sed only.
+DASHBOARD_KEY=$(grep '^dashboard_key:' "$(git rev-parse --show-toplevel)/.cloglog/config.yaml" \
+                | head -n1 | sed 's/^dashboard_key:[[:space:]]*//' \
+                | sed 's/[[:space:]]*#.*$//' | tr -d '"'"'")
+
 # Normalize slashes in branch names — scripts/check-demo.sh maps feat/foo → feat-foo.
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 DEMO_FILE="docs/demos/${BRANCH//\//-}/demo.md"
@@ -239,20 +249,20 @@ uvx showboat init "$DEMO_FILE" "<stakeholder sentence here>"
 # Show the before state
 uvx showboat note "$DEMO_FILE" "Before: no projects exist"
 uvx showboat exec "$DEMO_FILE" \
-  'curl -sf "$BASE/projects" -H "X-Dashboard-Key: cloglog-dashboard-dev"'
+  'curl -sf "$BASE/projects" -H "X-Dashboard-Key: $DASHBOARD_KEY"'
 
 # Perform the action
 uvx showboat note "$DEMO_FILE" "Action: create a project"
 uvx showboat exec "$DEMO_FILE" \
   'curl -sf -X POST "$BASE/projects" \
-    -H "X-Dashboard-Key: cloglog-dashboard-dev" \
+    -H "X-Dashboard-Key: $DASHBOARD_KEY" \
     -H "Content-Type: application/json" \
     -d "{\"name\": \"demo-project\"}"'
 
 # Show the after state
 uvx showboat note "$DEMO_FILE" "After: project appears in list"
 uvx showboat exec "$DEMO_FILE" \
-  'curl -sf "$BASE/projects" -H "X-Dashboard-Key: cloglog-dashboard-dev"'
+  'curl -sf "$BASE/projects" -H "X-Dashboard-Key: $DASHBOARD_KEY"'
 
 uvx showboat verify "$DEMO_FILE"
 ```
@@ -261,7 +271,7 @@ uvx showboat verify "$DEMO_FILE"
 
 ```bash
 uvx showboat exec "$DEMO_FILE" \
-  'curl -sf "$BASE/projects" -H "X-Dashboard-Key: cloglog-dashboard-dev"'
+  'curl -sf "$BASE/projects" -H "X-Dashboard-Key: $DASHBOARD_KEY"'
 ```
 
 When you need pipes, `$(...)` substitution, redirects, or `&&`, pass the interpreter explicitly as a SECOND positional and the code as the THIRD — do NOT use `bash -c`:

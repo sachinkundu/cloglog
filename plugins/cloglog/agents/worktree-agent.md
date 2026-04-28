@@ -62,7 +62,7 @@ Your work follows a strict pipeline. Call `mcp__cloglog__get_my_tasks` to get yo
 4. Call `mcp__cloglog__report_artifact(plan_task_id, worktree_id, plan_file_path)` with the repo-relative path to the plan file
 5. Call `mcp__cloglog__start_task` on the impl task
 
-**BACKEND GAP — T-NEW-b.** The pipeline guard at `src/agent/services.py:237` currently treats a `review`-status predecessor as resolved only when `pr_url` is non-empty. A plan task finished via `skip_pr=True` has no `pr_url`, so step 5 above will return 409 Conflict until T-NEW-b relaxes the guard to accept artifact-only resolution for spec/plan predecessors. Per `docs/design/agent-lifecycle.md` §4.1, a 409 from an MCP tool call is a runtime tool error — emit `mcp_tool_error` with `reason: "pipeline_guard_blocked"` so the supervisor can special-case the advance while still receiving the event on the unified `mcp_tool_error` channel. Append a line shaped like `{"type":"mcp_tool_error","worktree":"<wt-name>","worktree_id":"<uuid>","ts":"<utc-iso>","tool":"mcp__cloglog__start_task","error":"409 pipeline guard: predecessor not resolved","task_id":"<impl-task-uuid>","reason":"pipeline_guard_blocked","predecessor_task_id":"<plan-task-uuid>"}` to the main agent's inbox (`<project_root>/.cloglog/inbox`) and stop. The main agent will either force-advance the impl task or wait for T-NEW-b.
+**BACKEND GAP — T-NEW-b.** The pipeline guard at `src/agent/services.py:237` currently treats a `review`-status predecessor as resolved only when `pr_url` is non-empty. A plan task finished via `skip_pr=True` has no `pr_url`, so step 5 above will return 409 Conflict until T-NEW-b relaxes the guard to accept artifact-only resolution for spec/plan predecessors. Per `plugins/cloglog/docs/agent-lifecycle.md` §4.1, a 409 from an MCP tool call is a runtime tool error — emit `mcp_tool_error` with `reason: "pipeline_guard_blocked"` so the supervisor can special-case the advance while still receiving the event on the unified `mcp_tool_error` channel. Append a line shaped like `{"type":"mcp_tool_error","worktree":"<wt-name>","worktree_id":"<uuid>","ts":"<utc-iso>","tool":"mcp__cloglog__start_task","error":"409 pipeline guard: predecessor not resolved","task_id":"<impl-task-uuid>","reason":"pipeline_guard_blocked","predecessor_task_id":"<plan-task-uuid>"}` to the main agent's inbox (`<project_root>/.cloglog/inbox`) and stop. The main agent will either force-advance the impl task or wait for T-NEW-b.
 
 ### Impl Task (task_type: "impl")
 
@@ -141,7 +141,7 @@ This handles CLAUDE.md learnings, work log consolidation, and worktree cleanup.
 Agents communicate via inbox files, not the backend API. The canonical path is
 `<worktree_path>/.cloglog/inbox` — one file per worktree, in the worktree tree
 itself. The webhook consumer, `request_shutdown`, and every sending agent all
-write to this single path. See `docs/design/agent-lifecycle.md` Section 3 for
+write to this single path. See `plugins/cloglog/docs/agent-lifecycle.md` Section 3 for
 the full inbox contract and a note on the removed legacy path.
 
 - **Receiving:** On registration, start **exactly one** persistent Monitor on your inbox.

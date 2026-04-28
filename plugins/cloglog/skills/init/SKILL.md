@@ -276,7 +276,7 @@ Check if `.claude/settings.json` exists in the project. If the cloglog MCP serve
 
 > **T-214:** `CLOGLOG_API_KEY` MUST NOT be added to `.mcp.json` or any
 > per-project file. The MCP server reads it from the operator's environment
-> or from `~/.cloglog/credentials` only. See `docs/setup-credentials.md`.
+> or from `~/.cloglog/credentials` only. See `plugins/cloglog/docs/setup-credentials.md`.
 
 **Important:** The `SessionStart` hook must use an absolute path to the bootstrap script — `${CLAUDE_PLUGIN_ROOT}` does not resolve for `SessionStart` hooks in plugin settings.json (only project-level settings work). This is why init injects it into the project settings.
 
@@ -586,7 +586,7 @@ Present what was configured:
 | GitHub bot | configured/needs setup |
 
 Remind the user to:
-1. Set up `~/.cloglog/credentials` with `CLOGLOG_API_KEY=<key>` and `chmod 600` (or export `CLOGLOG_API_KEY` in their shell). See `docs/setup-credentials.md`. The key MUST NOT live in `.mcp.json` or `.claude/settings.json`.
+1. Set up `~/.cloglog/credentials` with `CLOGLOG_API_KEY=<key>` and `chmod 600` (or export `CLOGLOG_API_KEY` in their shell). See `plugins/cloglog/docs/setup-credentials.md`. The key MUST NOT live in `.mcp.json` or `.claude/settings.json`.
 2. **Set up the GitHub bot** if not yet configured (see Step 6 output)
 3. Run `git commit` to save the configuration
 4. Start the cloglog backend if not running

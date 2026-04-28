@@ -49,7 +49,8 @@ invariants: ## Run silent-failure pin tests (see docs/invariants.md)
 	  tests/agent/test_unit.py::TestAgentService::test_register_reconnect_preserves_branch_when_caller_sends_empty \
 	  tests/e2e/test_access_control.py::test_worktrees_with_invalid_mcp_bearer_is_rejected \
 	  tests/gateway/test_review_engine.py::TestResolvePrReviewRoot \
-	  tests/gateway/test_review_engine.py::TestLatestCodexReviewIsApproval
+	  tests/gateway/test_review_engine.py::TestLatestCodexReviewIsApproval \
+	  tests/test_makefile_gunicorn_invocation.py
 
 # ── Quality ───────────────────────────────────
 
@@ -153,6 +154,11 @@ run-backend: ## Start the FastAPI backend
 		--reload-exclude '__pycache__' \
 		--reload-exclude '*.pyc'
 
+# T-231: gunicorn invocations below pass --capture-output so worker stdout/stderr
+# (FastAPI tracebacks, codex CLI errors, review_engine exceptions) reach the
+# error-logfile. Without it, app stderr goes to the controlling terminal and is
+# lost in --daemon mode — we hit this on PR #260, where review_engine swallowed
+# an exception on a synchronize webhook and left no log to diagnose from.
 prod: ## Start prod server (gunicorn + vite preview, foreground — run in a zellij pane)
 	@if [ -f /tmp/cloglog-prod.pid ] && kill -0 "$$(cat /tmp/cloglog-prod.pid)" 2>/dev/null; then \
 		echo "ERROR: prod gunicorn is already running (pid $$(cat /tmp/cloglog-prod.pid)) on :8001."; \
@@ -189,6 +195,7 @@ prod: ## Start prod server (gunicorn + vite preview, foreground — run in a zel
 		    --pid /tmp/cloglog-prod.pid \
 		    --error-logfile /tmp/cloglog-prod.log \
 		    --access-logfile /tmp/cloglog-prod-access.log \
+		    --capture-output \
 		    --log-level info 2>&1 | sed -u 's/^/[backend] /') & \
 		(tail -F -n 0 /tmp/cloglog-prod.log 2>/dev/null | sed -u 's/^/[backend] /') & \
 		(cd ../cloglog-prod/frontend && npm run preview -- --port 4173 $$PREVIEW_HOST_FLAG 2>&1 | sed -u 's/^/[frontend] /' & echo $$! > /tmp/cloglog-prod-frontend.pid) & \
@@ -224,6 +231,7 @@ prod-bg: ## Start prod server in background
 		    --pid /tmp/cloglog-prod.pid \
 		    --error-logfile /tmp/cloglog-prod.log \
 		    --access-logfile /tmp/cloglog-prod-access.log \
+		    --capture-output \
 		    --log-level info \
 		    --daemon); \
 		fuser -k 4173/tcp 2>/dev/null || true; \

@@ -168,7 +168,7 @@ session. If it does not, agents launched on that host will fail to register.
 - `mcp-server/tests/credentials.test.ts` — coverage for the loader.
 - `tests/test_mcp_json_no_secret.py` — regression guard against the key
   ever returning to `.mcp.json`.
-- `plugins/cloglog/docs/agent-lifecycle.md` §4 (MCP discipline) — the broader rule
+- `${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md` §4 (MCP discipline) — the broader rule
   this credential location enforces.
 - `docs/postmortems/2026-04-10-mcp-registration-auth.md` — the original
   incident that introduced the key into `.mcp.json`; T-214 closes the

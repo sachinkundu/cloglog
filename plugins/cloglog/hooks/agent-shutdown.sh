@@ -119,7 +119,7 @@ fi
 
 # --- T-243: emit agent_unregistered event to the main agent inbox ---
 # Best-effort backstop. The agent SHOULD have written this event itself
-# before calling unregister_agent (see plugins/cloglog/docs/agent-lifecycle.md §2 step 5);
+# before calling unregister_agent (see ${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md §2 step 5);
 # we always write here too because `zellij action close-tab` under close-wave
 # has historically skipped this hook (T-217), so when the hook DOES fire we
 # want the close-wave consumer to see the event even if the agent never ran

@@ -100,7 +100,7 @@ When you receive a message, read it and act on the instruction. The main agent m
 1. Read the project CLAUDE.md for project-specific instructions
 2. Load MCP tools: call `ToolSearch(query: "select:mcp__cloglog__register_agent,mcp__cloglog__start_task,mcp__cloglog__update_task_status,mcp__cloglog__get_my_tasks,mcp__cloglog__unregister_agent,mcp__cloglog__add_task_note,mcp__cloglog__mark_pr_merged,mcp__cloglog__report_artifact,mcp__cloglog__search")` — MCP tools are deferred and MUST be loaded via ToolSearch before calling them. `mcp__cloglog__search` is in the preload so any later T-NNN/F-NN reference (and parent-epic context for tasks) can be resolved in one call instead of paging the board.
 
-   **Stop on MCP failure.** Halt on any MCP failure: startup unavailability emits `mcp_unavailable` and exits; runtime tool errors emit `mcp_tool_error` and wait for the main agent; transient network errors get one backoff retry before escalating. See `plugins/cloglog/docs/agent-lifecycle.md` §4.1 for both event shapes.
+   **Stop on MCP failure.** Halt on any MCP failure: startup unavailability emits `mcp_unavailable` and exits; runtime tool errors emit `mcp_tool_error` and wait for the main agent; transient network errors get one backoff retry before escalating. See `${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md` §4.1 for both event shapes.
      - **Startup** (ToolSearch returns no matches, or the first MCP call after register fails at the transport layer): write an `mcp_unavailable` event to `<project_root>/.cloglog/inbox` and exit.
      - **Runtime** (MCP tool call returns 5xx, backend exception, 409 state-machine guard, auth rejection, or schema error mid-task): write an `mcp_tool_error` event to `<project_root>/.cloglog/inbox` carrying the failing tool name + error, halt, and wait on your inbox Monitor for main-agent guidance. Never retry a 409 or a 5xx; never fall back to direct HTTP or `gh api`.
      - **Transient network** (`ECONNRESET`, `ETIMEDOUT`, fetch timeout): one retry after ≥ 2 s backoff, then escalate to `mcp_tool_error` on second failure.
@@ -193,7 +193,7 @@ When the supervisor inbox receives `agent_unregistered` from a worktree agent:
 ## Pipeline (Features Only)
 If this is a feature with spec/plan/impl tasks:
 - Spec task: write design spec, create PR, wait for merge. On merge: `mark_pr_merged` → `report_artifact` → write per-task work log → `agent_unregistered` → exit. Supervisor relaunches for plan task.
-- Plan task: write implementation plan (no PR needed), commit locally, then call `update_task_status(plan_task_id, "review", skip_pr=True)` and `report_artifact(plan_task_id, worktree_id, plan_path)`, then `start_task` on the impl task. **Known backend gap (T-NEW-b):** `start_task` on the impl returns 409 until the pipeline guard at `src/agent/services.py:237` accepts artifact-only predecessor resolution; a 409 is a runtime MCP tool error per §4.1, so when you hit it emit `mcp_tool_error` with `reason: "pipeline_guard_blocked"` to the main inbox and stop — main recognises that reason and handles the advance. See `plugins/cloglog/docs/agent-lifecycle.md` §1 for context and §4.1 for the event shape.
+- Plan task: write implementation plan (no PR needed), commit locally, then call `update_task_status(plan_task_id, "review", skip_pr=True)` and `report_artifact(plan_task_id, worktree_id, plan_path)`, then `start_task` on the impl task. **Known backend gap (T-NEW-b):** `start_task` on the impl returns 409 until the pipeline guard at `src/agent/services.py:237` accepts artifact-only predecessor resolution; a 409 is a runtime MCP tool error per §4.1, so when you hit it emit `mcp_tool_error` with `reason: "pipeline_guard_blocked"` to the main inbox and stop — main recognises that reason and handles the advance. See `${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md` §1 for context and §4.1 for the event shape.
 - Impl task: implement the feature, create PR, wait for merge. On merge: write per-task work log → `agent_unregistered` → exit.
 ```
 
@@ -255,7 +255,7 @@ printf '%s\n' "${TASK_MODEL:-}" > "${WORKTREE_PATH}/.cloglog/task-model"
 # reach only claude, whose SessionEnd hook is best-effort under signal. By
 # running claude as a subprocess and wait()ing for it, the TERM/HUP trap below
 # fires reliably and we hit /agents/unregister-by-path directly before claude
-# is killed. See plugins/cloglog/docs/agent-lifecycle.md §2 and the T-217 experiment
+# is killed. See ${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md §2 and the T-217 experiment
 # output (tab-close sends no signal at all; only the kill step does).
 cat > "${WORKTREE_PATH}/.cloglog/launch.sh" << EOF
 #!/bin/bash
@@ -285,7 +285,7 @@ _backend_url() {
 
 _api_key() {
   # Authoritative lookup order matches mcp-server/src/credentials.ts and the
-  # T-214 contract in plugins/cloglog/docs/setup-credentials.md: env first, then
+  # T-214 contract in ${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md: env first, then
   # ~/.cloglog/credentials (mode 0600). The worktree's .env and the repo's
   # .mcp.json MUST NOT carry the key — tests/test_mcp_json_no_secret.py
   # pins that invariant and .cloglog/on-worktree-create.sh never writes

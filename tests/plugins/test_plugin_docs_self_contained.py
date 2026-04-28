@@ -7,6 +7,7 @@ docs/ tree.
 Pins:
 - The three docs exist under plugins/cloglog/docs/.
 - No plugin skill/agent/template/hook still cites the bare docs/ paths (absence pin).
+- Plugin non-doc sources use ${CLAUDE_PLUGIN_ROOT}/docs/ not hardcoded plugins/cloglog/docs/.
 """
 
 from __future__ import annotations
@@ -72,26 +73,30 @@ def _violations(forbidden_pattern: str) -> list[str]:
 def test_no_bare_agent_lifecycle_path_in_plugin() -> None:
     """No plugin file should reference the bare docs/design/agent-lifecycle.md path.
 
-    The plugin must use plugins/cloglog/docs/agent-lifecycle.md instead so it
+    The plugin must use ${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md instead so it
     works when installed in any project.
     """
     violations = _violations("docs/design/agent-lifecycle.md")
     assert not violations, (
         "The following plugin files still reference docs/design/agent-lifecycle.md. "
-        "Update them to plugins/cloglog/docs/agent-lifecycle.md:\n" + "\n".join(violations)
+        "Update them to ${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md:\n" + "\n".join(violations)
     )
 
 
 def test_no_bare_setup_credentials_path_in_plugin() -> None:
-    """No plugin file should reference the bare docs/setup-credentials.md path."""
+    """No plugin file should reference the bare docs/setup-credentials.md path.
+
+    The plugin must use ${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md instead so it
+    works when installed in any project.
+    """
     violations = _violations("docs/setup-credentials.md")
-    # Allow occurrences that are already prefixed with plugins/cloglog/
-    real_violations = [
-        v for v in violations if "plugins/cloglog/docs/setup-credentials.md" not in v
-    ]
+    # Allow occurrences already prefixed with a path separator (e.g. ${CLAUDE_PLUGIN_ROOT}/docs/
+    # or plugins/cloglog/docs/ — both end in /docs/setup-credentials.md).
+    real_violations = [v for v in violations if "/docs/setup-credentials.md" not in v]
     assert not real_violations, (
         "The following plugin files still reference docs/setup-credentials.md. "
-        "Update them to plugins/cloglog/docs/setup-credentials.md:\n" + "\n".join(real_violations)
+        "Update them to ${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md:\n"
+        + "\n".join(real_violations)
     )
 
 
@@ -100,5 +105,35 @@ def test_no_bare_two_stage_pr_review_path_in_plugin() -> None:
     violations = _violations("docs/design/two-stage-pr-review.md")
     assert not violations, (
         "The following plugin files still reference docs/design/two-stage-pr-review.md. "
-        "Update them to plugins/cloglog/docs/two-stage-pr-review.md:\n" + "\n".join(violations)
+        "Update them to ${CLAUDE_PLUGIN_ROOT}/docs/two-stage-pr-review.md:\n"
+        + "\n".join(violations)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Portability pin — plugin non-doc sources must NOT use repo-relative paths
+# ---------------------------------------------------------------------------
+
+# Only non-doc plugin sources: skills, agents, hooks, templates, scripts.
+# The docs/ dir may contain internal cross-references between docs.
+_PLUGIN_NON_DOC_SOURCES = [p for p in _PLUGIN_SOURCES if PLUGIN_DOCS not in p.parents]
+
+
+def test_no_hardcoded_plugin_repo_path_in_plugin_sources() -> None:
+    """Plugin skills/agents/hooks/templates/scripts must not reference plugins/cloglog/docs/.
+
+    In any project that installs the plugin externally, the runtime path is
+    ${CLAUDE_PLUGIN_ROOT}/docs/... — the hardcoded repo-relative path only
+    exists in the cloglog dogfood checkout.
+    """
+    hits: list[str] = []
+    for path in _PLUGIN_NON_DOC_SOURCES:
+        rel = str(path.relative_to(REPO_ROOT))
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if "plugins/cloglog/docs/" in line:
+                hits.append(f"  {rel}:{lineno}: {line.strip()!r}")
+    assert not hits, (
+        "Plugin non-doc sources must use ${CLAUDE_PLUGIN_ROOT}/docs/ not "
+        "plugins/cloglog/docs/ (the latter only exists in the cloglog dogfood checkout):\n"
+        + "\n".join(hits)
     )

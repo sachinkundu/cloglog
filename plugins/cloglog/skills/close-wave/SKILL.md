@@ -8,7 +8,7 @@ user-invocable: true
 
 Close a wave of worktrees after all PRs are merged. Handles the full cleanup
 lifecycle using the **cooperative shutdown** protocol from
-`plugins/cloglog/docs/agent-lifecycle.md` §2 and §5.
+`${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md` §2 and §5.
 
 **Usage:**
 ```
@@ -32,14 +32,14 @@ This skill runs in one of two modes:
    every assigned task is resolved from the agent's side — i.e.
    `status == "done"`, OR `status == "review"` with `pr_merged == True`,
    OR `status == "review"` with `pr_url is None` (no-PR task via
-   `skip_pr=True` per `plugins/cloglog/docs/agent-lifecycle.md` §1 Trigger B).
+   `skip_pr=True` per `${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md` §1 Trigger B).
    See reconcile SKILL.md Step 5.0 for the full predicate specification;
    a stricter "`pr_merged=True` everywhere" reading would falsely reject
    cleanly-completed worktrees whose last task shipped no-PR. Reconcile
    is the system's arbiter: close-wave is the clean path,
    `force_unregister` is the dirty path, and delegation ensures the two
    stop fighting over teardown (T-270; see
-   `plugins/cloglog/docs/agent-lifecycle.md` §5 for the unified-flow spec).
+   `${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md` §5 for the unified-flow spec).
 
 ### When invoked from reconcile
 
@@ -112,7 +112,7 @@ Create a work log file (location configurable, default `docs/work-logs/<date>-<w
 ## Step 5: Cooperative Shutdown (replaces kill-by-PID + close-tab)
 
 For each worktree, run the **tier-1 → tier-2** sequence from
-`plugins/cloglog/docs/agent-lifecycle.md` §5. Cooperative shutdown lets the worktree
+`${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md` §5. Cooperative shutdown lets the worktree
 agent run its own Section 2 sequence — emit `agent_unregistered` with
 absolute path to `shutdown-artifacts/work-log.md` (`artifacts.learnings` is `null` for T-329 agents — learnings are embedded in per-task work logs), call
 `unregister_agent`, and stop — so the close-wave flow gets a usable work log
@@ -302,7 +302,7 @@ worktree's `.cloglog/inbox` plus the main agent inbox. It is a no-op when the
 tool surface did not change, so it is safe to run on every close-wave.
 
 A running worktree agent that receives the event follows the protocol in
-`plugins/cloglog/docs/agent-lifecycle.md` §6 — pause, write `need_session_restart` to
+`${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md` §6 — pause, write `need_session_restart` to
 the main inbox, wait for a tab relaunch (no MCP hot-reload exists; the tool
 list is cached at session start).
 

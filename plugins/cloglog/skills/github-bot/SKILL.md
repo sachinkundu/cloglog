@@ -168,7 +168,7 @@ How to respond to each event type:
     2. Call `mcp__cloglog__mark_pr_merged` with your active task_id. For spec tasks also call `mcp__cloglog__report_artifact`.
     3. Write `shutdown-artifacts/work-log-T-<NNN>.md` — the per-task work log (see the worktree-agent template's **Per-Task Work-Log Schema** for required frontmatter keys and sections). The **Residual TODOs / context the next task should know** section is load-bearing — write it carefully.
     4. Build the aggregate `shutdown-artifacts/work-log.md` by concatenating all per-task `work-log-T-*.md` files in task-number order plus a one-line envelope header (backward compat with close-wave Step 5d).
-    5. Emit `agent_unregistered` to `<project_root>/.cloglog/inbox` with absolute paths to `shutdown-artifacts/work-log.md`, the `prs` map (T-262 — build by calling `get_my_tasks()` and keying `T-{row.number}` for rows with non-null `pr_url`), and `"reason": "pr_merged"`. See §2 step 5 of `plugins/cloglog/docs/agent-lifecycle.md` for the full shape.
+    5. Emit `agent_unregistered` to `<project_root>/.cloglog/inbox` with absolute paths to `shutdown-artifacts/work-log.md`, the `prs` map (T-262 — build by calling `get_my_tasks()` and keying `T-{row.number}` for rows with non-null `pr_url`), and `"reason": "pr_merged"`. See §2 step 5 of `${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md` for the full shape.
     6. Call `mcp__cloglog__unregister_agent` and **exit**. Do NOT call `get_my_tasks` or start the next task — the supervisor handles that via the continuation prompt.
 - **`pr_closed`** — the PR was closed without merging. Move the task back to `in_progress` (or note the closure), ask the main agent for direction if unclear.
 

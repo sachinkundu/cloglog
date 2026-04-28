@@ -1,6 +1,6 @@
 #!/bin/bash
 # PreToolUse hook — block direct HTTP to the cloglog backend API.
-# Rule surface: plugins/cloglog/docs/agent-lifecycle.md §4 (MCP discipline).
+# Rule surface: ${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md §4 (MCP discipline).
 #
 # T-219: two bypass holes in the original hook are closed here.
 #   (1) Host-name bypass — the earlier hook only matched ${BACKEND_HOST}
@@ -142,7 +142,7 @@ TOOL_PAT+=')'
 # URL, and we still want those blocked.
 if echo "$COMMAND_FLAT" | grep -qE "${TOOL_PAT}[^;&|]*?(${HOST_ALT})(:[0-9]+)?/api"; then
   echo "Blocked: direct cloglog backend access prohibited." >&2
-  echo "  See plugins/cloglog/docs/agent-lifecycle.md §4 (MCP discipline)." >&2
+  echo "  See ${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md §4 (MCP discipline)." >&2
   echo "  Use MCP tools (mcp__cloglog__*) for all board/worktree operations." >&2
   echo "  Legitimate demo-only escape hatch: inline 'CLOGLOG_ALLOW_DIRECT_API=1 ...'" >&2
   exit 2

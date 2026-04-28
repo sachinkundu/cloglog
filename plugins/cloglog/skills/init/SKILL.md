@@ -403,13 +403,18 @@ bundle install
 
 **Mixed** (multiple detected): combine the relevant commands in a single script.
 
-**Unknown stack** (no recognised manifest): emit an empty stub with an
-explanatory comment so the operator knows where to add bootstrap steps:
+**Unknown stack** (no recognised manifest): emit a stub with the same
+`cd "${WORKTREE_PATH...}"` boilerplate as the other templates plus an
+explanatory comment, so any commands the operator adds run inside the new
+worktree (launch invokes `.cloglog/on-worktree-create.sh` by absolute path
+and does NOT change cwd first — see `plugins/cloglog/skills/launch/SKILL.md`):
 ```bash
 #!/usr/bin/env bash
+set -euo pipefail
+cd "${WORKTREE_PATH:?WORKTREE_PATH must be set}"
 # No tech stack auto-detected. Add project-specific worktree setup commands
-# here (e.g., dependency install, codegen, schema sync). The script runs once
-# per worktree create with WORKTREE_PATH exported.
+# here (e.g., dependency install, codegen, schema sync). They run inside
+# the new worktree (WORKTREE_PATH) because of the cd above.
 ```
 
 Make the script executable: `chmod +x .cloglog/on-worktree-create.sh`

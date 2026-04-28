@@ -1078,6 +1078,8 @@ export interface components {
              * @default false
              */
             codex_review_picked_up: boolean;
+            /** Model */
+            model?: string | null;
         };
         /** TaskCounts */
         TaskCounts: {

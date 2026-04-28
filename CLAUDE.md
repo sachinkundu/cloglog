@@ -197,6 +197,10 @@ Durable gotchas discovered during worktree tasks. Each bullet is non-obvious and
 
 - **When replacing a documented runtime contract, retire it end-to-end or chain a fallback.** Tests passing on the new path doesn't catch operators who set the old setting per the still-current `.env.example`. Either delete the setting + update docs in the same PR, or keep the old path as a fallback. Don't leave docs claiming behavior the code no longer provides.
 
+### Board / task repository
+
+- **`update_task` repository applies all fields unconditionally — `if value is not None` was wrong for fields declared on `TaskUpdate`.** The route layer uses `exclude_unset=True`, so only fields the caller explicitly included arrive at the repository; the old guard was double-filtering and prevented explicit `null` from clearing nullable columns. If you add a nullable field to `Task` and find it can't be cleared via PATCH: (1) ensure the field is declared on `TaskUpdate` (otherwise `model_dump(exclude_unset=True)` will never forward it regardless), then (2) check for a residual `if value is not None` guard in `repository.py`. Both changes are required — removing only the repository guard for a field not on `TaskUpdate` has no effect.
+
 ### Demo classifier / exemption gate (F-51)
 
 - **Allowlist regexes must be validated against the actual repo path tree.** Grep every path class before writing — a narrow-by-accident regex blocks the feature it enables (e.g., `plugins/*/hooks/` broke rollout PRs that touch `plugins/cloglog/skills/`; nested `package-lock.json` lives at `frontend/` and `mcp-server/`, not root).

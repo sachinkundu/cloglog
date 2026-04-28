@@ -329,7 +329,10 @@ If `.cloglog/config.yaml` already exists, update fields rather than overwriting.
 
 ### 4b. `on-worktree-create.sh`
 
-Detect the tech stack and generate the appropriate setup script:
+Detect the tech stack and generate the appropriate setup script. The generated
+script must contain **only generic dependency-fetch commands** for the
+detected stack — never cloglog-specific machinery (see "Cloglog-specific
+extensions" below).
 
 **Python with uv** (detected by `pyproject.toml` + `uv.lock` or `[tool.uv]`):
 ```bash
@@ -337,6 +340,17 @@ Detect the tech stack and generate the appropriate setup script:
 set -euo pipefail
 cd "${WORKTREE_PATH:?WORKTREE_PATH must be set}"
 uv sync
+```
+
+**Python without uv** (detected by `pyproject.toml` or `requirements.txt`, no `uv.lock`):
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "${WORKTREE_PATH:?WORKTREE_PATH must be set}"
+python3 -m venv .venv
+. .venv/bin/activate
+if [ -f pyproject.toml ]; then pip install -e .; fi
+if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 ```
 
 **Node.js** (detected by `package.json`):
@@ -355,15 +369,64 @@ cd "${WORKTREE_PATH:?WORKTREE_PATH must be set}"
 cargo build
 ```
 
-**Mixed** (multiple detected): combine the relevant commands.
-
-**None detected**: create an empty script with a comment:
+**Go** (detected by `go.mod`):
 ```bash
 #!/usr/bin/env bash
-# Add project-specific worktree setup commands here
+set -euo pipefail
+cd "${WORKTREE_PATH:?WORKTREE_PATH must be set}"
+go mod download
+```
+
+**Java / Maven** (detected by `pom.xml`):
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "${WORKTREE_PATH:?WORKTREE_PATH must be set}"
+mvn -B dependency:go-offline
+```
+
+**Java / Gradle** (detected by `build.gradle` or `build.gradle.kts`):
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "${WORKTREE_PATH:?WORKTREE_PATH must be set}"
+./gradlew --no-daemon dependencies
+```
+
+**Ruby / Bundler** (detected by `Gemfile`):
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "${WORKTREE_PATH:?WORKTREE_PATH must be set}"
+bundle install
+```
+
+**Mixed** (multiple detected): combine the relevant commands in a single script.
+
+**Unknown stack** (no recognised manifest): emit an empty stub with an
+explanatory comment so the operator knows where to add bootstrap steps:
+```bash
+#!/usr/bin/env bash
+# No tech stack auto-detected. Add project-specific worktree setup commands
+# here (e.g., dependency install, codegen, schema sync). The script runs once
+# per worktree create with WORKTREE_PATH exported.
 ```
 
 Make the script executable: `chmod +x .cloglog/on-worktree-create.sh`
+
+**Cloglog-specific extensions (do NOT emit from init).** The cloglog dogfood
+project's hand-written `.cloglog/on-worktree-create.sh` performs additional
+work that is **not** part of the generic init contract and must not be
+generated for downstream projects:
+
+- A `curl` POST to `/api/v1/agents/close-off-task` to seed a board task.
+- A call to `${REPO_ROOT}/scripts/worktree-infra.sh` for per-worktree Postgres
+  and port allocation.
+- `shutdown-artifacts/` reset and other dogfood-only plumbing.
+
+Downstream projects that need similar machinery opt in by editing their own
+`on-worktree-create.sh` after init runs. Init's job is only the generic
+dependency bootstrap above.
 
 ### 4c. `on-worktree-destroy.sh` (if needed)
 

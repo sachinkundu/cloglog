@@ -272,7 +272,62 @@ Proceed:
 
 ## Step 3: Configure MCP Server
 
-Check if `.claude/settings.json` exists in the project. If the cloglog MCP server is not configured, add it. Also inject the `SessionStart` hook for main agent bootstrapping (register + inbox monitor).
+Resolve concrete absolute paths for the bootstrap hook and MCP server entry, then merge them into `.claude/settings.json`. Do **not** emit literal `<absolute-path-to-project>`, `<path to plugins/cloglog>`, or `/path/to/mcp-server/dist/index.js` — every path written to settings.json must be the resolved absolute path on this host.
+
+```bash
+# Resolve the bootstrap hook absolute path. SessionStart hooks do NOT expand
+# ${CLAUDE_PLUGIN_ROOT}, so we resolve it to a literal absolute path now.
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT must be set — re-run from a Claude Code session with the cloglog plugin installed}"
+SESSION_BOOTSTRAP="${PLUGIN_ROOT}/hooks/session-bootstrap.sh"
+[ -f "$SESSION_BOOTSTRAP" ] || { echo "ERROR: session-bootstrap.sh not found at $SESSION_BOOTSTRAP"; exit 1; }
+
+# Resolve the MCP server entry. The marketplace bundles it alongside the
+# plugin at ${CLAUDE_PLUGIN_ROOT}/../mcp-server/dist/index.js; resolve to an
+# absolute path with realpath. If the build is missing, prompt rather than
+# writing a placeholder.
+MCP_INDEX_CANDIDATE="${PLUGIN_ROOT}/../mcp-server/dist/index.js"
+if [ -f "$MCP_INDEX_CANDIDATE" ]; then
+  MCP_INDEX="$(cd "$(dirname "$MCP_INDEX_CANDIDATE")" && pwd)/$(basename "$MCP_INDEX_CANDIDATE")"
+else
+  echo "WARN: mcp-server build not found at $MCP_INDEX_CANDIDATE"
+  echo "      Build it: (cd \"${PLUGIN_ROOT}/../mcp-server\" && npm install && npm run build)"
+  echo "      Or supply the absolute path to dist/index.js manually."
+  read -r -p "Absolute path to mcp-server/dist/index.js: " MCP_INDEX
+  [ -f "$MCP_INDEX" ] || { echo "ERROR: $MCP_INDEX does not exist"; exit 1; }
+fi
+
+mkdir -p .claude
+SESSION_BOOTSTRAP="$SESSION_BOOTSTRAP" \
+MCP_INDEX="$MCP_INDEX" \
+BACKEND_URL="$BACKEND_URL" \
+python3 - <<'PY'
+import json, os, pathlib
+path = pathlib.Path(".claude/settings.json")
+data = json.loads(path.read_text()) if path.exists() else {}
+hooks = data.setdefault("hooks", {})
+hooks["SessionStart"] = [
+    {
+        "matcher": "",
+        "hooks": [
+            {
+                "type": "command",
+                "command": os.environ["SESSION_BOOTSTRAP"],
+                "timeout": 5,
+            }
+        ],
+    }
+]
+servers = data.setdefault("mcpServers", {})
+servers["cloglog"] = {
+    "command": "node",
+    "args": [os.environ["MCP_INDEX"]],
+    "env": {"CLOGLOG_URL": os.environ["BACKEND_URL"]},
+}
+path.write_text(json.dumps(data, indent=2) + "\n")
+PY
+```
+
+For reference, the resulting `.claude/settings.json` shape is:
 
 ```json
 {
@@ -283,7 +338,7 @@ Check if `.claude/settings.json` exists in the project. If the cloglog MCP serve
         "hooks": [
           {
             "type": "command",
-            "command": "<absolute-path-to-project>/plugins/cloglog/hooks/session-bootstrap.sh",
+            "command": "/abs/path/to/plugin/hooks/session-bootstrap.sh",
             "timeout": 5
           }
         ]
@@ -293,9 +348,9 @@ Check if `.claude/settings.json` exists in the project. If the cloglog MCP serve
   "mcpServers": {
     "cloglog": {
       "command": "node",
-      "args": ["/path/to/mcp-server/dist/index.js"],
+      "args": ["/abs/path/to/mcp-server/dist/index.js"],
       "env": {
-        "CLOGLOG_URL": "<BACKEND_URL detected in Step 1c — e.g. http://127.0.0.1:8001>"
+        "CLOGLOG_URL": "http://127.0.0.1:8001"
       }
     }
   }
@@ -306,9 +361,7 @@ Check if `.claude/settings.json` exists in the project. If the cloglog MCP serve
 > per-project file. The MCP server reads it from the operator's environment
 > or from `~/.cloglog/credentials` only. See `${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md`.
 
-**Important:** The `SessionStart` hook must use an absolute path to the bootstrap script — `${CLAUDE_PLUGIN_ROOT}` does not resolve for `SessionStart` hooks in plugin settings.json (only project-level settings work). This is why init injects it into the project settings.
-
-If the file already has a cloglog MCP entry or SessionStart hook, update rather than duplicating.
+**Important:** The `SessionStart` hook must use an absolute path to the bootstrap script — `${CLAUDE_PLUGIN_ROOT}` does not resolve for `SessionStart` hooks in plugin settings.json (only project-level settings work). The Python merge above resolves it from the live `${CLAUDE_PLUGIN_ROOT}` and writes the absolute path verbatim. The merge is idempotent — re-running init updates the cloglog entry rather than duplicating it.
 
 ## Step 4: Create `.cloglog/` Configuration Directory
 
@@ -597,7 +650,7 @@ The cloglog plugin includes templates for automated PR review using OpenAI Codex
 ### 7a. Copy review schema and generate project-specific review prompt
 
 ```bash
-PLUGIN_ROOT="<path to plugins/cloglog>"
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:?CLAUDE_PLUGIN_ROOT must be set — re-run from a Claude Code session with the cloglog plugin installed}"
 mkdir -p .github/codex/prompts
 
 cp "${PLUGIN_ROOT}/templates/codex-review-schema.json" .github/codex/review-schema.json

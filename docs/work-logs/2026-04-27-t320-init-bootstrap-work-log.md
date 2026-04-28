@@ -30,7 +30,7 @@ Replaced `mcp__cloglog__get_board` in the `init` skill's Step 2 with a direct HT
 - **Phase 1 (pre-MCP):** calls `POST /api/v1/projects` with `X-Dashboard-Key: $DASHBOARD_SECRET`, writes `CLOGLOG_API_KEY` to `~/.cloglog/credentials` (or prints it for export on multi-project machines), writes `project_id` + `backend_url` to `.cloglog/config.yaml`, requests restart.
 - **Phase 2 (post-restart):** MCP server finds credentials and existing `project_id`; bootstrap is skipped; remaining setup steps proceed via MCP tools.
 
-Also fixed the default backend URL from `:8000` to `127.0.0.1:8001` throughout.
+Init/bootstrap now seeds `backend_url: http://127.0.0.1:8001` in `.cloglog/config.yaml`; other hooks (`worktree-create.sh`, `agent-shutdown.sh`, `enforce-task-transitions.sh`) and the launch.sh template still retain `localhost:8000` as their fallback when config is missing.
 
 ## Files Changed
 

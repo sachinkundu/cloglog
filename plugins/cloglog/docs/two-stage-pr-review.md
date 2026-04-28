@@ -1,5 +1,7 @@
 # Two-stage iterative PR review pipeline — design spec
 
+> **Portability note:** This doc is shipped with the cloglog plugin as a reference for the review pipeline design. It contains cloglog-repo-specific cross-references (`docs/ddd-context-map.md`, `docs/contracts/webhook-pipeline-spec.md`, `src/review/`, `src/gateway/`) that are not portable to other projects. Those references document the cloglog implementation and can be ignored when reading this doc as a design pattern for other projects.
+
 **Status:** Accepted (pending merge)
 **Scope:** Pins the exact semantics of the PR review pipeline that T-248 will implement.
 **Blocks:** T-248 (impl).

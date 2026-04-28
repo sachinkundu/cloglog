@@ -1,6 +1,6 @@
 # Two-stage iterative PR review pipeline — design spec
 
-> **Canonical location:** `plugins/cloglog/docs/two-stage-pr-review.md` — this copy is kept for cloglog-internal source cross-references. When editing, update both.
+> **Plugin mirror:** `plugins/cloglog/docs/two-stage-pr-review.md` ships a copy of this doc for plugin portability. This root copy is authoritative for cloglog-internal use (`src/`, tests). When editing, update both.
 
 **Status:** Accepted (pending merge)
 **Scope:** Pins the exact semantics of the PR review pipeline that T-248 will implement.

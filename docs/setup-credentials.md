@@ -1,6 +1,6 @@
 # cloglog credentials
 
-> **Canonical location:** `plugins/cloglog/docs/setup-credentials.md` — this copy is kept for cloglog-internal source cross-references. When editing, update both.
+> **Plugin mirror:** `plugins/cloglog/docs/setup-credentials.md` ships a copy of this doc for plugin portability. This root copy is authoritative for cloglog-internal use (`src/`, tests). When editing, update both.
 
 The cloglog MCP server authenticates to the backend with a single
 **project API key** (`CLOGLOG_API_KEY`). The key is project-level — every

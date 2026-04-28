@@ -1,6 +1,6 @@
 # Agent Lifecycle Protocol
 
-> **Canonical location:** `plugins/cloglog/docs/agent-lifecycle.md` — this copy is kept for cloglog-internal source cross-references (`src/`, `CLAUDE.md`). When editing, update both.
+> **Plugin mirror:** `plugins/cloglog/docs/agent-lifecycle.md` ships a copy of this doc for plugin portability. This root copy is authoritative for cloglog-internal use (`src/`, tests). When editing, update both.
 
 This document is the canonical specification for how a cloglog worktree agent
 lives and dies. Every plugin skill, agent template, and `AGENT_PROMPT.md` that

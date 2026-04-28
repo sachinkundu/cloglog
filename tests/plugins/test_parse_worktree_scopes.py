@@ -322,6 +322,48 @@ def test_hook_works_when_global_pyyaml_is_unavailable(tmp_path: Path) -> None:
     assert "Blocked" in out.stderr
 
 
+def test_hook_fails_closed_when_config_missing(tmp_path: Path) -> None:
+    """T-328: missing .cloglog/config.yaml must BLOCK writes, not allow them.
+
+    The hook previously exited 0 (allow all) when find_config returned nothing.
+    That is fail-open — a worktree with no config silently loses its write guard.
+    The correct behaviour is fail-closed: emit a clear message and exit 2 so
+    the operator knows to create the config, not silently proceed.
+
+    Note: a config that *exists* but lacks a ``worktree_scopes`` key is
+    intentionally a no-op (allow all) — see test_hook_allows_when_no_scopes_key.
+    The fail-closed rule applies only to the *absent config file* case.
+    """
+    main, wt = _make_worktree(tmp_path, "board")
+    # Deliberately do NOT create .cloglog/config.yaml.
+    out = _run_hook(wt, wt / "src/board/models.py")
+    assert out.returncode == 2, (
+        f"hook must fail closed when config is absent, got rc={out.returncode} "
+        f"stdout={out.stdout!r} stderr={out.stderr!r}"
+    )
+    assert "Blocked" in out.stderr
+    assert "config" in out.stderr.lower()
+
+
+def test_hook_allows_when_no_scopes_key(tmp_path: Path) -> None:
+    """T-328: a config that exists but has no worktree_scopes key is a no-op.
+
+    Projects that don't use scope enforcement write a config without
+    ``worktree_scopes``.  The hook must allow all writes in that case —
+    fail-closed applies only to the missing-file case, not missing-key.
+    """
+    main, wt = _make_worktree(tmp_path, "board")
+    (main / ".cloglog").mkdir()
+    (main / ".cloglog/config.yaml").write_text(
+        "project: myproject\nbackend_url: http://localhost:8001\n"
+    )
+    out = _run_hook(wt, wt / "src/anything/file.py")
+    assert out.returncode == 0, (
+        f"hook must allow writes when worktree_scopes key is absent, "
+        f"got rc={out.returncode} stderr={out.stderr!r}"
+    )
+
+
 def test_hook_fails_closed_on_malformed_config(tmp_path: Path) -> None:
     """Codex-flagged regression pin (PR #239 review): a malformed
     ``worktree_scopes`` block must BLOCK writes, not silently allow them.

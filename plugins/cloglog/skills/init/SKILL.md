@@ -40,7 +40,7 @@ export DASHBOARD_SECRET=<value from your backend's .env>
 
 Add to `~/.bashrc` or `~/.zshenv` so every Claude Code session inherits it.
 
-**4. GitHub App credentials (optional).** Steps 6–7 configure bot identity for agent PRs. You can run init without them and complete the bot setup later — agents just won't be able to push or create PRs until configured. See `docs/setup-credentials.md`.
+**4. GitHub App credentials (optional).** Steps 6–7 configure bot identity for agent PRs. You can run init without them and complete the bot setup later — agents just won't be able to push or create PRs until configured. See `${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md`.
 
 **Re-running init** is safe. If this project is already bootstrapped (`.cloglog/config.yaml` has a `project_id` and `~/.cloglog/credentials` has a key), prerequisite 3 (`DASHBOARD_SECRET`) is no longer needed — the project already exists on the backend. Prerequisite 4 (GitHub App) is **host-local** and must be satisfied independently on every machine: `~/.agent-vm/credentials/github-app.pem`, `GH_APP_ID`, and `GH_APP_INSTALLATION_ID` are not written by the bootstrap and must be present in the shell before agent PR steps will work.
 

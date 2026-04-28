@@ -1,22 +1,15 @@
-"""Pin tests: T-319.
+"""Pin tests: T-319 + T-321.
 
-init Steps 3 and 7a must resolve every `<...>` / `/path/to/...` placeholder
-to a concrete absolute path before writing files. A fresh repo running the
-Step 3 bash block must produce a `.claude/settings.json` with no literal
-placeholder substrings.
+T-319: init Steps 3 and 7a must resolve every `<...>` / `/path/to/...`
+placeholder to a concrete absolute path before writing files.
 
-Asserts:
-
-1. Step 3 bash block is self-contained — uses `${CLAUDE_PLUGIN_ROOT}` and
-   `git rev-parse --show-toplevel`, never the literal placeholders that the
-   pre-T-319 prose embedded.
-2. Step 7a uses `${CLAUDE_PLUGIN_ROOT}` for `PLUGIN_ROOT`, not the literal
-   `<path to plugins/cloglog>`.
-3. Executing the Step 3 block in a tmp_path repo (with a fake plugin tree
-   and bundled mcp-server build) writes a settings.json that contains
-   neither `<absolute-path-to-project>` nor `<path to plugins/cloglog>`
-   nor `/path/to/mcp-server/dist/index.js`, and DOES contain the resolved
-   absolute paths.
+T-321: init Step 4a must populate `.cloglog/config.yaml` with `project_id`
+(seeded from the `mcp__cloglog__create_project` response in Step 2) and a
+*commented-out* `worktree_scopes` template. A live mapping cannot be
+auto-generated because protect-worktree-writes derives the scope key from
+`basename(worktree) - "wt-"` and init has no way to predict the launcher's
+naming convention; live keys would silently leave the guard in allow-all
+mode (codex review on PR #260).
 """
 
 from __future__ import annotations
@@ -202,3 +195,143 @@ def test_step3_block_writes_settings_with_no_placeholders(
         f"mcp-server args[0] should resolve to dist/index.js, got {args[0]!r}"
     )
     assert backend == "http://127.0.0.1:8001"
+
+
+# ---------------------------------------------------------------------------
+# T-321 — Step 4a writes project_id and worktree_scopes
+# ---------------------------------------------------------------------------
+
+
+def _step4a_bash_block(skill_body: str) -> str:
+    """Return the bash block under '#### 4a.1'."""
+    section = _section(skill_body, "#### 4a.1", "## ")
+    return _first_bash_block(section)
+
+
+def _yaml_template(skill_body: str) -> str:
+    """Return the first ```yaml block in Step 4a (the config.yaml template)."""
+    section = _section(skill_body, "### 4a.", "### ")
+    m = re.search(r"```yaml\n(.*?)```", section, re.DOTALL)
+    assert m, "No ```yaml block found in Step 4a"
+    return m.group(1)
+
+
+def test_step4a_yaml_template_documents_project_id_and_worktree_scopes() -> None:
+    body = _read_skill()
+    step4a = _section(body, "### 4a.", "### ")
+    assert "project_id:" in step4a, (
+        "Step 4a must document `project_id` in the config.yaml template — "
+        "consumers that read project_id from config break without it."
+    )
+    assert "worktree_scopes:" in step4a, (
+        "Step 4a must document `worktree_scopes` so the protect-worktree-writes "
+        "hook has a scope map on a fresh project."
+    )
+
+
+def test_step4a1_bash_block_skips_when_worktree_scopes_already_present(
+    tmp_path: Path,
+) -> None:
+    """Idempotency: re-running Step 4a.1 on a config that already has scopes is a no-op."""
+    cfg = tmp_path / ".cloglog" / "config.yaml"
+    cfg.parent.mkdir()
+    cfg.write_text(
+        "project_id: deadbeef-aaaa-bbbb-cccc-000000000001\n"
+        "worktree_scopes:\n"
+        "  custom: [packages/]\n"
+    )
+    block = _step4a_bash_block(_read_skill())
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", block],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    # File is unchanged — no duplicate worktree_scopes key, no auto-detect overwrite.
+    body = cfg.read_text()
+    assert body.count("worktree_scopes:") == 1
+    assert "custom: [packages/]" in body
+
+
+def test_step4a1_always_emits_commented_template(tmp_path: Path) -> None:
+    """Step 4a.1 always appends a commented-out template, never a live mapping.
+
+    The protect-worktree-writes hook strips `wt-` from a worktree's basename
+    and looks the remainder up in `worktree_scopes` (with prefix matching).
+    Since init can't predict the launcher's worktree-naming convention,
+    auto-detected keys like `backend`/`frontend`/`mcp` would never match
+    real worktree names like `wt-t321-init-config-gen`, leaving the hook
+    in allow-all mode while pretending to enforce. Always-commented is the
+    only honest default.
+    """
+    project_id = "11111111-2222-3333-4444-555555555555"
+    cfg = tmp_path / ".cloglog" / "config.yaml"
+    cfg.parent.mkdir()
+    cfg.write_text(
+        f"project_name: demo\nproject_id: {project_id}\nbackend_url: http://127.0.0.1:8001\n"
+    )
+    # Layout that previously triggered auto-detection. Must NOT change behaviour.
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "frontend").mkdir()
+    (tmp_path / "mcp-server").mkdir()
+
+    block = _step4a_bash_block(_read_skill())
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", block],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    body = cfg.read_text()
+    assert f"project_id: {project_id}" in body, (
+        "Step 4a.1 must NOT touch project_id — only append the worktree_scopes template."
+    )
+    assert re.search(r"^worktree_scopes:", body, re.MULTILINE) is None, (
+        "Step 4a.1 must NEVER emit a live worktree_scopes mapping — scope keys "
+        "depend on the launcher's wt-<scope> convention, which init can't "
+        "predict. A live mapping with non-matching keys silently disables the "
+        "protect-worktree-writes guard."
+    )
+    assert "# worktree_scopes:" in body, (
+        "Step 4a.1 must emit a commented-out worktree_scopes template so "
+        "operators can uncomment and adapt to their launcher convention."
+    )
+
+
+def test_step4a_yaml_template_keeps_worktree_scopes_commented() -> None:
+    """YAML template shown to operators must keep worktree_scopes commented, not live."""
+    yaml = _yaml_template(_read_skill())
+    # `worktree_scopes:` (uncommented) must not appear as a live key in the
+    # template — only `# worktree_scopes:` is acceptable. Match line starts.
+    live_lines = [line for line in yaml.splitlines() if re.match(r"^worktree_scopes:", line)]
+    assert not live_lines, (
+        "YAML template must show worktree_scopes commented out — operators "
+        f"copy the template verbatim. Offending lines: {live_lines}"
+    )
+    assert any(line.startswith("# worktree_scopes:") for line in yaml.splitlines()), (
+        "YAML template must include a commented `# worktree_scopes:` placeholder."
+    )
+
+
+def test_step4a1_fails_loudly_when_project_id_missing(tmp_path: Path) -> None:
+    """Step 4a.1 must refuse to run when project_id is absent — Step 2 should have seeded it."""
+    cfg = tmp_path / ".cloglog" / "config.yaml"
+    cfg.parent.mkdir()
+    cfg.write_text("project_name: missing-id\n")  # no project_id
+
+    block = _step4a_bash_block(_read_skill())
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", block],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0, (
+        "Step 4a.1 must fail when project_id is missing — silently appending "
+        "worktree_scopes onto a half-bootstrapped config hides the Step 2 bug."
+    )
+    assert "project_id" in result.stderr or "project_id" in result.stdout

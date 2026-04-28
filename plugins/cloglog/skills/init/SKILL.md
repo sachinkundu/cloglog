@@ -369,6 +369,7 @@ For reference, the resulting `.claude/settings.json` shape is:
 
 ```yaml
 project_name: <name>
+project_id: <UUID returned by Step 2 — already seeded into config.yaml>
 backend_url: <BACKEND_URL detected in Step 1c — e.g. http://127.0.0.1:8001>
 quality_command: <detected or user-provided command>
 
@@ -390,6 +391,16 @@ reviewer_bot_logins:
 # stakeholder demo). Same shape `scripts/check-demo.sh` parses with
 # grep+sed. Cloglog's default below is sensible for most projects:
 demo_allowlist_paths: '^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates)/|^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$'
+
+# T-321 — worktree_scopes: scope-name → list of repo-relative path prefixes
+# the protect-worktree-writes hook treats as in-scope for that worktree.
+# Init emits this as a *commented-out template* — the scope keys MUST match
+# the launcher's worktree-naming convention (the hook strips `wt-` from the
+# basename and looks up the remainder in this map, with prefix matching), and
+# init has no way to predict that convention. Operators uncomment and adapt
+# after wiring up their launch flow.
+# worktree_scopes:
+#   <scope>: [<path-prefix>/, ...]   # e.g. backend: [src/, tests/]
 ```
 
 **Important:** Use the `BACKEND_URL` detected in Step 1c (or read from `.cloglog/config.yaml`
@@ -397,7 +408,59 @@ which was seeded in Step 2). Do not hard-code `127.0.0.1:8001` — non-default b
 survive the restart. If Step 2 already wrote `backend_url`, preserve it rather than overwriting
 with the default.
 
+`project_id` is already written to `.cloglog/config.yaml` in Step 2 (Phase 2 step 4) from the
+`POST /api/v1/projects` response. Step 4a MUST preserve it — never overwrite the file from
+scratch. The bash block below appends only the keys that are missing.
+
 If `.cloglog/config.yaml` already exists, update fields rather than overwriting. When upgrading a project that predates T-316, append the four new keys (`dashboard_key`, `webhook_tunnel_name`, `reviewer_bot_logins`, `demo_allowlist_paths`) instead of regenerating the file from scratch.
+
+#### 4a.1 — Append commented-out `worktree_scopes` template
+
+After the scalar keys above are written, run this bash block to append a
+*commented-out* `worktree_scopes` template if one isn't present. The block
+is idempotent — if `worktree_scopes:` is already present (e.g. cloglog's
+hand-written config), it's a no-op. `project_id` was seeded by Step 2 and
+is left untouched.
+
+**Why init emits a commented template, not an auto-detected mapping.** The
+`protect-worktree-writes.sh` hook resolves a worktree's scope by stripping
+`wt-` from the directory basename and looking up the remainder in this
+map, with prefix matching (`wt-frontend-auth` matches scope `frontend`).
+Live keys like `backend`/`frontend`/`mcp` would never match a normal
+launched worktree such as `wt-t321-init-config-gen` — the lookup falls
+through to the hook's allow-all branch and the guard becomes a silent
+no-op. Until launch-time scope is wired through (a separate task), init's
+job is to leave the operator a clear template to fill in once they've
+chosen a naming convention for their launcher.
+
+```bash
+mkdir -p .cloglog
+[ -f .cloglog/config.yaml ] || { echo "ERROR: .cloglog/config.yaml missing — Step 2 must run first"; exit 1; }
+
+# Verify Step 2 seeded project_id. Without it, the MCP server has no
+# canonical project identity and any consumer that reads project_id from
+# config (e.g. scripts/sync_mcp_dist.py) silently breaks.
+grep -q '^project_id:' .cloglog/config.yaml || {
+  echo "ERROR: project_id missing from .cloglog/config.yaml — re-run Step 2 (Phase 2)"
+  exit 1
+}
+
+if ! grep -q '^worktree_scopes:' .cloglog/config.yaml \
+   && ! grep -q '^# worktree_scopes:' .cloglog/config.yaml; then
+  cat >> .cloglog/config.yaml <<'YAML'
+
+# worktree_scopes: <scope>: [<path-prefix>, ...] mapping consumed by the
+# protect-worktree-writes hook. The hook strips `wt-` from the worktree
+# basename and looks up the remainder here (with prefix matching:
+# `wt-frontend-auth` -> `frontend`). Scope keys MUST match the
+# worktree-naming convention used by your /cloglog launch flow — keys
+# that don't match any worktree name leave the hook in allow-all mode.
+# Uncomment and adapt after you've settled on a convention.
+# worktree_scopes:
+#   <scope>: [<path-prefix>/, ...]   # e.g. backend: [src/, tests/]
+YAML
+fi
+```
 
 ### 4b. `on-worktree-create.sh`
 

@@ -97,3 +97,49 @@ def test_close_wave_skill_documents_branch_pr_flow() -> None:
         "`gh auth` session and break the bot-identity invariant the "
         "github-bot skill exists to enforce."
     )
+
+
+def test_close_wave_skill_step10_refetches_before_branching() -> None:
+    """T-331: Step 10 must re-fetch and ff-only immediately before branching.
+
+    Step 9 fast-forwards main, but Step 9.5 (make sync-mcp-dist) runs
+    between Step 9 and Step 10. Any PR merged in that window silently
+    invalidates Step 9's fast-forward, causing the close-wave branch to
+    be created from a stale base. Codex then sees a branch whose base
+    pre-dates the implementation merge and flags the work-log claims as
+    false (observed on PR #242, T-327 close-wave for T-314).
+
+    The fix is a mandatory re-fetch in Step 10's bash block, making the
+    sequence fetch → ff-only → checkout -b appear *together* so the base
+    is guaranteed fresh regardless of what merged during Steps 9.5+.
+    """
+    body = _read()
+    step10_marker = "## Step 10: Open a close-wave branch"
+    step11_marker = "## Step 10.5:"
+    assert step10_marker in body, "Step 10 header missing from close-wave SKILL.md"
+    step10_body = body[body.index(step10_marker) : body.index(step11_marker)]
+    assert "git fetch origin" in step10_body, (
+        "close-wave SKILL.md Step 10 must call `git fetch origin` "
+        "immediately before creating the close-wave branch. Step 9 "
+        "fetched main, but Step 9.5 runs between Step 9 and Step 10 "
+        "and any PR merged in that window silently invalidates the "
+        "fast-forward. Observed on PR #242 (T-327 close-wave for "
+        "T-314): codex round 1 flagged 'the changes don't exist in "
+        "the repo' because the branch base was pre-T-314."
+    )
+    assert "git merge --ff-only origin/main" in step10_body, (
+        "close-wave SKILL.md Step 10 must call "
+        "`git merge --ff-only origin/main` immediately before "
+        "`git checkout -b wt-close-...`. Without it the branch base "
+        "may be stale if a PR was merged during Step 9.5."
+    )
+    fetch_pos = step10_body.index("git fetch origin")
+    ff_pos = step10_body.index("git merge --ff-only origin/main")
+    branch_pos = step10_body.index("git checkout -b wt-close-")
+    assert fetch_pos < ff_pos < branch_pos, (
+        "close-wave SKILL.md Step 10 must order commands as: "
+        "`git fetch origin` → `git merge --ff-only origin/main` → "
+        "`git checkout -b wt-close-...`. The fetch and ff-only must "
+        "appear *before* the branch creation so the branch base is "
+        "always fresh."
+    )

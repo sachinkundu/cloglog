@@ -49,7 +49,10 @@ find_config() {
   return 1
 }
 
-CONFIG=$(find_config "$CWD") || exit 0
+CONFIG=$(find_config "$CWD") || {
+  echo "Blocked: .cloglog/config.yaml not found — cannot enforce worktree scope" >&2
+  exit 2
+}
 
 # --- Look up allowed directories for this worktree scope ---
 # Supports prefix matching: "frontend-auth" matches "frontend" scope.

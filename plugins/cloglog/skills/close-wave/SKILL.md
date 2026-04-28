@@ -310,9 +310,15 @@ list is cached at session start).
 
 The dev clone now has a writable local `main`, so the main agent uses the same `wt-*` branch + PR flow as every other agent (no detached-HEAD push, no direct-`main` commit). See `docs/design/prod-branch-tracking.md` §7.
 
+Step 9 fetched and fast-forwarded `main`, but Step 9.5 (`make sync-mcp-dist`) runs between Step 9 and here, and any PR merged in that window (e.g., an implementation PR merged in another tab while close-wave was running) silently invalidates Step 9's fast-forward. **Always re-fetch immediately before creating the branch** so the close-wave branch base includes every merged commit:
+
 ```bash
+git fetch origin
+git merge --ff-only origin/main
 git checkout -b wt-close-<date>-<wave-name>
 ```
+
+A non-fast-forward state means real divergence — investigate, do not paper over with a merge commit.
 
 Use today's date (`$(date -I)`) and the wave name from Step 1 (e.g., `wt-close-2026-04-26-wave-3` or `wt-close-2026-04-26-reconcile-wt-foo` for reconcile-delegated runs). All Step 11/12/13 edits (quality-gate fixes, work log, learnings) land on this branch — never on `main`.
 

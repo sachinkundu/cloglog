@@ -16,6 +16,34 @@ Set up a project to be managed by the cloglog Kanban dashboard. This skill is id
 
 Arguments: `$ARGUMENTS` — optional project name. If omitted, the skill will ask or default to the directory name.
 
+## Prerequisites
+
+Before running `/cloglog init`, ensure the following are satisfied.
+
+**1. Plugin installed.** The cloglog plugin must be installed in Claude Code:
+
+```bash
+claude plugins install /path/to/plugins/cloglog
+```
+
+After install, restart Claude Code. Confirm with `/help` — the cloglog skills should appear.
+
+**2. Backend running.** The cloglog backend must be accessible (default: `http://127.0.0.1:8001`). Step 2 makes a direct HTTP call to bootstrap the project.
+
+Verify: `curl -sf http://127.0.0.1:8001/health`
+
+**3. `DASHBOARD_SECRET` exported.** Step 2 authenticates the project-creation call with your dashboard key. Export it before starting:
+
+```bash
+export DASHBOARD_SECRET=<value from your backend's .env>
+```
+
+Add to `~/.bashrc` or `~/.zshenv` so every Claude Code session inherits it.
+
+**4. GitHub App credentials (optional).** Steps 6–7 configure bot identity for agent PRs. You can run init without them and complete the bot setup later — agents just won't be able to push or create PRs until configured. See `docs/setup-credentials.md`.
+
+**Re-running init** is safe. If this project is already bootstrapped (`.cloglog/config.yaml` has a `project_id` and `~/.cloglog/credentials` has a key), prerequisite 3 (`DASHBOARD_SECRET`) is no longer needed — the project already exists on the backend. Prerequisite 4 (GitHub App) is **host-local** and must be satisfied independently on every machine: `~/.agent-vm/credentials/github-app.pem`, `GH_APP_ID`, and `GH_APP_INSTALLATION_ID` are not written by the bootstrap and must be present in the shell before agent PR steps will work.
+
 ## Step 1: Gather Project Info
 
 ### 1a. Project name

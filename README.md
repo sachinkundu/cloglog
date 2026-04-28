@@ -6,7 +6,7 @@ Multi-project Kanban dashboard for managing autonomous AI coding agents running 
 
 cloglog gives you board-driven workflow for AI agents. You create tasks on a Kanban board; agents pick them up, implement them in isolated git worktrees, create PRs, and hand off for review — with automated PR review via Codex CLI and optional OpenCode.
 
-The **cloglog plugin** (`plugins/cloglog/`) is the operator-facing surface. It ships skills (`/cloglog init`, `/cloglog setup`, `/cloglog launch`, etc.), hooks (quality gate, worktree scope guard, session bootstrap), and agent prompt templates. The plugin is designed to work with any project, not just this repo.
+The **cloglog plugin** (`plugins/cloglog/`) is the operator-facing surface. It ships skills (`/cloglog init`, `/cloglog setup`, `/cloglog launch`, etc.), hooks (quality gate, worktree scope guard, session bootstrap), and agent prompt templates. The long-term goal is for the plugin to work with any project; cross-project portability is actively being hardened — see `docs/design/plugin-portability-audit.md` for current status.
 
 ## Prerequisites
 
@@ -28,8 +28,8 @@ Confirm with `/help`: the cloglog skills (`/cloglog init`, `/cloglog setup`, etc
 
 The cloglog backend must be accessible before you run `/cloglog init`. The default address is `http://127.0.0.1:8001`.
 
-- **Dev backend** (this repo): `make dev` starts both backend (port 8000) and a production-equivalent backend (port 8001)
-- **Prod backend**: `make prod` on the production host
+- **Dev backend** (this repo): `make dev` starts the dev backend on port 8000 (not 8001 — use `make prod` for 8001)
+- **Prod backend**: `make prod` binds on port 8001 — this is the target `/cloglog init` connects to by default
 
 Verify: `curl -sf http://127.0.0.1:8001/health | python3 -m json.tool`
 

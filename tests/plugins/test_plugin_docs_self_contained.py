@@ -88,15 +88,24 @@ def test_no_bare_setup_credentials_path_in_plugin() -> None:
 
     The plugin must use ${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md instead so it
     works when installed in any project.
+
+    Filter is applied to the raw line content (not the formatted violation string) so that
+    a violation inside plugins/cloglog/docs/setup-credentials.md itself is not silently
+    allowed because the filename portion contains /docs/setup-credentials.md.
     """
-    violations = _violations("docs/setup-credentials.md")
-    # Allow occurrences already prefixed with a path separator (e.g. ${CLAUDE_PLUGIN_ROOT}/docs/
-    # or plugins/cloglog/docs/ — both end in /docs/setup-credentials.md).
-    real_violations = [v for v in violations if "/docs/setup-credentials.md" not in v]
-    assert not real_violations, (
+    hits: list[str] = []
+    for path in _PLUGIN_SOURCES:
+        rel = str(path.relative_to(REPO_ROOT))
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            raw = line.strip()
+            if (
+                "docs/setup-credentials.md" in raw
+                and "${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md" not in raw
+            ):
+                hits.append(f"  {rel}:{lineno}: {raw!r}")
+    assert not hits, (
         "The following plugin files still reference docs/setup-credentials.md. "
-        "Update them to ${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md:\n"
-        + "\n".join(real_violations)
+        "Update them to ${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md:\n" + "\n".join(hits)
     )
 
 

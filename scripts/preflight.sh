@@ -69,11 +69,12 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Read tunnel name from .cloglog/config.yaml so non-cloglog projects can ship
-# their own value without forking this script (T-316). grep+sed only — no
-# Python YAML dependency (docs/invariants.md § hook YAML parsing).
-TUNNEL_NAME=$(grep '^webhook_tunnel_name:' "$REPO_ROOT/.cloglog/config.yaml" 2>/dev/null \
-              | head -n1 | sed 's/^webhook_tunnel_name:[[:space:]]*//' \
-              | sed 's/[[:space:]]*#.*$//' | tr -d '"'"'")
+# their own value without forking this script (T-316). Use the canonical
+# stdlib-only scalar reader so a missing key returns "" cleanly instead of
+# tripping `set -e` via grep's exit-1 (codex round 1 finding).
+# shellcheck source=../plugins/cloglog/hooks/lib/parse-yaml-scalar.sh
+source "$REPO_ROOT/plugins/cloglog/hooks/lib/parse-yaml-scalar.sh"
+TUNNEL_NAME=$(read_yaml_scalar "$REPO_ROOT/.cloglog/config.yaml" "webhook_tunnel_name" "")
 
 if pgrep -x cloudflared >/dev/null 2>&1; then
   ok "cloudflared tunnel running"

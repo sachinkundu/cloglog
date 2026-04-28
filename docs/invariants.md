@@ -131,6 +131,23 @@ against `Base.metadata` so a table rename can't quietly make a pattern
 dead — caught on PR #206 round 2 when `agent_sessions` was flagged in
 place of the real `sessions` table).
 
+## Production runtime
+
+### `make prod` / `make prod-bg` invoke gunicorn with `--capture-output`
+
+Without `--capture-output`, gunicorn worker stdout/stderr (FastAPI
+tracebacks, codex CLI invocation errors, review_engine exceptions) goes to
+the controlling terminal, not `--error-logfile`. In `--daemon` mode there
+is no controlling terminal, so the output is dropped. PR #260 (T-231)
+caught this: the review_engine swallowed an exception on a synchronize
+webhook and left no log to diagnose from. A future Makefile edit that
+drops the flag from either invocation would silently regress the same
+class of failure — production keeps booting, gunicorn's own boot/shutdown
+lines still show up in the log, and only an unrelated incident makes the
+gap visible.
+
+**Pin:** `tests/test_makefile_gunicorn_invocation.py`
+
 ## Demo gate
 
 ### `scripts/check-demo.sh` auto-exempts only fully-allowlisted diffs

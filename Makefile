@@ -49,7 +49,8 @@ invariants: ## Run silent-failure pin tests (see docs/invariants.md)
 	  tests/agent/test_unit.py::TestAgentService::test_register_reconnect_preserves_branch_when_caller_sends_empty \
 	  tests/e2e/test_access_control.py::test_worktrees_with_invalid_mcp_bearer_is_rejected \
 	  tests/gateway/test_review_engine.py::TestResolvePrReviewRoot \
-	  tests/gateway/test_review_engine.py::TestLatestCodexReviewIsApproval
+	  tests/gateway/test_review_engine.py::TestLatestCodexReviewIsApproval \
+	  tests/test_makefile_gunicorn_invocation.py
 
 # ── Quality ───────────────────────────────────
 

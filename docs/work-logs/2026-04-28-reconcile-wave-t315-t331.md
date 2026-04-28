@@ -12,13 +12,13 @@ Five wt-* worktrees from the morning's parallel-launch wave landed cleanly on `m
 | wt-t328-protect-writes-failclosed | T-328 | [#251](https://github.com/sachinkundu/cloglog/pull/251) | cooperative | gone | full work-log archived below |
 | wt-t331-close-wave-ff-only | T-331 | [#252](https://github.com/sachinkundu/cloglog/pull/252) | cooperative | gone | full work-log archived below |
 
-All five completed cleanly per the predicate (`shutdown-artifacts/work-log.md` present, every assigned task `review` + `pr_merged=true`).
+All five worktrees had completed cleanly: each had `shutdown-artifacts/work-log.md` present, each task was `review`+`pr_merged=true`, and the inbox carried matching `agent_unregistered` events. Note that this reconcile run did **not** invoke close-wave delegation per `plugins/cloglog/skills/reconcile/SKILL.md` Step 5.0 — the documented predicate (artifact present + close-off task in backlog + every assigned task resolved) and the close-wave Step 5c teardown both go through the buggy `zellij action close-tab` path that closes the focused (supervisor) tab. T-339 captures the bug; until it lands, cleanup runs the manual safe path documented below. Future reconcile invocations should still go through delegation once T-339 is merged.
 
 ---
 
 ## T-315 — move plugin docs into plugin tree (PR #249)
 
-Source: `wt-t315-move-plugin-docs/shutdown-artifacts/work-log.md`
+Source: PR [#249](https://github.com/sachinkundu/cloglog/pull/249) (merge commit on `main`); the original `wt-t315-move-plugin-docs/shutdown-artifacts/work-log.md` was inlined here verbatim before worktree teardown.
 
 Moved `docs/design/agent-lifecycle.md`, `docs/design/two-stage-pr-review.md`, and `docs/setup-credentials.md` into `plugins/cloglog/docs/` so the plugin ships these docs when installed on any project (making it self-contained). Updated all citations within plugin-owned files to use `${CLAUDE_PLUGIN_ROOT}/docs/<name>.md` rather than cloglog-specific paths. Added 7 pin tests.
 
@@ -43,7 +43,7 @@ Moved `docs/design/agent-lifecycle.md`, `docs/design/two-stage-pr-review.md`, an
 
 ## T-317 — document launch.sh host-specificity (PR #248)
 
-Source: `wt-t317-launch-host-doc/shutdown-artifacts/work-log.md` (aggregate only)
+Source: PR [#248](https://github.com/sachinkundu/cloglog/pull/248) (merge commit on `main`); inlined from the worktree's aggregate `shutdown-artifacts/work-log.md` before teardown — only the aggregate envelope was written, no per-task detail file.
 
 Added operator-host-specificity warning to launch SKILL.md Step 4e and a pin test. No code changes — documentation and test only. Closes F-53 Phase 1.4.
 
@@ -51,7 +51,7 @@ Added operator-host-specificity warning to launch SKILL.md Step 4e and a pin tes
 
 ## T-318 — README + init prerequisites (PR #250)
 
-Source: `wt-t318-readme-init-prereqs/shutdown-artifacts/work-log.md`
+Source: PR [#250](https://github.com/sachinkundu/cloglog/pull/250) (merge commit on `main`); inlined from the worktree's `shutdown-artifacts/work-log.md` before teardown.
 
 Created `README.md` at the project root and added a `## Prerequisites` section to `plugins/cloglog/skills/init/SKILL.md`, both documenting the operator install flow for the cloglog plugin. Added 10 pin tests in `tests/plugins/test_readme_and_init_prereqs.py` to prevent regression.
 
@@ -81,7 +81,7 @@ This resolves Phase 2 Step 5 of `docs/design/plugin-portability-audit.md`.
 
 ## T-328 — protect-worktree-writes fail-closed on missing config (PR #251)
 
-Source: `wt-t328-protect-writes-failclosed/shutdown-artifacts/work-log.md`
+Source: PR [#251](https://github.com/sachinkundu/cloglog/pull/251) (merge commit on `main`); inlined from the worktree's `shutdown-artifacts/work-log.md` before teardown.
 
 Fixed a fail-open bug in `plugins/cloglog/hooks/protect-worktree-writes.sh`: when `.cloglog/config.yaml` is absent, the hook previously exited 0 (allow all writes). Changed to exit 2 with a clear operator message. Added two pin tests to lock in the boundary between fail-closed (config missing) and intentional no-op (config exists, no `worktree_scopes` key).
 
@@ -104,7 +104,7 @@ Fixed a fail-open bug in `plugins/cloglog/hooks/protect-worktree-writes.sh`: whe
 
 ## T-331 — close-wave skill: ff-only main before branching (PR #252)
 
-Source: `wt-t331-close-wave-ff-only/shutdown-artifacts/work-log.md`
+Source: PR [#252](https://github.com/sachinkundu/cloglog/pull/252) (merge commit on `main`); inlined from the worktree's `shutdown-artifacts/work-log.md` before teardown.
 
 Added `git fetch origin` + `git merge --ff-only origin/main` immediately before `git checkout -b wt-close-...` in Step 10 of `plugins/cloglog/skills/close-wave/SKILL.md`.
 

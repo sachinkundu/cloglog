@@ -1,22 +1,13 @@
-"""Pin tests: T-319.
+"""Pin tests: T-319 + T-321.
 
-init Steps 3 and 7a must resolve every `<...>` / `/path/to/...` placeholder
-to a concrete absolute path before writing files. A fresh repo running the
-Step 3 bash block must produce a `.claude/settings.json` with no literal
-placeholder substrings.
+T-319: init Steps 3 and 7a must resolve every `<...>` / `/path/to/...`
+placeholder to a concrete absolute path before writing files.
 
-Asserts:
-
-1. Step 3 bash block is self-contained — uses `${CLAUDE_PLUGIN_ROOT}` and
-   `git rev-parse --show-toplevel`, never the literal placeholders that the
-   pre-T-319 prose embedded.
-2. Step 7a uses `${CLAUDE_PLUGIN_ROOT}` for `PLUGIN_ROOT`, not the literal
-   `<path to plugins/cloglog>`.
-3. Executing the Step 3 block in a tmp_path repo (with a fake plugin tree
-   and bundled mcp-server build) writes a settings.json that contains
-   neither `<absolute-path-to-project>` nor `<path to plugins/cloglog>`
-   nor `/path/to/mcp-server/dist/index.js`, and DOES contain the resolved
-   absolute paths.
+T-321: init Step 4a must populate `.cloglog/config.yaml` with `project_id`
+(seeded from the `mcp__cloglog__create_project` response in Step 2) and a
+`worktree_scopes` mapping (auto-detected from layout, or commented template
+on unknown layouts) so a fresh project picks up the
+protect-worktree-writes guard without hand-editing.
 """
 
 from __future__ import annotations
@@ -202,3 +193,137 @@ def test_step3_block_writes_settings_with_no_placeholders(
         f"mcp-server args[0] should resolve to dist/index.js, got {args[0]!r}"
     )
     assert backend == "http://127.0.0.1:8001"
+
+
+# ---------------------------------------------------------------------------
+# T-321 — Step 4a writes project_id and worktree_scopes
+# ---------------------------------------------------------------------------
+
+
+def _step4a_bash_block(skill_body: str) -> str:
+    """Return the bash block under '#### 4a.1 — Append worktree_scopes'."""
+    section = _section(skill_body, "#### 4a.1", "## ")
+    return _first_bash_block(section)
+
+
+def test_step4a_yaml_template_documents_project_id_and_worktree_scopes() -> None:
+    body = _read_skill()
+    step4a = _section(body, "### 4a.", "### ")
+    assert "project_id:" in step4a, (
+        "Step 4a must document `project_id` in the config.yaml template — "
+        "consumers that read project_id from config break without it."
+    )
+    assert "worktree_scopes:" in step4a, (
+        "Step 4a must document `worktree_scopes` so the protect-worktree-writes "
+        "hook has a scope map on a fresh project."
+    )
+
+
+def test_step4a1_bash_block_skips_when_worktree_scopes_already_present(
+    tmp_path: Path,
+) -> None:
+    """Idempotency: re-running Step 4a.1 on a config that already has scopes is a no-op."""
+    cfg = tmp_path / ".cloglog" / "config.yaml"
+    cfg.parent.mkdir()
+    cfg.write_text(
+        "project_id: deadbeef-aaaa-bbbb-cccc-000000000001\n"
+        "worktree_scopes:\n"
+        "  custom: [packages/]\n"
+    )
+    block = _step4a_bash_block(_read_skill())
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", block],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    # File is unchanged — no duplicate worktree_scopes key, no auto-detect overwrite.
+    body = cfg.read_text()
+    assert body.count("worktree_scopes:") == 1
+    assert "custom: [packages/]" in body
+
+
+def test_step4a1_appends_detected_worktree_scopes_on_layout_match(
+    tmp_path: Path,
+) -> None:
+    """Repo with src/ + tests/ + frontend/ + mcp-server/ — detection emits all three scopes."""
+    project_id = "11111111-2222-3333-4444-555555555555"
+    cfg = tmp_path / ".cloglog" / "config.yaml"
+    cfg.parent.mkdir()
+    cfg.write_text(
+        f"project_name: demo\nproject_id: {project_id}\nbackend_url: http://127.0.0.1:8001\n"
+    )
+    # Recognised layout.
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "frontend").mkdir()
+    (tmp_path / "mcp-server").mkdir()
+
+    block = _step4a_bash_block(_read_skill())
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", block],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    body = cfg.read_text()
+    # project_id preserved verbatim.
+    assert f"project_id: {project_id}" in body, (
+        "Step 4a.1 must NOT touch project_id — only append worktree_scopes."
+    )
+    # worktree_scopes block appended with detected entries.
+    assert "worktree_scopes:" in body
+    assert "backend: [src/, tests/]" in body
+    assert "frontend: [frontend/]" in body
+    assert "mcp: [mcp-server/]" in body
+
+
+def test_step4a1_emits_commented_template_on_unknown_layout(tmp_path: Path) -> None:
+    """Repo with no recognised top-level dirs — emits a commented template, not a live mapping."""
+    cfg = tmp_path / ".cloglog" / "config.yaml"
+    cfg.parent.mkdir()
+    cfg.write_text("project_name: weird\nproject_id: 99999999-8888-7777-6666-555555555555\n")
+    # No src/, frontend/, mcp-server/, app/ — empty repo.
+
+    block = _step4a_bash_block(_read_skill())
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", block],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    body = cfg.read_text()
+    # No live worktree_scopes mapping — only commented guidance.
+    assert re.search(r"^worktree_scopes:", body, re.MULTILINE) is None, (
+        "Unknown layout must NOT emit a live worktree_scopes mapping — the hook "
+        "would block all writes against an empty scope set."
+    )
+    assert "# worktree_scopes:" in body, (
+        "Unknown layout must emit a commented-out worktree_scopes template so "
+        "operators can fill it in."
+    )
+
+
+def test_step4a1_fails_loudly_when_project_id_missing(tmp_path: Path) -> None:
+    """Step 4a.1 must refuse to run when project_id is absent — Step 2 should have seeded it."""
+    cfg = tmp_path / ".cloglog" / "config.yaml"
+    cfg.parent.mkdir()
+    cfg.write_text("project_name: missing-id\n")  # no project_id
+
+    block = _step4a_bash_block(_read_skill())
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", block],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0, (
+        "Step 4a.1 must fail when project_id is missing — silently appending "
+        "worktree_scopes onto a half-bootstrapped config hides the Step 2 bug."
+    )
+    assert "project_id" in result.stderr or "project_id" in result.stdout

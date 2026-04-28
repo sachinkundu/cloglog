@@ -369,6 +369,7 @@ For reference, the resulting `.claude/settings.json` shape is:
 
 ```yaml
 project_name: <name>
+project_id: <UUID returned by Step 2 — already seeded into config.yaml>
 backend_url: <BACKEND_URL detected in Step 1c — e.g. http://127.0.0.1:8001>
 quality_command: <detected or user-provided command>
 
@@ -390,6 +391,16 @@ reviewer_bot_logins:
 # stakeholder demo). Same shape `scripts/check-demo.sh` parses with
 # grep+sed. Cloglog's default below is sensible for most projects:
 demo_allowlist_paths: '^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates)/|^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$'
+
+# T-321 — worktree_scopes: scope-name → list of repo-relative path prefixes
+# the protect-worktree-writes hook treats as in-scope for that worktree.
+# Auto-detected from common project layouts (see bash block below). On a
+# repo whose layout doesn't match any pattern, init emits a commented-out
+# template so the hook stays a no-op until the operator fills it in.
+worktree_scopes:
+  backend: [src/, tests/]
+  frontend: [frontend/]
+  mcp: [mcp-server/]
 ```
 
 **Important:** Use the `BACKEND_URL` detected in Step 1c (or read from `.cloglog/config.yaml`
@@ -397,7 +408,76 @@ which was seeded in Step 2). Do not hard-code `127.0.0.1:8001` — non-default b
 survive the restart. If Step 2 already wrote `backend_url`, preserve it rather than overwriting
 with the default.
 
+`project_id` is already written to `.cloglog/config.yaml` in Step 2 (Phase 2 step 4) from the
+`POST /api/v1/projects` response. Step 4a MUST preserve it — never overwrite the file from
+scratch. The bash block below appends only the keys that are missing.
+
 If `.cloglog/config.yaml` already exists, update fields rather than overwriting. When upgrading a project that predates T-316, append the four new keys (`dashboard_key`, `webhook_tunnel_name`, `reviewer_bot_logins`, `demo_allowlist_paths`) instead of regenerating the file from scratch.
+
+#### 4a.1 — Append `worktree_scopes` (auto-detected)
+
+After the scalar keys above are written, run this bash block to append a
+`worktree_scopes` mapping based on the project's top-level layout. This is
+idempotent — if the key is already present (e.g. cloglog's hand-written
+config), the block is a no-op. `project_id` was seeded by Step 2 and is
+left untouched.
+
+```bash
+mkdir -p .cloglog
+[ -f .cloglog/config.yaml ] || { echo "ERROR: .cloglog/config.yaml missing — Step 2 must run first"; exit 1; }
+
+# Verify Step 2 seeded project_id. Without it, the MCP server has no
+# canonical project identity and any consumer that reads project_id from
+# config (e.g. scripts/sync_mcp_dist.py) silently breaks.
+grep -q '^project_id:' .cloglog/config.yaml || {
+  echo "ERROR: project_id missing from .cloglog/config.yaml — re-run Step 2 (Phase 2)"
+  exit 1
+}
+
+if ! grep -q '^worktree_scopes:' .cloglog/config.yaml; then
+  python3 - <<'PY'
+import pathlib
+
+cfg = pathlib.Path(".cloglog/config.yaml")
+
+# Top-level layout patterns. The first path in each tuple is the trigger;
+# all listed paths are emitted as the scope's prefix list. Order matters
+# only for deterministic output.
+candidates = [
+    ("backend", ["src/", "tests/"]),
+    ("frontend", ["frontend/"]),
+    ("mcp", ["mcp-server/"]),
+    ("app", ["app/", "tests/"]),
+]
+detected = []
+for name, paths in candidates:
+    trigger = pathlib.Path(paths[0].rstrip("/"))
+    if trigger.is_dir():
+        # Only include paths that actually exist; drop the rest.
+        present = [p for p in paths if pathlib.Path(p.rstrip("/")).is_dir()]
+        if present:
+            detected.append((name, present))
+
+if detected:
+    block = ["", "worktree_scopes:"]
+    for name, paths in detected:
+        block.append(f"  {name}: [{', '.join(paths)}]")
+else:
+    block = [
+        "",
+        "# worktree_scopes: <scope>: [<path-prefix>, ...] mapping consumed by",
+        "# the protect-worktree-writes hook. No layout pattern was detected at",
+        "# init time. Uncomment and adapt to your project's layout — until you",
+        "# do, the hook stays a no-op (every worktree write is allowed).",
+        "# worktree_scopes:",
+        "#   core: [src/, tests/]",
+    ]
+
+with cfg.open("a") as fh:
+    fh.write("\n".join(block) + "\n")
+PY
+fi
+```
 
 ### 4b. `on-worktree-create.sh`
 

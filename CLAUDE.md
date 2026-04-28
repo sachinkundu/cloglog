@@ -199,7 +199,7 @@ Durable gotchas discovered during worktree tasks. Each bullet is non-obvious and
 
 ### Board / task repository
 
-- **`update_task` repository applies all fields unconditionally — `if value is not None` was wrong.** The route layer uses `exclude_unset=True`, so only fields the caller explicitly included arrive at the repository; the old guard was double-filtering and prevented explicit `null` from clearing nullable columns. If you add a nullable field to `Task` and find it can't be cleared via PATCH, check for a residual `if value is not None` guard in `repository.py`. The `exclude_unset=True` + unconditional apply pattern is the correct contract for all nullable task fields.
+- **`update_task` repository applies all fields unconditionally — `if value is not None` was wrong for fields declared on `TaskUpdate`.** The route layer uses `exclude_unset=True`, so only fields the caller explicitly included arrive at the repository; the old guard was double-filtering and prevented explicit `null` from clearing nullable columns. If you add a nullable field to `Task` and find it can't be cleared via PATCH: (1) ensure the field is declared on `TaskUpdate` (otherwise `model_dump(exclude_unset=True)` will never forward it regardless), then (2) check for a residual `if value is not None` guard in `repository.py`. Both changes are required — removing only the repository guard for a field not on `TaskUpdate` has no effect.
 
 ### Demo classifier / exemption gate (F-51)
 

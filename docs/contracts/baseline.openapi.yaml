@@ -1747,6 +1747,11 @@ components:
             for this task's pr_url. Drives the "codex reviewed" badge on
             review-column task cards (T-260). Projected read-only from
             ``pr_review_turns``; never a write target.
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
       type: object
       required:
       - id

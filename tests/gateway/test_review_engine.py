@@ -3905,6 +3905,189 @@ class TestResolvePrReviewRootRepoRouting:
             f"and the path so the operator can fix it; got {messages}"
         )
 
+    @pytest.mark.asyncio
+    async def test_path2_registry_refuses_existing_non_git_directory(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """T-350 codex round 5 HIGH: Path 2 must validate the registry
+        entry via ``--git-common-dir``, not just ``is_dir()``. A typo'd
+        registry value pointing at an existing non-git directory was
+        being accepted as a successful registry hit; codex/opencode
+        would then review the wrong tree (or empty dir) instead of
+        refusing.
+
+        Pin: registry has the antisocial key but points it at a plain
+        directory that is not a git repo. The resolver must NOT
+        return that directory as a candidate; it must fall through to
+        the existing refusal path (registry non-empty + repo absent
+        from a usable registry → return None).
+        """
+        import logging as _logging
+
+        not_a_repo = tmp_path / "antisocial-typo"
+        not_a_repo.mkdir()  # exists, but is not git-init'd
+        cloglog_root = tmp_path / "cloglog-prod"
+        cloglog_root.mkdir()
+        monkeypatch.setattr(
+            "src.gateway.review_engine.settings.review_repo_roots",
+            {
+                "sachinkundu/cloglog": cloglog_root,
+                "sachinkundu/antisocial": not_a_repo,
+            },
+        )
+        monkeypatch.setattr(
+            "src.gateway.review_engine.settings.review_source_root",
+            cloglog_root,
+        )
+        query = _StubWorktreeQuery(None)
+        event = self._event(
+            "sachinkundu/antisocial",
+            "feature/typo",
+            head_sha="",
+            pr_number=11,
+        )
+
+        with caplog.at_level(_logging.WARNING, logger="src.gateway.review_engine"):
+            result = await resolve_pr_review_root(
+                event, project_id=uuid.uuid4(), worktree_query=query
+            )
+
+        assert result is None, (
+            "Path 2 must refuse a registry entry that is not a git repo, "
+            f"not return it as a candidate; got {result}"
+        )
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            "review_source=fallback" in m
+            and "registry_path_invalid" in m
+            and "sachinkundu/antisocial" in m
+            for m in messages
+        ), f"Missing registry_path_invalid WARNING; got {messages}"
+        assert any(
+            "review_source=refused" in m and "reason=unconfigured_repo" in m for m in messages
+        ), f"Refusal path must still fire; got {messages}"
+
+    @pytest.mark.asyncio
+    async def test_degraded_path_refuses_unconfigured_repo(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """T-350 codex round 5 MEDIUM: the single-turn degraded review
+        path (``session_factory=None`` or missing ``head_sha``) must
+        also honour the ``review_repo_roots`` refusal contract. Before
+        this fix the degraded branch hard-coded
+        ``settings.review_source_root or Path.cwd()`` and reviewed
+        unconfigured foreign PRs against cloglog's source — recreating
+        the antisocial PR #2 leak whenever a deployment used the
+        no-factory constructor or an event arrived without head_sha.
+
+        Pin: feed a foreign-repo PR through ``ReviewEngineConsumer()``
+        (no ``session_factory`` → degraded path), with a registry that
+        DOES NOT include that repo. Assert codex is never spawned, a
+        ``UNCONFIGURED_REPO`` skip comment is posted, and the
+        degraded-path WARNING fires.
+        """
+        cloglog_root = tmp_path / "cloglog-prod"
+        cloglog_root.mkdir()
+        # Registry has cloglog only — antisocial event must be refused.
+        # Set review_source_root to the legacy fallback so a regression
+        # that bypassed the new refusal would visibly route there
+        # (codex argv would carry `-C cloglog-prod`).
+        monkeypatch.setattr(
+            "src.gateway.review_engine.settings.review_repo_roots",
+            {"sachinkundu/cloglog": cloglog_root},
+        )
+        monkeypatch.setattr(
+            "src.gateway.review_engine.settings.review_source_root",
+            cloglog_root,
+        )
+
+        consumer = ReviewEngineConsumer(max_per_hour=10)
+        captured_argv: list[Any] = []
+
+        def _record_spawn(*args: Any, **kwargs: Any) -> None:
+            captured_argv.append(args)
+            raise AssertionError(
+                "codex MUST NOT be spawned for an unconfigured-repo PR on "
+                "the degraded path; registry refusal must short-circuit"
+            )
+
+        # Antisocial PR through the degraded path.
+        event = WebhookEvent(
+            type=WebhookEventType.PR_OPENED,
+            delivery_id="d-T350-degraded",
+            repo_full_name="sachinkundu/antisocial",
+            pr_number=99,
+            pr_url="https://github.com/sachinkundu/antisocial/pull/99",
+            head_branch="wt-close-2026-04-29-wave-1",
+            base_branch="main",
+            sender="sachinkundu",
+            raw={},
+        )
+
+        post_skip_calls: list[Any] = []
+
+        async def _capture_skip(repo: str, pr: int, reason: Any, body: str, token: str) -> None:
+            post_skip_calls.append((repo, pr, reason, body))
+
+        with (
+            patch(
+                "src.gateway.review_engine.count_bot_reviews",
+                new=AsyncMock(return_value=0),
+            ),
+            patch(
+                "src.gateway.review_engine.latest_codex_review_is_approval",
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
+                "src.gateway.review_engine._spawn",
+                side_effect=_record_spawn,
+            ),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.review_engine.ReviewEngineConsumer._fetch_pr_diff",
+                new=AsyncMock(
+                    return_value=(
+                        "diff --git a/foo.py b/foo.py\n"
+                        "index 1..2 100644\n--- a/foo.py\n+++ b/foo.py\n"
+                        "@@ -1 +1 @@\n-old\n+new\n"
+                    )
+                ),
+            ),
+            patch(
+                "src.gateway.review_engine.post_skip_comment",
+                new=AsyncMock(side_effect=_capture_skip),
+            ),
+        ):
+            await consumer.handle(event)
+
+        assert captured_argv == [], (
+            "Degraded path MUST refuse before spawning codex; "
+            f"unexpected spawn args={captured_argv}"
+        )
+        assert len(post_skip_calls) == 1, (
+            f"Expected exactly one skip comment; got {post_skip_calls}"
+        )
+        repo, pr_num, reason, _body = post_skip_calls[0]
+        from src.gateway.review_skip_comments import SkipReason
+
+        assert repo == "sachinkundu/antisocial"
+        assert pr_num == 99
+        assert reason == SkipReason.UNCONFIGURED_REPO, (
+            f"Expected UNCONFIGURED_REPO skip; got {reason}"
+        )
+
 
 class TestReviewEngineDDDBoundary:
     """T-278 DDD backstop — Gateway's review engine must NOT import the

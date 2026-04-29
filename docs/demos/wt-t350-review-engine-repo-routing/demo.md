@@ -1,7 +1,7 @@
 # T-350: review engine no longer reviews cross-repo PRs against the wrong repository's source
 
-*2026-04-29T17:57:08Z by Showboat 0.6.1*
-<!-- showboat-id: df69e7d0-fd1a-4dea-a58e-f9205b8cf1de -->
+*2026-04-29T18:09:43Z by Showboat 0.6.1*
+<!-- showboat-id: 8a5ee996-0127-40fd-b369-e10a98bd489c -->
 
 Background: antisocial PR #2 (branch wt-close-2026-04-29-wave-1) was reviewed against cloglog's source. The resolver was repo-blind — Path 1 (branch lookup) missed because the close-wave branch had no worktree row, and Path 2 fell back to settings.review_source_root (cloglog-prod) without consulting event.repo_full_name.
 
@@ -41,7 +41,7 @@ grep -c "SkipReason.UNCONFIGURED_REPO" src/gateway/review_engine.py | xargs -I{}
 ```
 
 ```output
-UNCONFIGURED_REPO callsites in review_engine.py: 1
+UNCONFIGURED_REPO callsites in review_engine.py: 3
 ```
 
 ```bash

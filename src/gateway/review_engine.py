@@ -452,7 +452,13 @@ async def resolve_pr_review_root(
         registry_entry = settings.review_repo_roots.get(event.repo_full_name)
         if registry_entry is not None:
             cand = Path(registry_entry)
-            if cand.is_dir():
+            # Codex round 5 HIGH: validate via ``--git-common-dir`` rather
+            # than ``is_dir()`` alone. A mistyped registry value pointing
+            # at an existing non-git directory was being accepted as a
+            # successful registry hit; codex/opencode would then review
+            # the wrong tree (or empty dir) instead of refusing. The
+            # probe also catches a path that vanished after backend boot.
+            if _git_common_dir(cand) is not None:
                 candidate = cand
                 logger.info(
                     "review_source=registry path=%s repo=%s pr=#%d",
@@ -462,8 +468,9 @@ async def resolve_pr_review_root(
                 )
             else:
                 logger.warning(
-                    "review_source=fallback reason=registry_path_missing "
-                    "repo=%s registry_path=%s pr=#%d",
+                    "review_source=fallback reason=registry_path_invalid "
+                    "repo=%s registry_path=%s pr=#%d "
+                    "(path is missing or not a git repo)",
                     event.repo_full_name,
                     registry_entry,
                     event.pr_number,
@@ -1658,11 +1665,71 @@ class ReviewEngineConsumer:
 
         Silent failure is never acceptable here — see PR #149 / #159.
         """
-        # `settings.review_source_root` must point at a checkout of the PR's
-        # merge target (usually main). When unset, fall back to Path.cwd() —
-        # fine for dev, wrong in prod where the backend runs out of a prod
-        # checkout that trails main. See T-255.
-        project_root = settings.review_source_root or Path.cwd()
+        # T-350 codex round 5 MEDIUM: the degraded single-turn path
+        # cannot bypass the per-repo refusal. ``_review_pr``'s sequenced
+        # branch routes through ``resolve_pr_review_root`` and refuses
+        # unconfigured repos with ``UNCONFIGURED_REPO``; without this
+        # block, any caller that takes the degraded branch (no
+        # ``session_factory``, missing ``head_sha``, or older harnesses
+        # constructing ``ReviewEngineConsumer()`` with no factory) would
+        # still review against ``settings.review_source_root`` and
+        # recreate the cross-repo leak.
+        #
+        # The degraded path skips the per-PR worktree lookup (which
+        # requires DB session machinery the degraded branch was added
+        # to avoid), so we apply the registry-only subset of the
+        # refusal contract: when ``review_repo_roots`` is populated and
+        # the event's repo isn't in it (or is mapped to an invalid
+        # path), refuse. When the registry is empty (single-repo legacy
+        # hosts) we keep the historical fallback unchanged.
+        if settings.review_repo_roots:
+            registry_entry = settings.review_repo_roots.get(event.repo_full_name)
+            if registry_entry is None:
+                logger.warning(
+                    "Degraded review path: review_repo_roots configured but "
+                    "no entry for %s — refusing rather than reviewing against "
+                    "review_source_root (T-350)",
+                    event.repo_full_name,
+                )
+                await self._notify_skip(
+                    event,
+                    SkipReason.UNCONFIGURED_REPO,
+                    (
+                        f"Code review skipped: this App is installed but not "
+                        f"configured for review on `{event.repo_full_name}`. "
+                        f"Configure `REVIEW_REPO_ROOTS` (env var or "
+                        f"`review_repo_roots` in `src/shared/config.py`) on "
+                        f"the cloglog backend to enable reviews for this repo."
+                    ),
+                )
+                return None
+            registry_path = Path(registry_entry)
+            if _git_common_dir(registry_path) is None:
+                logger.warning(
+                    "Degraded review path: review_repo_roots[%s]=%s is not "
+                    "a usable git repo — refusing (T-350 round 5)",
+                    event.repo_full_name,
+                    registry_entry,
+                )
+                await self._notify_skip(
+                    event,
+                    SkipReason.UNCONFIGURED_REPO,
+                    (
+                        f"Code review skipped: `REVIEW_REPO_ROOTS` entry for "
+                        f"`{event.repo_full_name}` points at "
+                        f"`{registry_entry}`, which is not a git repo. "
+                        f"Fix the configuration on the cloglog backend."
+                    ),
+                )
+                return None
+            project_root = registry_path
+        else:
+            # Legacy single-repo path — `settings.review_source_root` must
+            # point at a checkout of the PR's merge target (usually main).
+            # When unset, fall back to Path.cwd() — fine for dev, wrong in
+            # prod where the backend runs out of a prod checkout that
+            # trails main. See T-255.
+            project_root = settings.review_source_root or Path.cwd()
         prompt = _load_project_prompt(project_root)
         schema_path = _get_schema_path(project_root)
         full_prompt = f"{prompt}\n\nDIFF:\n{diff}"

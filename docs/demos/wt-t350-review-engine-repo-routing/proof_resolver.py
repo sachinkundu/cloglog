@@ -61,10 +61,33 @@ def _make_event(repo_full_name: str, branch: str) -> WebhookEvent:
     )
 
 
+def _init_git_repo(path: Path) -> None:
+    """Make ``path`` a real git repo so the resolver's
+    ``--git-common-dir`` validation accepts it (T-350 round 5
+    tightened Path 2 to require git, not just a directory)."""
+    import os
+    import subprocess
+
+    path.mkdir(parents=True, exist_ok=True)
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.com",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.com",
+    }
+    subprocess.run(["git", "init", "-q", str(path)], check=True, env=env)
+    subprocess.run(
+        ["git", "-C", str(path), "commit", "-q", "--allow-empty", "-m", "init"],
+        check=True,
+        env=env,
+    )
+
+
 async def _drive() -> tuple[object, object]:
     with tempfile.TemporaryDirectory() as tmp:
         cloglog_root = Path(tmp) / "cloglog-prod"
-        cloglog_root.mkdir()
+        _init_git_repo(cloglog_root)
         registry = {"sachinkundu/cloglog": cloglog_root}
 
         # Force the legacy fallback to ALSO point at cloglog-prod, so a
@@ -81,12 +104,8 @@ async def _drive() -> tuple[object, object]:
                 cloglog_root,
             ),
         ):
-            antisocial_event = _make_event(
-                "sachinkundu/antisocial", "wt-close-2026-04-29-wave-1"
-            )
-            cloglog_event = _make_event(
-                "sachinkundu/cloglog", "wt-close-2026-04-29-wave-7"
-            )
+            antisocial_event = _make_event("sachinkundu/antisocial", "wt-close-2026-04-29-wave-1")
+            cloglog_event = _make_event("sachinkundu/cloglog", "wt-close-2026-04-29-wave-7")
             antisocial_result = await resolve_pr_review_root(
                 antisocial_event,
                 project_id=uuid.uuid4(),
@@ -98,9 +117,7 @@ async def _drive() -> tuple[object, object]:
                 worktree_query=_NoMatchQuery(),
             )
             cloglog_path = (
-                cloglog_result.path.relative_to(tmp)
-                if cloglog_result is not None
-                else None
+                cloglog_result.path.relative_to(tmp) if cloglog_result is not None else None
             )
             return antisocial_result, cloglog_path
 
@@ -109,9 +126,7 @@ def main() -> None:
     antisocial, cloglog_relpath = asyncio.run(_drive())
     print("(i)  antisocial close-wave (unconfigured repo):")
     print(f"     resolver returned: {antisocial!r}")
-    assert antisocial is None, (
-        "T-350 regression: antisocial PR fell back to cloglog source"
-    )
+    assert antisocial is None, "T-350 regression: antisocial PR fell back to cloglog source"
     print("     OK — REFUSED (engine posts unconfigured_repo skip)")
     print()
     print("(ii) cloglog close-wave (registry hit):")

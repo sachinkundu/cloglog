@@ -202,17 +202,21 @@ worktree agents to mint short-lived tokens at runtime; it reads
 it can be reused in other projects without embedding any one operator's
 identifiers.
 
-**Required in every project's `.cloglog/config.yaml` (T-348, preferred):**
+**Required in `.cloglog/local.yaml` (T-348, gitignored — preferred):**
 
 ```yaml
 gh_app_id: "<your-app-id>"
 gh_app_installation_id: "<your-installation-id>"
 ```
 
-The launch skill renders these into `.cloglog/launch.sh` as `export`s, so
-every worktree agent (initial launch and post-`/clear` continuations) sees
-them in its process environment. This is the only path that survives
-`/clear` between tasks (T-329) without operator intervention.
+`.cloglog/local.yaml` is gitignored because each operator installs the
+App into their own org/repo and gets a distinct Installation ID — committing
+these would push other clones at the wrong installation. `gh-app-token.py`
+resolves both keys itself in this order: env → `.cloglog/local.yaml` →
+`.cloglog/config.yaml` (tracked fallback for single-operator repos). The
+launch skill *also* exports them into worktree-agent shells so they survive
+`/clear` between tasks (T-329) for downstream `gh` calls that use the env
+directly.
 
 **Optional shell-RC fallback** (for ad-hoc `gh-app-token.py` invocations
 outside the worktree-launch path — e.g. running `make verify-prod-protection`
@@ -232,12 +236,11 @@ both are absent, any skill command that runs
 reconcile) will exit with `Error: GH_APP_ID environment variable is
 required`.
 
-**Reference (cloglog's own values — for the operator running this repo;
-NOT applicable to other operators or downstream consumers):** the App ID
-and Installation ID for sakundu's installation are listed in this repo's
-own `.cloglog/config.yaml`. Each operator who installs the App into their
-own org/repo gets a distinct Installation ID — never copy these between
-operators.
+**Each operator's own values are stored in their own gitignored
+`.cloglog/local.yaml`.** Never copy these between operators or commit them
+to `.cloglog/config.yaml` — that would push other clones at the wrong App
+installation. The PEM is the only host-local secret; the App and
+Installation IDs are non-secret but still per-operator.
 
 Onboarding a new host:
 

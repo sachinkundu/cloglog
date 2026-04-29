@@ -15,6 +15,12 @@ CONTRACT.yaml
 .cloglog/inbox
 .cloglog/db-schema.sql
 .cloglog/launch.sh
+# T-348: per-host bot identifiers (gh_app_id / gh_app_installation_id) and
+# any other operator-specific overrides. Each operator installs the App into
+# their own org/repo and gets a distinct Installation ID; tracking these
+# would push other clones at the wrong installation.
+.cloglog/local.yaml
+.cloglog/task-model
 .claude/agent-usage.log
 test-results/
 

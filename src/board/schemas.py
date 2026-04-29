@@ -16,6 +16,12 @@ class ProjectCreate(BaseModel):
     repo_url: str = ""
 
 
+class ProjectUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    repo_url: str | None = None
+
+
 class ProjectResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

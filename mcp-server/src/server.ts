@@ -323,6 +323,22 @@ export function createServer(client: CloglogClient): McpServer {
   // ── Board management ──────────────────────────────────
 
   server.tool(
+    'update_project',
+    'Patch the current project (name, description, repo_url). The MCP server is already scoped to one project — pass only the fields you want to change. ``repo_url`` is canonicalized server-side (https form, no .git suffix). Pass null to ``repo_url`` to clear it.',
+    {
+      name: z.string().optional().describe('New project name'),
+      description: z.string().optional().describe('New project description'),
+      repo_url: z.string().nullable().optional().describe('Canonical GitHub URL (https://github.com/<owner>/<repo>). Server-side normalization strips .git and rewrites SSH form. Pass null to clear.'),
+    },
+    async ({ name, description, repo_url }) => {
+      const pid = requireProject()
+      if (typeof pid !== 'string') return pid
+      const result = await handlers.update_project({ project_id: pid, name, description, repo_url })
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] }
+    }
+  )
+
+  server.tool(
     'create_tasks',
     'Create epics/features/tasks on the board from a structured breakdown.',
     {

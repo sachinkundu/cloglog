@@ -46,6 +46,8 @@ Add to `~/.bashrc` or `~/.zshenv` so every Claude Code session inherits it.
 
 **Auto-repair on re-run.** Earlier versions of this skill wrote the `mcpServers.cloglog` block to `.claude/settings.json`. Claude Code does not load MCP servers from that file — they must live in `.mcp.json` at the project root. Re-running init detects that legacy layout and migrates the block: it moves `mcpServers.cloglog` into `.mcp.json` and strips the stale `mcpServers` key from `.claude/settings.json`. The migration is idempotent — a second re-run is a no-op.
 
+**Auto-repair: empty `repo_url` on the backend.** Step 6a now backfills the project's `repo_url` on the backend whenever a GitHub remote is configured locally. The detected URL is **canonicalized** to `https://github.com/<owner>/<repo>` (no `.git`, no SSH form, no trailing slash) before being written via `mcp__cloglog__update_project`. The backend's webhook router and codex review engine resolve a project by `Project.repo_url.endswith(<repo_full_name>)` — a row stored as `git@github.com:owner/repo.git` would never match, so canonical bytes on disk are load-bearing. If the project's `repo_url` is already canonical, the call is a no-op (the backend's `update_project` re-normalizes idempotently). If the project was created via the pre-T-346 init flow with an empty `repo_url`, this is the repair path.
+
 ## Step 1: Gather Project Info
 
 ### 1a. Project name
@@ -681,10 +683,10 @@ The cloglog workflow requires a GitHub repo and a GitHub App bot identity for al
 ### 6a. Check if the project has a GitHub remote
 
 ```bash
-git remote get-url origin 2>/dev/null
+ORIGIN_URL=$(git remote get-url origin 2>/dev/null || true)
 ```
 
-**If no remote exists**, the code hasn't been pushed to GitHub yet. Guide the user:
+**If no remote exists** (`ORIGIN_URL` empty), the code hasn't been pushed to GitHub yet. Guide the user:
 
 > **No GitHub remote found.** Before agents can create PRs, this project needs a GitHub repository.
 >
@@ -694,6 +696,30 @@ git remote get-url origin 2>/dev/null
 > 4. Run `/cloglog init` again to continue setup.
 
 Record in the summary: `GitHub repo: not configured`. The init can continue for everything else — the bot check will be skipped.
+
+**If a remote exists**, canonicalize the URL to the shape the backend's webhook router expects, then call `mcp__cloglog__update_project` to backfill the project's `repo_url`. The backend stores `repo_url` and the webhook consumer (`src/gateway/webhook_consumers.py`) and review engine (`src/gateway/review_engine.py`) match incoming events with `Project.repo_url.endswith(<repo_full_name>)`. A row carrying `git@github.com:owner/repo.git` (SSH) or `https://github.com/owner/repo.git` (with `.git`) would silently miss every webhook — so canonical bytes on disk are load-bearing.
+
+```bash
+# Canonicalize: strip whitespace, convert SSH → HTTPS, drop trailing .git
+# and trailing slash. Mirrors src/board/repo_url.py::normalize_repo_url so
+# init's pre-write shape matches what the backend stores.
+CANONICAL_URL="$ORIGIN_URL"
+CANONICAL_URL="${CANONICAL_URL#"${CANONICAL_URL%%[![:space:]]*}"}"  # ltrim
+CANONICAL_URL="${CANONICAL_URL%"${CANONICAL_URL##*[![:space:]]}"}"  # rtrim
+case "$CANONICAL_URL" in
+  git@github.com:*) CANONICAL_URL="https://github.com/${CANONICAL_URL#git@github.com:}" ;;
+  http://github.com/*) CANONICAL_URL="https://github.com/${CANONICAL_URL#http://github.com/}" ;;
+esac
+CANONICAL_URL="${CANONICAL_URL%.git}"
+CANONICAL_URL="${CANONICAL_URL%/}"
+echo "Canonical repo URL: $CANONICAL_URL"
+```
+
+Then ask the agent to call the MCP tool (the bash block above only computes the canonical URL — the MCP call goes through Claude's tool layer, not curl):
+
+> Call `mcp__cloglog__update_project(repo_url="<CANONICAL_URL>")` to backfill the row.
+
+The backend re-normalizes the URL on write, so re-running init on a project whose `repo_url` is already canonical is a no-op (same bytes in, same bytes stored). If the project was created by an earlier init that left `repo_url` empty, this call is the repair.
 
 ### 6b. Check if the GitHub App bot exists
 

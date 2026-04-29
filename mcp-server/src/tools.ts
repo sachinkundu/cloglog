@@ -55,6 +55,7 @@ export interface ToolHandlers {
 
   // New tools for API parity
   get_project(args: Record<string, never>): Promise<unknown>
+  update_project(args: { project_id: string; name?: string; description?: string; repo_url?: string | null }): Promise<unknown>
   create_epic(args: { project_id: string; title: string; description?: string; bounded_context?: string }): Promise<unknown>
   list_epics(args: { project_id: string }): Promise<unknown>
   create_feature(args: { project_id: string; epic_id: string; title: string; description?: string }): Promise<unknown>
@@ -174,6 +175,17 @@ export function createToolHandlers(client: CloglogClient): ToolHandlers {
 
     async get_project() {
       return client.request('GET', '/api/v1/gateway/me')
+    },
+
+    async update_project({ project_id, name, description, repo_url }) {
+      // Forward only fields the caller explicitly included, mirroring
+      // FastAPI's ``model_dump(exclude_unset=True)`` semantics. ``null`` is
+      // forwarded so callers can clear ``repo_url``.
+      const fields: Record<string, unknown> = {}
+      if (name !== undefined) fields.name = name
+      if (description !== undefined) fields.description = description
+      if (repo_url !== undefined) fields.repo_url = repo_url
+      return client.request('PATCH', `/api/v1/projects/${project_id}`, fields)
     },
 
     async create_epic({ project_id, title, description, bounded_context }) {

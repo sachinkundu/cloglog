@@ -8,6 +8,7 @@ from uuid import UUID
 
 from src.board.interfaces import BoardBlockerDTO, FeatureBlocker, TaskBlocker
 from src.board.models import Feature, Project, Task
+from src.board.repo_url import normalize_repo_url
 from src.board.repository import BoardRepository
 from src.board.schemas import ImportPlan, SearchResponse, SearchResult
 from src.board.templates import (
@@ -55,7 +56,7 @@ class BoardService:
         self, name: str, description: str, repo_url: str
     ) -> tuple[Project, str]:
         """Create a project and return (project, plaintext_api_key)."""
-        project = await self._repo.create_project(name, description, repo_url)
+        project = await self._repo.create_project(name, description, normalize_repo_url(repo_url))
         api_key = secrets.token_hex(32)
         api_key_hash = self._hash_key(api_key)
         await self._repo.set_project_api_key_hash(project.id, api_key_hash)
@@ -63,6 +64,17 @@ class BoardService:
         refreshed = await self._repo.get_project(project.id)
         assert refreshed is not None
         return refreshed, api_key
+
+    async def update_project(self, project_id: UUID, fields: dict[str, object]) -> Project | None:
+        """Patch project fields. ``repo_url``, when present, is canonicalized.
+
+        ``fields`` is the route's ``model_dump(exclude_unset=True)`` — only
+        keys the caller explicitly sent. An explicit ``None`` for a
+        nullable column passes through to the repository to clear it.
+        """
+        if "repo_url" in fields and fields["repo_url"] is not None:
+            fields = {**fields, "repo_url": normalize_repo_url(str(fields["repo_url"]))}
+        return await self._repo.update_project(project_id, **fields)
 
     async def verify_api_key(self, api_key: str) -> Project | None:
         """Verify an API key and return the associated project."""

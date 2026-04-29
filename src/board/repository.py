@@ -38,6 +38,24 @@ class BoardRepository:
     async def get_project(self, project_id: UUID) -> Project | None:
         return await self._session.get(Project, project_id)
 
+    async def update_project(self, project_id: UUID, **fields: object) -> Project | None:
+        """Apply ``fields`` to a project unconditionally.
+
+        The route layer hands us only fields the caller explicitly included
+        (``model_dump(exclude_unset=True)``), so an explicit ``null`` here
+        means "clear the column" — adding a ``if value is not None`` guard
+        would silently drop those clears (CLAUDE.md "Board / task
+        repository" learning).
+        """
+        project = await self._session.get(Project, project_id)
+        if project is None:
+            return None
+        for key, value in fields.items():
+            setattr(project, key, value)
+        await self._session.commit()
+        await self._session.refresh(project)
+        return project
+
     async def list_projects(self) -> list[Project]:
         result = await self._session.execute(select(Project).order_by(Project.created_at))
         return list(result.scalars().all())

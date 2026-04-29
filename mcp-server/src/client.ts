@@ -57,6 +57,13 @@ export class CloglogClient {
     // the caller knows the worktree by path before any agent session owns a
     // token. Route it like register_agent / unregister-by-path.
     const isCloseOffTaskRoute = path === '/api/v1/agents/close-off-task'
+    // T-346: GET /api/v1/gateway/me is protected by ``CurrentProject`` (the
+    // project API key), not the MCP service key. The MCP server hits this
+    // endpoint from ``ensureProject()`` to lazy-resolve project_id during
+    // ``/cloglog init``'s repo_url backfill — before any agent registers.
+    // Without the project-API-key route, ``ensureProject()`` 401s and the
+    // backfill silently no-ops.
+    const isGatewayMeRoute = path === '/api/v1/gateway/me'
     // Supervisor routes target a different worktree than the caller — the
     // caller's agent token (which is bound to its own worktree) would fail
     // the target-worktree check. Use the MCP service key instead.
@@ -75,6 +82,16 @@ export class CloglogClient {
     if (isRegisterRoute || isUnregisterByPath || isCloseOffTaskRoute) {
       // Project-scoped agent bootstrap/teardown routes use project API key
       headers['Authorization'] = `Bearer ${this.apiKey}`
+    } else if (isGatewayMeRoute) {
+      // GET /api/v1/gateway/me is protected by ``CurrentProject`` (project
+      // API key in Authorization), but the *middleware* still requires the
+      // ``X-MCP-Request`` header to let any non-/agents/* route through
+      // (path 1 in ``ApiAccessControlMiddleware``). Bearer-only is rejected
+      // at the middleware before ``CurrentProject`` runs (codex review on
+      // PR #270 round 4). Send both headers together — the canonical shape
+      // already pinned by ``tests/e2e/test_full_workflow.py``.
+      headers['Authorization'] = `Bearer ${this.apiKey}`
+      headers['X-MCP-Request'] = 'true'
     } else if (isSupervisorRoute) {
       // Supervisor actions target another worktree — use MCP service key
       headers['Authorization'] = `Bearer ${this.serviceKey}`

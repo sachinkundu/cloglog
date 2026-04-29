@@ -55,6 +55,24 @@ export function createServer(client: CloglogClient): McpServer {
     return currentProjectId
   }
 
+  /**
+   * Resolve the caller's project_id without requiring a prior
+   * ``register_agent``. Used by tools that operate on the project itself
+   * (e.g. ``update_project`` in the ``/cloglog init`` repo_url backfill
+   * flow), which run before any worktree registration.
+   *
+   * Lazily caches the result into ``currentProjectId`` so a later
+   * ``register_agent`` call is a no-op for project identity. Codex review
+   * round 2 on PR #270.
+   */
+  async function ensureProject(): Promise<string> {
+    if (currentProjectId) return currentProjectId
+    const me = await client.request('GET', '/api/v1/gateway/me') as Record<string, unknown>
+    const pid = me.id as string
+    currentProjectId = pid
+    return pid
+  }
+
   /** Wrap a tool handler to catch API errors and return them as isError responses */
   function wrapHandler<T extends Record<string, unknown>>(
     fn: (args: T) => Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }>
@@ -321,6 +339,26 @@ export function createServer(client: CloglogClient): McpServer {
   )
 
   // ── Board management ──────────────────────────────────
+
+  server.tool(
+    'update_project',
+    'Patch the current project (name, description, repo_url). The MCP server is already scoped to one project — pass only the fields you want to change. ``repo_url`` is canonicalized server-side (https form, no .git suffix). Pass null to ``repo_url`` to clear it.',
+    {
+      name: z.string().optional().describe('New project name'),
+      description: z.string().optional().describe('New project description'),
+      repo_url: z.string().nullable().optional().describe('Canonical GitHub URL (https://github.com/<owner>/<repo>). Server-side normalization strips .git and rewrites SSH form. Pass null to clear.'),
+    },
+    async ({ name, description, repo_url }) => {
+      // Use ensureProject (not requireProject) so /cloglog init can
+      // backfill repo_url without first calling register_agent — init
+      // runs before any worktree exists. The API key already pins the
+      // server to one project, so /api/v1/gateway/me is the canonical
+      // identity lookup.
+      const pid = await ensureProject()
+      const result = await handlers.update_project({ project_id: pid, name, description, repo_url })
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] }
+    }
+  )
 
   server.tool(
     'create_tasks',

@@ -268,6 +268,31 @@ describe('Tool Handlers', () => {
     expect(result).toHaveProperty('status', 'assigned')
   })
 
+  it('update_project sends only explicitly-set fields', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 'proj-1', name: 'p', repo_url: 'https://github.com/owner/repo',
+    })
+
+    await handlers.update_project({
+      project_id: 'proj-1',
+      repo_url: 'git@github.com:owner/repo.git',
+    })
+    expect(client.request).toHaveBeenCalledWith(
+      'PATCH', '/api/v1/projects/proj-1',
+      { repo_url: 'git@github.com:owner/repo.git' }
+    )
+  })
+
+  it('update_project forwards null repo_url to clear the column', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 'proj-1' })
+
+    await handlers.update_project({ project_id: 'proj-1', repo_url: null })
+    expect(client.request).toHaveBeenCalledWith(
+      'PATCH', '/api/v1/projects/proj-1',
+      { repo_url: null }
+    )
+  })
+
   it('update_epic calls PATCH /epics/{id}', async () => {
     (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
       id: 'epic-1', title: 'Updated Epic',

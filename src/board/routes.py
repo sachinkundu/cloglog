@@ -30,6 +30,7 @@ from src.board.schemas import (
     ImportPlan,
     ProjectCreate,
     ProjectResponse,
+    ProjectUpdate,
     ProjectWithKey,
     ReorderRequest,
     SearchResponse,
@@ -77,6 +78,20 @@ async def list_projects(service: ServiceDep) -> list[ProjectResponse]:
 @router.get("/projects/{project_id}", response_model=ProjectResponse)
 async def get_project(project_id: UUID, service: ServiceDep) -> ProjectResponse:
     project = await service._repo.get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return ProjectResponse.model_validate(project)
+
+
+@router.patch("/projects/{project_id}", response_model=ProjectResponse)
+async def update_project(
+    project_id: UUID,
+    body: ProjectUpdate,
+    service: ServiceDep,
+    _: CurrentMcpOrDashboard,
+) -> ProjectResponse:
+    fields = body.model_dump(exclude_unset=True)
+    project = await service.update_project(project_id, fields)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return ProjectResponse.model_validate(project)

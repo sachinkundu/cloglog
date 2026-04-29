@@ -53,7 +53,8 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        /** Update Project */
+        patch: operations["update_project_api_v1_projects__project_id__patch"];
         trace?: never;
     };
     "/api/v1/projects/{project_id}/epics": {
@@ -910,6 +911,15 @@ export interface components {
              */
             repo_url: string;
         };
+        /** ProjectUpdate */
+        ProjectUpdate: {
+            /** Name */
+            name?: string;
+            /** Description */
+            description?: string;
+            /** Repo Url */
+            repo_url?: string | null;
+        };
         /** ProjectResponse */
         ProjectResponse: {
             /**
@@ -1341,6 +1351,41 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_project_api_v1_projects__project_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectUpdate"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

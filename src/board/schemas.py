@@ -16,6 +16,25 @@ class ProjectCreate(BaseModel):
     repo_url: str = ""
 
 
+class ProjectUpdate(BaseModel):
+    # ``Project.name`` and ``Project.description`` are NOT NULL columns
+    # with a default of ``""``. Typing them as plain ``str`` (not
+    # ``str | None``) makes Pydantic 422 on explicit JSON ``null`` —
+    # matching the reality of the column AND keeping the generated
+    # OpenAPI's ``name?: string`` / ``description?: string`` shape
+    # consistent with the contract clients consume (codex review on
+    # PR #270 round 4). ``model_dump(exclude_unset=True)`` still excludes
+    # fields the caller didn't send, so the omit-to-leave-unchanged
+    # PATCH semantics are preserved.
+    #
+    # ``repo_url`` stays ``str | None`` because explicit ``null`` is the
+    # documented "clear" value (the service coerces it to ``""`` for
+    # the NOT NULL column).
+    name: str = ""
+    description: str = ""
+    repo_url: str | None = None
+
+
 class ProjectResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

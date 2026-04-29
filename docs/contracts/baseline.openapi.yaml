@@ -79,6 +79,36 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+    patch:
+      summary: Update Project
+      operationId: update_project_api_v1_projects__project_id__patch
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Project Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/projects/{project_id}/epics:
     post:
       summary: Create Epic
@@ -1537,6 +1567,21 @@ components:
       required:
       - name
       title: ProjectCreate
+    ProjectUpdate:
+      properties:
+        name:
+          type: string
+          title: Name
+        description:
+          type: string
+          title: Description
+        repo_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Repo Url
+      type: object
+      title: ProjectUpdate
     ProjectResponse:
       properties:
         id:

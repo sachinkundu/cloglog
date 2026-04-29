@@ -914,9 +914,9 @@ export interface components {
         /** ProjectUpdate */
         ProjectUpdate: {
             /** Name */
-            name?: string | null;
+            name?: string;
             /** Description */
-            description?: string | null;
+            description?: string;
             /** Repo Url */
             repo_url?: string | null;
         };

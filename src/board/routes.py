@@ -85,7 +85,10 @@ async def get_project(project_id: UUID, service: ServiceDep) -> ProjectResponse:
 
 @router.patch("/projects/{project_id}", response_model=ProjectResponse)
 async def update_project(
-    project_id: UUID, body: ProjectUpdate, service: ServiceDep
+    project_id: UUID,
+    body: ProjectUpdate,
+    service: ServiceDep,
+    _: CurrentMcpOrDashboard,
 ) -> ProjectResponse:
     fields = body.model_dump(exclude_unset=True)
     project = await service.update_project(project_id, fields)

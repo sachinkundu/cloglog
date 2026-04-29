@@ -1570,14 +1570,10 @@ components:
     ProjectUpdate:
       properties:
         name:
-          anyOf:
-          - type: string
-          - type: 'null'
+          type: string
           title: Name
         description:
-          anyOf:
-          - type: string
-          - type: 'null'
+          type: string
           title: Description
         repo_url:
           anyOf:

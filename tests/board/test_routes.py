@@ -142,6 +142,56 @@ async def test_patch_project_rejects_agent_token(client: AsyncClient):
     assert resp.status_code == 403
 
 
+async def test_patch_project_rejects_invalid_mcp_bearer(client: AsyncClient):
+    """The middleware (``ApiAccessControlMiddleware``) only checks
+    *presence* of the ``X-MCP-Request`` header — the per-route
+    ``CurrentMcpOrDashboard`` dependency revalidates the bearer against
+    ``settings.mcp_service_key``. Without it, any caller can mutate
+    project data with ``Authorization: Bearer garbage`` +
+    ``X-MCP-Request: true``. Codex review on PR #270."""
+    create = await client.post(
+        "/api/v1/projects",
+        json={"name": "patch-mcp-auth", "description": "original"},
+    )
+    project_id = create.json()["id"]
+
+    resp = await client.patch(
+        f"/api/v1/projects/{project_id}",
+        json={"description": "should-not-apply"},
+        headers={
+            "X-Dashboard-Key": "",
+            "Authorization": "Bearer garbage",
+            "X-MCP-Request": "true",
+        },
+    )
+    assert resp.status_code == 401
+
+    # And confirm the row is unchanged.
+    confirm = await client.get(f"/api/v1/projects/{project_id}")
+    assert confirm.json()["description"] == "original"
+
+
+async def test_patch_project_rejects_explicit_null_on_name(client: AsyncClient):
+    """``Project.name`` is NOT NULL with default ``""``. ``ProjectUpdate``
+    rejects explicit JSON ``null`` at the schema layer (422) so the
+    request never reaches the column and 500s on
+    ``NotNullViolationError`` (codex review on PR #270)."""
+    create = await client.post("/api/v1/projects", json={"name": "patch-null-name"})
+    project_id = create.json()["id"]
+
+    resp = await client.patch(f"/api/v1/projects/{project_id}", json={"name": None})
+    assert resp.status_code == 422
+
+
+async def test_patch_project_rejects_explicit_null_on_description(client: AsyncClient):
+    """Same shape for ``description`` — see name pin above."""
+    create = await client.post("/api/v1/projects", json={"name": "patch-null-desc"})
+    project_id = create.json()["id"]
+
+    resp = await client.patch(f"/api/v1/projects/{project_id}", json={"description": None})
+    assert resp.status_code == 422
+
+
 async def test_create_project_normalizes_repo_url(client: AsyncClient):
     """POST /projects must store the canonical form so a fresh init that
     creates a project with a remote already configured lands canonical

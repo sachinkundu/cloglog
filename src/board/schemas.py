@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 # --- Project ---
 
@@ -17,9 +17,26 @@ class ProjectCreate(BaseModel):
 
 
 class ProjectUpdate(BaseModel):
+    # ``None`` here means "field not sent" (Pydantic ``exclude_unset``
+    # discriminator); it is NOT the canonical clear value. ``Project.name``
+    # and ``Project.description`` are NOT NULL columns with a default of
+    # ``""`` — sending an explicit JSON ``null`` would 500 with
+    # ``NotNullViolationError``, so the validator below rejects it at 422.
+    # ``repo_url`` accepts explicit null and is coerced to ``""`` in
+    # ``BoardService.update_project`` (codex review on PR #270).
     name: str | None = None
     description: str | None = None
     repo_url: str | None = None
+
+    @field_validator("name", "description", mode="before")
+    @classmethod
+    def _reject_explicit_null(cls, v: object, info: object) -> object:
+        if v is None:
+            # ``info.field_name`` is the offending key; surfacing it makes
+            # the 422 self-explanatory to API clients.
+            field_name = getattr(info, "field_name", "field")
+            raise ValueError(f"{field_name} cannot be null; omit the key to leave it unchanged")
+        return v
 
 
 class ProjectResponse(BaseModel):

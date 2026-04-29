@@ -59,6 +59,57 @@ describe('search tool', () => {
   })
 })
 
+describe('update_project tool', () => {
+  it('lazily resolves project_id via /gateway/me before any register_agent call', async () => {
+    // Codex review on PR #270 (round 2): /cloglog init's Step 6a backfill
+    // calls update_project before register_agent. requireProject would
+    // return "Not registered" and the backfill would silently no-op,
+    // leaving repo_url empty and webhook routing broken. Pin: the lazy
+    // path resolves project_id from the API key without prior register.
+    const client = mockClient()
+    ;(client.request as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ id: 'proj-7', name: 'antisocial', repo_url: '' })  // /gateway/me
+      .mockResolvedValueOnce({ id: 'proj-7', repo_url: 'https://github.com/o/r' })  // PATCH
+
+    const server = createServer(client)
+    const tools = (server as any)._registeredTools
+
+    const result = await tools.update_project.handler({
+      repo_url: 'git@github.com:o/r.git',
+    })
+
+    expect(client.request).toHaveBeenNthCalledWith(1, 'GET', '/api/v1/gateway/me')
+    expect(client.request).toHaveBeenNthCalledWith(
+      2,
+      'PATCH',
+      '/api/v1/projects/proj-7',
+      { repo_url: 'git@github.com:o/r.git' }
+    )
+    expect(result.content[0].text).toContain('"repo_url": "https://github.com/o/r"')
+  })
+
+  it('reuses cached project_id after register_agent — no second /gateway/me call', async () => {
+    const client = mockClient()
+    ;(client.request as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ worktree_id: 'wt-1', project_id: 'proj-7' })  // register
+      .mockResolvedValueOnce({ id: 'proj-7' })  // PATCH only — no /gateway/me
+
+    const server = createServer(client)
+    const tools = (server as any)._registeredTools
+    await tools.register_agent.handler({ worktree_path: '/tmp/x' })
+    await tools.update_project.handler({ name: 'renamed' })
+
+    expect(client.request).toHaveBeenCalledTimes(2)
+    expect(client.request).toHaveBeenNthCalledWith(2, 'PATCH', '/api/v1/projects/proj-7', {
+      name: 'renamed',
+    })
+    // No /gateway/me call — register_agent already populated currentProjectId.
+    const calls = (client.request as ReturnType<typeof vi.fn>).mock.calls
+    expect(calls.some((c) => c[1] === '/api/v1/gateway/me')).toBe(false)
+  })
+})
+
+
 describe('register_agent tool', () => {
   let client: CloglogClient
 

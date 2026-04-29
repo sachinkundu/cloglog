@@ -48,6 +48,8 @@ Add to `~/.bashrc` or `~/.zshenv` so every Claude Code session inherits it.
 
 **Auto-repair: empty `repo_url` on the backend.** Step 6a now backfills the project's `repo_url` on the backend whenever a GitHub remote is configured locally. The detected URL is **canonicalized** to `https://github.com/<owner>/<repo>` (no `.git`, no SSH form, no trailing slash) before being written via `mcp__cloglog__update_project`. The backend's webhook router and codex review engine resolve a project by `Project.repo_url.endswith(<repo_full_name>)` — a row stored as `git@github.com:owner/repo.git` would never match, so canonical bytes on disk are load-bearing. If the project's `repo_url` is already canonical, the call is a no-op (the backend's `update_project` re-normalizes idempotently). If the project was created via the pre-T-346 init flow with an empty `repo_url`, this is the repair path.
 
+**`mcp__cloglog__update_project` does NOT require a prior `mcp__cloglog__register_agent`.** Other MCP tools (`start_task`, `get_my_tasks`, etc.) demand registration because they're scoped to a worktree session. `update_project` operates on the *project* itself, identified by the API key the MCP server was started with — so the server lazily resolves `project_id` via `GET /api/v1/gateway/me` on first use. Init can call `update_project` from a fresh shell (no worktree, no agent registered) and it works.
+
 ## Step 1: Gather Project Info
 
 ### 1a. Project name

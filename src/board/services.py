@@ -69,11 +69,15 @@ class BoardService:
         """Patch project fields. ``repo_url``, when present, is canonicalized.
 
         ``fields`` is the route's ``model_dump(exclude_unset=True)`` — only
-        keys the caller explicitly sent. An explicit ``None`` for a
-        nullable column passes through to the repository to clear it.
+        keys the caller explicitly sent. The ``Project.repo_url`` column is
+        NOT NULL with a default of ``""`` (see ``src/board/models.py``); an
+        explicit JSON ``null`` is coerced to the empty string here so callers
+        get a deterministic "clear" semantics instead of a 500 from
+        Postgres' ``NotNullViolationError``.
         """
-        if "repo_url" in fields and fields["repo_url"] is not None:
-            fields = {**fields, "repo_url": normalize_repo_url(str(fields["repo_url"]))}
+        if "repo_url" in fields:
+            value = fields["repo_url"]
+            fields = {**fields, "repo_url": normalize_repo_url(str(value)) if value else ""}
         return await self._repo.update_project(project_id, **fields)
 
     async def verify_api_key(self, api_key: str) -> Project | None:

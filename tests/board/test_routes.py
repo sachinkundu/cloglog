@@ -90,6 +90,31 @@ async def test_patch_project_unknown_field_dropped(client: AsyncClient):
     assert resp.json()["description"] == "keep"
 
 
+async def test_patch_project_clears_repo_url_with_empty_string(client: AsyncClient):
+    """The Project.repo_url column is NOT NULL with default "". Sending an
+    empty string resets the row, while explicit null is coerced to "" by
+    the service (so clients can treat null and "" symmetrically without
+    eating a 500 from Postgres' NotNullViolationError)."""
+    create = await client.post(
+        "/api/v1/projects",
+        json={"name": "patch-clear", "repo_url": "https://github.com/o/r"},
+    )
+    project_id = create.json()["id"]
+
+    resp = await client.patch(f"/api/v1/projects/{project_id}", json={"repo_url": ""})
+    assert resp.status_code == 200
+    assert resp.json()["repo_url"] == ""
+
+    # Re-set, then send null — coerced to "" by the service.
+    await client.patch(
+        f"/api/v1/projects/{project_id}",
+        json={"repo_url": "https://github.com/o/r"},
+    )
+    resp = await client.patch(f"/api/v1/projects/{project_id}", json={"repo_url": None})
+    assert resp.status_code == 200
+    assert resp.json()["repo_url"] == ""
+
+
 async def test_patch_project_not_found(client: AsyncClient):
     resp = await client.patch(
         "/api/v1/projects/00000000-0000-0000-0000-000000000000",

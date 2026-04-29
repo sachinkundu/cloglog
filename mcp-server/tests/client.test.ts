@@ -77,6 +77,45 @@ describe('CloglogClient', () => {
     })
   })
 
+  describe('gateway/me routing', () => {
+    let client: CloglogClient
+
+    beforeEach(() => {
+      client = new CloglogClient({
+        baseUrl: 'http://localhost:8000',
+        apiKey: 'test-key',
+        serviceKey: 'test-service-key',
+      })
+    })
+
+    afterEach(() => {
+      vi.restoreAllMocks()
+    })
+
+    it('uses project API key (not MCP service key) and omits X-MCP-Request', async () => {
+      // Codex review on PR #270 round 3: GET /api/v1/gateway/me is
+      // protected by ``CurrentProject`` (project API key), not the MCP
+      // service key. ``ensureProject()`` calls this from the /cloglog init
+      // backfill flow before any agent registers; the wrong credential
+      // shape would 401 and silently no-op the repo_url backfill.
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ id: 'proj-1', name: 'p' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+
+      await client.request('GET', '/api/v1/gateway/me')
+
+      const call = (fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+      expect(call[0]).toBe('http://localhost:8000/api/v1/gateway/me')
+      const headers = call[1].headers as Record<string, string>
+      expect(headers.Authorization).toBe('Bearer test-key')
+      expect(headers).not.toHaveProperty('X-MCP-Request')
+    })
+  })
+
+
   describe('assign-task routing', () => {
     let client: CloglogClient
 

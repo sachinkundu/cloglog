@@ -44,6 +44,8 @@ Add to `~/.bashrc` or `~/.zshenv` so every Claude Code session inherits it.
 
 **Re-running init** is safe. If this project is already bootstrapped (`.cloglog/config.yaml` has a `project_id` and `~/.cloglog/credentials` has a key), prerequisite 3 (`DASHBOARD_SECRET`) is no longer needed — the project already exists on the backend. Prerequisite 4 (GitHub App) is **host-local** and must be satisfied independently on every machine: `~/.agent-vm/credentials/github-app.pem`, `GH_APP_ID`, and `GH_APP_INSTALLATION_ID` are not written by the bootstrap and must be present in the shell before agent PR steps will work.
 
+**Auto-repair on re-run.** Earlier versions of this skill wrote the `mcpServers.cloglog` block to `.claude/settings.json`. Claude Code does not load MCP servers from that file — they must live in `.mcp.json` at the project root. Re-running init detects that legacy layout and migrates the block: it moves `mcpServers.cloglog` into `.mcp.json` and strips the stale `mcpServers` key from `.claude/settings.json`. The migration is idempotent — a second re-run is a no-op.
+
 ## Step 1: Gather Project Info
 
 ### 1a. Project name
@@ -272,7 +274,14 @@ Proceed:
 
 ## Step 3: Configure MCP Server
 
-Resolve concrete absolute paths for the bootstrap hook and MCP server entry, then merge them into `.claude/settings.json`. Do **not** emit literal `<absolute-path-to-project>`, `<path to plugins/cloglog>`, or `/path/to/mcp-server/dist/index.js` — every path written to settings.json must be the resolved absolute path on this host.
+Resolve concrete absolute paths for the bootstrap hook and MCP server entry, then merge them into the **two** files Claude Code reads from:
+
+- `.claude/settings.json` — receives the `SessionStart` hook ONLY. Claude Code does NOT load MCP servers from this file.
+- `.mcp.json` (project root) — receives the `mcpServers.cloglog` entry. This is the file Claude Code actually consults for project-scoped MCP servers.
+
+Writing the `mcpServers` block to `.claude/settings.json` is the legacy bug fixed in T-344 — the cloglog MCP server silently failed to start in freshly-init'd projects. Both writes below are idempotent: re-running init updates the cloglog entry in place rather than duplicating it.
+
+Do **not** emit literal `<absolute-path-to-project>`, `<path to plugins/cloglog>`, or `/path/to/mcp-server/dist/index.js` — every path written must be the resolved absolute path on this host.
 
 ```bash
 # Resolve the bootstrap hook absolute path. SessionStart hooks do NOT expand
@@ -302,9 +311,36 @@ MCP_INDEX="$MCP_INDEX" \
 BACKEND_URL="$BACKEND_URL" \
 python3 - <<'PY'
 import json, os, pathlib
-path = pathlib.Path(".claude/settings.json")
-data = json.loads(path.read_text()) if path.exists() else {}
-hooks = data.setdefault("hooks", {})
+
+# --- Step 3 merge: two files, two responsibilities ----------------------------
+# `.claude/settings.json`  -> hooks (SessionStart)
+# `.mcp.json`              -> mcpServers (cloglog)
+#
+# T-344: Claude Code does NOT load MCP servers from `.claude/settings.json`.
+# The legacy combined merge silently produced a broken project where
+# `mcp__cloglog__*` tools never resolved. We now write each block to the file
+# Claude Code actually reads it from.
+
+settings_path = pathlib.Path(".claude/settings.json")
+mcp_path      = pathlib.Path(".mcp.json")
+
+settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+mcp      = json.loads(mcp_path.read_text())      if mcp_path.exists()      else {}
+
+# Phase 1.5 — auto-repair legacy layout.
+# If a previous (broken) init wrote mcpServers.cloglog into settings.json,
+# move it into .mcp.json before we re-merge. Idempotent: a clean layout is
+# left untouched. We always strip mcpServers from settings.json regardless,
+# because that file is the wrong home for the block.
+legacy_servers = settings.pop("mcpServers", None)
+if isinstance(legacy_servers, dict) and "cloglog" in legacy_servers:
+    mcp_servers = mcp.setdefault("mcpServers", {})
+    # Prefer the entry already in .mcp.json (operator may have edited it);
+    # only seed from settings.json if .mcp.json has no cloglog entry yet.
+    mcp_servers.setdefault("cloglog", legacy_servers["cloglog"])
+
+# Hook write — settings.json owns SessionStart.
+hooks = settings.setdefault("hooks", {})
 hooks["SessionStart"] = [
     {
         "matcher": "",
@@ -317,17 +353,23 @@ hooks["SessionStart"] = [
         ],
     }
 ]
-servers = data.setdefault("mcpServers", {})
+
+# MCP server write — .mcp.json owns mcpServers.
+servers = mcp.setdefault("mcpServers", {})
 servers["cloglog"] = {
     "command": "node",
     "args": [os.environ["MCP_INDEX"]],
     "env": {"CLOGLOG_URL": os.environ["BACKEND_URL"]},
 }
-path.write_text(json.dumps(data, indent=2) + "\n")
+
+settings_path.write_text(json.dumps(settings, indent=2) + "\n")
+mcp_path.write_text(json.dumps(mcp, indent=2) + "\n")
 PY
 ```
 
-For reference, the resulting `.claude/settings.json` shape is:
+For reference, the resulting shapes are:
+
+`.claude/settings.json` (hooks only — no `mcpServers` key):
 
 ```json
 {
@@ -344,7 +386,14 @@ For reference, the resulting `.claude/settings.json` shape is:
         ]
       }
     ]
-  },
+  }
+}
+```
+
+`.mcp.json` (mcpServers only — Claude Code's project-scoped MCP config):
+
+```json
+{
   "mcpServers": {
     "cloglog": {
       "command": "node",
@@ -360,8 +409,10 @@ For reference, the resulting `.claude/settings.json` shape is:
 > **T-214:** `CLOGLOG_API_KEY` MUST NOT be added to `.mcp.json` or any
 > per-project file. The MCP server reads it from the operator's environment
 > or from `~/.cloglog/credentials` only. See `${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md`.
+> The pin is `tests/test_mcp_json_no_secret.py` — the merge above never
+> writes `CLOGLOG_API_KEY` into `mcpServers.cloglog.env`.
 
-**Important:** The `SessionStart` hook must use an absolute path to the bootstrap script — `${CLAUDE_PLUGIN_ROOT}` does not resolve for `SessionStart` hooks in plugin settings.json (only project-level settings work). The Python merge above resolves it from the live `${CLAUDE_PLUGIN_ROOT}` and writes the absolute path verbatim. The merge is idempotent — re-running init updates the cloglog entry rather than duplicating it.
+**Important:** The `SessionStart` hook must use an absolute path to the bootstrap script — `${CLAUDE_PLUGIN_ROOT}` does not resolve for `SessionStart` hooks in plugin settings.json (only project-level settings work). The Python merge above resolves it from the live `${CLAUDE_PLUGIN_ROOT}` and writes the absolute path verbatim. The merge is idempotent — re-running init updates the cloglog entry rather than duplicating it, and migrates the legacy `mcpServers`-in-settings.json layout if present.
 
 ## Step 4: Create `.cloglog/` Configuration Directory
 
@@ -811,13 +862,13 @@ Present what was configured:
 | Quality command | `<command>` |
 | Tech stack | Python/Node/Rust/Mixed |
 | Config location | `.cloglog/config.yaml` |
-| MCP configured | yes/no (+ instructions if manual setup needed) |
+| MCP configured | yes/no — `mcpServers.cloglog` written to `.mcp.json` |
 | SessionStart hook | injected into `.claude/settings.json` |
 | CLAUDE.md | updated/created |
 | GitHub bot | configured/needs setup |
 
 Remind the user to:
-1. Set up `~/.cloglog/credentials` with `CLOGLOG_API_KEY=<key>` and `chmod 600` (or export `CLOGLOG_API_KEY` in their shell). See `${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md`. The key MUST NOT live in `.mcp.json` or `.claude/settings.json`.
+1. Set up `~/.cloglog/credentials` with `CLOGLOG_API_KEY=<key>` and `chmod 600` (or export `CLOGLOG_API_KEY` in their shell). See `${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md`. The key MUST NOT live in `.mcp.json` (which now carries the `mcpServers.cloglog` entry) or `.claude/settings.json`.
 2. **Set up the GitHub bot** if not yet configured (see Step 6 output)
 3. Run `git commit` to save the configuration
 4. Start the cloglog backend if not running

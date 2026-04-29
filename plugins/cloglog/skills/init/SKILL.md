@@ -749,17 +749,56 @@ Record in the summary: `GitHub bot: needs setup`. The init can continue — agen
 
 Only run this if both the remote and the bot exist:
 
+`gh-app-token.py` requires `GH_APP_ID` and `GH_APP_INSTALLATION_ID` in its
+process environment (it hard-fails otherwise — see
+`${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py:23-31`). On the new T-348
+flow, those values live in `.cloglog/config.yaml`; the launch skill exports
+them into worktree agents at run time but `/cloglog init` runs **before**
+any worktree exists, so it must read the config and pass them to the
+subprocess explicitly. Read both values via the same grep+sed scalar-parse
+shape used in `${CLAUDE_PLUGIN_ROOT}/hooks/lib/parse-yaml-scalar.sh`:
+
 ```bash
-BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests "${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py" 2>/dev/null)
-if [[ -n "$BOT_TOKEN" ]]; then
-  REPO=$(git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
-  if GH_TOKEN="$BOT_TOKEN" gh repo view "$REPO" --json name -q .name 2>/dev/null; then
-    echo "Bot has access to this repo"
+CFG="$(git rev-parse --show-toplevel)/.cloglog/config.yaml"
+
+_read_scalar() {
+  local key="$1"
+  [[ -f "$CFG" ]] || return 0
+  grep "^${key}:" "$CFG" 2>/dev/null | head -n1 \
+    | sed "s/^${key}:[[:space:]]*//" \
+    | sed 's/[[:space:]]*#.*$//' \
+    | tr -d '"' | tr -d "'"
+}
+
+# Resolve from config first, fall back to existing shell exports
+GH_APP_ID="${GH_APP_ID:-$(_read_scalar gh_app_id)}"
+GH_APP_INSTALLATION_ID="${GH_APP_INSTALLATION_ID:-$(_read_scalar gh_app_installation_id)}"
+
+if [[ -z "$GH_APP_ID" || -z "$GH_APP_INSTALLATION_ID" ]]; then
+  echo "WARNING: gh_app_id / gh_app_installation_id missing — cannot verify repo access."
+  echo "  Add both keys to .cloglog/config.yaml (preferred — T-348) so worktree agents"
+  echo "  inherit them automatically. See ${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md."
+else
+  BOT_TOKEN=$(GH_APP_ID="$GH_APP_ID" GH_APP_INSTALLATION_ID="$GH_APP_INSTALLATION_ID" \
+    uv run --with "PyJWT[crypto]" --with requests "${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py" 2>/dev/null)
+  if [[ -z "$BOT_TOKEN" ]]; then
+    echo "WARNING: gh-app-token.py minted no token — check PEM permissions and config IDs."
   else
-    echo "Bot does NOT have access to this repo"
+    REPO=$(git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
+    if GH_TOKEN="$BOT_TOKEN" gh repo view "$REPO" --json name -q .name 2>/dev/null; then
+      echo "Bot has access to this repo"
+    else
+      echo "Bot does NOT have access to this repo"
+    fi
   fi
 fi
 ```
+
+The explicit `GH_APP_ID="$GH_APP_ID" ... uv run ...` prefix forwards the
+config-derived values into the subprocess environment, so the new T-348
+flow (PEM + config-only IDs) successfully verifies repo access at init
+time. Without this, init would silently skip the access check on a fresh
+T-348 host.
 
 **If the bot does not have access:**
 

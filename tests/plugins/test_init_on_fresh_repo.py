@@ -180,19 +180,47 @@ def test_step3_block_writes_settings_with_no_placeholders(
     )
 
     settings_path = repo / ".claude" / "settings.json"
+    mcp_path = repo / ".mcp.json"
     assert settings_path.exists(), "Step 3 did not write .claude/settings.json"
-    raw = settings_path.read_text()
+    assert mcp_path.exists(), (
+        "Step 3 did not write .mcp.json — Claude Code loads MCP servers from "
+        ".mcp.json at the project root, not .claude/settings.json (T-344)."
+    )
+    settings_raw = settings_path.read_text()
+    mcp_raw = mcp_path.read_text()
 
     for needle in PLACEHOLDERS:
-        assert needle not in raw, (
+        assert needle not in settings_raw, (
             f".claude/settings.json contains literal placeholder {needle!r} "
             "after Step 3 — placeholders must be resolved before write."
         )
+        assert needle not in mcp_raw, (
+            f".mcp.json contains literal placeholder {needle!r} after Step 3 — "
+            "placeholders must be resolved before write."
+        )
 
-    data = json.loads(raw)
-    hook_cmd = data["hooks"]["SessionStart"][0]["hooks"][0]["command"]
-    args = data["mcpServers"]["cloglog"]["args"]
-    backend = data["mcpServers"]["cloglog"]["env"]["CLOGLOG_URL"]
+    settings_data = json.loads(settings_raw)
+    mcp_data = json.loads(mcp_raw)
+
+    # T-344: hooks belong in settings.json, the cloglog mcpServer entry
+    # belongs in .mcp.json. The two files must not cross-contaminate.
+    # Note: settings.mcpServers may legitimately host other (non-cloglog)
+    # operator-maintained server entries, so we only forbid the cloglog
+    # entry from re-appearing in settings.json — we do NOT forbid the
+    # whole `mcpServers` key.
+    assert "cloglog" not in settings_data.get("mcpServers", {}), (
+        ".claude/settings.json must NOT contain `mcpServers.cloglog` (T-344). "
+        "Claude Code does not load MCP servers from this file; the cloglog "
+        "entry must live in .mcp.json at the project root."
+    )
+    assert "hooks" not in mcp_data, (
+        ".mcp.json must NOT contain `hooks` — that key belongs in "
+        ".claude/settings.json. Crossed writes mean the merge has regressed."
+    )
+
+    hook_cmd = settings_data["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    args = mcp_data["mcpServers"]["cloglog"]["args"]
+    backend = mcp_data["mcpServers"]["cloglog"]["env"]["CLOGLOG_URL"]
 
     assert hook_cmd == str(fake_plugin_root / "hooks" / "session-bootstrap.sh"), (
         f"SessionStart command should be the resolved bootstrap path, got {hook_cmd!r}"
@@ -205,6 +233,233 @@ def test_step3_block_writes_settings_with_no_placeholders(
         f"mcp-server args[0] should resolve to dist/index.js, got {args[0]!r}"
     )
     assert backend == "http://127.0.0.1:8001"
+
+    # T-214 invariant re-affirmed at the new file location.
+    cloglog_env = mcp_data["mcpServers"]["cloglog"].get("env", {})
+    assert "CLOGLOG_API_KEY" not in cloglog_env, (
+        "Step 3 must NEVER write CLOGLOG_API_KEY into .mcp.json — the MCP "
+        "server reads it from env or ~/.cloglog/credentials only (T-214)."
+    )
+    assert "CLOGLOG_API_KEY" not in mcp_raw, (
+        "CLOGLOG_API_KEY must not appear anywhere in .mcp.json (T-214)."
+    )
+
+
+# ---------------------------------------------------------------------------
+# T-344 — Step 3 auto-repair migrates legacy mcpServers-in-settings.json
+# ---------------------------------------------------------------------------
+
+
+def test_step3_migrates_legacy_mcp_servers_block_to_mcp_json(
+    tmp_path: Path, fake_plugin_root: Path
+) -> None:
+    """A project initialized with the broken pre-T-344 layout has
+    `mcpServers.cloglog` inside `.claude/settings.json` and no `.mcp.json`.
+    Re-running Step 3 must move the entry into `.mcp.json` and strip
+    `mcpServers` from settings.json. The repair is idempotent — running
+    Step 3 a second time on the now-correct layout must be a no-op.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=x@y",
+            "-c",
+            "user.name=x",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+        cwd=repo,
+        check=True,
+    )
+
+    # Seed the broken legacy layout: mcpServers in settings.json, no .mcp.json.
+    legacy_settings_dir = repo / ".claude"
+    legacy_settings_dir.mkdir()
+    legacy_settings = legacy_settings_dir / "settings.json"
+    legacy_settings.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "cloglog": {
+                        "command": "node",
+                        "args": ["/legacy/path/to/index.js"],
+                        "env": {"CLOGLOG_URL": "http://127.0.0.1:8001"},
+                    }
+                }
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+    block = _first_bash_block(_section(_read_skill(), "## Step 3:", "## Step "))
+    env = {
+        **os.environ,
+        "CLAUDE_PLUGIN_ROOT": str(fake_plugin_root),
+        "BACKEND_URL": "http://127.0.0.1:8001",
+    }
+
+    # Run Step 3 once — migration kicks in.
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", block],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"Step 3 migration run failed: stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+
+    settings = json.loads(legacy_settings.read_text())
+    mcp = json.loads((repo / ".mcp.json").read_text())
+
+    # Cloglog was the only entry in the seeded settings.mcpServers, so the
+    # now-empty key must be dropped after migration. (When other entries
+    # exist alongside cloglog they survive — see the dedicated test below.)
+    assert "mcpServers" not in settings, (
+        "Step 3 migration must DROP an empty mcpServers key from settings.json "
+        "after moving the only entry (cloglog) out. Leaving an empty `mcpServers: {}` "
+        "is broken-layout-shaped clutter."
+    )
+    assert "cloglog" in mcp.get("mcpServers", {}), (
+        "Step 3 migration must MOVE `mcpServers.cloglog` into .mcp.json."
+    )
+    # The migrated entry MUST reflect the freshly resolved MCP_INDEX, not the
+    # stale `/legacy/path/to/index.js` from the seed. The merge runs after the
+    # migration and overwrites the cloglog entry with current paths.
+    args = mcp["mcpServers"]["cloglog"]["args"]
+    assert args[0].endswith("/mcp-server/dist/index.js"), (
+        f"Migration must refresh args to the resolved MCP_INDEX, got {args!r}"
+    )
+    assert "/legacy/path/to/index.js" not in (repo / ".mcp.json").read_text(), (
+        "Migration left the stale legacy index path in place — expected the "
+        "merge step to overwrite the cloglog entry with current resolved paths."
+    )
+
+    # Run Step 3 again — must be a clean no-op (no exception, no duplication).
+    result2 = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", block],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result2.returncode == 0, (
+        f"Step 3 re-run failed: stdout={result2.stdout!r} stderr={result2.stderr!r}"
+    )
+    settings2 = json.loads(legacy_settings.read_text())
+    mcp2 = json.loads((repo / ".mcp.json").read_text())
+    assert "mcpServers" not in settings2
+    assert list(mcp2["mcpServers"].keys()) == ["cloglog"], (
+        "Re-running Step 3 must leave .mcp.json's mcpServers stable, not duplicate."
+    )
+
+
+def test_step3_migration_preserves_non_cloglog_mcp_servers(
+    tmp_path: Path, fake_plugin_root: Path
+) -> None:
+    """Regression guard: Step 3's repair must move ONLY the cloglog entry
+    out of `.claude/settings.json`, leaving any other operator-maintained
+    `mcpServers.*` entries (e.g. `github`, `linear`) in place. A naive
+    `settings.pop("mcpServers")` would silently delete them on the first
+    re-run of init.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=x@y",
+            "-c",
+            "user.name=x",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+        cwd=repo,
+        check=True,
+    )
+
+    # Legacy layout with cloglog AND a hand-maintained sibling server.
+    other_server = {
+        "command": "node",
+        "args": ["/opt/some-other-mcp/index.js"],
+        "env": {"OTHER_API_KEY": "redacted"},
+    }
+    legacy_settings_dir = repo / ".claude"
+    legacy_settings_dir.mkdir()
+    legacy_settings = legacy_settings_dir / "settings.json"
+    legacy_settings.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "cloglog": {
+                        "command": "node",
+                        "args": ["/legacy/path/to/index.js"],
+                        "env": {"CLOGLOG_URL": "http://127.0.0.1:8001"},
+                    },
+                    "other-server": other_server,
+                }
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+    block = _first_bash_block(_section(_read_skill(), "## Step 3:", "## Step "))
+    env = {
+        **os.environ,
+        "CLAUDE_PLUGIN_ROOT": str(fake_plugin_root),
+        "BACKEND_URL": "http://127.0.0.1:8001",
+    }
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", block],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"Step 3 migration run failed: stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+
+    settings = json.loads(legacy_settings.read_text())
+    mcp = json.loads((repo / ".mcp.json").read_text())
+
+    # Cloglog moved out of settings.json into .mcp.json.
+    assert "cloglog" not in settings.get("mcpServers", {}), (
+        "Step 3 migration must remove the cloglog entry from settings.json."
+    )
+    assert "cloglog" in mcp.get("mcpServers", {})
+
+    # The non-cloglog entry MUST survive — both the key and the original body.
+    assert "other-server" in settings.get("mcpServers", {}), (
+        "Step 3 migration silently deleted a non-cloglog MCP server entry "
+        "from .claude/settings.json. Migrate only the cloglog entry — leave "
+        "operator-maintained sibling servers intact."
+    )
+    assert settings["mcpServers"]["other-server"] == other_server, (
+        "Step 3 migration must preserve the body of non-cloglog entries verbatim."
+    )
+
+    # And the non-cloglog entry must NOT have been hoisted into .mcp.json —
+    # those are different files for different purposes.
+    assert "other-server" not in mcp.get("mcpServers", {}), (
+        "Step 3 migration must not copy non-cloglog entries into .mcp.json — "
+        "those servers were intentionally placed in settings.json by the operator."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -368,8 +623,17 @@ HOST_LITERALS = (
 # the plugin identifies itself on the wire. The pins below assert these
 # survive the host-literal scan (i.e. the regex shape doesn't accidentally
 # strip them too).
+#
+# T-344: `mcpServers.cloglog` now lives in `.mcp.json`, not `.claude/settings.json`.
+# The brand surface in settings.json is just the `cloglog` literal that lands
+# in the SessionStart hook path (resolved from ${CLAUDE_PLUGIN_ROOT}). The
+# `mcp-server/dist/index.js` literal moved with the block to `.mcp.json` and
+# is asserted by the new `.mcp.json`-side test below.
 BRAND_SURFACE_SETTINGS = (
-    "cloglog",  # MCP server entry name in settings.json
+    "cloglog",  # plugin name reaches settings.json via the resolved bootstrap path
+)
+BRAND_SURFACE_MCP_JSON = (
+    "cloglog",  # MCP server entry name in .mcp.json
     "mcp-server/dist/index.js",  # plugin-resolved entry point
 )
 
@@ -422,20 +686,29 @@ def test_step3_settings_carries_no_host_specific_literals(
     )
 
     settings = (repo / ".claude" / "settings.json").read_text()
+    mcp_json = (repo / ".mcp.json").read_text()
     for needle in HOST_LITERALS:
         assert needle not in settings, (
             f".claude/settings.json contains host-specific literal {needle!r} "
             "after Step 3 — this is operator-environment state leaking into a "
             "fresh project. Move the value behind a config key or env var."
         )
+        assert needle not in mcp_json, (
+            f".mcp.json contains host-specific literal {needle!r} after Step 3 — "
+            "this is operator-environment state leaking into a fresh project."
+        )
 
     # Carve-out: brand surface must SURVIVE the no-literal sweep above. A
-    # future widened regex that strips `cloglog` from settings.json would
+    # future widened regex that strips `cloglog` from these files would
     # rename the MCP server and break every `mcp__cloglog__*` reference.
-    for needle in BRAND_SURFACE_SETTINGS:
-        assert needle in settings, (
-            f"Step 3 lost brand-surface literal {needle!r} — a regex over-broad "
-            "enough to strip this would rename the MCP server."
+    # Post T-344 the brand surface lives in .mcp.json (where mcpServers.cloglog
+    # is now written); settings.json carries only the SessionStart hook and
+    # need not include a cloglog literal in this fixture (real plugin paths
+    # contain "cloglog" but the fake_plugin_root fixture is named "plugin").
+    for needle in BRAND_SURFACE_MCP_JSON:
+        assert needle in mcp_json, (
+            f"Step 3 lost brand-surface literal {needle!r} from .mcp.json — "
+            "a regex over-broad enough to strip this would rename the MCP server."
         )
 
 

@@ -777,7 +777,10 @@ cd mcp-server && make test
    ```bash
    cloglog projects create "My Project"
    ```
-4. Configure the MCP server in your Claude Code settings:
+4. Configure the MCP server. Claude Code reads project-scoped MCP servers
+   from `.mcp.json` at the project root — **not** from `.claude/settings.json`
+   (T-344). Run `/cloglog init` to write the entry automatically, or, for a
+   manual setup, create `.mcp.json` with:
    ```json
    {
      "mcpServers": {
@@ -785,7 +788,7 @@ cd mcp-server && make test
          "command": "node",
          "args": ["./mcp-server/dist/index.js"],
          "env": {
-           "CLOGLOG_URL": "http://localhost:8000"
+           "CLOGLOG_URL": "http://127.0.0.1:8000"
          }
        }
      }

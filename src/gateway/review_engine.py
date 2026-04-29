@@ -511,10 +511,15 @@ async def resolve_pr_review_root(
     #      via Path 1 still needs the antisocial main clone, even
     #      when the operator only registered cloglog),
     #   3. legacy ``fallback`` (single-repo / no candidate).
-    main_clone_anchor = _resolve_main_clone_anchor(candidate, event.repo_full_name, fallback)
     if head_sha:
         worktree_sha = _probe_git_head(candidate)
         if worktree_sha is not None and worktree_sha != head_sha:
+            # Resolve the anchor lazily so we don't probe registry paths
+            # (and emit warnings about misconfigured ones) on PRs where
+            # SHAs match — the temp-checkout path won't run anyway.
+            main_clone_anchor = _resolve_main_clone_anchor(
+                candidate, event.repo_full_name, fallback
+            )
             temp = await _create_review_checkout(
                 main_clone_anchor,
                 head_sha=head_sha,
@@ -554,21 +559,38 @@ def _resolve_main_clone_anchor(candidate: Path | None, repo_full_name: str, fall
     won't resolve. Preference order matches the resolver's path order:
 
     1. ``settings.review_repo_roots[repo_full_name]`` — explicit
-       operator config wins (multi-repo backends).
+       operator config wins (multi-repo backends), **but only if the
+       configured path is a real git repo on disk** (codex round 4: a
+       stale/mistyped registry entry was silently overriding a valid
+       Path 1 worktree hit and breaking the temp-checkout). Validates
+       via ``_git_common_dir`` rather than ``is_dir()`` alone — the
+       anchor must own a git object DB, not just exist as a directory.
     2. Parent of ``git -C <candidate> rev-parse --git-common-dir`` —
-       a Path 0/1 worktree hit for a repo without a registry entry
-       still has the right answer encoded in the worktree itself: a
-       linked worktree's common-dir points at the main clone's
-       ``.git``, whose parent is the main clone. Covers codex round
-       3's foreign-repo Path 1 hit (antisocial worktree on a host
-       whose registry only lists cloglog).
+       a Path 0/1 worktree hit for a repo without a usable registry
+       entry still has the right answer encoded in the worktree
+       itself: a linked worktree's common-dir points at the main
+       clone's ``.git``, whose parent is the main clone. Covers codex
+       round 3's foreign-repo Path 1 hit (antisocial worktree on a
+       host whose registry only lists cloglog).
     3. ``fallback`` — single-repo legacy path, or a candidate whose
        common-dir probe fails (very rare; ``_create_review_checkout``
        is best-effort either way).
     """
     registry_entry = settings.review_repo_roots.get(repo_full_name)
     if registry_entry is not None:
-        return Path(registry_entry)
+        registry_path = Path(registry_entry)
+        # Validate via ``--git-common-dir`` — a typo'd/stale path that
+        # happens to exist as a directory but is not a git repo would
+        # still break ``git worktree add`` downstream. The probe also
+        # protects against a path that vanished after backend boot.
+        if _git_common_dir(registry_path) is not None:
+            return registry_path
+        logger.warning(
+            "review_repo_roots[%s]=%s is not a usable git repo — "
+            "falling through to candidate common-dir derivation",
+            repo_full_name,
+            registry_entry,
+        )
     if candidate is not None:
         common_dir = _git_common_dir(candidate)
         if common_dir is not None:

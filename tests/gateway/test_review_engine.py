@@ -3777,6 +3777,134 @@ class TestResolvePrReviewRootRepoRouting:
             f"for cleanup symmetry; got {result.main_clone!r}."
         )
 
+    @pytest.mark.asyncio
+    async def test_stale_registry_entry_falls_through_to_worktree_common_dir(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """T-350 codex round 4: a stale/mistyped registry entry must not
+        override a valid Path 1 worktree hit. The original round-3 fix
+        used the registry path unconditionally — if it pointed at a
+        missing or non-git directory, ``_create_review_checkout`` would
+        fail and the review would silently fall back to the stale
+        candidate.
+
+        Pin: registry has the correct repo key but a path that doesn't
+        exist; Path 1 returns a real linked worktree; SHA mismatch
+        triggers the temp-checkout. Anchor must come from the worktree's
+        ``--git-common-dir``, not the bad registry entry. The resolver
+        also logs a WARNING naming the bad path so an operator can fix
+        the config.
+        """
+        import logging as _logging
+        import os as _os
+        import subprocess as _subprocess
+
+        # Real antisocial main + linked worktree, same shape as the
+        # round-3 test.
+        antisocial_main = tmp_path / "antisocial-main"
+        _init_git_repo_at(antisocial_main)
+        antisocial_worktree = tmp_path / "antisocial-wt-bar"
+        env = {
+            **{k: v for k, v in _os.environ.items()},
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.com",
+        }
+        _subprocess.run(
+            [
+                "git",
+                "-C",
+                str(antisocial_main),
+                "worktree",
+                "add",
+                "-b",
+                "wt-bar",
+                str(antisocial_worktree),
+            ],
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+        worktree_sha = _subprocess.run(
+            ["git", "-C", str(antisocial_worktree), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=env,
+        ).stdout.strip()
+
+        # Bad registry: antisocial points at a path that doesn't exist.
+        bad_registry_path = tmp_path / "missing-does-not-exist"
+        cloglog_root = tmp_path / "cloglog-prod"
+        cloglog_root.mkdir()
+        monkeypatch.setattr(
+            "src.gateway.review_engine.settings.review_repo_roots",
+            {
+                "sachinkundu/cloglog": cloglog_root,
+                "sachinkundu/antisocial": bad_registry_path,
+            },
+        )
+        monkeypatch.setattr(
+            "src.gateway.review_engine.settings.review_source_root",
+            cloglog_root,
+        )
+
+        # Path 1 hit on the antisocial worktree row.
+        project_id = uuid.uuid4()
+        row = self._row(project_id, "wt-bar", str(antisocial_worktree))
+        query = _StubWorktreeQuery(row)
+
+        # Force a SHA mismatch so the temp-checkout branch executes.
+        event_sha = "b" * 40 if not worktree_sha.startswith("b") else "c" * 40
+        assert event_sha != worktree_sha
+        event = self._event(
+            "sachinkundu/antisocial",
+            "wt-bar",
+            head_sha=event_sha,
+            pr_number=8,
+        )
+
+        fake_temp = tmp_path / "temp-checkout-stale"
+        fake_temp.mkdir()
+        create_mock = AsyncMock(return_value=fake_temp)
+        monkeypatch.setattr("src.gateway.review_engine._create_review_checkout", create_mock)
+
+        with caplog.at_level(_logging.WARNING, logger="src.gateway.review_engine"):
+            result = await resolve_pr_review_root(
+                event, project_id=project_id, worktree_query=query
+            )
+
+        assert result is not None and result.is_temp is True
+        create_mock.assert_awaited_once()
+        args, kwargs = create_mock.call_args
+        call_anchor = args[0] if args else kwargs.get("main_clone")
+        # Anchor must be the worktree's common-dir parent — NOT the
+        # bad registry path.
+        assert Path(call_anchor).resolve() == antisocial_main.resolve(), (
+            "T-350 codex round 4: a non-git registry entry must not "
+            "override the valid Path 1 worktree's common-dir derivation. "
+            f"Got anchor={call_anchor!r}; expected {antisocial_main!r}; "
+            f"bad registry entry was {bad_registry_path!r}."
+        )
+        assert Path(call_anchor).resolve() != bad_registry_path.resolve(), (
+            "Bad registry entry leaked into the temp-checkout call"
+        )
+        # Operator visibility: WARNING names the bad config path.
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            "review_repo_roots" in m
+            and "sachinkundu/antisocial" in m
+            and "not a usable git repo" in m
+            for m in messages
+        ), (
+            "Bad registry entry must produce a WARNING naming the repo "
+            f"and the path so the operator can fix it; got {messages}"
+        )
+
 
 class TestReviewEngineDDDBoundary:
     """T-278 DDD backstop — Gateway's review engine must NOT import the

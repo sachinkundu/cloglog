@@ -3588,6 +3588,86 @@ class TestResolvePrReviewRootRepoRouting:
             "review_source=registry" in m and "sachinkundu/antisocial" in m for m in messages
         ), f"Registry hit must log review_source=registry; got {messages}"
 
+    @pytest.mark.asyncio
+    async def test_temp_checkout_anchored_at_registry_path_not_review_source_root(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """T-350 codex round 2: when Path 2 (registry) wins AND the
+        candidate's HEAD disagrees with ``event.head_sha``, the temp-dir
+        checkout must be materialised under the registry-resolved main
+        clone — NOT under ``settings.review_source_root``.
+
+        Anchoring at ``review_source_root`` (typically cloglog-prod) for
+        a foreign-repo PR runs ``git worktree add ... <foreign sha>``
+        against cloglog-prod's object DB and ``git fetch origin
+        <foreign branch>`` against cloglog's origin: neither resolves
+        the foreign objects, so the temp-checkout silently degrades to
+        a stale review. Pin: the resolver must pass the registry path
+        as ``main_clone`` to ``_create_review_checkout`` and to the
+        returned ``PrReviewRoot`` (so finally-block cleanup runs
+        against the right ``git worktree`` list).
+        """
+        antisocial_root = tmp_path / "antisocial"
+        antisocial_sha = _init_git_repo_at(antisocial_root)
+        cloglog_root = tmp_path / "cloglog-prod"
+        cloglog_root.mkdir()
+        # Registry hit for antisocial; legacy fallback (cloglog-prod) is
+        # the WRONG anchor — pin asserts the resolver does not use it.
+        monkeypatch.setattr(
+            "src.gateway.review_engine.settings.review_repo_roots",
+            {
+                "sachinkundu/cloglog": cloglog_root,
+                "sachinkundu/antisocial": antisocial_root,
+            },
+        )
+        monkeypatch.setattr(
+            "src.gateway.review_engine.settings.review_source_root",
+            cloglog_root,
+        )
+
+        # Force a SHA mismatch so the temp-checkout branch executes.
+        event_sha = "b" * 40 if not antisocial_sha.startswith("b") else "c" * 40
+        assert event_sha != antisocial_sha
+
+        fake_temp = tmp_path / "temp-checkout"
+        fake_temp.mkdir()
+        create_mock = AsyncMock(return_value=fake_temp)
+        monkeypatch.setattr("src.gateway.review_engine._create_review_checkout", create_mock)
+
+        query = _StubWorktreeQuery(None)
+        event = self._event(
+            "sachinkundu/antisocial",
+            "feature/external",
+            head_sha=event_sha,
+            pr_number=99,
+        )
+
+        result = await resolve_pr_review_root(event, project_id=uuid.uuid4(), worktree_query=query)
+
+        assert result is not None and result.is_temp is True, (
+            f"Expected is_temp=True PrReviewRoot; got {result}"
+        )
+        # The temp-checkout helper must receive the registry path as its
+        # main_clone — NOT cloglog-prod (settings.review_source_root).
+        create_mock.assert_awaited_once()
+        args, kwargs = create_mock.call_args
+        call_anchor = args[0] if args else kwargs.get("main_clone")
+        assert call_anchor == antisocial_root, (
+            "T-350 codex round 2: _create_review_checkout must be anchored "
+            "at the registry path for the PR's repo, not at "
+            f"settings.review_source_root. Got anchor={call_anchor!r}; "
+            f"expected {antisocial_root!r}."
+        )
+        # The PrReviewRoot returned to the caller must carry the same
+        # anchor as main_clone, so finally-block cleanup runs against
+        # the registry path's worktree list, not cloglog-prod's.
+        assert result.main_clone == antisocial_root, (
+            "PrReviewRoot.main_clone must point at the registry root for "
+            f"finally-block cleanup; got {result.main_clone!r}."
+        )
+
 
 class TestReviewEngineDDDBoundary:
     """T-278 DDD backstop — Gateway's review engine must NOT import the

@@ -491,11 +491,26 @@ async def resolve_pr_review_root(
         candidate = fallback
 
     # SHA-check + temp-dir fallback
+    #
+    # T-350 codex review (session 2/5): the temp-checkout MUST be
+    # materialised inside the main clone of the PR's OWN repo —
+    # ``main_clone`` is documented as "the repository that owns the
+    # disposable worktree" (PrReviewRoot docstring). Anchoring at
+    # ``fallback`` (= ``review_source_root``, typically cloglog-prod)
+    # for a foreign-repo PR runs ``git worktree add ... <foreign sha>``
+    # against cloglog-prod's object DB and ``git fetch origin
+    # <foreign branch>`` against cloglog's origin — neither resolves
+    # the foreign objects, so the temp-checkout silently degrades to
+    # a stale review. Resolve the per-repo anchor before calling
+    # ``_create_review_checkout``: registry takes precedence over the
+    # legacy fallback so a multi-repo host materialises each repo's
+    # temp-checkout under its own main clone.
+    main_clone_anchor = settings.review_repo_roots.get(event.repo_full_name) or fallback
     if head_sha:
         worktree_sha = _probe_git_head(candidate)
         if worktree_sha is not None and worktree_sha != head_sha:
             temp = await _create_review_checkout(
-                fallback,
+                main_clone_anchor,
                 head_sha=head_sha,
                 pr_number=event.pr_number,
                 head_branch=head_branch,
@@ -508,7 +523,7 @@ async def resolve_pr_review_root(
                     event.pr_number,
                     worktree_sha[:7],
                 )
-                return PrReviewRoot(path=temp, is_temp=True, main_clone=fallback)
+                return PrReviewRoot(path=temp, is_temp=True, main_clone=main_clone_anchor)
             logger.warning(
                 "review_source_drift worktree_head=%s pr_head=%s pr_branch=%s "
                 "worktree_path=%s pr=#%d (temp-dir checkout unavailable; "

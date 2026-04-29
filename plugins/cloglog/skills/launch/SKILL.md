@@ -297,11 +297,12 @@ _read_scalar_yaml() {
 }
 
 _gh_app_id() {
-  # Resolution order (T-348): .cloglog/local.yaml (gitignored, host-local —
-  # preferred) → .cloglog/config.yaml (tracked fallback for single-operator
-  # repos). The script gh-app-token.py applies the same precedence; this
-  # export just primes the env so downstream skills can use \$GH_APP_ID
-  # directly without re-resolving.
+  # Resolution order (T-348): env → .cloglog/local.yaml (gitignored,
+  # host-local — preferred) → .cloglog/config.yaml (tracked fallback for
+  # single-operator repos). Mirrors gh-app-token.py's _resolve precedence
+  # exactly so an operator who keeps a temporary env override is honored,
+  # not clobbered by stale YAML.
+  [[ -n "\${GH_APP_ID:-}" ]] && { echo "\$GH_APP_ID"; return; }
   local v
   v=\$(_read_scalar_yaml "\$PROJECT_ROOT/.cloglog/local.yaml" "gh_app_id")
   [[ -n "\$v" ]] && { echo "\$v"; return; }
@@ -309,7 +310,8 @@ _gh_app_id() {
 }
 
 _gh_app_installation_id() {
-  # See _gh_app_id resolution order above.
+  # See _gh_app_id resolution order above (env first).
+  [[ -n "\${GH_APP_INSTALLATION_ID:-}" ]] && { echo "\$GH_APP_INSTALLATION_ID"; return; }
   local v
   v=\$(_read_scalar_yaml "\$PROJECT_ROOT/.cloglog/local.yaml" "gh_app_installation_id")
   [[ -n "\$v" ]] && { echo "\$v"; return; }

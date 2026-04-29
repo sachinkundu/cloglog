@@ -859,19 +859,33 @@ fi
 
 ## Step 8: Gitignore and Add to Git
 
-Add `.cloglog/inbox` to `.gitignore` (the inbox file is runtime state, not source):
+Add the runtime / host-local files to `.gitignore` so they never get
+staged. `.cloglog/inbox` is runtime webhook state; `.cloglog/local.yaml`
+holds operator-host-specific App identifiers (T-348) and committing it
+would point other clones at the wrong GitHub App installation:
 
 ```bash
-echo '.cloglog/inbox' >> .gitignore
+{ grep -qxF '.cloglog/inbox'      .gitignore 2>/dev/null || echo '.cloglog/inbox'      >> .gitignore; }
+{ grep -qxF '.cloglog/local.yaml' .gitignore 2>/dev/null || echo '.cloglog/local.yaml' >> .gitignore; }
 ```
 
-Then stage the config files:
+Then stage the tracked config files **explicitly** — never `git add
+.cloglog/` as a directory, because that would pick up
+`.cloglog/local.yaml` if the operator had already created it before
+running this step:
 
 ```bash
-git add .cloglog/ .github/codex/ .gitignore
+git add .cloglog/config.yaml .gitignore
+# Also add any tracked sibling files (varies per project — common ones below).
+[[ -f .cloglog/on-worktree-create.sh ]]  && git add .cloglog/on-worktree-create.sh
+[[ -f .cloglog/on-worktree-destroy.sh ]] && git add .cloglog/on-worktree-destroy.sh
+[[ -d .github/codex ]] && git add .github/codex/
 ```
 
-If CLAUDE.md/AGENTS.md was modified, add that too. Do not commit automatically — let the user decide when to commit.
+If CLAUDE.md/AGENTS.md was modified, add that too. Do not commit
+automatically — let the user decide when to commit. Verify with
+`git diff --cached --name-only` that `.cloglog/local.yaml` is NOT in
+the staged changes before committing.
 
 ## Step 9: Summary
 

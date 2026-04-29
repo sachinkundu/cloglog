@@ -61,37 +61,58 @@ def test_launch_skill_defines_scalar_yaml_helper() -> None:
     )
 
 
-def test_launch_skill_readers_check_local_yaml_first() -> None:
-    """``_gh_app_id`` and ``_gh_app_installation_id`` must check
-    ``.cloglog/local.yaml`` (gitignored) before ``.cloglog/config.yaml``.
+def test_launch_skill_readers_resolve_env_first_then_local_then_config() -> None:
+    """``_gh_app_id`` / ``_gh_app_installation_id`` must walk
+    env → ``.cloglog/local.yaml`` → ``.cloglog/config.yaml``, exactly
+    matching gh-app-token.py's ``_resolve`` precedence.
 
-    Codex round 3 (MEDIUM) flagged that committing operator IDs to
-    tracked config would push other clones at the wrong App installation.
-    The fix splits resolution between gitignored ``local.yaml`` (preferred)
-    and tracked ``config.yaml`` (fallback only); this pin enforces both
-    readers walk that order.
+    Round 3 (MEDIUM): committing operator IDs to tracked config would push
+    other clones at the wrong App installation — gitignored ``local.yaml``
+    is the per-host home, ``config.yaml`` is the fallback.
+
+    Round 5 (MEDIUM): the readers must honor an existing env override —
+    otherwise an operator who exported `GH_APP_ID` for a temporary App gets
+    clobbered as soon as the worktree agent reads stale YAML.
     """
     body = _read(LAUNCH_SKILL)
-    for fn_name, key in (
-        ("_gh_app_id", "gh_app_id"),
-        ("_gh_app_installation_id", "gh_app_installation_id"),
+    for fn_name, env_var, yaml_key in (
+        ("_gh_app_id", "GH_APP_ID", "gh_app_id"),
+        ("_gh_app_installation_id", "GH_APP_INSTALLATION_ID", "gh_app_installation_id"),
     ):
         fn_match = re.search(rf"{fn_name}\(\)\s*\{{(.*?)\n\}}", body, flags=re.DOTALL)
         assert fn_match, f"{fn_name}() block missing from launch SKILL.md (T-348)."
         fn_body = fn_match.group(1)
-        local_idx = fn_body.find("local.yaml")
-        config_idx = fn_body.find("config.yaml")
+
+        env_idx = fn_body.find(f"${{{env_var}:-}}")
+        # Strip comment lines so the order check looks at the executable
+        # shape, not at the prose at the top of the function.
+        code = "\n".join(ln for ln in fn_body.splitlines() if not ln.lstrip().startswith("#"))
+        local_idx = code.find("local.yaml")
+        config_idx = code.find("config.yaml")
+
+        assert env_idx >= 0, (
+            f"{fn_name}() must check ${env_var} from env before YAML — "
+            f"otherwise an operator-set env override is clobbered by stale "
+            f".cloglog/local.yaml (T-348 round 5)."
+        )
         assert local_idx >= 0 and config_idx >= 0, (
             f"{fn_name}() must reference both local.yaml (preferred, "
             "gitignored) and config.yaml (fallback). See T-348 round 3."
         )
+        # env-check must appear in the function (placement before YAML
+        # is enforced structurally by the early-return pattern). YAML
+        # order is enforced on code lines only.
         assert local_idx < config_idx, (
-            f"{fn_name}() must check .cloglog/local.yaml BEFORE "
-            ".cloglog/config.yaml — committed config is a fallback only "
-            "(T-348 round 3)."
+            f"{fn_name}() YAML resolution must check local.yaml before "
+            f"config.yaml. See T-348 round 3."
         )
-        # Use the literal key name for the YAML lookup.
-        assert key in fn_body, f"{fn_name}() must look up the {key!r} YAML key."
+        # Env early-return guard must also appear before any
+        # `_read_scalar_yaml` invocation in the function body.
+        first_yaml_call = fn_body.find("_read_scalar_yaml")
+        assert env_idx < first_yaml_call, (
+            f"{fn_name}() env early-return must appear before any YAML lookup. See T-348 round 5."
+        )
+        assert yaml_key in fn_body, f"{fn_name}() must look up the {yaml_key!r} YAML key."
 
 
 def test_launch_sh_exports_both_gh_app_env_vars() -> None:
@@ -227,6 +248,42 @@ def test_local_yaml_is_gitignored() -> None:
     assert ".cloglog/local.yaml" in text.splitlines(), (
         ".gitignore must list .cloglog/local.yaml — operator-specific App IDs "
         "live there and must never be tracked. See T-348."
+    )
+
+
+def test_init_step8_ignores_local_yaml_and_never_adds_cloglog_dir() -> None:
+    """Init Step 8 must add ``.cloglog/local.yaml`` to ``.gitignore`` AND
+    must NOT stage the ``.cloglog/`` directory wholesale (codex round 5
+    HIGH).
+
+    Failure mode this pin closes: an operator runs ``/cloglog init`` on a
+    fresh repo, follows Step 6b's instruction to put App identifiers in
+    ``.cloglog/local.yaml``, then continues to Step 8. If Step 8 runs
+    ``git add .cloglog/`` as a directory, the operator's host-specific
+    Installation ID is staged, and the next ``git commit`` ships the leak
+    T-348 was meant to prevent.
+    """
+    skill = REPO_ROOT / "plugins/cloglog/skills/init/SKILL.md"
+    body = _read(skill)
+    # Find Step 8 block.
+    step8_match = re.search(r"## Step 8.*?(?=\n## Step \d|\Z)", body, flags=re.DOTALL)
+    assert step8_match, "Init Step 8 section missing — T-348 round 5 fix."
+    section = step8_match.group(0)
+
+    assert ".cloglog/local.yaml" in section and ".gitignore" in section, (
+        "Init Step 8 must append .cloglog/local.yaml to .gitignore — "
+        "otherwise an operator following Step 6b will accidentally stage "
+        "their per-host App identifiers (T-348 round 5)."
+    )
+    assert "git add .cloglog/ " not in section and "git add .cloglog/$" not in section, (
+        "Init Step 8 must NOT run `git add .cloglog/` as a directory — "
+        "that wholesale-stages .cloglog/local.yaml on a fresh init. Use "
+        "explicit per-file paths (T-348 round 5)."
+    )
+    # Positive: explicit config.yaml staging is required.
+    assert "git add .cloglog/config.yaml" in section, (
+        "Init Step 8 must explicitly stage .cloglog/config.yaml (the "
+        "tracked config), not the directory."
     )
 
 

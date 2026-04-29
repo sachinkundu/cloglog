@@ -492,7 +492,7 @@ async def resolve_pr_review_root(
 
     # SHA-check + temp-dir fallback
     #
-    # T-350 codex review (session 2/5): the temp-checkout MUST be
+    # T-350 codex sessions 2/5 + 3/5: the temp-checkout MUST be
     # materialised inside the main clone of the PR's OWN repo —
     # ``main_clone`` is documented as "the repository that owns the
     # disposable worktree" (PrReviewRoot docstring). Anchoring at
@@ -501,11 +501,17 @@ async def resolve_pr_review_root(
     # against cloglog-prod's object DB and ``git fetch origin
     # <foreign branch>`` against cloglog's origin — neither resolves
     # the foreign objects, so the temp-checkout silently degrades to
-    # a stale review. Resolve the per-repo anchor before calling
-    # ``_create_review_checkout``: registry takes precedence over the
-    # legacy fallback so a multi-repo host materialises each repo's
-    # temp-checkout under its own main clone.
-    main_clone_anchor = settings.review_repo_roots.get(event.repo_full_name) or fallback
+    # a stale review.
+    #
+    # Order of preference for the anchor:
+    #   1. registry entry for the PR's repo (multi-repo backends),
+    #   2. parent of the candidate's ``--git-common-dir`` — covers
+    #      Path 0/1 worktree hits for a foreign repo NOT in the
+    #      registry (codex round 3: an antisocial worktree row routed
+    #      via Path 1 still needs the antisocial main clone, even
+    #      when the operator only registered cloglog),
+    #   3. legacy ``fallback`` (single-repo / no candidate).
+    main_clone_anchor = _resolve_main_clone_anchor(candidate, event.repo_full_name, fallback)
     if head_sha:
         worktree_sha = _probe_git_head(candidate)
         if worktree_sha is not None and worktree_sha != head_sha:
@@ -536,6 +542,80 @@ async def resolve_pr_review_root(
             )
 
     return PrReviewRoot(path=candidate)
+
+
+def _resolve_main_clone_anchor(candidate: Path | None, repo_full_name: str, fallback: Path) -> Path:
+    """Pick the main-clone anchor for ``_create_review_checkout``.
+
+    The temp-checkout helper materialises a disposable worktree under
+    ``<anchor>/.cloglog/review-checkouts/`` via ``git worktree add`` and,
+    on a fetch retry, runs ``git fetch origin <branch>`` from the same
+    anchor. Both must run inside the PR's OWN repo or the SHA / refs
+    won't resolve. Preference order matches the resolver's path order:
+
+    1. ``settings.review_repo_roots[repo_full_name]`` — explicit
+       operator config wins (multi-repo backends).
+    2. Parent of ``git -C <candidate> rev-parse --git-common-dir`` —
+       a Path 0/1 worktree hit for a repo without a registry entry
+       still has the right answer encoded in the worktree itself: a
+       linked worktree's common-dir points at the main clone's
+       ``.git``, whose parent is the main clone. Covers codex round
+       3's foreign-repo Path 1 hit (antisocial worktree on a host
+       whose registry only lists cloglog).
+    3. ``fallback`` — single-repo legacy path, or a candidate whose
+       common-dir probe fails (very rare; ``_create_review_checkout``
+       is best-effort either way).
+    """
+    registry_entry = settings.review_repo_roots.get(repo_full_name)
+    if registry_entry is not None:
+        return Path(registry_entry)
+    if candidate is not None:
+        common_dir = _git_common_dir(candidate)
+        if common_dir is not None:
+            # ``.git`` parent is the main clone; for the main worktree
+            # itself this is the worktree dir (== main clone), and for
+            # a linked worktree it's the original repo. Either way the
+            # resulting path owns the worktree list and the origin
+            # remote that ``_create_review_checkout`` needs.
+            return common_dir.parent
+    return fallback
+
+
+def _git_common_dir(path: Path) -> Path | None:
+    """Probe ``git -C <path> rev-parse --git-common-dir``. Return the
+    absolute path to the shared ``.git`` directory or ``None``.
+
+    For a linked worktree, the result points at the main clone's
+    ``.git`` (the source of truth for the object DB and remotes).
+    For the main worktree, it points at the worktree's own ``.git``.
+    Errors are swallowed — the caller falls through to its own
+    fallback.
+    """
+    import subprocess  # local: keep top-level imports lean
+
+    try:
+        proc = subprocess.run(  # noqa: S603 -- fixed argv, path from trusted source
+            ["git", "-C", str(path), "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as err:  # pragma: no cover - rare
+        logger.warning("git rev-parse --git-common-dir probe failed for %s: %s", path, err)
+        return None
+    if proc.returncode != 0:
+        return None
+    common = proc.stdout.strip()
+    if not common:
+        return None
+    common_path = Path(common)
+    if not common_path.is_absolute():
+        # Older git emits a relative path resolved against the working
+        # tree — anchor at ``path`` so the result is always absolute,
+        # avoiding cwd dependency in the caller.
+        common_path = (path / common_path).resolve()
+    return common_path
 
 
 def _probe_git_head(path: Path) -> str | None:

@@ -3668,6 +3668,115 @@ class TestResolvePrReviewRootRepoRouting:
             f"finally-block cleanup; got {result.main_clone!r}."
         )
 
+    @pytest.mark.asyncio
+    async def test_temp_checkout_anchor_for_path1_foreign_repo_uses_worktree_common_dir(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """T-350 codex round 3: a Path 1 (worktree branch) hit for a
+        foreign repo NOT in the registry must still anchor the temp-
+        checkout at the foreign repo's main clone — derived from the
+        worktree's ``--git-common-dir`` — rather than falling back to
+        ``settings.review_source_root``.
+
+        Failure mode codex caught: registry lists only cloglog;
+        antisocial has a registered worktree, so Path 1 returns it;
+        SHA mismatch then materialises a temp-checkout under
+        cloglog-prod, which can't resolve antisocial's objects.
+        """
+        import os as _os
+        import subprocess as _subprocess
+
+        # Simulate the antisocial main clone + a linked worktree off it.
+        # ``_init_git_repo_at`` creates a real git repo; the worktree's
+        # ``rev-parse --git-common-dir`` points back at the main clone.
+        antisocial_main = tmp_path / "antisocial-main"
+        _init_git_repo_at(antisocial_main)
+        antisocial_worktree = tmp_path / "antisocial-wt-foo"
+        env = {
+            **{k: v for k, v in _os.environ.items()},
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.com",
+        }
+        _subprocess.run(
+            [
+                "git",
+                "-C",
+                str(antisocial_main),
+                "worktree",
+                "add",
+                "-b",
+                "wt-foo",
+                str(antisocial_worktree),
+            ],
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+        worktree_sha = _subprocess.run(
+            ["git", "-C", str(antisocial_worktree), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=env,
+        ).stdout.strip()
+
+        cloglog_root = tmp_path / "cloglog-prod"
+        cloglog_root.mkdir()
+        # Registry has cloglog ONLY — antisocial relies on worktree
+        # common-dir derivation. settings.review_source_root also
+        # points at cloglog so a regression that fell through there
+        # would visibly route the wrong way and fail the assert.
+        monkeypatch.setattr(
+            "src.gateway.review_engine.settings.review_repo_roots",
+            {"sachinkundu/cloglog": cloglog_root},
+        )
+        monkeypatch.setattr(
+            "src.gateway.review_engine.settings.review_source_root",
+            cloglog_root,
+        )
+
+        # Path 1 hit on the antisocial worktree row.
+        project_id = uuid.uuid4()
+        row = self._row(project_id, "wt-foo", str(antisocial_worktree))
+        query = _StubWorktreeQuery(row)
+
+        # Force a SHA mismatch so the temp-checkout branch executes.
+        event_sha = "b" * 40 if not worktree_sha.startswith("b") else "c" * 40
+        assert event_sha != worktree_sha
+        event = self._event(
+            "sachinkundu/antisocial",
+            "wt-foo",
+            head_sha=event_sha,
+            pr_number=7,
+        )
+
+        fake_temp = tmp_path / "temp-checkout"
+        fake_temp.mkdir()
+        create_mock = AsyncMock(return_value=fake_temp)
+        monkeypatch.setattr("src.gateway.review_engine._create_review_checkout", create_mock)
+
+        result = await resolve_pr_review_root(event, project_id=project_id, worktree_query=query)
+
+        assert result is not None and result.is_temp is True
+        create_mock.assert_awaited_once()
+        args, kwargs = create_mock.call_args
+        call_anchor = args[0] if args else kwargs.get("main_clone")
+        # Resolve symlinks (macOS /private/var ↔ /var; tmp_path can carry one).
+        assert Path(call_anchor).resolve() == antisocial_main.resolve(), (
+            "T-350 codex round 3: Path 1 foreign-repo worktree hit must "
+            "anchor the temp-checkout at the worktree's --git-common-dir "
+            f"parent (antisocial main clone), not review_source_root. "
+            f"Got anchor={call_anchor!r}; expected {antisocial_main!r}."
+        )
+        assert Path(result.main_clone).resolve() == antisocial_main.resolve(), (
+            "PrReviewRoot.main_clone must match the temp-checkout anchor "
+            f"for cleanup symmetry; got {result.main_clone!r}."
+        )
+
 
 class TestReviewEngineDDDBoundary:
     """T-278 DDD backstop — Gateway's review engine must NOT import the

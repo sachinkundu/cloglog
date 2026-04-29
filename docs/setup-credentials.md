@@ -184,7 +184,7 @@ under `~/.agent-vm/credentials/`:
 
 | Bot | PEM path | App-id / installation-id |
 |-----|----------|--------------------------|
-| `sakundu-claude-assistant[bot]` (code-push bot) | `~/.agent-vm/credentials/github-app.pem` | hard-coded in `src/gateway/github_token.py`; **agent-side minting** reads `GH_APP_ID` / `GH_APP_INSTALLATION_ID` from env (see below) |
+| `sakundu-claude-assistant[bot]` (code-push bot) | `~/.agent-vm/credentials/github-app.pem` | hard-coded in `src/gateway/github_token.py`; **agent-side minting** reads `GH_APP_ID` / `GH_APP_INSTALLATION_ID` from env, sourced from `.cloglog/config.yaml` via the launch skill (T-348 — see below) |
 | `cloglog-codex-reviewer[bot]` | `~/.agent-vm/credentials/codex-reviewer.pem` | hard-coded in `src/gateway/github_token.py` |
 | `cloglog-opencode-reviewer[bot]` (**T-248**) | `~/.agent-vm/credentials/opencode-reviewer.pem` | hard-coded in `src/gateway/github_token.py` (`_OPENCODE_APP_ID`, `_OPENCODE_INSTALLATION_ID`) |
 
@@ -196,16 +196,32 @@ as env vars expecting the backend to read them; `github_token.py` never
 consults env for reviewer App IDs, so env-based tweaks are silently
 ignored. Only the PEM is per-host.
 
-### Code-push bot — env vars for agent-side token minting (T-314)
+### Code-push bot — config-driven token minting (T-314, T-348)
 
 `src/gateway/github_token.py` hard-codes the code-push bot's IDs for
 **server-side** use only. The plugin skill script
 `plugins/cloglog/scripts/gh-app-token.py` is used by worktree agents to
-mint short-lived tokens at runtime; it reads from the exported environment
-so it can be reused in other projects without embedding cloglog-specific
-constants.
+mint short-lived tokens at runtime; it reads `GH_APP_ID` /
+`GH_APP_INSTALLATION_ID` from the **exported environment** so it can be
+reused in other projects without embedding cloglog-specific constants.
 
-**Required in every shell that launches Claude Code / agents:**
+**Required in `.cloglog/config.yaml` (T-348, preferred):**
+
+```yaml
+gh_app_id: "3235173"
+gh_app_installation_id: "120404294"
+```
+
+The launch skill renders these into `.cloglog/launch.sh` as `export`s so
+every worktree agent (initial launch and post-`/clear` continuations) sees
+them in its process environment. This is the only path that survives
+`/clear` between tasks (T-329) without operator intervention — relying on
+shell-RC inheritance fails on hosts where the supervisor relaunch does not
+preserve the parent zellij shell's env.
+
+**Optional shell-RC fallback** (for ad-hoc `gh-app-token.py` invocations
+outside the worktree-launch path — e.g. running `make verify-prod-protection`
+in your interactive shell):
 
 ```bash
 export GH_APP_ID=3235173
@@ -219,8 +235,8 @@ Add these to `~/.bashrc`, `~/.zshenv`, or `~/.profile`. Alternatively, use
 printenv GH_APP_ID GH_APP_INSTALLATION_ID
 ```
 
-`scripts/preflight.sh` warns when either variable is missing. If the vars
-are absent, any skill command that runs
+`scripts/preflight.sh` warns when *neither* path resolves the values. If
+both are absent, any skill command that runs
 `plugins/cloglog/scripts/gh-app-token.py` (github-bot, close-wave,
 reconcile) will exit with `Error: GH_APP_ID environment variable is
 required`.

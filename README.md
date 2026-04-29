@@ -49,8 +49,9 @@ Step 6 of `/cloglog init` configures bot identity for agent PRs. You can skip th
 
 Required for bot operations (all three are **host-local** — they don't travel with the repo and must be present on every machine):
 
-- `~/.agent-vm/credentials/github-app.pem` — App private key
-- `GH_APP_ID` and `GH_APP_INSTALLATION_ID` **exported** in your shell. A repo-local `.env` file is *not* sourced by Claude Code or the bot-token script — add the `export …` lines to `~/.bashrc` / `~/.zshenv` or use direnv. Verify with `printenv GH_APP_ID GH_APP_INSTALLATION_ID` in a fresh shell.
+- `~/.agent-vm/credentials/github-app.pem` — App private key (the only secret)
+- `gh_app_id` and `gh_app_installation_id` in `.cloglog/config.yaml` (T-348 — preferred). The launch skill exports these into every worktree agent's `launch.sh`, so they survive `/clear` between tasks without operator intervention. App ID and Installation ID are non-secret operator-host-specific identifiers (visible on the App settings / installation detail pages).
+- *Optional:* `GH_APP_ID` / `GH_APP_INSTALLATION_ID` exported in your shell RC (`~/.bashrc`, `~/.zshenv`, or via direnv) for ad-hoc `gh-app-token.py` invocations *outside* the worktree-launch path. A repo-local `.env` file is *not* sourced by Claude Code or the bot-token script. Verify with `printenv GH_APP_ID GH_APP_INSTALLATION_ID` in a fresh shell.
 
 See `docs/setup-credentials.md` for detailed bot setup instructions.
 

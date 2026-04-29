@@ -92,12 +92,14 @@ describe('CloglogClient', () => {
       vi.restoreAllMocks()
     })
 
-    it('uses project API key (not MCP service key) and omits X-MCP-Request', async () => {
-      // Codex review on PR #270 round 3: GET /api/v1/gateway/me is
-      // protected by ``CurrentProject`` (project API key), not the MCP
-      // service key. ``ensureProject()`` calls this from the /cloglog init
-      // backfill flow before any agent registers; the wrong credential
-      // shape would 401 and silently no-op the repo_url backfill.
+    it('uses project API key in Authorization AND X-MCP-Request: true', async () => {
+      // Codex review on PR #270 — round 3 catch: /api/v1/gateway/me is
+      // protected by ``CurrentProject`` (project API key in Authorization),
+      // not the MCP service key. Round 4 catch: the *middleware* still
+      // requires ``X-MCP-Request: true`` to let any non-/agents/* route
+      // pass; bearer-only is rejected at the middleware before
+      // ``CurrentProject`` runs. Both headers are required together —
+      // the canonical shape pinned by tests/e2e/test_full_workflow.py.
       vi.spyOn(globalThis, 'fetch').mockResolvedValue(
         new Response(JSON.stringify({ id: 'proj-1', name: 'p' }), {
           status: 200,
@@ -111,7 +113,7 @@ describe('CloglogClient', () => {
       expect(call[0]).toBe('http://localhost:8000/api/v1/gateway/me')
       const headers = call[1].headers as Record<string, string>
       expect(headers.Authorization).toBe('Bearer test-key')
-      expect(headers).not.toHaveProperty('X-MCP-Request')
+      expect(headers['X-MCP-Request']).toBe('true')
     })
   })
 

@@ -79,9 +79,19 @@ export class CloglogClient {
       'Content-Type': 'application/json',
     }
 
-    if (isRegisterRoute || isUnregisterByPath || isCloseOffTaskRoute || isGatewayMeRoute) {
+    if (isRegisterRoute || isUnregisterByPath || isCloseOffTaskRoute) {
       // Project-scoped agent bootstrap/teardown routes use project API key
       headers['Authorization'] = `Bearer ${this.apiKey}`
+    } else if (isGatewayMeRoute) {
+      // GET /api/v1/gateway/me is protected by ``CurrentProject`` (project
+      // API key in Authorization), but the *middleware* still requires the
+      // ``X-MCP-Request`` header to let any non-/agents/* route through
+      // (path 1 in ``ApiAccessControlMiddleware``). Bearer-only is rejected
+      // at the middleware before ``CurrentProject`` runs (codex review on
+      // PR #270 round 4). Send both headers together — the canonical shape
+      // already pinned by ``tests/e2e/test_full_workflow.py``.
+      headers['Authorization'] = `Bearer ${this.apiKey}`
+      headers['X-MCP-Request'] = 'true'
     } else if (isSupervisorRoute) {
       // Supervisor actions target another worktree — use MCP service key
       headers['Authorization'] = `Bearer ${this.serviceKey}`

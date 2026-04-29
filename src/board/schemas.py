@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict
 
 # --- Project ---
 
@@ -17,26 +17,22 @@ class ProjectCreate(BaseModel):
 
 
 class ProjectUpdate(BaseModel):
-    # ``None`` here means "field not sent" (Pydantic ``exclude_unset``
-    # discriminator); it is NOT the canonical clear value. ``Project.name``
-    # and ``Project.description`` are NOT NULL columns with a default of
-    # ``""`` — sending an explicit JSON ``null`` would 500 with
-    # ``NotNullViolationError``, so the validator below rejects it at 422.
-    # ``repo_url`` accepts explicit null and is coerced to ``""`` in
-    # ``BoardService.update_project`` (codex review on PR #270).
-    name: str | None = None
-    description: str | None = None
+    # ``Project.name`` and ``Project.description`` are NOT NULL columns
+    # with a default of ``""``. Typing them as plain ``str`` (not
+    # ``str | None``) makes Pydantic 422 on explicit JSON ``null`` —
+    # matching the reality of the column AND keeping the generated
+    # OpenAPI's ``name?: string`` / ``description?: string`` shape
+    # consistent with the contract clients consume (codex review on
+    # PR #270 round 4). ``model_dump(exclude_unset=True)`` still excludes
+    # fields the caller didn't send, so the omit-to-leave-unchanged
+    # PATCH semantics are preserved.
+    #
+    # ``repo_url`` stays ``str | None`` because explicit ``null`` is the
+    # documented "clear" value (the service coerces it to ``""`` for
+    # the NOT NULL column).
+    name: str = ""
+    description: str = ""
     repo_url: str | None = None
-
-    @field_validator("name", "description", mode="before")
-    @classmethod
-    def _reject_explicit_null(cls, v: object, info: object) -> object:
-        if v is None:
-            # ``info.field_name`` is the offending key; surfacing it makes
-            # the 422 self-explanatory to API clients.
-            field_name = getattr(info, "field_name", "field")
-            raise ValueError(f"{field_name} cannot be null; omit the key to leave it unchanged")
-        return v
 
 
 class ProjectResponse(BaseModel):

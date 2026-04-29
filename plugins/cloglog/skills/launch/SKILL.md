@@ -283,6 +283,30 @@ _backend_url() {
   if [[ -n "\$parsed" ]]; then echo "\$parsed"; else echo "\$default"; fi
 }
 
+_gh_app_id() {
+  # T-348: read GitHub App ID from .cloglog/config.yaml so worktree agents
+  # can mint bot tokens after \`/clear\` (which can drop env inherited from
+  # the launching shell). Same grep+sed shape as _backend_url; do NOT
+  # reintroduce the python YAML lib here (docs/invariants.md:76 — system
+  # python3 typically lacks PyYAML and silently returns the default).
+  local cfg="\$PROJECT_ROOT/.cloglog/config.yaml"
+  [[ -f "\$cfg" ]] || return 0
+  grep '^gh_app_id:' "\$cfg" 2>/dev/null | head -n1 \\
+    | sed 's/^gh_app_id:[[:space:]]*//' \\
+    | sed 's/[[:space:]]*#.*\$//' \\
+    | tr -d '"' | tr -d "'"
+}
+
+_gh_app_installation_id() {
+  # T-348: see _gh_app_id above.
+  local cfg="\$PROJECT_ROOT/.cloglog/config.yaml"
+  [[ -f "\$cfg" ]] || return 0
+  grep '^gh_app_installation_id:' "\$cfg" 2>/dev/null | head -n1 \\
+    | sed 's/^gh_app_installation_id:[[:space:]]*//' \\
+    | sed 's/[[:space:]]*#.*\$//' \\
+    | tr -d '"' | tr -d "'"
+}
+
 _api_key() {
   # Authoritative lookup order matches mcp-server/src/credentials.ts and the
   # T-214 contract in ${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md: env first, then
@@ -340,6 +364,14 @@ trap '_on_signal HUP' HUP
 trap '_on_signal INT' INT
 
 cd "\$WORKTREE_PATH"
+# T-348: export GitHub App identifiers so the github-bot skill's
+# gh-app-token.py can mint installation tokens. These survive \`/clear\`
+# because launch.sh re-exports them on every (re)launch, instead of
+# relying on shell RC inheritance from whatever spawned zellij.
+_GH_APP_ID="\$(_gh_app_id)"
+_GH_APP_INSTALLATION_ID="\$(_gh_app_installation_id)"
+[[ -n "\$_GH_APP_ID" ]] && export GH_APP_ID="\$_GH_APP_ID"
+[[ -n "\$_GH_APP_INSTALLATION_ID" ]] && export GH_APP_INSTALLATION_ID="\$_GH_APP_INSTALLATION_ID"
 # Read per-task model from .cloglog/task-model — written by the launch skill (T-332).
 # The supervisor rewrites this file before each continuation relaunch so the
 # correct model is used for every task, not just the initial one.

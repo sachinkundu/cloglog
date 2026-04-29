@@ -106,15 +106,23 @@ else
     Copy the PEM key from your GitHub App settings to ~/.agent-vm/credentials/github-app.pem"
 fi
 
-if [ -n "${GH_APP_ID:-}" ] && [ -n "${GH_APP_INSTALLATION_ID:-}" ]; then
-  ok "GH_APP_ID and GH_APP_INSTALLATION_ID exported"
+# T-348: GitHub App IDs live in .cloglog/config.yaml (operator-host-specific
+# but non-secret). The launch skill exports them into worktree agents via
+# launch.sh; here we just verify they are present in config OR exported in
+# the operator's shell (back-compat). Either is sufficient.
+CFG_GH_APP_ID=$(read_yaml_scalar "$REPO_ROOT/.cloglog/config.yaml" "gh_app_id" "")
+CFG_GH_APP_INSTALLATION_ID=$(read_yaml_scalar "$REPO_ROOT/.cloglog/config.yaml" "gh_app_installation_id" "")
+
+if { [ -n "${GH_APP_ID:-}" ] || [ -n "$CFG_GH_APP_ID" ]; } \
+   && { [ -n "${GH_APP_INSTALLATION_ID:-}" ] || [ -n "$CFG_GH_APP_INSTALLATION_ID" ]; }; then
+  ok "GH_APP_ID and GH_APP_INSTALLATION_ID resolved (env or .cloglog/config.yaml)"
 else
-  warn "GH_APP_ID and/or GH_APP_INSTALLATION_ID not exported — agents calling
+  warn "GH_APP_ID and/or GH_APP_INSTALLATION_ID not resolvable — agents calling
     plugins/cloglog/scripts/gh-app-token.py will fail with 'env var required'.
-    Add to ~/.bashrc or ~/.zshenv:
-    $(echo -e "${DIM}export GH_APP_ID=3235173${NC}")
-    $(echo -e "${DIM}export GH_APP_INSTALLATION_ID=120404294${NC}")
-    (cloglog's App and Installation IDs — not secrets, public GitHub App identifiers)"
+    Add the two non-secret identifiers to .cloglog/config.yaml:
+    $(echo -e "${DIM}gh_app_id: \"<your-app-id>\"${NC}")
+    $(echo -e "${DIM}gh_app_installation_id: \"<your-installation-id>\"${NC}")
+    The launch skill reads these and exports them into every worktree agent."
 fi
 
 # ── Report ───────────────────────────────────────────────────────────────────

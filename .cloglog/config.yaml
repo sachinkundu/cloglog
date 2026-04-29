@@ -6,6 +6,21 @@ quality_command: make quality
 dashboard_key: cloglog-dashboard-dev
 webhook_tunnel_name: cloglog-webhooks
 
+# GitHub App identifiers for the bot that pushes commits / opens PRs from
+# worktree agents. Both values are non-secret (App ID is visible on the App
+# settings page; Installation ID is visible on the installation detail page) —
+# the secret is the PEM at ~/.agent-vm/credentials/github-app.pem.
+#
+# These are operator-host-specific: each operator who runs cloglog locally
+# installs the App into their own org/repo and gets a distinct Installation ID.
+# The launch skill reads these from this file and `export`s them in the
+# generated .cloglog/launch.sh so worktree agents can mint a bot token even
+# after `/clear` between tasks (T-348). Do NOT remove these and rely on shell
+# RC env vars instead — `/clear` followed by a supervisor relaunch enters a
+# fresh bash that does not inherit RC exports reliably across hosts.
+gh_app_id: "3235173"
+gh_app_installation_id: "120404294"
+
 # Auto-merge-eligible final-stage reviewer bots only. The two-stage review
 # pipeline (docs/design/two-stage-pr-review.md) runs opencode first (stage A)
 # then codex (stage B); only codex's `:pass:` may auto-merge. Opencode is

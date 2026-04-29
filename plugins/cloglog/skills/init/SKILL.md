@@ -42,7 +42,7 @@ Add to `~/.bashrc` or `~/.zshenv` so every Claude Code session inherits it.
 
 **4. GitHub App credentials (optional).** Steps 6–7 configure bot identity for agent PRs. You can run init without them and complete the bot setup later — agents just won't be able to push or create PRs until configured. See `${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md`.
 
-**Re-running init** is safe. If this project is already bootstrapped (`.cloglog/config.yaml` has a `project_id` and `~/.cloglog/credentials` has a key), prerequisite 3 (`DASHBOARD_SECRET`) is no longer needed — the project already exists on the backend. Prerequisite 4 (GitHub App) is **host-local** and must be satisfied independently on every machine: `~/.agent-vm/credentials/github-app.pem`, `GH_APP_ID`, and `GH_APP_INSTALLATION_ID` are not written by the bootstrap and must be present in the shell before agent PR steps will work.
+**Re-running init** is safe. If this project is already bootstrapped (`.cloglog/config.yaml` has a `project_id` and `~/.cloglog/credentials` has a key), prerequisite 3 (`DASHBOARD_SECRET`) is no longer needed — the project already exists on the backend. Prerequisite 4 (GitHub App) is **host-local** and must be satisfied independently on every machine: `~/.agent-vm/credentials/github-app.pem` (the PEM secret), and `gh_app_id` / `gh_app_installation_id` in `.cloglog/config.yaml` (non-secret operator-specific identifiers — T-348). The launch skill exports these into worktree agents so `/clear` between tasks does not drop them.
 
 **Auto-repair on re-run.** Earlier versions of this skill wrote the `mcpServers.cloglog` block to `.claude/settings.json`. Claude Code does not load MCP servers from that file — they must live in `.mcp.json` at the project root. Re-running init detects that legacy layout and migrates the block: it moves `mcpServers.cloglog` into `.mcp.json` and strips the stale `mcpServers` key from `.claude/settings.json`. The migration is idempotent — a second re-run is a no-op.
 
@@ -699,25 +699,33 @@ Record in the summary: `GitHub repo: not configured`. The init can continue for 
 
 Look for:
 - `~/.agent-vm/credentials/github-app.pem` on disk
-- `GH_APP_ID` and `GH_APP_INSTALLATION_ID` exported in the process environment
+- `gh_app_id` and `gh_app_installation_id` in `.cloglog/config.yaml` (T-348 — preferred)
+  OR `GH_APP_ID` / `GH_APP_INSTALLATION_ID` exported in the process environment (back-compat)
 
 **If the PEM exists** (bot has been set up before):
 
 The token script is provided by the plugin at `${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py`
-and reads `GH_APP_ID` / `GH_APP_INSTALLATION_ID` from the **exported environment**. A
-repo-local `.env` file is NOT automatically sourced by Claude agents or shell launchers —
-the variables must be exported in the process environment at launch time.
+and reads `GH_APP_ID` / `GH_APP_INSTALLATION_ID` from the **exported environment**. The
+launch skill (T-348) reads `gh_app_id` / `gh_app_installation_id` from `.cloglog/config.yaml`
+and exports them into every worktree agent's `launch.sh`, so worktree agents survive `/clear`
+without relying on shell-RC inheritance.
 
-Recommended: add to your shell RC (`~/.bashrc`, `~/.zshenv`, or `~/.profile`) so every
-shell and every Claude / agent session inherits them automatically:
+Add the two non-secret identifiers to `.cloglog/config.yaml` (App ID is visible on the App
+settings page; Installation ID on the installation detail page):
 
-```bash
-export GH_APP_ID=<your-app-id>
-export GH_APP_INSTALLATION_ID=<your-installation-id>
+```yaml
+gh_app_id: "<your-app-id>"
+gh_app_installation_id: "<your-installation-id>"
 ```
 
-Alternatively, use [direnv](https://direnv.net/) with a project `.envrc`. Verify with
-`printenv GH_APP_ID GH_APP_INSTALLATION_ID` in a fresh shell before continuing.
+These values are operator-host-specific (each operator installs the App into their own
+org/repo and gets a distinct Installation ID). The PEM at `~/.agent-vm/credentials/github-app.pem`
+remains the only secret.
+
+Verify with `printenv GH_APP_ID GH_APP_INSTALLATION_ID` after launching a worktree agent
+(launch.sh exports them); on the operator's interactive shell you can also export them in
+your shell RC (`~/.bashrc`, `~/.zshenv`) for ad-hoc gh-app-token.py invocations outside the
+worktree-launch path.
 
 **If the PEM does not exist** (first-time setup):
 
@@ -731,7 +739,7 @@ Alternatively, use [direnv](https://direnv.net/) with a project `.envrc`. Verify
 >    - Permissions: Contents (read/write), Pull requests (read/write), Issues (read/write)
 >    - Install it on the repositories you want to manage
 > 2. Generate a private key and save it to `~/.agent-vm/credentials/github-app.pem`
-> 3. Note the App ID and Installation ID — export `GH_APP_ID=<id>` and `GH_APP_INSTALLATION_ID=<id>` in your shell RC (`~/.bashrc`, `~/.zshenv`) or via direnv so all Claude/agent processes inherit them
+> 3. Note the App ID and Installation ID — add `gh_app_id: "<id>"` and `gh_app_installation_id: "<id>"` to `.cloglog/config.yaml` (T-348). The launch skill exports these into every worktree agent automatically. Optionally also export `GH_APP_ID` / `GH_APP_INSTALLATION_ID` in your shell RC for ad-hoc gh-app-token.py invocations outside the worktree-launch path.
 >
 > Run `/cloglog init` again once the bot is set up.
 

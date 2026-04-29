@@ -788,7 +788,7 @@ cd mcp-server && make test
          "command": "node",
          "args": ["./mcp-server/dist/index.js"],
          "env": {
-           "CLOGLOG_URL": "http://127.0.0.1:8001"
+           "CLOGLOG_URL": "http://127.0.0.1:8000"
          }
        }
      }

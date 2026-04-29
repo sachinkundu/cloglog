@@ -182,7 +182,7 @@ under `~/.agent-vm/credentials/`:
 
 | Bot | PEM path | App-id / installation-id |
 |-----|----------|--------------------------|
-| `sakundu-claude-assistant[bot]` (code-push bot) | `~/.agent-vm/credentials/github-app.pem` | hard-coded in `src/gateway/github_token.py`; **agent-side minting** reads `GH_APP_ID` / `GH_APP_INSTALLATION_ID` from env (see below) |
+| `sakundu-claude-assistant[bot]` (code-push bot) | `~/.agent-vm/credentials/github-app.pem` | hard-coded in `src/gateway/github_token.py`; **agent-side minting** by `gh-app-token.py` resolves `GH_APP_ID` / `GH_APP_INSTALLATION_ID` from env → `.cloglog/local.yaml` (gitignored) → `.cloglog/config.yaml` (T-348 — see below) |
 | `cloglog-codex-reviewer[bot]` | `~/.agent-vm/credentials/codex-reviewer.pem` | hard-coded in `src/gateway/github_token.py` |
 | `cloglog-opencode-reviewer[bot]` (**T-248**) | `~/.agent-vm/credentials/opencode-reviewer.pem` | hard-coded in `src/gateway/github_token.py` (`_OPENCODE_APP_ID`, `_OPENCODE_INSTALLATION_ID`) |
 
@@ -233,8 +233,8 @@ printenv GH_APP_ID GH_APP_INSTALLATION_ID
 `scripts/preflight.sh` warns when neither path resolves the values. If
 both are absent, any skill command that runs
 `plugins/cloglog/scripts/gh-app-token.py` (github-bot, close-wave,
-reconcile) will exit with `Error: GH_APP_ID environment variable is
-required`.
+reconcile) will exit with `Error: GH_APP_ID is required (env or
+.cloglog/local.yaml)`.
 
 **Each operator's own values are stored in their own gitignored
 `.cloglog/local.yaml`.** Never copy these between operators or commit them

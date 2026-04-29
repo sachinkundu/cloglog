@@ -329,15 +329,24 @@ mcp      = json.loads(mcp_path.read_text())      if mcp_path.exists()      else 
 
 # Phase 1.5 — auto-repair legacy layout.
 # If a previous (broken) init wrote mcpServers.cloglog into settings.json,
-# move it into .mcp.json before we re-merge. Idempotent: a clean layout is
-# left untouched. We always strip mcpServers from settings.json regardless,
-# because that file is the wrong home for the block.
-legacy_servers = settings.pop("mcpServers", None)
+# move ONLY the cloglog entry into .mcp.json. Any other mcpServers entries
+# (e.g. an operator-maintained `github` or `linear` server) stay put —
+# settings.json is the wrong home for `cloglog` specifically, but other
+# servers may live there legitimately and we must not silently delete them.
+# Idempotent: a clean layout (no cloglog under settings.mcpServers) is a
+# no-op for this block.
+legacy_servers = settings.get("mcpServers")
 if isinstance(legacy_servers, dict) and "cloglog" in legacy_servers:
+    legacy_cloglog = legacy_servers.pop("cloglog")
     mcp_servers = mcp.setdefault("mcpServers", {})
     # Prefer the entry already in .mcp.json (operator may have edited it);
     # only seed from settings.json if .mcp.json has no cloglog entry yet.
-    mcp_servers.setdefault("cloglog", legacy_servers["cloglog"])
+    mcp_servers.setdefault("cloglog", legacy_cloglog)
+    # If cloglog was the only server in settings.mcpServers, drop the now-
+    # empty key so a clean post-repair layout has no `mcpServers` in
+    # settings.json. Otherwise leave the residual entries untouched.
+    if not legacy_servers:
+        settings.pop("mcpServers", None)
 
 # Hook write — settings.json owns SessionStart.
 hooks = settings.setdefault("hooks", {})

@@ -202,13 +202,16 @@ def test_step3_block_writes_settings_with_no_placeholders(
     settings_data = json.loads(settings_raw)
     mcp_data = json.loads(mcp_raw)
 
-    # T-344: hooks belong in settings.json, mcpServers in .mcp.json. The two
-    # files MUST NOT cross-contaminate — a stale mcpServers key in
-    # settings.json is the original bug this test guards against.
-    assert "mcpServers" not in settings_data, (
-        ".claude/settings.json must NOT contain `mcpServers` (T-344). "
-        "Claude Code does not load MCP servers from this file; the entry "
-        "must live in .mcp.json at the project root."
+    # T-344: hooks belong in settings.json, the cloglog mcpServer entry
+    # belongs in .mcp.json. The two files must not cross-contaminate.
+    # Note: settings.mcpServers may legitimately host other (non-cloglog)
+    # operator-maintained server entries, so we only forbid the cloglog
+    # entry from re-appearing in settings.json — we do NOT forbid the
+    # whole `mcpServers` key.
+    assert "cloglog" not in settings_data.get("mcpServers", {}), (
+        ".claude/settings.json must NOT contain `mcpServers.cloglog` (T-344). "
+        "Claude Code does not load MCP servers from this file; the cloglog "
+        "entry must live in .mcp.json at the project root."
     )
     assert "hooks" not in mcp_data, (
         ".mcp.json must NOT contain `hooks` — that key belongs in "
@@ -318,9 +321,13 @@ def test_step3_migrates_legacy_mcp_servers_block_to_mcp_json(
     settings = json.loads(legacy_settings.read_text())
     mcp = json.loads((repo / ".mcp.json").read_text())
 
+    # Cloglog was the only entry in the seeded settings.mcpServers, so the
+    # now-empty key must be dropped after migration. (When other entries
+    # exist alongside cloglog they survive — see the dedicated test below.)
     assert "mcpServers" not in settings, (
-        "Step 3 migration must STRIP `mcpServers` from .claude/settings.json. "
-        "Leaving it in place keeps the broken layout next to the correct one."
+        "Step 3 migration must DROP an empty mcpServers key from settings.json "
+        "after moving the only entry (cloglog) out. Leaving an empty `mcpServers: {}` "
+        "is broken-layout-shaped clutter."
     )
     assert "cloglog" in mcp.get("mcpServers", {}), (
         "Step 3 migration must MOVE `mcpServers.cloglog` into .mcp.json."
@@ -353,6 +360,105 @@ def test_step3_migrates_legacy_mcp_servers_block_to_mcp_json(
     assert "mcpServers" not in settings2
     assert list(mcp2["mcpServers"].keys()) == ["cloglog"], (
         "Re-running Step 3 must leave .mcp.json's mcpServers stable, not duplicate."
+    )
+
+
+def test_step3_migration_preserves_non_cloglog_mcp_servers(
+    tmp_path: Path, fake_plugin_root: Path
+) -> None:
+    """Regression guard: Step 3's repair must move ONLY the cloglog entry
+    out of `.claude/settings.json`, leaving any other operator-maintained
+    `mcpServers.*` entries (e.g. `github`, `linear`) in place. A naive
+    `settings.pop("mcpServers")` would silently delete them on the first
+    re-run of init.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=x@y",
+            "-c",
+            "user.name=x",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+        cwd=repo,
+        check=True,
+    )
+
+    # Legacy layout with cloglog AND a hand-maintained sibling server.
+    other_server = {
+        "command": "node",
+        "args": ["/opt/some-other-mcp/index.js"],
+        "env": {"OTHER_API_KEY": "redacted"},
+    }
+    legacy_settings_dir = repo / ".claude"
+    legacy_settings_dir.mkdir()
+    legacy_settings = legacy_settings_dir / "settings.json"
+    legacy_settings.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "cloglog": {
+                        "command": "node",
+                        "args": ["/legacy/path/to/index.js"],
+                        "env": {"CLOGLOG_URL": "http://127.0.0.1:8001"},
+                    },
+                    "other-server": other_server,
+                }
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+    block = _first_bash_block(_section(_read_skill(), "## Step 3:", "## Step "))
+    env = {
+        **os.environ,
+        "CLAUDE_PLUGIN_ROOT": str(fake_plugin_root),
+        "BACKEND_URL": "http://127.0.0.1:8001",
+    }
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", block],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"Step 3 migration run failed: stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+
+    settings = json.loads(legacy_settings.read_text())
+    mcp = json.loads((repo / ".mcp.json").read_text())
+
+    # Cloglog moved out of settings.json into .mcp.json.
+    assert "cloglog" not in settings.get("mcpServers", {}), (
+        "Step 3 migration must remove the cloglog entry from settings.json."
+    )
+    assert "cloglog" in mcp.get("mcpServers", {})
+
+    # The non-cloglog entry MUST survive — both the key and the original body.
+    assert "other-server" in settings.get("mcpServers", {}), (
+        "Step 3 migration silently deleted a non-cloglog MCP server entry "
+        "from .claude/settings.json. Migrate only the cloglog entry — leave "
+        "operator-maintained sibling servers intact."
+    )
+    assert settings["mcpServers"]["other-server"] == other_server, (
+        "Step 3 migration must preserve the body of non-cloglog entries verbatim."
+    )
+
+    # And the non-cloglog entry must NOT have been hoisted into .mcp.json —
+    # those are different files for different purposes.
+    assert "other-server" not in mcp.get("mcpServers", {}), (
+        "Step 3 migration must not copy non-cloglog entries into .mcp.json — "
+        "those servers were intentionally placed in settings.json by the operator."
     )
 
 

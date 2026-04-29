@@ -194,45 +194,65 @@ as env vars expecting the backend to read them; `github_token.py` never
 consults env for reviewer App IDs, so env-based tweaks are silently
 ignored. Only the PEM is per-host.
 
-### Code-push bot — env vars for agent-side token minting (T-314)
+### Code-push bot — config-driven token minting (T-314, T-348)
 
-`src/gateway/github_token.py` hard-codes the code-push bot's IDs for
-**server-side** use only. The plugin skill script
-`plugins/cloglog/scripts/gh-app-token.py` is used by worktree agents to
-mint short-lived tokens at runtime; it reads from the exported environment
-so it can be reused in other projects without embedding cloglog-specific
-constants.
+The plugin skill script `plugins/cloglog/scripts/gh-app-token.py` is used by
+worktree agents to mint short-lived tokens at runtime; it reads
+`GH_APP_ID` / `GH_APP_INSTALLATION_ID` from the **exported environment** so
+it can be reused in other projects without embedding any one operator's
+identifiers.
 
-**Required in every shell that launches Claude Code / agents:**
+**Required in `.cloglog/local.yaml` (T-348, gitignored — preferred):**
 
-```bash
-export GH_APP_ID=3235173
-export GH_APP_INSTALLATION_ID=120404294
+```yaml
+gh_app_id: "<your-app-id>"
+gh_app_installation_id: "<your-installation-id>"
 ```
 
-Add these to `~/.bashrc`, `~/.zshenv`, or `~/.profile`. Alternatively, use
-[direnv](https://direnv.net/) with a project `.envrc`. Verify with:
+`.cloglog/local.yaml` is gitignored because each operator installs the
+App into their own org/repo and gets a distinct Installation ID — committing
+these would push other clones at the wrong installation. `gh-app-token.py`
+resolves both keys itself in this order: env → `.cloglog/local.yaml` →
+`.cloglog/config.yaml` (tracked fallback for single-operator repos). The
+launch skill *also* exports them into worktree-agent shells so they survive
+`/clear` between tasks (T-329) for downstream `gh` calls that use the env
+directly.
+
+**Optional shell-RC fallback** (for ad-hoc `gh-app-token.py` invocations
+outside the worktree-launch path — e.g. running `make verify-prod-protection`
+in your interactive shell): export `GH_APP_ID` / `GH_APP_INSTALLATION_ID`
+in `~/.bashrc`, `~/.zshenv`, `~/.profile`, or via [direnv](https://direnv.net/).
+
+Verify after launching a worktree agent (or in your shell, if using the RC
+path) with:
 
 ```bash
 printenv GH_APP_ID GH_APP_INSTALLATION_ID
 ```
 
-`scripts/preflight.sh` warns when either variable is missing. If the vars
-are absent, any skill command that runs
+`scripts/preflight.sh` warns when neither path resolves the values. If
+both are absent, any skill command that runs
 `plugins/cloglog/scripts/gh-app-token.py` (github-bot, close-wave,
 reconcile) will exit with `Error: GH_APP_ID environment variable is
 required`.
 
+**Each operator's own values are stored in their own gitignored
+`.cloglog/local.yaml`.** Never copy these between operators or commit them
+to `.cloglog/config.yaml` — that would push other clones at the wrong App
+installation. The PEM is the only host-local secret; the App and
+Installation IDs are non-secret but still per-operator.
+
 Onboarding a new host:
 
-1. Download the App's private key (`.pem`) from the GitHub App settings.
+1. Download the code-push bot's private key (`.pem`) from the GitHub App
+   settings.
 2. `chmod 600` it and place it at
-   `~/.agent-vm/credentials/opencode-reviewer.pem`.
+   `~/.agent-vm/credentials/github-app.pem`.
 
-If the PEM is missing, the sequencer catches `FileNotFoundError`, logs one
-INFO line per session, and falls through to codex-only — the backend still
-boots healthy. `~/.cloglog/credentials` is NOT consulted for reviewer
-tokens; do not place PEM contents there.
+If this PEM is missing, `plugins/cloglog/scripts/gh-app-token.py` exits
+non-zero with `Error: PEM file not found at ~/.agent-vm/credentials/github-app.pem`
+and every agent push / PR-create operation fails. `~/.cloglog/credentials`
+is NOT consulted for code-push tokens; do not place PEM contents there.
 
 ## Opencode reviewer — enable flag
 

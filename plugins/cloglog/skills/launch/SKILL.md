@@ -283,6 +283,41 @@ _backend_url() {
   if [[ -n "\$parsed" ]]; then echo "\$parsed"; else echo "\$default"; fi
 }
 
+_read_scalar_yaml() {
+  # T-348: read a top-level scalar key from a YAML file via grep+sed.
+  # Same shape as _backend_url and parse-yaml-scalar.sh; do NOT reintroduce
+  # the python YAML lib here (docs/invariants.md:76 — system python3
+  # typically lacks PyYAML and silently returns the default).
+  local file="\$1"; local key="\$2"
+  [[ -f "\$file" ]] || return 0
+  grep "^\${key}:" "\$file" 2>/dev/null | head -n1 \\
+    | sed "s/^\${key}:[[:space:]]*//" \\
+    | sed 's/[[:space:]]*#.*\$//' \\
+    | tr -d '"' | tr -d "'"
+}
+
+_gh_app_id() {
+  # Resolution order (T-348): env → .cloglog/local.yaml (gitignored,
+  # host-local — preferred) → .cloglog/config.yaml (tracked fallback for
+  # single-operator repos). Mirrors gh-app-token.py's _resolve precedence
+  # exactly so an operator who keeps a temporary env override is honored,
+  # not clobbered by stale YAML.
+  [[ -n "\${GH_APP_ID:-}" ]] && { echo "\$GH_APP_ID"; return; }
+  local v
+  v=\$(_read_scalar_yaml "\$PROJECT_ROOT/.cloglog/local.yaml" "gh_app_id")
+  [[ -n "\$v" ]] && { echo "\$v"; return; }
+  _read_scalar_yaml "\$PROJECT_ROOT/.cloglog/config.yaml" "gh_app_id"
+}
+
+_gh_app_installation_id() {
+  # See _gh_app_id resolution order above (env first).
+  [[ -n "\${GH_APP_INSTALLATION_ID:-}" ]] && { echo "\$GH_APP_INSTALLATION_ID"; return; }
+  local v
+  v=\$(_read_scalar_yaml "\$PROJECT_ROOT/.cloglog/local.yaml" "gh_app_installation_id")
+  [[ -n "\$v" ]] && { echo "\$v"; return; }
+  _read_scalar_yaml "\$PROJECT_ROOT/.cloglog/config.yaml" "gh_app_installation_id"
+}
+
 _api_key() {
   # Authoritative lookup order matches mcp-server/src/credentials.ts and the
   # T-214 contract in ${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md: env first, then
@@ -340,6 +375,14 @@ trap '_on_signal HUP' HUP
 trap '_on_signal INT' INT
 
 cd "\$WORKTREE_PATH"
+# T-348: export GitHub App identifiers so the github-bot skill's
+# gh-app-token.py can mint installation tokens. These survive \`/clear\`
+# because launch.sh re-exports them on every (re)launch, instead of
+# relying on shell RC inheritance from whatever spawned zellij.
+_GH_APP_ID="\$(_gh_app_id)"
+_GH_APP_INSTALLATION_ID="\$(_gh_app_installation_id)"
+[[ -n "\$_GH_APP_ID" ]] && export GH_APP_ID="\$_GH_APP_ID"
+[[ -n "\$_GH_APP_INSTALLATION_ID" ]] && export GH_APP_INSTALLATION_ID="\$_GH_APP_INSTALLATION_ID"
 # Read per-task model from .cloglog/task-model — written by the launch skill (T-332).
 # The supervisor rewrites this file before each continuation relaunch so the
 # correct model is used for every task, not just the initial one.

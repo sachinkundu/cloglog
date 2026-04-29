@@ -10,7 +10,7 @@ Every GitHub operation must use the GitHub App bot identity. The user cannot mer
 
 ## Prerequisites
 
-- `${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py` is provided by the plugin and generates a short-lived installation token from the GitHub App's PEM key. Set `GH_APP_ID` and `GH_APP_INSTALLATION_ID` in your environment before calling it.
+- `${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py` is provided by the plugin and generates a short-lived installation token from the GitHub App's PEM key. The script resolves `GH_APP_ID` / `GH_APP_INSTALLATION_ID` itself (T-348) — env → `.cloglog/local.yaml` (gitignored, host-local) → `.cloglog/config.yaml` — so callers don't need to pre-export anything. The launch skill still exports them into worktree-agent shells for the convenience of unrelated `gh` calls.
 - The PEM key must be at `~/.agent-vm/credentials/github-app.pem`.
 
 ## Getting a Bot Token

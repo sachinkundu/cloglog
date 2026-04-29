@@ -42,7 +42,7 @@ Add to `~/.bashrc` or `~/.zshenv` so every Claude Code session inherits it.
 
 **4. GitHub App credentials (optional).** Steps 6–7 configure bot identity for agent PRs. You can run init without them and complete the bot setup later — agents just won't be able to push or create PRs until configured. See `${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md`.
 
-**Re-running init** is safe. If this project is already bootstrapped (`.cloglog/config.yaml` has a `project_id` and `~/.cloglog/credentials` has a key), prerequisite 3 (`DASHBOARD_SECRET`) is no longer needed — the project already exists on the backend. Prerequisite 4 (GitHub App) is **host-local** and must be satisfied independently on every machine: `~/.agent-vm/credentials/github-app.pem`, `GH_APP_ID`, and `GH_APP_INSTALLATION_ID` are not written by the bootstrap and must be present in the shell before agent PR steps will work.
+**Re-running init** is safe. If this project is already bootstrapped (`.cloglog/config.yaml` has a `project_id` and `~/.cloglog/credentials` has a key), prerequisite 3 (`DASHBOARD_SECRET`) is no longer needed — the project already exists on the backend. Prerequisite 4 (GitHub App) is **host-local** and must be satisfied independently on every machine: `~/.agent-vm/credentials/github-app.pem` (the PEM secret), and `gh_app_id` / `gh_app_installation_id` in the gitignored `.cloglog/local.yaml` (non-secret operator-specific identifiers — T-348). `gh-app-token.py` reads them on every invocation.
 
 **Auto-repair on re-run.** Earlier versions of this skill wrote the `mcpServers.cloglog` block to `.claude/settings.json`. Claude Code does not load MCP servers from that file — they must live in `.mcp.json` at the project root. Re-running init detects that legacy layout and migrates the block: it moves `mcpServers.cloglog` into `.mcp.json` and strips the stale `mcpServers` key from `.claude/settings.json`. The migration is idempotent — a second re-run is a no-op.
 
@@ -726,26 +726,26 @@ The backend re-normalizes the URL on write, so re-running init on a project whos
 ### 6b. Check if the GitHub App bot exists
 
 Look for:
-- `~/.agent-vm/credentials/github-app.pem` on disk
-- `GH_APP_ID` and `GH_APP_INSTALLATION_ID` exported in the process environment
+- `~/.agent-vm/credentials/github-app.pem` on disk (the only secret)
+- `gh_app_id` and `gh_app_installation_id` resolvable for `gh-app-token.py`. Resolution order: env → `.cloglog/local.yaml` (gitignored, host-local — preferred for any clone) → `.cloglog/config.yaml` (tracked fallback)
 
 **If the PEM exists** (bot has been set up before):
 
-The token script is provided by the plugin at `${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py`
-and reads `GH_APP_ID` / `GH_APP_INSTALLATION_ID` from the **exported environment**. A
-repo-local `.env` file is NOT automatically sourced by Claude agents or shell launchers —
-the variables must be exported in the process environment at launch time.
+The token script `${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py` resolves
+`GH_APP_ID` / `GH_APP_INSTALLATION_ID` (T-348) from: env → `.cloglog/local.yaml`
+→ `.cloglog/config.yaml`. Add the two non-secret identifiers to
+`.cloglog/local.yaml` (gitignored — App ID is visible on the App settings page;
+Installation ID on the installation detail page):
 
-Recommended: add to your shell RC (`~/.bashrc`, `~/.zshenv`, or `~/.profile`) so every
-shell and every Claude / agent session inherits them automatically:
-
-```bash
-export GH_APP_ID=<your-app-id>
-export GH_APP_INSTALLATION_ID=<your-installation-id>
+```yaml
+gh_app_id: "<your-app-id>"
+gh_app_installation_id: "<your-installation-id>"
 ```
 
-Alternatively, use [direnv](https://direnv.net/) with a project `.envrc`. Verify with
-`printenv GH_APP_ID GH_APP_INSTALLATION_ID` in a fresh shell before continuing.
+These values are **operator-host-specific** (each operator installs the App into
+their own org/repo and gets a distinct Installation ID — committing them would
+push other clones at the wrong installation). The PEM at
+`~/.agent-vm/credentials/github-app.pem` remains the only secret.
 
 **If the PEM does not exist** (first-time setup):
 
@@ -759,7 +759,7 @@ Alternatively, use [direnv](https://direnv.net/) with a project `.envrc`. Verify
 >    - Permissions: Contents (read/write), Pull requests (read/write), Issues (read/write)
 >    - Install it on the repositories you want to manage
 > 2. Generate a private key and save it to `~/.agent-vm/credentials/github-app.pem`
-> 3. Note the App ID and Installation ID — export `GH_APP_ID=<id>` and `GH_APP_INSTALLATION_ID=<id>` in your shell RC (`~/.bashrc`, `~/.zshenv`) or via direnv so all Claude/agent processes inherit them
+> 3. Note the App ID and Installation ID — add `gh_app_id: "<id>"` and `gh_app_installation_id: "<id>"` to `.cloglog/local.yaml` (gitignored — T-348). `gh-app-token.py` reads them on every invocation; no shell RC export needed.
 >
 > Run `/cloglog init` again once the bot is set up.
 
@@ -769,9 +769,17 @@ Record in the summary: `GitHub bot: needs setup`. The init can continue — agen
 
 Only run this if both the remote and the bot exist:
 
+`gh-app-token.py` resolves `GH_APP_ID` / `GH_APP_INSTALLATION_ID` in this
+order (T-348): process env → `.cloglog/local.yaml` (gitignored, preferred)
+→ `.cloglog/config.yaml` (tracked fallback). Init verifies repo access by
+running it directly — no env-priming required:
+
 ```bash
 BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests "${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py" 2>/dev/null)
-if [[ -n "$BOT_TOKEN" ]]; then
+if [[ -z "$BOT_TOKEN" ]]; then
+  echo "WARNING: gh-app-token.py minted no token — check ~/.agent-vm/credentials/github-app.pem"
+  echo "  and ensure gh_app_id / gh_app_installation_id are set in .cloglog/local.yaml."
+else
   REPO=$(git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
   if GH_TOKEN="$BOT_TOKEN" gh repo view "$REPO" --json name -q .name 2>/dev/null; then
     echo "Bot has access to this repo"
@@ -780,6 +788,10 @@ if [[ -n "$BOT_TOKEN" ]]; then
   fi
 fi
 ```
+
+If the script exits non-zero (missing IDs, no PEM, or App not installed
+on the repo), `BOT_TOKEN` will be empty and the WARNING fires — the access
+check never silently no-ops on a misconfigured host.
 
 **If the bot does not have access:**
 
@@ -875,19 +887,33 @@ fi
 
 ## Step 8: Gitignore and Add to Git
 
-Add `.cloglog/inbox` to `.gitignore` (the inbox file is runtime state, not source):
+Add the runtime / host-local files to `.gitignore` so they never get
+staged. `.cloglog/inbox` is runtime webhook state; `.cloglog/local.yaml`
+holds operator-host-specific App identifiers (T-348) and committing it
+would point other clones at the wrong GitHub App installation:
 
 ```bash
-echo '.cloglog/inbox' >> .gitignore
+{ grep -qxF '.cloglog/inbox'      .gitignore 2>/dev/null || echo '.cloglog/inbox'      >> .gitignore; }
+{ grep -qxF '.cloglog/local.yaml' .gitignore 2>/dev/null || echo '.cloglog/local.yaml' >> .gitignore; }
 ```
 
-Then stage the config files:
+Then stage the tracked config files **explicitly** — never `git add
+.cloglog/` as a directory, because that would pick up
+`.cloglog/local.yaml` if the operator had already created it before
+running this step:
 
 ```bash
-git add .cloglog/ .github/codex/ .gitignore
+git add .cloglog/config.yaml .gitignore
+# Also add any tracked sibling files (varies per project — common ones below).
+[[ -f .cloglog/on-worktree-create.sh ]]  && git add .cloglog/on-worktree-create.sh
+[[ -f .cloglog/on-worktree-destroy.sh ]] && git add .cloglog/on-worktree-destroy.sh
+[[ -d .github/codex ]] && git add .github/codex/
 ```
 
-If CLAUDE.md/AGENTS.md was modified, add that too. Do not commit automatically — let the user decide when to commit.
+If CLAUDE.md/AGENTS.md was modified, add that too. Do not commit
+automatically — let the user decide when to commit. Verify with
+`git diff --cached --name-only` that `.cloglog/local.yaml` is NOT in
+the staged changes before committing.
 
 ## Step 9: Summary
 

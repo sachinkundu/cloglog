@@ -29,10 +29,7 @@ uvx showboat exec "$DEMO_FILE" bash \
   'uv run --quiet python docs/demos/wt-t350-review-engine-repo-routing/proof_resolver.py'
 
 uvx showboat note "$DEMO_FILE" \
-  "Pin tests: five new acceptance pin tests live in tests/gateway/test_review_engine.py::TestResolvePrReviewRootRepoRouting. Recap (counted from the test source so the count cannot drift)."
-
-uvx showboat exec "$DEMO_FILE" bash \
-  'grep -c "    async def test_" tests/gateway/test_review_engine.py | xargs -I{} echo "TestResolvePrReviewRoot* tests in test_review_engine.py: {}"'
+  "Pin tests: five new acceptance pin tests live in tests/gateway/test_review_engine.py::TestResolvePrReviewRootRepoRouting. Counting only the T-350 acceptance test names so the count cannot drift as unrelated tests are added to the file."
 
 uvx showboat exec "$DEMO_FILE" bash \
   'grep -E "^    async def test_" tests/gateway/test_review_engine.py | grep -E "(skips_unrelated_repo|close_wave_pr_on_cloglog_still_routes|existing_worktree_branch_lookup_unchanged|review_repo_roots_registry_lookup)" | wc -l | xargs -I{} echo "T-350 acceptance pins present: {}"'

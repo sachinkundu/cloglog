@@ -45,19 +45,29 @@ pass this Depends."
 
 ## Review engine
 
-### `resolve_pr_review_root` — three strategies + SHA drift
+### `resolve_pr_review_root` — four strategies + SHA drift + repo-aware refusal
 
-Per-PR review root resolver has three strategies in order: `find_by_pr_url`
+Per-PR review root resolver has four strategies in order: `find_by_pr_url`
 (PR → task → worktree, covers main-agent close-out PRs), `find_by_branch`
-(agent worktree PRs), then host-level fallback (`REVIEW_SOURCE_ROOT` /
-`Path.cwd()`). After any strategy hits, a SHA mismatch against
-`event.head_sha` materialises a disposable checkout under
-`<main>/.cloglog/review-checkouts/<sha8>-<pr>`. Return type is
-`PrReviewRoot(path, is_temp, main_clone)` — callers must inspect `is_temp`
-for cleanup. External-fork PRs fall through to a `review_source_drift`
-warning by design (see `docs/design/two-stage-pr-review.md` §9.6).
+(agent worktree PRs), per-repo registry (`REVIEW_REPO_ROOTS` mapping
+`owner/repo → filesystem path`, T-350), then legacy host-level fallback
+(`REVIEW_SOURCE_ROOT` / `Path.cwd()`). After any strategy hits, a SHA
+mismatch against `event.head_sha` materialises a disposable checkout
+under `<main>/.cloglog/review-checkouts/<sha8>-<pr>`. Return type is
+`PrReviewRoot(path, is_temp, main_clone) | None` — callers must inspect
+`is_temp` for cleanup AND handle the `None` refusal case. The resolver
+returns `None` when `REVIEW_REPO_ROOTS` is non-empty AND the event's
+`repo_full_name` is absent AND no worktree on the host owns the branch;
+the engine surfaces this as a one-shot `unconfigured_repo` skip comment
+instead of routing the review to the wrong repo's source (the antisocial
+PR #2 incident shape). When `REVIEW_REPO_ROOTS` is empty (single-repo
+hosts), the legacy fallback applies and the resolver never returns
+`None` — preserving pre-T-350 behaviour. External-fork PRs in
+single-repo mode fall through to a `review_source_drift` warning by
+design (see `docs/design/two-stage-pr-review.md` §9.6).
 
-**Pin:** `tests/gateway/test_review_engine.py::TestResolvePrReviewRoot`
+**Pin:** `tests/gateway/test_review_engine.py::TestResolvePrReviewRoot` +
+`tests/gateway/test_review_engine.py::TestResolvePrReviewRootRepoRouting`
 
 ### Review body `_SEVERE_SEVERITIES` writer/reader parity
 

@@ -1,7 +1,7 @@
 # T-350: review engine no longer reviews cross-repo PRs against the wrong repository's source
 
-*2026-04-29T17:13:06Z by Showboat 0.6.1*
-<!-- showboat-id: af711ddf-4c49-491e-8bd2-31e2fc4a2fd7 -->
+*2026-04-29T17:24:51Z by Showboat 0.6.1*
+<!-- showboat-id: 868410b5-b0c1-408d-a00b-c90d36f0638c -->
 
 Background: antisocial PR #2 (branch wt-close-2026-04-29-wave-1) was reviewed against cloglog's source. The resolver was repo-blind — Path 1 (branch lookup) missed because the close-wave branch had no worktree row, and Path 2 fell back to settings.review_source_root (cloglog-prod) without consulting event.repo_full_name.
 
@@ -24,15 +24,7 @@ review_source=refused reason=unconfigured_repo repo=sachinkundu/antisocial pr_br
      OK — routed to cloglog's review root via registry
 ```
 
-Pin tests: five new acceptance pin tests live in tests/gateway/test_review_engine.py::TestResolvePrReviewRootRepoRouting. Recap (counted from the test source so the count cannot drift).
-
-```bash
-grep -c "    async def test_" tests/gateway/test_review_engine.py | xargs -I{} echo "TestResolvePrReviewRoot* tests in test_review_engine.py: {}"
-```
-
-```output
-TestResolvePrReviewRoot* tests in test_review_engine.py: 79
-```
+Pin tests: five new acceptance pin tests live in tests/gateway/test_review_engine.py::TestResolvePrReviewRootRepoRouting. Counting only the T-350 acceptance test names so the count cannot drift as unrelated tests are added to the file.
 
 ```bash
 grep -E "^    async def test_" tests/gateway/test_review_engine.py | grep -E "(skips_unrelated_repo|close_wave_pr_on_cloglog_still_routes|existing_worktree_branch_lookup_unchanged|review_repo_roots_registry_lookup)" | wc -l | xargs -I{} echo "T-350 acceptance pins present: {}"

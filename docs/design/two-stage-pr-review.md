@@ -621,8 +621,17 @@ async def resolve_pr_review_root(
     *,
     project_id: UUID,
     worktree_query: IWorktreeQuery,
-) -> PrReviewRoot: ...
+) -> PrReviewRoot | None: ...
 ```
+
+T-350 widened the return type to `PrReviewRoot | None`. The resolver
+returns `None` when the per-repo registry (`settings.review_repo_roots`)
+is non-empty AND the event's `repo_full_name` is absent AND no worktree
+on the host owns the branch — refusing rather than routing the review
+to the wrong repo's source. The caller in `_review_pr` posts a one-shot
+`UNCONFIGURED_REPO` skip comment and returns. When the registry is
+empty (single-repo hosts), the legacy fallback applies and the resolver
+never returns `None` — preserving pre-T-350 behaviour.
 
 Preference order:
 
@@ -643,9 +652,23 @@ Preference order:
    open and the moment `update_task_status(..., pr_url=...)` is called
    on the task (for both agent and close-out flows).
 
-2. **Host-level fallback (T-255 Path 2).** `settings.review_source_root
-   or Path.cwd()`. Used for PRs whose owning worktree is not on this
-   host (external contributors, closed worktrees, closed agents).
+2. **Per-repo registry (T-350 Path 2).** Consult
+   `settings.review_repo_roots[event.repo_full_name]` — a map from
+   GitHub `owner/repo` strings to absolute filesystem paths. Catches
+   close-wave / hand-created PRs that have no registered worktree on
+   the host. Without this path, those PRs would inherit the wrong
+   repo's source via Path 3 (the antisocial PR #2 incident).
+
+3. **Host-level fallback (T-255 Path 3, legacy).**
+   `settings.review_source_root or Path.cwd()`. Used for PRs whose
+   owning worktree is not on this host (external contributors, closed
+   worktrees, closed agents). Only consulted when
+   `settings.review_repo_roots` is **empty** — the single-repo
+   compatibility path. When the registry is populated, this path is
+   replaced by an explicit refusal (`return None`); the engine posts a
+   one-shot `UNCONFIGURED_REPO` skip comment instead of falling through
+   to a foreign repo's source. Operators must populate
+   `REVIEW_REPO_ROOTS` on every multi-repo backend; see `.env.example`.
 
 **SHA-check + temp-dir fallback (T-281).** Whichever candidate the chain
 above yields, we probe `git -C <candidate> rev-parse HEAD`. If the

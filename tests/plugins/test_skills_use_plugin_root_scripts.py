@@ -126,27 +126,35 @@ def _run_script(**env_overrides: str) -> subprocess.CompletedProcess[str]:
 
     Uses ``uv run`` so PyJWT[crypto] and requests are available without adding
     them to the project's dev dependencies.
+
+    T-348 round 4: the script now resolves ``GH_APP_ID`` /
+    ``GH_APP_INSTALLATION_ID`` from ``.cloglog/local.yaml`` /
+    ``.cloglog/config.yaml`` if env is empty. To exercise the **env-only**
+    contract these tests pin, run the subprocess from a temporary
+    non-git directory so the script's project-root probe (``git rev-parse
+    --show-toplevel``) returns nothing and YAML lookup is skipped.
     """
     env = {**os.environ, **env_overrides}
-    # Strip any real credentials so the test never accidentally calls GitHub.
     env.pop("GH_APP_ID", None)
     env.pop("GH_APP_INSTALLATION_ID", None)
     env.update(env_overrides)
-    return subprocess.run(
-        [
-            "uv",
-            "run",
-            "--with",
-            "PyJWT[crypto]",
-            "--with",
-            "requests",
-            "python",
-            str(GH_APP_TOKEN_SCRIPT),
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        return subprocess.run(
+            [
+                "uv",
+                "run",
+                "--with",
+                "PyJWT[crypto]",
+                "--with",
+                "requests",
+                "python",
+                str(GH_APP_TOKEN_SCRIPT),
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=tmpdir,
+        )
 
 
 def test_gh_app_token_errors_when_gh_app_id_missing() -> None:

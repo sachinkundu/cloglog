@@ -82,7 +82,7 @@ _HINT = (
     "    1. export the env var, OR\n"
     "    2. add `gh_app_id: \"<id>\"` / `gh_app_installation_id: \"<id>\"` to\n"
     "       .cloglog/local.yaml (gitignored, preferred — host-local).\n"
-    "    See plugins/cloglog/docs/setup-credentials.md for details."
+    "    See ${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md for details."
 )
 
 if not APP_ID:

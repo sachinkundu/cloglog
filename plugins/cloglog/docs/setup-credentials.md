@@ -244,14 +244,15 @@ Installation IDs are non-secret but still per-operator.
 
 Onboarding a new host:
 
-1. Download the App's private key (`.pem`) from the GitHub App settings.
+1. Download the code-push bot's private key (`.pem`) from the GitHub App
+   settings.
 2. `chmod 600` it and place it at
-   `~/.agent-vm/credentials/opencode-reviewer.pem`.
+   `~/.agent-vm/credentials/github-app.pem`.
 
-If the PEM is missing, the sequencer catches `FileNotFoundError`, logs one
-INFO line per session, and falls through to codex-only — the backend still
-boots healthy. `~/.cloglog/credentials` is NOT consulted for reviewer
-tokens; do not place PEM contents there.
+If this PEM is missing, `plugins/cloglog/scripts/gh-app-token.py` exits
+non-zero with `Error: PEM file not found at ~/.agent-vm/credentials/github-app.pem`
+and every agent push / PR-create operation fails. `~/.cloglog/credentials`
+is NOT consulted for code-push tokens; do not place PEM contents there.
 
 ## Opencode reviewer — enable flag
 

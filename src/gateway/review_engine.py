@@ -341,7 +341,7 @@ async def resolve_pr_review_root(
     *,
     project_id: UUID,
     worktree_query: IWorktreeQuery,
-) -> PrReviewRoot:
+) -> PrReviewRoot | None:
     """Resolve the filesystem root codex should read for this PR.
 
     Preference order:
@@ -360,9 +360,22 @@ async def resolve_pr_review_root(
     **Path 1 — branch lookup (T-278).** Fall through to
     ``worktrees.branch_name == event.head_branch`` within the project.
 
-    **Path 2 — host-level fallback (T-255).**
+    **Path 2 — per-repo registry (T-350).** Consult
+    ``settings.review_repo_roots[event.repo_full_name]``. The map keys
+    are ``owner/repo`` strings; the value is an absolute filesystem
+    path. This path catches close-wave/hand-created PRs that have no
+    registered worktree on the host — without it, those PRs would
+    inherit the wrong repo's source via Path 3.
+
+    **Path 3 — host-level fallback (T-255, legacy).**
     ``settings.review_source_root or Path.cwd()`` for PRs whose owning
-    worktree is not on this host.
+    worktree is not on this host. Only consulted when
+    ``settings.review_repo_roots`` is EMPTY (legacy single-repo
+    deployment). When the registry is populated, this path is replaced
+    by an explicit refusal: the resolver returns ``None`` for any
+    ``repo_full_name`` not in the registry — surfaced to the caller
+    as a one-shot ``unconfigured_repo`` skip comment instead of a
+    cross-repo review (T-350; the antisocial PR #2 incident).
 
     **SHA-check + temp-dir fallback (T-281).** Whichever candidate the
     chain yields, we probe ``git -C <candidate> rev-parse HEAD``. If the
@@ -434,8 +447,42 @@ async def resolve_pr_review_root(
                     event.pr_number,
                 )
 
-    # Path 2 — host-level fallback
+    # Path 2 — per-repo registry (T-350)
     if candidate is None:
+        registry_entry = settings.review_repo_roots.get(event.repo_full_name)
+        if registry_entry is not None:
+            cand = Path(registry_entry)
+            if cand.is_dir():
+                candidate = cand
+                logger.info(
+                    "review_source=registry path=%s repo=%s pr=#%d",
+                    candidate,
+                    event.repo_full_name,
+                    event.pr_number,
+                )
+            else:
+                logger.warning(
+                    "review_source=fallback reason=registry_path_missing "
+                    "repo=%s registry_path=%s pr=#%d",
+                    event.repo_full_name,
+                    registry_entry,
+                    event.pr_number,
+                )
+
+    # Path 3 — host-level fallback OR refusal
+    if candidate is None:
+        if settings.review_repo_roots:
+            # Operator opted into the registry; an unmatched repo is a
+            # configuration miss, not a fallback target. Refusing here
+            # is the T-350 fix — the alternative is reviewing the PR
+            # against the wrong repository's source.
+            logger.warning(
+                "review_source=refused reason=unconfigured_repo repo=%s pr_branch=%s pr=#%d",
+                event.repo_full_name,
+                head_branch or "<empty>",
+                event.pr_number,
+            )
+            return None
         logger.warning(
             "review_source=fallback reason=no_matching_worktree pr_branch=%s pr=#%d",
             head_branch or "<empty>",
@@ -1322,6 +1369,25 @@ class ReviewEngineConsumer:
             review_root = await resolve_pr_review_root(
                 event, project_id=project_id, worktree_query=wq
             )
+        # T-350: when `review_repo_roots` is configured and the event's
+        # repo isn't in it AND no worktree owns the branch, the resolver
+        # refuses (None). Posting nothing is strictly better than
+        # reviewing against the wrong repo's source — surface the refusal
+        # as a one-shot skip comment so the operator can see the
+        # configuration gap on GitHub.
+        if review_root is None:
+            await self._notify_skip(
+                event,
+                SkipReason.UNCONFIGURED_REPO,
+                (
+                    f"Code review skipped: this App is installed but not "
+                    f"configured for review on `{event.repo_full_name}`. "
+                    f"Configure `REVIEW_REPO_ROOTS` (env var or "
+                    f"`review_repo_roots` in `src/shared/config.py`) on "
+                    f"the cloglog backend to enable reviews for this repo."
+                ),
+            )
+            return
         project_root = review_root.path
 
         # Session counter for the review-body header (T-290). ``prior`` counts

@@ -48,6 +48,12 @@ class SkipReason(StrEnum):
     OPENCODE_FAILED = "opencode_failed"
     OPENCODE_TIMEOUT = "opencode_timeout"
     OPENCODE_UNAVAILABLE = "opencode_unavailable"
+    # T-350: PR's repo_full_name has no entry in `review_repo_roots` AND no
+    # worktree on this host owns its branch — the resolver refuses rather
+    # than fall through to the host-level review_source_root, which would
+    # review the PR against the wrong repository's source (the original
+    # antisocial PR #2 incident: cloglog source cited as antisocial code).
+    UNCONFIGURED_REPO = "unconfigured_repo"
 
 
 @dataclass

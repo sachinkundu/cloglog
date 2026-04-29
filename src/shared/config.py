@@ -37,9 +37,29 @@ class Settings(BaseSettings):
     review_source_root: Path | None = Field(
         default=None,
         description=(
-            "Filesystem root the review engine passes to `codex -C`. "
-            "Must point at a git checkout of the PR's merge target (usually main). "
+            "Filesystem root the review engine passes to `codex -C` "
+            "as the legacy single-repo fallback. Used only when "
+            "`review_repo_roots` is empty (e.g. dev hosts that haven't "
+            "migrated). When `review_repo_roots` is set, the resolver "
+            "consults that map and refuses unconfigured repos instead "
+            "of falling back here — preventing T-350 cross-repo leaks "
+            "(antisocial PR #2 was reviewed against cloglog's source). "
             "When None, falls back to Path.cwd() — OK for dev, wrong in prod."
+        ),
+    )
+    review_repo_roots: dict[str, Path] = Field(
+        default_factory=dict,
+        description=(
+            "Per-repo filesystem map consulted by the review engine "
+            "before the legacy `review_source_root` fallback. Keys are "
+            "GitHub `owner/repo` strings (matching `event.repo_full_name`); "
+            "values are absolute filesystem paths to the matching git "
+            "checkout. When non-empty, the resolver REFUSES to review a "
+            "PR whose `repo_full_name` is absent from the map and whose "
+            "branch has no registered worktree on this host — see T-350. "
+            "Set via the `REVIEW_REPO_ROOTS` env var as JSON: "
+            '`{"sachinkundu/cloglog": "/home/sachin/code/cloglog-prod", '
+            '"sachinkundu/antisocial": "/home/sachin/code/antisocial"}`.'
         ),
     )
     main_agent_inbox_path: Path | None = Field(

@@ -3324,6 +3324,271 @@ class TestResolvePrReviewRoot:
         )
 
 
+class TestResolvePrReviewRootRepoRouting:
+    """T-350 — resolver must consult ``event.repo_full_name`` before
+    falling back to the host-level ``review_source_root``. The original
+    incident: antisocial PR #2 was reviewed against cloglog's source
+    because the resolver was repo-blind and the PR's branch had no
+    registered worktree on the host. The fix introduces
+    ``settings.review_repo_roots`` — a per-repo registry consulted
+    before the legacy fallback. When the registry is non-empty and an
+    incoming PR's repo is absent from it AND no worktree on this host
+    owns its branch, the resolver REFUSES (returns ``None``) instead
+    of routing the review to the wrong repo's source.
+    """
+
+    @staticmethod
+    def _event(
+        repo_full_name: str,
+        head_branch: str,
+        *,
+        head_sha: str = "",
+        pr_number: int = 350,
+    ) -> WebhookEvent:
+        return WebhookEvent(
+            type=WebhookEventType.PR_OPENED,
+            delivery_id=f"d-{repo_full_name}-{pr_number}",
+            repo_full_name=repo_full_name,
+            pr_number=pr_number,
+            pr_url=f"https://github.com/{repo_full_name}/pull/{pr_number}",
+            head_branch=head_branch,
+            base_branch="main",
+            sender="sachinkundu",
+            raw={
+                "pull_request": {"head": {"sha": head_sha}},
+                "repository": {"full_name": repo_full_name},
+            },
+        )
+
+    @staticmethod
+    def _row(project_id: Any, branch_name: str, worktree_path: str) -> Any:
+        from src.agent.interfaces import WorktreeRow
+
+        return WorktreeRow(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            worktree_path=worktree_path,
+            branch_name=branch_name,
+            status="online",
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolve_pr_review_root_skips_unrelated_repo(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """T-350 acceptance #1: webhook for ``sachinkundu/antisocial`` with
+        no matching worktree on this host AND no registry entry for that
+        repo → resolver returns ``None``. Pins the refusal: the original
+        antisocial PR #2 incident took this exact shape (close-wave branch
+        ``wt-close-2026-04-29-wave-1`` had no worktree row, the registry
+        wasn't consulted, fallback handed cloglog-prod to codex).
+        """
+        import logging as _logging
+
+        cloglog_root = tmp_path / "cloglog-prod"
+        cloglog_root.mkdir()
+        # Registry exists and has cloglog — but NOT antisocial. The
+        # incoming PR's repo must be refused, not silently routed
+        # elsewhere.
+        monkeypatch.setattr(
+            "src.gateway.review_engine.settings.review_repo_roots",
+            {"sachinkundu/cloglog": cloglog_root},
+        )
+        # Also pin the legacy fallback to a real path so a regression
+        # that ignores the registry would visibly route there — making
+        # the test fail with a path comparison rather than vacuously
+        # passing.
+        monkeypatch.setattr(
+            "src.gateway.review_engine.settings.review_source_root",
+            cloglog_root,
+        )
+        query = _StubWorktreeQuery(None)
+        event = self._event(
+            "sachinkundu/antisocial",
+            "wt-close-2026-04-29-wave-1",
+        )
+
+        with caplog.at_level(_logging.WARNING, logger="src.gateway.review_engine"):
+            result = await resolve_pr_review_root(
+                event, project_id=uuid.uuid4(), worktree_query=query
+            )
+
+        assert result is None, (
+            "Unconfigured repo with no worktree match must REFUSE — got "
+            f"{result}. Returning a candidate here re-opens the T-350 "
+            "cross-repo leak (antisocial PR reviewed against cloglog source)."
+        )
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            "review_source=refused" in m and "reason=unconfigured_repo" in m for m in messages
+        ), (
+            "Refusal must log review_source=refused reason=unconfigured_repo for "
+            f"operator visibility; got {messages}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_close_wave_pr_on_cloglog_still_routes_to_cloglog(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """T-350 acceptance #2: a cloglog close-wave PR (no worktree row
+        for the close-off branch, no pr_url binding) MUST still resolve
+        to cloglog's review root via the registry. Without this the fix
+        would regress every cloglog close-wave / hand-created PR.
+        """
+        cloglog_root = tmp_path / "cloglog-prod"
+        sha = _init_git_repo_at(cloglog_root)
+        monkeypatch.setattr(
+            "src.gateway.review_engine.settings.review_repo_roots",
+            {"sachinkundu/cloglog": cloglog_root},
+        )
+        query = _StubWorktreeQuery(None)
+        event = self._event(
+            "sachinkundu/cloglog",
+            "wt-close-2026-04-29-wave-7",
+            head_sha=sha,
+        )
+
+        result = await resolve_pr_review_root(event, project_id=uuid.uuid4(), worktree_query=query)
+
+        assert result is not None, (
+            "Cloglog close-wave PR must route to cloglog's review root via "
+            "registry — got None. The fix would otherwise break every "
+            "close-wave / hand-created cloglog PR."
+        )
+        assert result.path == cloglog_root, (
+            f"Expected registry path {cloglog_root}; got {result.path}"
+        )
+        assert result.is_temp is False
+
+    @pytest.mark.asyncio
+    async def test_existing_worktree_branch_lookup_unchanged_cloglog(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """T-350 acceptance #3 (cloglog half): a registered cloglog
+        worktree for the PR's branch hits Path 1 regardless of the
+        registry — the registry is the no-worktree-match safety net,
+        not a replacement for the worktree lookup. Pins that adding the
+        registry never displaces a live worktree row.
+        """
+        project_id = uuid.uuid4()
+        worktree_dir = tmp_path / "wt-cloglog-feature"
+        sha = _init_git_repo_at(worktree_dir)
+        # Registry deliberately points elsewhere — Path 1 must win.
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.setattr(
+            "src.gateway.review_engine.settings.review_repo_roots",
+            {"sachinkundu/cloglog": elsewhere},
+        )
+        row = self._row(project_id, "wt-cloglog-feature", str(worktree_dir))
+        query = _StubWorktreeQuery(row)
+        event = self._event(
+            "sachinkundu/cloglog",
+            "wt-cloglog-feature",
+            head_sha=sha,
+        )
+
+        result = await resolve_pr_review_root(event, project_id=project_id, worktree_query=query)
+
+        assert result is not None and result.path == worktree_dir, (
+            f"Path 1 (worktree branch) must beat the registry; got {result}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_existing_worktree_branch_lookup_unchanged_foreign_repo(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """T-350 acceptance #3 (foreign-repo half): same regression pin,
+        but for a non-cloglog repo with a registered worktree row. This
+        is the antisocial PR #3 control case: PR #3 was reviewed
+        correctly because Path 1 hit on its registered worktree, even
+        though the host's review_source_root pointed at cloglog.
+        """
+        project_id = uuid.uuid4()
+        worktree_dir = tmp_path / "antisocial-wt-bootstrap"
+        sha = _init_git_repo_at(worktree_dir)
+        # Registry is empty for antisocial, but Path 1 still wins.
+        cloglog_root = tmp_path / "cloglog-prod"
+        cloglog_root.mkdir()
+        monkeypatch.setattr(
+            "src.gateway.review_engine.settings.review_repo_roots",
+            {"sachinkundu/cloglog": cloglog_root},
+        )
+        row = self._row(project_id, "wt-f0-bootstrap", str(worktree_dir))
+        query = _StubWorktreeQuery(row)
+        event = self._event(
+            "sachinkundu/antisocial",
+            "wt-f0-bootstrap",
+            head_sha=sha,
+            pr_number=3,
+        )
+
+        result = await resolve_pr_review_root(event, project_id=project_id, worktree_query=query)
+
+        assert result is not None and result.path == worktree_dir, (
+            "Antisocial PR #3 control case: Path 1 must still win for a "
+            f"registered foreign-repo worktree; got {result}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_review_repo_roots_registry_lookup(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """T-350 acceptance #4: a webhook with ``repo_full_name`` in
+        the registry AND no worktree match → resolver returns the
+        registry path. This is option (a) — per-repo routing for
+        repos whose checkouts live on this host but whose PRs aren't
+        owned by a worktree (e.g. external contributors, hand-created
+        PRs).
+        """
+        import logging as _logging
+
+        antisocial_root = tmp_path / "antisocial"
+        sha = _init_git_repo_at(antisocial_root)
+        cloglog_root = tmp_path / "cloglog-prod"
+        cloglog_root.mkdir()
+        monkeypatch.setattr(
+            "src.gateway.review_engine.settings.review_repo_roots",
+            {
+                "sachinkundu/cloglog": cloglog_root,
+                "sachinkundu/antisocial": antisocial_root,
+            },
+        )
+        query = _StubWorktreeQuery(None)
+        event = self._event(
+            "sachinkundu/antisocial",
+            "feature/external",
+            head_sha=sha,
+            pr_number=42,
+        )
+
+        with caplog.at_level(_logging.INFO, logger="src.gateway.review_engine"):
+            result = await resolve_pr_review_root(
+                event, project_id=uuid.uuid4(), worktree_query=query
+            )
+
+        assert result is not None, "Registry hit must produce a candidate; got None"
+        assert result.path == antisocial_root, (
+            f"Registry must route antisocial PR to antisocial root; got {result.path}"
+        )
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            "review_source=registry" in m and "sachinkundu/antisocial" in m for m in messages
+        ), f"Registry hit must log review_source=registry; got {messages}"
+
+
 class TestReviewEngineDDDBoundary:
     """T-278 DDD backstop — Gateway's review engine must NOT import the
     Agent context's models or repository (priority-3 DDD violation per

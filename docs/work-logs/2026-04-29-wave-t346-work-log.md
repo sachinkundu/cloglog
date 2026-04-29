@@ -68,6 +68,6 @@ Captured for CLAUDE.md (operator decision: candidate set extracted to per-task w
 ## State after this wave
 
 - T-346 implementation merged: PATCH /projects + repo_url canonicalization + init backfill ship complete.
-- MCP server tool surface advanced (added `update_project`); existing worktrees received `mcp_tools_updated` broadcast and may need restart per `/home/sachin/code/cloglog/plugins/cloglog/docs/agent-lifecycle.md` §6.
+- MCP server tool surface advanced (added `update_project`); existing worktrees received `mcp_tools_updated` broadcast and may need restart per `plugins/cloglog/docs/agent-lifecycle.md` §6.
 - T-348 + T-350 worktree agents are still running and unaffected (they don't use `update_project`).
 - No follow-up tasks from T-346 itself; adjacent (T-285, T-343) explicitly out-of-scope.

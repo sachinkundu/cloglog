@@ -93,7 +93,7 @@ def test_launch_skill_template_emits_no_import_yaml() -> None:
     body = _read(LAUNCH_SKILL)
     # Extract the launch.sh heredoc body (between "<< EOF" and the closing EOF).
     match = re.search(
-        r'cat > "\$\{WORKTREE_PATH\}/\.cloglog/launch\.sh" << EOF\n(.*?)\nEOF',
+        r"cat > \"\$\{WORKTREE_PATH\}/\.cloglog/launch\.sh\" << '?EOF'?\n(.*?)\nEOF",
         body,
         flags=re.DOTALL,
     )
@@ -113,7 +113,7 @@ def test_launch_skill_template_uses_grep_sed_for_backend_url() -> None:
     """Pin the rendered _backend_url() shape: grep + sed scalar parse."""
     body = _read(LAUNCH_SKILL)
     match = re.search(
-        r'cat > "\$\{WORKTREE_PATH\}/\.cloglog/launch\.sh" << EOF\n(.*?)\nEOF',
+        r"cat > \"\$\{WORKTREE_PATH\}/\.cloglog/launch\.sh\" << '?EOF'?\n(.*?)\nEOF",
         body,
         flags=re.DOTALL,
     )

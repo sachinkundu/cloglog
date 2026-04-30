@@ -262,20 +262,26 @@ merged, it issues:
 Read <WORKTREE_PATH>/AGENT_PROMPT.md and all shutdown-artifacts/work-log-T-*.md files in <WORKTREE_PATH>, then begin the next task.
 ```
 
-The new session reads this template (already on disk), reads the prior work
-logs (Work-Log Bootstrap section above), loads MCP tools, **calls
+The new session reads this template (already on disk), reads the prior
+work logs (Work-Log Bootstrap section above), loads MCP tools, **calls
 `register_agent` to bind this MCP session to the worktree** (the previous
 session's `unregister_agent` cleared its registration; the MCP server's
 per-process `currentWorktreeId` is gone with the prior process), then
-follows Standard workflow step 3: `get_my_tasks` is the live source of
-truth for which task to start, since the supervisor relaunch flow re-issues
-the launch prompt without rewriting `task.md`. The agent reads `task.md`
-for description / scope hints but trusts `get_my_tasks` for the active
-task UUID.
+follows Standard workflow step 3 unchanged: trust `task.md`'s UUID and
+call `start_task`. If the backend returns a 4xx/5xx because `task.md` is
+stale (the supervisor's `task.md` rewrite for task N+1 hasn't landed yet),
+emit `mcp_tool_error` to the project root inbox and halt — the supervisor
+sees the event, rewrites `task.md`, and re-issues the continuation
+prompt. The continuation flow uses **the same** task-resolution contract
+as initial launch; there is no second contract.
 
-**Known gap (residual TODO):** the supervisor relaunch flow should rewrite
-`task.md` for the next task before re-issuing the prompt — that's the
-proper fix and lives in the Supervisor Relaunch Flow section of the launch
-SKILL. Until that lands, the agent's `get_my_tasks` defense above is the
-authoritative resolver. Do not remove the defense even after the
-supervisor-side rewrite ships — defense in depth is cheap here.
+**Residual TODO — supervisor-side `task.md` rewrite.** The proper end
+state has the supervisor rewrite `${WORKTREE_PATH}/task.md` before
+issuing the continuation prompt (using the same Step 3 rendering shape
+the launch SKILL uses on initial launch). That edit lands in the
+Supervisor Relaunch Flow section, which T-356 currently owns. Until it
+ships, every continuation hits the `mcp_tool_error` escalation path
+above on the very first `start_task` — that is correct
+fail-loud-fast behaviour. Do not paper over with an agent-side
+`get_my_tasks` fallback: `TaskInfo` does not expose `task_type` so the
+agent cannot reproduce the supervisor's pipeline-aware pick.

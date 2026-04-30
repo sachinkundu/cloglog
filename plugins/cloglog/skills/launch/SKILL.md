@@ -185,11 +185,11 @@ When the supervisor relaunches the same worktree for task N+1, it issues:
 Read ${WORKTREE_PATH}/AGENT_PROMPT.md and all shutdown-artifacts/work-log-T-*.md files in ${WORKTREE_PATH}, then begin the next task.
 ```
 
-The new session reads the template (already on disk in the worktree from the original launch), reads prior work logs, loads MCP tools, **re-registers via `mcp__cloglog__register_agent` to bind the new MCP session** (the previous session's `unregister_agent` cleared its per-process state), then resolves the active task via `get_my_tasks` (the live source of truth — see the template's Standard workflow step 3 for why `task.md` is read for hints but not trusted for the UUID on continuation), and proceeds normally.
+The new session reads the template (already on disk in the worktree from the original launch), reads prior work logs, loads MCP tools, **re-registers via `mcp__cloglog__register_agent` to bind the new MCP session** (the previous session's `unregister_agent` cleared its per-process state), then follows Standard workflow step 3 unchanged: trust `task.md`'s UUID and call `start_task`. There is **one** task-resolution contract — the same one initial launches use.
 
 **The launch SKILL writes the initial prompt; the supervisor writes continuation prompts.** Continuation sessions reuse `.cloglog/launch.sh` by passing the prompt as `$1` so the TERM/HUP signal trap and `_unregister_fallback` path from the initial launch are preserved.
 
-**Residual: supervisor-side `task.md` rewrite.** The proper fix for the continuation flow is for the supervisor to rewrite `${WORKTREE_PATH}/task.md` for the next task before issuing the continuation prompt — using the same Step 3 rendering shape. That edit lands in the Supervisor Relaunch Flow section, which T-356 currently owns; this PR (T-360) leaves the agent-side `get_my_tasks` defense as the resolver. Do not remove the defense after the rewrite lands — defense in depth.
+**Required: supervisor-side `task.md` rewrite.** The supervisor MUST rewrite `${WORKTREE_PATH}/task.md` for the next task before issuing the continuation prompt — using the same Step 3 rendering shape this skill uses on initial launch. That edit lands in the Supervisor Relaunch Flow section, which T-356 currently owns. Until it ships, the very first `start_task` after relaunch hits a 409 because `task.md` still names the just-merged task; the agent emits `mcp_tool_error` and halts (fail-loud-fast). The agent does NOT fall back to `get_my_tasks` because `TaskInfo` does not expose `task_type` (`src/agent/schemas.py:67-78`) and an agent-side resolver cannot reproduce the supervisor's pipeline-aware pick.
 
 ## Supervisor Relaunch Flow
 

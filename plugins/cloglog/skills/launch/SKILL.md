@@ -188,7 +188,8 @@ When the supervisor inbox receives `agent_unregistered` from a worktree agent:
    zellij action write-chars "bash '${WORKTREE_PATH}/.cloglog/launch.sh' 'Read ${WORKTREE_PATH}/AGENT_PROMPT.md and all shutdown-artifacts/work-log-T-*.md files in ${WORKTREE_PATH}, then begin the next task.'"
    zellij action write "13"   # send Enter
    ```
-4. **If no backlog tasks remain** → invoke the `cloglog:close-wave` skill for this worktree.
+4. **Confirmation phase applies to relaunches too.** A continuation prompt can trip the same bootstrap failures as an initial launch — `claude` can fail to start, the new task's `--model` can be unavailable, MCP can be down, the heredoc-rendered `launch.sh` can have decayed (T-353-class issue introduced by an unrelated edit). After issuing the relaunch keystrokes, watch `<project_root>/.cloglog/inbox` for an `agent_started` event whose `worktree` field equals `${WORKTREE_NAME}`, with the same `launch_confirm_timeout_seconds` deadline (default `90`) as Step 5. On timeout, emit the same diagnostic checklist (`query-tab-names` / `bash -n` / `agent-shutdown-debug.log` / `.env` / `head -3 launch.sh`) and hand off to the operator. **Do NOT silently retry the relaunch; do NOT loop up to N times.** The supervisor must NOT mark the worktree as continuing on the next task until either `agent_started` arrives or the operator has acted.
+5. **If no backlog tasks remain** → invoke the `cloglog:close-wave` skill for this worktree.
 
 ## Pipeline (Features Only)
 If this is a feature with spec/plan/impl tasks:
@@ -421,19 +422,34 @@ Wait briefly between each agent launch. Each needs its own zellij tab.
 
 ## Step 5: Verification
 
-After all agents are launched:
+After all agents are launched, the main agent does NOT trust tab creation as proof of life. A spawned zellij tab can hold a crashed `claude`, a `bash` syntax error in `launch.sh` (e.g. T-353's antisocial heredoc bug — `unexpected EOF while looking for matching '"'`), a half-applied `on-worktree-create.sh`, or an MCP-unavailable abort, and `query-tab-names` will still list the tab. The only authoritative liveness signal is an `agent_started` event on `<project_root>/.cloglog/inbox` carrying the worktree's `worktree` field. Step 5 enforces a deadline on that event per launched worktree.
 
 1. **List tabs** to confirm all were created:
    ```bash
    zellij action query-tab-names
    ```
 
-2. **Present a summary table** to the user showing:
+2. **Confirmation phase — `agent_started` deadline.** For each launched worktree, watch `<project_root>/.cloglog/inbox` for an `agent_started` event whose `worktree` field equals the worktree name (e.g. `wt-t356-launch-confirm-timeout`). The deadline is `launch_confirm_timeout_seconds` from `.cloglog/config.yaml` (default `90` if the key is missing or malformed — read via the `parse-yaml-scalar.sh` shape, do NOT introduce a YAML library). The main agent already runs a persistent inbox Monitor — reuse it; do not spawn a second tail. Read the existing event stream with a deadline (e.g. an `until`-loop over `tail -F` filtered to `agent_started` lines for this `worktree`, bounded by `date +%s` against `start + launch_confirm_timeout_seconds`).
+
+   - **Confirmed within deadline** → row in the summary table is marked `live` and carries the `worktree_id` from the event payload.
+   - **Deadline elapsed with no matching event** → row is marked `LAUNCH FAILED — no agent_started in <N>s`. The main agent emits the diagnostic checklist below and **hands off to the operator**. The main agent does NOT silently retry; do NOT loop on the launch up to N times; every class of bootstrap failure has a different fix and the operator owns the call.
+
+3. **Diagnostic checklist on timeout.** Print these commands verbatim for the operator (substitute `<worktree>` with the absolute worktree path and `<wt-name>` with the tab/branch name):
+
+   1. `zellij action query-tab-names | grep <wt-name>` — tab present? Absent ⇒ launcher never ran.
+   2. `bash -n <worktree>/.cloglog/launch.sh` — syntax valid? Non-zero ⇒ heredoc-rendering failure (T-353 class).
+   3. `tail -20 /tmp/agent-shutdown-debug.log` — any trap fire mentioning this worktree? Process started then died on signal.
+   4. `cat <worktree>/.env | grep -E 'CLOGLOG_API_KEY|DATABASE_URL'` — both set? Half-applied `on-worktree-create.sh`.
+   5. `head -3 <worktree>/.cloglog/launch.sh` — first line is `#!/bin/bash`? Sanity check the file rendered at all.
+
+   The main agent must NOT proceed to the "wait for review/merge" loop until either the `agent_started` event arrives (late-confirmation is fine — log it and continue) OR the operator has explicitly acted (relaunch, abort, or fix-and-retry instruction in the inbox). Treat the launch as failed in the summary table until then.
+
+4. **Present a summary table** to the user showing:
 
    | Tab Name | Task/Feature | Title | Priority | Status |
    |----------|-------------|-------|----------|--------|
-   | wt-... | T-45 | Fix bug in... | high | launched |
-   | wt-... | F-12 | Add search... | medium | launched |
+   | wt-... | T-45 | Fix bug in... | high | live (worktree_id `…`) |
+   | wt-... | F-12 | Add search... | medium | LAUNCH FAILED — no agent_started in 90s |
 
 ## Rules
 

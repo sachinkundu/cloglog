@@ -56,117 +56,140 @@ For standalone tasks (T-*), skip this step — they are executed directly.
 
 ## Step 3: Assemble Agent Prompt
 
-For each task or feature, write an `AGENT_PROMPT.md` to a temporary location. The prompt must include:
+Workflow rules live in **one file** — `${CLAUDE_PLUGIN_ROOT}/templates/AGENT_PROMPT.md` — and are copied verbatim into each worktree. The per-task delta lives in a small sibling `task.md`. Hand-pasting workflow rules into per-agent prompts is the failure mode T-360 closed (2026-04-30: three agents tailing the wrong inbox file because authors hand-copied the inbox path).
 
-### Prompt Template
+For each task or feature:
 
-```markdown
-# Agent Prompt
+```bash
+# 1. Copy the workflow template verbatim. The template is the single source
+# of truth for inbox handling, MCP preload, stop-on-failure, the standard
+# workflow, the per-task shutdown sequence, and the continuation prompt.
+cp "${CLAUDE_PLUGIN_ROOT}/templates/AGENT_PROMPT.md" "${WORKTREE_PATH}/AGENT_PROMPT.md"
 
-## Task
-**<T-number or F-number>: <title>**
-Priority: <priority>
+# 2. Emit the per-task delta. Use a **quoted** heredoc (`'TASK_EOF'`) so
+# `${VAR}` references in the body stay literal — only the `@@PLACEHOLDER@@`
+# tokens get substituted via sed below. Mirrors T-353's quoted-heredoc
+# discipline for launch.sh.
+cat > "${WORKTREE_PATH}/task.md" << 'TASK_EOF'
+# Task — @@TASK_NUMBER@@: @@TASK_TITLE@@
 
-## What to Build/Fix
-<description from the task or feature>
+Priority: @@PRIORITY@@
+Feature: @@FEATURE_REF@@
 
 ## Task IDs
-- Task ID: `<uuid>`
-- Feature ID: `<uuid>` (if applicable)
+- Task ID: `@@TASK_UUID@@`
+- Feature ID: `@@FEATURE_UUID@@`
+- Worktree ID: `@@WORKTREE_UUID@@`
+- Worktree name: `@@WORKTREE_NAME@@`
+- Worktree path: `@@WORKTREE_PATH@@`
+- Project root: `@@PROJECT_ROOT@@`
 
-## Inbox
-Monitor your inbox for messages from the main agent. **One inbox monitor per agent process, period** — persistent monitors survive `/clear`, so a naive spawn on a re-entered session would duplicate tails and triple-fire every event.
+## Description
 
-Before spawning, reconcile against existing monitors:
+@@TASK_DESCRIPTION@@
 
-1. Call `TaskList`.
-2. Filter for running Monitor tasks whose `command` ends in `.cloglog/inbox` and resolves to **this** worktree's inbox file. Match on path suffix (`/.cloglog/inbox`) and verify the resolved absolute path equals `<WORKTREE_PATH>/.cloglog/inbox` — historical monitors started with the relative path `tail -f .cloglog/inbox` (see the github-bot crash-recovery flow) must still be caught here, otherwise the dedupe is bypassed and `/clear` followed by recovery would still spawn a duplicate.
-3. Branch on the count of matches:
-   - **Exactly one** → reuse it; do not spawn a new Monitor.
-   - **Zero** → spawn a fresh persistent monitor. **The inbox file may not exist yet** — `.cloglog/on-worktree-create.sh` does not pre-create it, and the lifecycle spec leaves first creation to the backend's first webhook write. `tail -f` on a missing file exits immediately (verified: this skill's own author hit it on session start). Use `tail -n 0 -F` — start at end-of-file (deliver only events appended from now on) and reopen-by-name on rotation. Wrap with `mkdir`/`touch` so the file is materialised first:
-     ```
-     Monitor(
-       command: "mkdir -p <WORKTREE_PATH>/.cloglog && touch <WORKTREE_PATH>/.cloglog/inbox && tail -n 0 -F <WORKTREE_PATH>/.cloglog/inbox",
-       description: "Messages from main agent",
-       persistent: true
-     )
-     ```
-     **Why `-n 0`, not `-n +1`.** The inbox is append-only for the worktree's lifetime (`src/gateway/webhook_consumers.py` always appends; `request_shutdown` is pinned by `tests/agent/test_unit.py` not to truncate). Replaying from line 1 on a re-entered session would re-deliver already-handled events — and the documented `pr_merged` handler immediately calls `start_task`, which raises if another task is active (`src/agent/services.py:357-370`). To reconcile events that landed while you were offline, use the *Check PR Status* drill-down in `plugins/cloglog/skills/github-bot/SKILL.md`, not `tail` history.
-   - **Two or more** → keep the oldest matching monitor and `TaskStop` the rest.
+## Sibling work in flight
 
-When you receive a message, read it and act on the instruction. The main agent may send rebasing requests, priority changes, or other guidance.
+@@SIBLING_WARNINGS@@
 
-## Workflow
-1. Read the project CLAUDE.md for project-specific instructions
-2. Load MCP tools: call `ToolSearch(query: "select:mcp__cloglog__register_agent,mcp__cloglog__start_task,mcp__cloglog__update_task_status,mcp__cloglog__get_my_tasks,mcp__cloglog__unregister_agent,mcp__cloglog__add_task_note,mcp__cloglog__mark_pr_merged,mcp__cloglog__report_artifact,mcp__cloglog__search")` — MCP tools are deferred and MUST be loaded via ToolSearch before calling them. `mcp__cloglog__search` is in the preload so any later T-NNN/F-NN reference (and parent-epic context for tasks) can be resolved in one call instead of paging the board.
+## Residual TODOs hint
 
-   **Stop on MCP failure.** Halt on any MCP failure: startup unavailability emits `mcp_unavailable` and exits; runtime tool errors emit `mcp_tool_error` and wait for the main agent; transient network errors get one backoff retry before escalating. See `${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md` §4.1 for both event shapes.
-     - **Startup** (ToolSearch returns no matches, or the first MCP call after register fails at the transport layer): write an `mcp_unavailable` event to `<project_root>/.cloglog/inbox` and exit.
-     - **Runtime** (MCP tool call returns 5xx, backend exception, 409 state-machine guard, auth rejection, or schema error mid-task): write an `mcp_tool_error` event to `<project_root>/.cloglog/inbox` carrying the failing tool name + error, halt, and wait on your inbox Monitor for main-agent guidance. Never retry a 409 or a 5xx; never fall back to direct HTTP or `gh api`.
-     - **Transient network** (`ECONNRESET`, `ETIMEDOUT`, fetch timeout): one retry after ≥ 2 s backoff, then escalate to `mcp_tool_error` on second failure.
-3. Start inbox monitor (see Inbox section above)
-4. Register: call `mcp__cloglog__register_agent` with this worktree path
-5. Echo `agent_started` to the main agent inbox (`<project_root>/.cloglog/inbox`) so the main agent sees you are live:
-   ```bash
-   printf '{"type":"agent_started","worktree":"<wt-name>","worktree_id":"<uuid>","ts":"%s"}\n' "$(date -Is)" \
-     >> <project_root>/.cloglog/inbox
-   ```
-6. Start task: call `mcp__cloglog__start_task` with the task ID
-7. Run existing tests first to establish a green baseline
-8. Implement the feature or fix
-9. Run the project quality gate
-10. Produce proof-of-work demo — invoke the demo skill (`cloglog:demo`).
-    The skill classifies the diff and terminates in one of three states:
-    a real `docs/demos/<branch>/demo.md` for user-observable changes; a
-    committed `docs/demos/<branch>/exemption.md` when the classifier
-    returns `no_demo`; or a static auto-exempt (no file written) when
-    every changed file is on the developer-infrastructure allowlist. Do
-    not pre-decide — let the skill decide.
-11. Create PR using the github-bot skill, with the `## Demo` section
-    reflecting whichever terminal state the skill reached (the skill's
-    own Step 6 prints the matching PR-body template).
-12. Move task to review with PR URL via `mcp__cloglog__update_task_status`
-13. Your `.cloglog/inbox` Monitor delivers review/merge/CI events automatically — do NOT start a `/loop`. On `review_submitted` from any login listed in `.cloglog/config.yaml: reviewer_bot_logins` (the auto-merge-eligible final-stage reviewers — cloglog ships codex only; opencode stage-A reviews are intentionally not in that list and route through the standard in_progress flow): run the auto-merge gate (see the github-bot skill's *Auto-Merge on Codex Pass* section). On `pr_merged`, run the per-task shutdown sequence:
-    - **First**, append a `pr_merged_notification` line to `<project_root>/.cloglog/inbox` so the supervisor sees the merge (T-262 — the `pr_merged` webhook only fans out to the merging worktree's own inbox):
-      ```bash
-      printf '{"type":"pr_merged_notification","worktree":"<wt-name>","worktree_id":"<uuid>","task":"T-NNN","task_id":"<uuid>","pr":"<pr-url>","pr_number":NNN,"ts":"%s"}\n' "$(date -Is)" \
-        >> <project_root>/.cloglog/inbox
-      ```
-    - Call `mcp__cloglog__mark_pr_merged(task_id, worktree_id)`. For `spec` tasks also call `mcp__cloglog__report_artifact(task_id, worktree_id, artifact_path)`.
-    - Write `shutdown-artifacts/work-log-T-<NNN>.md` — structured per-task summary (see the worktree-agent template's **Per-Task Work-Log Schema**). The **Residual TODOs / context the next task should know** section is the load-bearing handoff; write it carefully.
-    - Build the aggregate `shutdown-artifacts/work-log.md` by concatenating all `work-log-T-*.md` files in chronological order plus a one-line envelope header (backward compat with close-wave Step 5d).
-    - **Emit `agent_unregistered` to `<project_root>/.cloglog/inbox` before `unregister_agent`.** Shape:
-      ```json
-      {
-        "type": "agent_unregistered",
-        "worktree": "<wt-name>",
-        "worktree_id": "<uuid>",
-        "ts": "<utc-iso>",
-        "tasks_completed": ["T-NNN"],
-        "prs": {"T-NNN": "<pr-url>"},
-        "artifacts": {
-          "work_log": "/abs/path/shutdown-artifacts/work-log.md",
-          "learnings": null
-        },
-        "reason": "pr_merged"
-      }
-      ```
-      Absolute paths are required. `tasks_completed` is a flat list of task UUIDs; build the `prs` map by calling `mcp__cloglog__get_my_tasks()` and, for each row with a non-null `pr_url`, keying the map at `T-{row.number}` (the `TaskInfo` schema exposes both `number` and `pr_url`). Plan tasks (no `pr_url`) MUST be omitted from `prs`. This event is authoritative — do not rely on the SessionEnd hook.
-    - Call `mcp__cloglog__unregister_agent` and **exit**. Do NOT call `get_my_tasks` or start the next task — the supervisor handles that.
+@@RESIDUAL_NOTES@@
+TASK_EOF
 
-**One task per session.** Each session ends after one PR merge (or after a plan+impl pair where the impl PR merges). Standalone no-PR tasks (docs, research, prototypes using `skip_pr=True`) also exit after completing — they run the same per-task shutdown sequence with `reason: "no_pr_task_complete"` instead of `"pr_merged"`, skipping `mark_pr_merged` and `pr_merged_notification`. Plan tasks are the only exception: they immediately start the following impl task in the same session. The supervisor sees `agent_unregistered`, checks for remaining backlog tasks on this worktree, and either relaunches with the continuation prompt (see **Continuation Prompt** below) or triggers close-wave if no tasks remain.
+# 3. Substitute per-task placeholders. Task titles / descriptions are
+# free-form board strings (src/board/schemas.py:133-139) so they may
+# contain `&` (which sed expands to the matched text), `\` (escape), or
+# the chosen `|` delimiter. Without escaping, a title like `R&D follow-up`
+# would render `task.md` with the placeholder text spliced back in.
+# `_sed_escape_replacement` escapes the three replacement metacharacters
+# so every value round-trips literally.
+_sed_escape_replacement() {
+  printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
+}
+TASK_NUMBER_E=$(_sed_escape_replacement "${TASK_NUMBER}")
+TASK_TITLE_E=$(_sed_escape_replacement "${TASK_TITLE}")
+PRIORITY_E=$(_sed_escape_replacement "${PRIORITY}")
+FEATURE_REF_E=$(_sed_escape_replacement "${FEATURE_REF:-(none)}")
+TASK_UUID_E=$(_sed_escape_replacement "${TASK_UUID}")
+FEATURE_UUID_E=$(_sed_escape_replacement "${FEATURE_UUID:-(none)}")
+WORKTREE_UUID_E=$(_sed_escape_replacement "${WORKTREE_UUID}")
+WORKTREE_NAME_E=$(_sed_escape_replacement "${WORKTREE_NAME}")
+WORKTREE_PATH_E=$(_sed_escape_replacement "${WORKTREE_PATH}")
+PROJECT_ROOT_E=$(_sed_escape_replacement "${PROJECT_ROOT}")
+
+sed -i \
+  -e "s|@@TASK_NUMBER@@|${TASK_NUMBER_E}|g" \
+  -e "s|@@TASK_TITLE@@|${TASK_TITLE_E}|g" \
+  -e "s|@@PRIORITY@@|${PRIORITY_E}|g" \
+  -e "s|@@FEATURE_REF@@|${FEATURE_REF_E}|g" \
+  -e "s|@@TASK_UUID@@|${TASK_UUID_E}|g" \
+  -e "s|@@FEATURE_UUID@@|${FEATURE_UUID_E}|g" \
+  -e "s|@@WORKTREE_UUID@@|${WORKTREE_UUID_E}|g" \
+  -e "s|@@WORKTREE_NAME@@|${WORKTREE_NAME_E}|g" \
+  -e "s|@@WORKTREE_PATH@@|${WORKTREE_PATH_E}|g" \
+  -e "s|@@PROJECT_ROOT@@|${PROJECT_ROOT_E}|g" \
+  "${WORKTREE_PATH}/task.md"
+
+# 4. Multi-line placeholders. Description / sibling warnings / residual
+# notes are free-form multi-line strings — sed's replacement-string
+# substitution doesn't handle newlines cleanly, so we write each value
+# to a temp file and use sed's `r FILE` + `d` pair to replace the whole
+# placeholder line with the file's contents. Each placeholder appears
+# on its own line in the heredoc above, which makes whole-line
+# replacement safe.
+#
+# Codex round 4 (HIGH): no `WORKFLOW_OVERRIDE` placeholder. The board /
+# MCP contracts have no persisted `workflow_override` field; the
+# template handles `skip_pr` as a runtime decision the agent makes from
+# its own diff at PR time, not as a launch-time stored field.
+TMP_DESC=$(mktemp)
+TMP_SIB=$(mktemp)
+TMP_RES=$(mktemp)
+trap 'rm -f "$TMP_DESC" "$TMP_SIB" "$TMP_RES"' EXIT
+
+printf '%s' "${TASK_DESCRIPTION:-(none)}"   > "$TMP_DESC"
+printf '%s' "${SIBLING_WARNINGS:-(none)}"   > "$TMP_SIB"
+printf '%s' "${RESIDUAL_NOTES:-(none)}"     > "$TMP_RES"
+
+# `sed -i -e '/@@TOKEN@@/{r FILE' -e 'd}'` reads FILE in place of the
+# matched line, then deletes the placeholder. Two `-e` arguments are
+# required because the `r` command extends to end-of-line.
+sed -i -e "/@@TASK_DESCRIPTION@@/{r ${TMP_DESC}" -e "d;}" "${WORKTREE_PATH}/task.md"
+sed -i -e "/@@SIBLING_WARNINGS@@/{r ${TMP_SIB}"  -e "d;}" "${WORKTREE_PATH}/task.md"
+sed -i -e "/@@RESIDUAL_NOTES@@/{r ${TMP_RES}"    -e "d;}" "${WORKTREE_PATH}/task.md"
+```
+
+The agent reads `AGENT_PROMPT.md` first; the template's first section instructs it to read `task.md` for the per-task delta. The launch.sh fallback prompt (`Read ${WORKTREE_PATH}/AGENT_PROMPT.md and begin.`) is unchanged — `task.md` is reached transitively from the template.
+
+### What the template owns vs. what task.md owns
+
+- **Template (`plugins/cloglog/templates/AGENT_PROMPT.md`):** inbox paths (worktree for read, project root for write), MCP preload, stop-on-MCP-failure, standard workflow steps, per-task shutdown sequence, runtime `skip_pr` decision rule, continuation-prompt bootstrap, work-log bootstrap. Update this file once and every future agent inherits the change.
+- **`task.md`:** task ID / feature ID / worktree ID / paths, task number / title / priority, description, sibling-task warnings, residual TODOs hint.
+
+### Standalone no-PR tasks (runtime `skip_pr`)
+
+A task that finishes without a PR (docs / research / prototype / internal-only refactor) is recognised at runtime, not at launch — the agent inspects its own diff at PR time and either calls `update_task_status(task_id, "review", skip_pr=True)` or opens a PR. There is no persisted `workflow_override` field on the board (`src/agent/schemas.py:60-65`, `mcp-server/src/tools.ts:29-35` expose `skip_pr` only at status-update time). See the template's **Standalone no-PR tasks** section for the diff-based decision rule.
+
+## One task per session
+
+Each worktree agent runs exactly one task per session and exits after the PR merges (or after a `skip_pr` standalone task completes). The supervisor sees `agent_unregistered`, runs the relaunch flow below, and either issues the continuation prompt or triggers `cloglog:close-wave`. Plan tasks are the only exception — a plan task immediately starts the following impl task in the same session; the boundary fires when the impl PR merges.
+
+Full per-task shutdown sequence lives in `${CLAUDE_PLUGIN_ROOT}/templates/AGENT_PROMPT.md` under **Per-task shutdown sequence**.
 
 ## Continuation Prompt
 
-When the supervisor relaunches the same worktree for task N+1 after task N's PR merged and the agent exited, use this prompt instead of the initial launch prompt:
+When the supervisor relaunches the same worktree for task N+1, it issues:
 
 ```
-Read /abs/path/to/worktree/AGENT_PROMPT.md and all shutdown-artifacts/work-log-T-*.md files in that worktree, then begin the next task.
+Read ${WORKTREE_PATH}/AGENT_PROMPT.md and all shutdown-artifacts/work-log-T-*.md files in ${WORKTREE_PATH}, then begin the next task.
 ```
 
-The initial AGENT_PROMPT.md is already in the worktree from the original launch — do not rewrite it. The prior work logs carry the context the new session needs. The new session bootstraps by reading the work logs (see the worktree-agent template's **Work-Log Bootstrap** step), then loads MCP tools, registers, starts the next backlog task, and proceeds normally.
+The new session reads the template (already on disk in the worktree from the original launch), reads prior work logs, loads MCP tools, **re-registers via `mcp__cloglog__register_agent` to bind the new MCP session** (the previous session's `unregister_agent` cleared its per-process state), then follows Standard workflow step 3 unchanged: trust `task.md`'s UUID and call `start_task`. There is **one** task-resolution contract — the same one initial launches use.
 
-**The launch SKILL writes the initial prompt; the supervisor writes continuation prompts.** Continuation sessions reuse `.cloglog/launch.sh` by passing the prompt as `$1` — this preserves the TERM/HUP signal trap and `_unregister_fallback` path from the initial launch. Do not invoke `claude` directly for relaunches; always go through `launch.sh` so crash/close-tab cleanup works identically for initial and continuation sessions.
+**The launch SKILL writes the initial prompt; the supervisor writes continuation prompts.** Continuation sessions reuse `.cloglog/launch.sh` by passing the prompt as `$1` so the TERM/HUP signal trap and `_unregister_fallback` path from the initial launch are preserved.
+
+**Required: supervisor-side `task.md` rewrite.** The supervisor MUST rewrite `${WORKTREE_PATH}/task.md` for the next task before issuing the continuation prompt — using the same Step 3 rendering shape this skill uses on initial launch. That edit lands in the Supervisor Relaunch Flow section, which T-356 currently owns. Until it ships, the very first `start_task` after relaunch hits a 409 because `task.md` still names the just-merged task; the agent emits `mcp_tool_error` and halts (fail-loud-fast). The agent does NOT fall back to `get_my_tasks` because `TaskInfo` does not expose `task_type` (`src/agent/schemas.py:67-78`) and an agent-side resolver cannot reproduce the supervisor's pipeline-aware pick.
 
 ## Supervisor Relaunch Flow
 
@@ -191,16 +214,15 @@ When the supervisor inbox receives `agent_unregistered` from a worktree agent:
 4. **Confirmation phase applies to relaunches too.** A continuation prompt can trip the same bootstrap failures as an initial launch — `claude` can fail to start, the new task's `--model` can be unavailable, MCP can be down, the heredoc-rendered `launch.sh` can have decayed (T-353-class issue introduced by an unrelated edit). After issuing the relaunch keystrokes, watch `<project_root>/.cloglog/inbox` for an `agent_started` event whose `worktree` field equals `${WORKTREE_NAME}`, with the same `launch_confirm_timeout_seconds` deadline (default `90`) as Step 5. On timeout, emit the same diagnostic checklist (`query-tab-names` / `bash -n` / `agent-shutdown-debug.log` / split `CLOGLOG_API_KEY` (env or `~/.cloglog/credentials`) and `DATABASE_URL` (`.env`) probes / `head -3 launch.sh`) and hand off to the operator. **Do NOT silently retry the relaunch; do NOT loop up to N times.** The supervisor must NOT mark the worktree as continuing on the next task until either `agent_started` arrives or the operator has acted.
 5. **If no backlog tasks remain** → invoke the `cloglog:close-wave` skill for this worktree.
 
-## Pipeline (Features Only)
-If this is a feature with spec/plan/impl tasks:
-- Spec task: write design spec, create PR, wait for merge. On merge: `mark_pr_merged` → `report_artifact` → write per-task work log → `agent_unregistered` → exit. Supervisor relaunches for plan task.
-- Plan task: write implementation plan (no PR needed), commit locally, then call `update_task_status(plan_task_id, "review", skip_pr=True)` and `report_artifact(plan_task_id, worktree_id, plan_path)`, then `start_task` on the impl task. **Known backend gap (T-NEW-b):** `start_task` on the impl returns 409 until the pipeline guard at `src/agent/services.py:237` accepts artifact-only predecessor resolution; a 409 is a runtime MCP tool error per §4.1, so when you hit it emit `mcp_tool_error` with `reason: "pipeline_guard_blocked"` to the main inbox and stop — main recognises that reason and handles the advance. See `${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md` §1 for context and §4.1 for the event shape.
-- Impl task: implement the feature, create PR, wait for merge. On merge: write per-task work log → `agent_unregistered` → exit.
-```
+## Pipeline behaviour (Features Only)
 
-Use **absolute paths** when referencing the prompt file. Agents cannot reliably find files by relative path.
+For features with spec/plan/impl tasks, agent behaviour is defined in `${CLAUDE_PLUGIN_ROOT}/agents/worktree-agent.md` under **Pipeline Lifecycle**. Summary:
 
-Do **not** inline shell variables in prompts. Write the prompt to a file, then reference it.
+- **Spec task:** write design spec, open PR, wait for merge. On merge: `mark_pr_merged` → `report_artifact` → per-task work log → `agent_unregistered` → exit. Supervisor relaunches for plan.
+- **Plan task:** write plan, commit locally, `update_task_status(plan_task_id, "review", skip_pr=True)` + `report_artifact`, then `start_task` on the impl in the same session. **Known backend gap (T-NEW-b):** `start_task` on the impl returns 409 until the pipeline guard at `src/agent/services.py:237` accepts artifact-only predecessor resolution; emit `mcp_tool_error` with `reason: "pipeline_guard_blocked"` to the main inbox and stop. See `${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md` §1.
+- **Impl task:** implement, open PR, wait for merge. On merge: per-task work log → `agent_unregistered` → exit.
+
+The supervisor sees `agent_unregistered`, runs the relaunch flow above, and either relaunches or triggers `cloglog:close-wave`.
 
 ## Step 4: Create Worktrees and Launch Agents
 
@@ -231,9 +253,9 @@ if [[ -x "${WORKTREE_PATH}/.cloglog/on-worktree-create.sh" ]]; then
 fi
 ```
 
-### 4d. Write AGENT_PROMPT.md into the worktree
+### 4d. AGENT_PROMPT.md and task.md
 
-Copy the assembled prompt to `${WORKTREE_PATH}/AGENT_PROMPT.md`.
+Step 3 already wrote both `${WORKTREE_PATH}/AGENT_PROMPT.md` (verbatim copy of the workflow template) and `${WORKTREE_PATH}/task.md` (per-task delta). Nothing further to do here.
 
 ### 4e. Create zellij tab and launch agent
 

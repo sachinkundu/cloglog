@@ -6,6 +6,12 @@ quality_command: make quality
 dashboard_key: cloglog-dashboard-dev
 webhook_tunnel_name: cloglog-webhooks
 
+# T-356: deadline (seconds) for the main agent to wait for an `agent_started`
+# event after spawning a worktree agent (initial launch and supervisor
+# relaunches alike). On timeout the SKILL emits a diagnostic checklist and
+# hands off to the operator — no silent retry. Default 90 if missing.
+launch_confirm_timeout_seconds: 90
+
 # GitHub App identifiers (gh_app_id / gh_app_installation_id) live in the
 # gitignored .cloglog/local.yaml — they are operator-host-specific and must
 # not be tracked. See plugins/cloglog/docs/setup-credentials.md (T-348).
@@ -23,6 +29,13 @@ reviewer_bot_logins:
 # scalar reader at plugins/cloglog/hooks/lib/parse-yaml-scalar.sh handles
 # it without a YAML list parser.
 demo_allowlist_paths: '^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates)/|^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$'
+
+# T-358: operator off-switch for desktop toasts (notify-send). Set to false
+# to suppress every toast class without affecting the persisted Notification
+# row or the dashboard SSE bell. Read by
+# src/gateway/notification_listener.py:load_toast_enabled via the stdlib
+# scalar reader (no PyYAML -- docs/invariants.md hook YAML parsing entry).
+desktop_toast_enabled: true
 
 worktree_scopes:
   board: [src/board/, tests/board/, src/alembic/]

@@ -125,8 +125,11 @@ def test_launch_sh_exports_both_gh_app_env_vars() -> None:
     """
     body = _read(LAUNCH_SKILL)
     # Find the rendered launch.sh body (between the heredoc markers).
+    # T-353: SKILL now uses a quoted heredoc (`<< 'EOF'`); accept either form
+    # so this pin survives both quoted and (legacy) unquoted variants while
+    # asserting the export-before-claude property below.
     heredoc = re.search(
-        r"cat > \"\$\{WORKTREE_PATH\}/\.cloglog/launch\.sh\".*?<<\s*EOF\n(.*?)\nEOF\n",
+        r"cat > \"\$\{WORKTREE_PATH\}/\.cloglog/launch\.sh\".*?<<\s*'?EOF'?\n(.*?)\nEOF\n",
         body,
         flags=re.DOTALL,
     )
@@ -138,23 +141,36 @@ def test_launch_sh_exports_both_gh_app_env_vars() -> None:
     assert claude_idx > 0, "claude invocation missing from launch.sh heredoc"
     pre_claude = rendered[:claude_idx]
 
-    assert 'export GH_APP_ID="\\$_GH_APP_ID"' in pre_claude, (
+    # T-353: with the quoted heredoc, `$_GH_APP_ID` appears literally
+    # (no backslash escape). Match either form so the pin holds across
+    # the heredoc-quoting refactor.
+    assert (
+        'export GH_APP_ID="$_GH_APP_ID"' in pre_claude
+        or 'export GH_APP_ID="\\$_GH_APP_ID"' in pre_claude
+    ), (
         "launch.sh must export GH_APP_ID from the config-derived value "
         "before invoking claude. Without this, the github-bot skill's "
         "gh-app-token.py exits with 'env var required' on every task "
         "after a /clear."
     )
-    assert 'export GH_APP_INSTALLATION_ID="\\$_GH_APP_INSTALLATION_ID"' in pre_claude, (
-        "launch.sh must export GH_APP_INSTALLATION_ID before invoking claude."
-    )
+    assert (
+        'export GH_APP_INSTALLATION_ID="$_GH_APP_INSTALLATION_ID"' in pre_claude
+        or 'export GH_APP_INSTALLATION_ID="\\$_GH_APP_INSTALLATION_ID"' in pre_claude
+    ), "launch.sh must export GH_APP_INSTALLATION_ID before invoking claude."
 
     # Gate on non-empty so a missing config key doesn't clobber a shell-RC export.
-    assert '[[ -n "\\$_GH_APP_ID" ]] && export GH_APP_ID' in pre_claude, (
+    assert (
+        '[[ -n "$_GH_APP_ID" ]] && export GH_APP_ID' in pre_claude
+        or '[[ -n "\\$_GH_APP_ID" ]] && export GH_APP_ID' in pre_claude
+    ), (
         "GH_APP_ID export must be gated on a non-empty config value — "
         "otherwise an operator who keeps the values in their shell RC "
         "(back-compat) would have them clobbered to empty."
     )
-    assert '[[ -n "\\$_GH_APP_INSTALLATION_ID" ]] && export GH_APP_INSTALLATION_ID' in pre_claude
+    assert (
+        '[[ -n "$_GH_APP_INSTALLATION_ID" ]] && export GH_APP_INSTALLATION_ID' in pre_claude
+        or '[[ -n "\\$_GH_APP_INSTALLATION_ID" ]] && export GH_APP_INSTALLATION_ID' in pre_claude
+    )
 
 
 def test_no_operator_host_literals_in_plugin_or_tracked_cloglog_dir() -> None:

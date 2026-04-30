@@ -86,81 +86,9 @@ async def test_listener_creates_notification_on_review():
     assert published_event.data["task_number"] == 42
 
 
-@pytest.mark.asyncio
-async def test_listener_fires_notify_send_when_display_set():
-    """_handle_review_event should call notify-send when DISPLAY env var is set."""
-    project_id = uuid4()
-    task_id = uuid4()
-    event = _make_event(project_id, task_id)
-
-    mock_task = _make_task(task_id)
-    mock_notif = _make_notif(project_id, task_id)
-
-    mock_repo = MagicMock()
-    mock_repo.get_task = AsyncMock(return_value=mock_task)
-    mock_repo.create_notification = AsyncMock(return_value=mock_notif)
-
-    mock_session = MagicMock()
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=False)
-
-    mock_session_factory = MagicMock(return_value=mock_session)
-
-    mock_proc = MagicMock()
-    mock_create_subprocess = AsyncMock(return_value=mock_proc)
-
-    _nl = "src.gateway.notification_listener"
-    with (
-        patch(f"{_nl}.async_session_factory", mock_session_factory),
-        patch(f"{_nl}.BoardRepository", return_value=mock_repo),
-        patch(f"{_nl}.event_bus.publish", new_callable=AsyncMock),
-        patch.dict(f"{_nl}.os.environ", {"DISPLAY": ":1"}, clear=True),
-        patch(f"{_nl}.asyncio.create_subprocess_exec", mock_create_subprocess),
-    ):
-        from src.gateway import notification_listener
-
-        await notification_listener._handle_review_event(event)
-
-    mock_create_subprocess.assert_awaited_once()
-    call_args = mock_create_subprocess.call_args[0]
-    assert call_args[0] == "notify-send"
-    assert call_args[1] == "cloglog"
-    assert "T-42" in call_args[2]
-    assert "Fix bug" in call_args[2]
-
-
-@pytest.mark.asyncio
-async def test_listener_skips_notify_send_when_no_display():
-    """_handle_review_event should NOT call notify-send when DISPLAY is not set."""
-    project_id = uuid4()
-    task_id = uuid4()
-    event = _make_event(project_id, task_id)
-
-    mock_task = _make_task(task_id)
-    mock_notif = _make_notif(project_id, task_id)
-
-    mock_repo = MagicMock()
-    mock_repo.get_task = AsyncMock(return_value=mock_task)
-    mock_repo.create_notification = AsyncMock(return_value=mock_notif)
-
-    mock_session = MagicMock()
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=False)
-
-    mock_session_factory = MagicMock(return_value=mock_session)
-
-    mock_create_subprocess = AsyncMock()
-
-    _nl = "src.gateway.notification_listener"
-    with (
-        patch(f"{_nl}.async_session_factory", mock_session_factory),
-        patch(f"{_nl}.BoardRepository", return_value=mock_repo),
-        patch(f"{_nl}.event_bus.publish", new_callable=AsyncMock),
-        patch.dict(f"{_nl}.os.environ", {}, clear=True),
-        patch(f"{_nl}.asyncio.create_subprocess_exec", mock_create_subprocess),
-    ):
-        from src.gateway import notification_listener
-
-        await notification_listener._handle_review_event(event)
-
-    mock_create_subprocess.assert_not_awaited()
+# T-358: notify-send no longer fires on TASK_STATUS_CHANGED -> review (only the
+# persisted Notification row + NOTIFICATION_CREATED SSE for the dashboard bell).
+# The replacement absence-pin lives in
+# tests/gateway/test_notification_listener_does_not_toast_on_review_transition.py
+# and the new toast classes are pinned in the sibling
+# test_notification_listener_toasts_on_*.py files.

@@ -53,6 +53,12 @@ class EventType(StrEnum):
     # idempotent on the frontend (a re-fetch of the board reads the same
     # projected value).
     REVIEW_CODEX_TURN_STARTED = "review_codex_turn_started"
+    # T-358: emitted by AgentService.{unregister, force_unregister,
+    # check_heartbeat_timeouts}. The desktop-toast dispatcher fires only on a
+    # known-non-clean ``reason`` (e.g. ``force_unregistered``,
+    # ``heartbeat_timeout``); a default unregister with no reason is
+    # treated as a clean shutdown and stays silent.
+    AGENT_UNREGISTERED = "agent_unregistered"
 
 
 @dataclass

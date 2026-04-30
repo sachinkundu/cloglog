@@ -341,7 +341,7 @@ async def resolve_pr_review_root(
     *,
     project_id: UUID,
     worktree_query: IWorktreeQuery,
-) -> PrReviewRoot:
+) -> PrReviewRoot | None:
     """Resolve the filesystem root codex should read for this PR.
 
     Preference order:
@@ -360,9 +360,22 @@ async def resolve_pr_review_root(
     **Path 1 — branch lookup (T-278).** Fall through to
     ``worktrees.branch_name == event.head_branch`` within the project.
 
-    **Path 2 — host-level fallback (T-255).**
+    **Path 2 — per-repo registry (T-350).** Consult
+    ``settings.review_repo_roots[event.repo_full_name]``. The map keys
+    are ``owner/repo`` strings; the value is an absolute filesystem
+    path. This path catches close-wave/hand-created PRs that have no
+    registered worktree on the host — without it, those PRs would
+    inherit the wrong repo's source via Path 3.
+
+    **Path 3 — host-level fallback (T-255, legacy).**
     ``settings.review_source_root or Path.cwd()`` for PRs whose owning
-    worktree is not on this host.
+    worktree is not on this host. Only consulted when
+    ``settings.review_repo_roots`` is EMPTY (legacy single-repo
+    deployment). When the registry is populated, this path is replaced
+    by an explicit refusal: the resolver returns ``None`` for any
+    ``repo_full_name`` not in the registry — surfaced to the caller
+    as a one-shot ``unconfigured_repo`` skip comment instead of a
+    cross-repo review (T-350; the antisocial PR #2 incident).
 
     **SHA-check + temp-dir fallback (T-281).** Whichever candidate the
     chain yields, we probe ``git -C <candidate> rev-parse HEAD``. If the
@@ -434,8 +447,49 @@ async def resolve_pr_review_root(
                     event.pr_number,
                 )
 
-    # Path 2 — host-level fallback
+    # Path 2 — per-repo registry (T-350)
     if candidate is None:
+        registry_entry = settings.review_repo_roots.get(event.repo_full_name)
+        if registry_entry is not None:
+            cand = Path(registry_entry)
+            # Codex round 5 HIGH: validate via ``--git-common-dir`` rather
+            # than ``is_dir()`` alone. A mistyped registry value pointing
+            # at an existing non-git directory was being accepted as a
+            # successful registry hit; codex/opencode would then review
+            # the wrong tree (or empty dir) instead of refusing. The
+            # probe also catches a path that vanished after backend boot.
+            if _git_common_dir(cand) is not None:
+                candidate = cand
+                logger.info(
+                    "review_source=registry path=%s repo=%s pr=#%d",
+                    candidate,
+                    event.repo_full_name,
+                    event.pr_number,
+                )
+            else:
+                logger.warning(
+                    "review_source=fallback reason=registry_path_invalid "
+                    "repo=%s registry_path=%s pr=#%d "
+                    "(path is missing or not a git repo)",
+                    event.repo_full_name,
+                    registry_entry,
+                    event.pr_number,
+                )
+
+    # Path 3 — host-level fallback OR refusal
+    if candidate is None:
+        if settings.review_repo_roots:
+            # Operator opted into the registry; an unmatched repo is a
+            # configuration miss, not a fallback target. Refusing here
+            # is the T-350 fix — the alternative is reviewing the PR
+            # against the wrong repository's source.
+            logger.warning(
+                "review_source=refused reason=unconfigured_repo repo=%s pr_branch=%s pr=#%d",
+                event.repo_full_name,
+                head_branch or "<empty>",
+                event.pr_number,
+            )
+            return None
         logger.warning(
             "review_source=fallback reason=no_matching_worktree pr_branch=%s pr=#%d",
             head_branch or "<empty>",
@@ -444,11 +498,37 @@ async def resolve_pr_review_root(
         candidate = fallback
 
     # SHA-check + temp-dir fallback
+    #
+    # T-350 codex sessions 2/5 + 3/5: the temp-checkout MUST be
+    # materialised inside the main clone of the PR's OWN repo —
+    # ``main_clone`` is documented as "the repository that owns the
+    # disposable worktree" (PrReviewRoot docstring). Anchoring at
+    # ``fallback`` (= ``review_source_root``, typically cloglog-prod)
+    # for a foreign-repo PR runs ``git worktree add ... <foreign sha>``
+    # against cloglog-prod's object DB and ``git fetch origin
+    # <foreign branch>`` against cloglog's origin — neither resolves
+    # the foreign objects, so the temp-checkout silently degrades to
+    # a stale review.
+    #
+    # Order of preference for the anchor:
+    #   1. registry entry for the PR's repo (multi-repo backends),
+    #   2. parent of the candidate's ``--git-common-dir`` — covers
+    #      Path 0/1 worktree hits for a foreign repo NOT in the
+    #      registry (codex round 3: an antisocial worktree row routed
+    #      via Path 1 still needs the antisocial main clone, even
+    #      when the operator only registered cloglog),
+    #   3. legacy ``fallback`` (single-repo / no candidate).
     if head_sha:
         worktree_sha = _probe_git_head(candidate)
         if worktree_sha is not None and worktree_sha != head_sha:
+            # Resolve the anchor lazily so we don't probe registry paths
+            # (and emit warnings about misconfigured ones) on PRs where
+            # SHAs match — the temp-checkout path won't run anyway.
+            main_clone_anchor = _resolve_main_clone_anchor(
+                candidate, event.repo_full_name, fallback
+            )
             temp = await _create_review_checkout(
-                fallback,
+                main_clone_anchor,
                 head_sha=head_sha,
                 pr_number=event.pr_number,
                 head_branch=head_branch,
@@ -461,7 +541,7 @@ async def resolve_pr_review_root(
                     event.pr_number,
                     worktree_sha[:7],
                 )
-                return PrReviewRoot(path=temp, is_temp=True, main_clone=fallback)
+                return PrReviewRoot(path=temp, is_temp=True, main_clone=main_clone_anchor)
             logger.warning(
                 "review_source_drift worktree_head=%s pr_head=%s pr_branch=%s "
                 "worktree_path=%s pr=#%d (temp-dir checkout unavailable; "
@@ -474,6 +554,97 @@ async def resolve_pr_review_root(
             )
 
     return PrReviewRoot(path=candidate)
+
+
+def _resolve_main_clone_anchor(candidate: Path | None, repo_full_name: str, fallback: Path) -> Path:
+    """Pick the main-clone anchor for ``_create_review_checkout``.
+
+    The temp-checkout helper materialises a disposable worktree under
+    ``<anchor>/.cloglog/review-checkouts/`` via ``git worktree add`` and,
+    on a fetch retry, runs ``git fetch origin <branch>`` from the same
+    anchor. Both must run inside the PR's OWN repo or the SHA / refs
+    won't resolve. Preference order matches the resolver's path order:
+
+    1. ``settings.review_repo_roots[repo_full_name]`` — explicit
+       operator config wins (multi-repo backends), **but only if the
+       configured path is a real git repo on disk** (codex round 4: a
+       stale/mistyped registry entry was silently overriding a valid
+       Path 1 worktree hit and breaking the temp-checkout). Validates
+       via ``_git_common_dir`` rather than ``is_dir()`` alone — the
+       anchor must own a git object DB, not just exist as a directory.
+    2. Parent of ``git -C <candidate> rev-parse --git-common-dir`` —
+       a Path 0/1 worktree hit for a repo without a usable registry
+       entry still has the right answer encoded in the worktree
+       itself: a linked worktree's common-dir points at the main
+       clone's ``.git``, whose parent is the main clone. Covers codex
+       round 3's foreign-repo Path 1 hit (antisocial worktree on a
+       host whose registry only lists cloglog).
+    3. ``fallback`` — single-repo legacy path, or a candidate whose
+       common-dir probe fails (very rare; ``_create_review_checkout``
+       is best-effort either way).
+    """
+    registry_entry = settings.review_repo_roots.get(repo_full_name)
+    if registry_entry is not None:
+        registry_path = Path(registry_entry)
+        # Validate via ``--git-common-dir`` — a typo'd/stale path that
+        # happens to exist as a directory but is not a git repo would
+        # still break ``git worktree add`` downstream. The probe also
+        # protects against a path that vanished after backend boot.
+        if _git_common_dir(registry_path) is not None:
+            return registry_path
+        logger.warning(
+            "review_repo_roots[%s]=%s is not a usable git repo — "
+            "falling through to candidate common-dir derivation",
+            repo_full_name,
+            registry_entry,
+        )
+    if candidate is not None:
+        common_dir = _git_common_dir(candidate)
+        if common_dir is not None:
+            # ``.git`` parent is the main clone; for the main worktree
+            # itself this is the worktree dir (== main clone), and for
+            # a linked worktree it's the original repo. Either way the
+            # resulting path owns the worktree list and the origin
+            # remote that ``_create_review_checkout`` needs.
+            return common_dir.parent
+    return fallback
+
+
+def _git_common_dir(path: Path) -> Path | None:
+    """Probe ``git -C <path> rev-parse --git-common-dir``. Return the
+    absolute path to the shared ``.git`` directory or ``None``.
+
+    For a linked worktree, the result points at the main clone's
+    ``.git`` (the source of truth for the object DB and remotes).
+    For the main worktree, it points at the worktree's own ``.git``.
+    Errors are swallowed — the caller falls through to its own
+    fallback.
+    """
+    import subprocess  # local: keep top-level imports lean
+
+    try:
+        proc = subprocess.run(  # noqa: S603 -- fixed argv, path from trusted source
+            ["git", "-C", str(path), "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as err:  # pragma: no cover - rare
+        logger.warning("git rev-parse --git-common-dir probe failed for %s: %s", path, err)
+        return None
+    if proc.returncode != 0:
+        return None
+    common = proc.stdout.strip()
+    if not common:
+        return None
+    common_path = Path(common)
+    if not common_path.is_absolute():
+        # Older git emits a relative path resolved against the working
+        # tree — anchor at ``path`` so the result is always absolute,
+        # avoiding cwd dependency in the caller.
+        common_path = (path / common_path).resolve()
+    return common_path
 
 
 def _probe_git_head(path: Path) -> str | None:
@@ -1322,6 +1493,25 @@ class ReviewEngineConsumer:
             review_root = await resolve_pr_review_root(
                 event, project_id=project_id, worktree_query=wq
             )
+        # T-350: when `review_repo_roots` is configured and the event's
+        # repo isn't in it AND no worktree owns the branch, the resolver
+        # refuses (None). Posting nothing is strictly better than
+        # reviewing against the wrong repo's source — surface the refusal
+        # as a one-shot skip comment so the operator can see the
+        # configuration gap on GitHub.
+        if review_root is None:
+            await self._notify_skip(
+                event,
+                SkipReason.UNCONFIGURED_REPO,
+                (
+                    f"Code review skipped: this App is installed but not "
+                    f"configured for review on `{event.repo_full_name}`. "
+                    f"Configure `REVIEW_REPO_ROOTS` (env var or "
+                    f"`review_repo_roots` in `src/shared/config.py`) on "
+                    f"the cloglog backend to enable reviews for this repo."
+                ),
+            )
+            return
         project_root = review_root.path
 
         # Session counter for the review-body header (T-290). ``prior`` counts
@@ -1475,11 +1665,71 @@ class ReviewEngineConsumer:
 
         Silent failure is never acceptable here — see PR #149 / #159.
         """
-        # `settings.review_source_root` must point at a checkout of the PR's
-        # merge target (usually main). When unset, fall back to Path.cwd() —
-        # fine for dev, wrong in prod where the backend runs out of a prod
-        # checkout that trails main. See T-255.
-        project_root = settings.review_source_root or Path.cwd()
+        # T-350 codex round 5 MEDIUM: the degraded single-turn path
+        # cannot bypass the per-repo refusal. ``_review_pr``'s sequenced
+        # branch routes through ``resolve_pr_review_root`` and refuses
+        # unconfigured repos with ``UNCONFIGURED_REPO``; without this
+        # block, any caller that takes the degraded branch (no
+        # ``session_factory``, missing ``head_sha``, or older harnesses
+        # constructing ``ReviewEngineConsumer()`` with no factory) would
+        # still review against ``settings.review_source_root`` and
+        # recreate the cross-repo leak.
+        #
+        # The degraded path skips the per-PR worktree lookup (which
+        # requires DB session machinery the degraded branch was added
+        # to avoid), so we apply the registry-only subset of the
+        # refusal contract: when ``review_repo_roots`` is populated and
+        # the event's repo isn't in it (or is mapped to an invalid
+        # path), refuse. When the registry is empty (single-repo legacy
+        # hosts) we keep the historical fallback unchanged.
+        if settings.review_repo_roots:
+            registry_entry = settings.review_repo_roots.get(event.repo_full_name)
+            if registry_entry is None:
+                logger.warning(
+                    "Degraded review path: review_repo_roots configured but "
+                    "no entry for %s — refusing rather than reviewing against "
+                    "review_source_root (T-350)",
+                    event.repo_full_name,
+                )
+                await self._notify_skip(
+                    event,
+                    SkipReason.UNCONFIGURED_REPO,
+                    (
+                        f"Code review skipped: this App is installed but not "
+                        f"configured for review on `{event.repo_full_name}`. "
+                        f"Configure `REVIEW_REPO_ROOTS` (env var or "
+                        f"`review_repo_roots` in `src/shared/config.py`) on "
+                        f"the cloglog backend to enable reviews for this repo."
+                    ),
+                )
+                return None
+            registry_path = Path(registry_entry)
+            if _git_common_dir(registry_path) is None:
+                logger.warning(
+                    "Degraded review path: review_repo_roots[%s]=%s is not "
+                    "a usable git repo — refusing (T-350 round 5)",
+                    event.repo_full_name,
+                    registry_entry,
+                )
+                await self._notify_skip(
+                    event,
+                    SkipReason.UNCONFIGURED_REPO,
+                    (
+                        f"Code review skipped: `REVIEW_REPO_ROOTS` entry for "
+                        f"`{event.repo_full_name}` points at "
+                        f"`{registry_entry}`, which is not a git repo. "
+                        f"Fix the configuration on the cloglog backend."
+                    ),
+                )
+                return None
+            project_root = registry_path
+        else:
+            # Legacy single-repo path — `settings.review_source_root` must
+            # point at a checkout of the PR's merge target (usually main).
+            # When unset, fall back to Path.cwd() — fine for dev, wrong in
+            # prod where the backend runs out of a prod checkout that
+            # trails main. See T-255.
+            project_root = settings.review_source_root or Path.cwd()
         prompt = _load_project_prompt(project_root)
         schema_path = _get_schema_path(project_root)
         full_prompt = f"{prompt}\n\nDIFF:\n{diff}"

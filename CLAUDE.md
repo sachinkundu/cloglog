@@ -119,6 +119,7 @@ Durable gotchas discovered during worktree tasks. Each bullet is non-obvious and
 
 ### review_engine plumbing
 
+- **GitHub create-review POST stamps `commit_id` from the branch's current head when omitted.** `post_review` MUST pass `"commit_id": head_sha` in the payload — otherwise a race between codex reading the tree and a new push lands an incorrectly-attributed review (codex reviewed SHA X, GitHub records the review against SHA Y because Y was the head when the POST landed). Downstream consumers (`count_bot_reviews` dedupes by `commit_id`; `_codex_passed_for_head` filters by `commit_id == head_sha`) silently mis-count sessions and block correct auto-merge approvals. The `ReviewLoop` happy path AND the degraded single-turn path (`session_factory is None`) BOTH call `post_review` and BOTH need `head_sha` plumbed through. T-365. Pins: `tests/gateway/test_review_engine.py::test_commit_id_included_when_head_sha_provided`, `::test_commit_id_omitted_when_head_sha_empty`, `::test_degraded_path_includes_commit_id`.
 - **Opencode-only host has a hard constraint on `count_bot_reviews`.** `TestOpencodeOnlyHost::test_session_cap_check_skipped_when_codex_unavailable` pins that `count_bot_reviews` MUST NOT be called when `_codex_available=False`. Any future code that needs a prior session count must gate the HTTP call on `_codex_available` or pre-seed a fallback (`prior = 0`) before the capability-gated block.
 
 ### Worktrees

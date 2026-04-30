@@ -48,20 +48,28 @@ def _extract_emit_block(skill_text: str) -> str:
             eof = j
             break
     assert eof is not None, "No closing EOF for the launch.sh heredoc"
-    # Then collect the two sed -i lines that follow.
-    sed_lines = []
+    # Then collect every line between EOF and `chmod +x` — this captures the
+    # `sed -i` substitution pair and any setup lines (e.g. the
+    # `_sed_escape_replacement` helper added in T-353 codex round 1) that
+    # must run before them. Skip blank lines and pure-comment lines so we
+    # don't trip on Markdown prose mixed in (we are inside a fenced bash
+    # block so that's unlikely, but be defensive).
+    post_lines: list[str] = []
+    found_chmod = False
+    sed_count = 0
     for k in range(eof + 1, len(lines)):
         stripped = lines[k].strip()
-        if stripped.startswith("sed -i"):
-            sed_lines.append(lines[k])
-            if len(sed_lines) == 2:
-                break
-        elif stripped.startswith("chmod +x"):
+        if stripped.startswith("chmod +x"):
+            found_chmod = True
             break
-    assert len(sed_lines) == 2, (
-        f"Expected 2 `sed -i` substitution lines after the heredoc; got {len(sed_lines)}"
+        post_lines.append(lines[k])
+        if stripped.startswith("sed -i"):
+            sed_count += 1
+    assert found_chmod, "No `chmod +x` line found after the launch.sh heredoc"
+    assert sed_count == 2, (
+        f"Expected 2 `sed -i` substitution lines after the heredoc; got {sed_count}"
     )
-    block_lines = lines[start : eof + 1] + sed_lines
+    block_lines = lines[start : eof + 1] + post_lines
     return "\n".join(block_lines) + "\n"
 
 
@@ -69,8 +77,13 @@ def test_launch_sh_renders_clean(tmp_path: Path) -> None:
     skill_text = SKILL_PATH.read_text()
     emit_block = _extract_emit_block(skill_text)
 
-    wt_path = tmp_path / "fake-wt" / "foo"
-    proj_root = tmp_path / "fake-proj"
+    # T-353 codex round 1: include `&` in both fixture paths so the sed
+    # replacement-string escape is exercised. In a sed replacement, `&`
+    # expands to the matched text; without the `s/[&|\]/\\&/g` escape,
+    # the rendered file would contain `fake@@WORKTREE_PATH@@wt` instead of
+    # `fake&wt`. Real-world trigger: a checkout under `~/R&D/`.
+    wt_path = tmp_path / "fake&wt" / "foo"
+    proj_root = tmp_path / "fake&proj"
     (wt_path / ".cloglog").mkdir(parents=True)
     proj_root.mkdir(parents=True)
 

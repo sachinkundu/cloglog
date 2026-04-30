@@ -408,8 +408,19 @@ EOF
 # Quoted heredoc above leaves @@WORKTREE_PATH@@ / @@PROJECT_ROOT@@ as literal
 # placeholders; sed bakes them in here. Use `|` as the separator since paths
 # contain `/`.
-sed -i "s|@@WORKTREE_PATH@@|${WORKTREE_PATH}|g" "${WORKTREE_PATH}/.cloglog/launch.sh"
-sed -i "s|@@PROJECT_ROOT@@|${PROJECT_ROOT}|g" "${WORKTREE_PATH}/.cloglog/launch.sh"
+#
+# T-353 codex round 1 — escape the replacement string for sed. In a sed
+# replacement, `&` expands to the matched text, `\` escapes, and the chosen
+# delimiter `|` ends the replacement. Any host path containing `&`, `|`, or
+# `\` (e.g. a repo under `~/R&D/`) would render with `&` replaced by the
+# placeholder text and trip silent path corruption. The regex
+# `'s/[&|\]/\\&/g'` prefixes a backslash to each of those three metacharacters
+# in the replacement.
+_sed_escape_replacement() { printf '%s' "$1" | sed 's/[&|\]/\\&/g'; }
+_ESC_WORKTREE_PATH=$(_sed_escape_replacement "${WORKTREE_PATH}")
+_ESC_PROJECT_ROOT=$(_sed_escape_replacement "${PROJECT_ROOT}")
+sed -i "s|@@WORKTREE_PATH@@|${_ESC_WORKTREE_PATH}|g" "${WORKTREE_PATH}/.cloglog/launch.sh"
+sed -i "s|@@PROJECT_ROOT@@|${_ESC_PROJECT_ROOT}|g" "${WORKTREE_PATH}/.cloglog/launch.sh"
 chmod +x "${WORKTREE_PATH}/.cloglog/launch.sh"
 
 # new-tab -- <command> starts the command in the tab's initial pane — no write-chars, no list-clients, no pane-id needed

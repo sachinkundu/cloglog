@@ -659,9 +659,19 @@ class AgentService:
     # --- Unregister ---
 
     async def unregister(
-        self, worktree_id: UUID, artifacts: dict[str, str | None] | None = None
+        self,
+        worktree_id: UUID,
+        artifacts: dict[str, str | None] | None = None,
+        reason: str | None = None,
     ) -> None:
-        """End the active session and delete worktree record."""
+        """End the active session and delete worktree record.
+
+        ``reason`` is forwarded to the AGENT_UNREGISTERED event the
+        notification listener subscribes to (T-358). Routine reasons
+        (``pr_merged``, ``no_pr_task_complete``) are filtered out by the
+        toast dispatcher; unset / unknown reasons are treated as a
+        non-clean exit and toast the operator.
+        """
         worktree = await self._repo.get_worktree(worktree_id)
         if worktree is None:
             raise ValueError(f"Worktree {worktree_id} not found")
@@ -676,10 +686,19 @@ class AgentService:
         }
         if artifacts is not None:
             event_data["artifacts"] = artifacts
+        if reason is not None:
+            event_data["reason"] = reason
 
         await event_bus.publish(
             Event(
                 type=EventType.WORKTREE_OFFLINE,
+                project_id=worktree.project_id,
+                data=event_data,
+            )
+        )
+        await event_bus.publish(
+            Event(
+                type=EventType.AGENT_UNREGISTERED,
                 project_id=worktree.project_id,
                 data=event_data,
             )
@@ -722,18 +741,28 @@ class AgentService:
             if session is not None:
                 await self._repo.end_session(session.id, status="force_unregistered")
 
+            offline_data = {
+                "worktree_id": str(worktree_id),
+                "worktree_path": worktree.worktree_path,
+                "reason": "force_unregistered",
+                "caller_project_id": (
+                    str(caller_project_id) if caller_project_id else "mcp_service"
+                ),
+            }
             await event_bus.publish(
                 Event(
                     type=EventType.WORKTREE_OFFLINE,
                     project_id=worktree.project_id,
-                    data={
-                        "worktree_id": str(worktree_id),
-                        "worktree_path": worktree.worktree_path,
-                        "reason": "force_unregistered",
-                        "caller_project_id": (
-                            str(caller_project_id) if caller_project_id else "mcp_service"
-                        ),
-                    },
+                    data=offline_data,
+                )
+            )
+            # T-358: also surface as AGENT_UNREGISTERED so the desktop-toast
+            # dispatcher fires (force_unregistered is non-clean by definition).
+            await event_bus.publish(
+                Event(
+                    type=EventType.AGENT_UNREGISTERED,
+                    project_id=worktree.project_id,
+                    data=offline_data,
                 )
             )
 
@@ -759,12 +788,13 @@ class AgentService:
         project_id: UUID,
         worktree_path: str,
         artifacts: dict[str, str | None] | None = None,
+        reason: str | None = None,
     ) -> None:
         """Resolve worktree by path and unregister it."""
         worktree = await self._repo.get_worktree_by_path(project_id, worktree_path)
         if worktree is None:
             raise ValueError(f"Worktree not found for path: {worktree_path}")
-        await self.unregister(worktree.id, artifacts=artifacts)
+        await self.unregister(worktree.id, artifacts=artifacts, reason=reason)
 
     async def remove_offline_agents(self, project_id: UUID) -> int:
         """Delete all offline worktree records for a project. Returns count removed."""

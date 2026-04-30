@@ -135,11 +135,31 @@ sed -i \
   -e "s|@@PROJECT_ROOT@@|${PROJECT_ROOT_E}|g" \
   "${WORKTREE_PATH}/task.md"
 
-# Description / sibling warnings / residual notes / workflow override are
-# multi-line free text — apply the same `_sed_escape_replacement` helper
-# before substitution. Multi-line content also needs newline-to-`\n`
-# handling; the launching agent writes them via `printf "%s\n"` to a
-# temp file then inlines with `awk 'NR==FNR{...}'` rather than `sed`.
+# 4. Multi-line placeholders. Description / sibling warnings / residual
+# notes / workflow override are free-form multi-line strings — sed's
+# replacement-string substitution doesn't handle newlines cleanly, so
+# we write each value to a temp file and use sed's `r FILE` + `d` pair
+# to replace the whole placeholder line with the file's contents.
+# Each placeholder appears on its own line in the heredoc above, which
+# makes whole-line replacement safe.
+TMP_DESC=$(mktemp)
+TMP_SIB=$(mktemp)
+TMP_RES=$(mktemp)
+TMP_OVR=$(mktemp)
+trap 'rm -f "$TMP_DESC" "$TMP_SIB" "$TMP_RES" "$TMP_OVR"' EXIT
+
+printf '%s' "${TASK_DESCRIPTION:-(none)}"   > "$TMP_DESC"
+printf '%s' "${SIBLING_WARNINGS:-(none)}"   > "$TMP_SIB"
+printf '%s' "${RESIDUAL_NOTES:-(none)}"     > "$TMP_RES"
+printf '%s' "${WORKFLOW_OVERRIDE:-(none)}"  > "$TMP_OVR"
+
+# `sed -i -e '/@@TOKEN@@/{r FILE' -e 'd}'` reads FILE in place of the
+# matched line, then deletes the placeholder. Two `-e` arguments are
+# required because the `r` command extends to end-of-line.
+sed -i -e "/@@TASK_DESCRIPTION@@/{r ${TMP_DESC}" -e "d;}" "${WORKTREE_PATH}/task.md"
+sed -i -e "/@@SIBLING_WARNINGS@@/{r ${TMP_SIB}"  -e "d;}" "${WORKTREE_PATH}/task.md"
+sed -i -e "/@@RESIDUAL_NOTES@@/{r ${TMP_RES}"    -e "d;}" "${WORKTREE_PATH}/task.md"
+sed -i -e "/@@WORKFLOW_OVERRIDE@@/{r ${TMP_OVR}" -e "d;}" "${WORKTREE_PATH}/task.md"
 ```
 
 The agent reads `AGENT_PROMPT.md` first; the template's first section instructs it to read `task.md` for the per-task delta. The launch.sh fallback prompt (`Read ${WORKTREE_PATH}/AGENT_PROMPT.md and begin.`) is unchanged — `task.md` is reached transitively from the template.

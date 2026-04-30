@@ -20,9 +20,9 @@ If any `work-log-T-<NNN>.md` files exist, **read them all** before any other act
 
 ## First Steps
 
-1. Read `AGENT_PROMPT.md` in your current directory — it contains your feature assignment and task IDs
+1. Read `AGENT_PROMPT.md` in your current directory — it is the **workflow template** (canonical source for inbox handling, MCP preload, stop-on-failure, the standard workflow, the per-task shutdown sequence, and the continuation prompt). T-360 split the per-task delta out: the **task assignment** (task ID, feature ID, worktree IDs, paths, description, sibling-task warnings, residual TODOs hint, optional `workflow_override`) lives in sibling `task.md`. Read `task.md` next.
 2. Read the project's root `CLAUDE.md` — it contains project-specific instructions including which subagents to spawn, what quality gate to run, tech stack details, and any methodology to follow
-3. Follow the workflow in AGENT_PROMPT.md exactly
+3. Follow the workflow in AGENT_PROMPT.md exactly, using `task.md`'s values for the per-task UUIDs and paths.
 
 ## Non-Negotiable Principles
 

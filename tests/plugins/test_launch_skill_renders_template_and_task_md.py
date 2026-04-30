@@ -73,26 +73,11 @@ def test_step3_emits_both_files_with_substituted_placeholders() -> None:
             "WORKFLOW_OVERRIDE": "(none)",
         }
 
-        # The SKILL's bash references a few variables (TASK_DESCRIPTION etc)
-        # that the prose says are populated via temp files. Append the
-        # missing substitutions so the test exercises the full shape;
-        # reuse the same `_sed_escape_replacement` helper the SKILL block
-        # defines so free-form values round-trip literally.
-        bash_full = bash + (
-            "\n"
-            'TASK_DESCRIPTION_E=$(_sed_escape_replacement "${TASK_DESCRIPTION}")\n'
-            'SIBLING_WARNINGS_E=$(_sed_escape_replacement "${SIBLING_WARNINGS}")\n'
-            'RESIDUAL_NOTES_E=$(_sed_escape_replacement "${RESIDUAL_NOTES}")\n'
-            'WORKFLOW_OVERRIDE_E=$(_sed_escape_replacement "${WORKFLOW_OVERRIDE}")\n'
-            'sed -i "s|@@TASK_DESCRIPTION@@|${TASK_DESCRIPTION_E}|g" '
-            '"${WORKTREE_PATH}/task.md"\n'
-            'sed -i "s|@@SIBLING_WARNINGS@@|${SIBLING_WARNINGS_E}|g" '
-            '"${WORKTREE_PATH}/task.md"\n'
-            'sed -i "s|@@RESIDUAL_NOTES@@|${RESIDUAL_NOTES_E}|g" '
-            '"${WORKTREE_PATH}/task.md"\n'
-            'sed -i "s|@@WORKFLOW_OVERRIDE@@|${WORKFLOW_OVERRIDE_E}|g" '
-            '"${WORKTREE_PATH}/task.md"\n'
-        )
+        # Codex round 3: the test now executes the documented Step 3
+        # block AS-IS — no per-test `bash_full` augmentation. Any
+        # placeholder Step 3 forgets to substitute will leave a leftover
+        # @@TOKEN@@ token, which the no-leftover assertion below catches.
+        bash_full = bash
 
         result = subprocess.run(
             ["bash", "-c", bash_full],
@@ -178,21 +163,8 @@ def test_step3_escapes_sed_replacement_metacharacters() -> None:
             "WORKFLOW_OVERRIDE": "(none)",
         }
 
-        bash_full = bash + (
-            "\n"
-            'TASK_DESCRIPTION_E=$(_sed_escape_replacement "${TASK_DESCRIPTION}")\n'
-            'SIBLING_WARNINGS_E=$(_sed_escape_replacement "${SIBLING_WARNINGS}")\n'
-            'RESIDUAL_NOTES_E=$(_sed_escape_replacement "${RESIDUAL_NOTES}")\n'
-            'WORKFLOW_OVERRIDE_E=$(_sed_escape_replacement "${WORKFLOW_OVERRIDE}")\n'
-            'sed -i "s|@@TASK_DESCRIPTION@@|${TASK_DESCRIPTION_E}|g" '
-            '"${WORKTREE_PATH}/task.md"\n'
-            'sed -i "s|@@SIBLING_WARNINGS@@|${SIBLING_WARNINGS_E}|g" '
-            '"${WORKTREE_PATH}/task.md"\n'
-            'sed -i "s|@@RESIDUAL_NOTES@@|${RESIDUAL_NOTES_E}|g" '
-            '"${WORKTREE_PATH}/task.md"\n'
-            'sed -i "s|@@WORKFLOW_OVERRIDE@@|${WORKFLOW_OVERRIDE_E}|g" '
-            '"${WORKTREE_PATH}/task.md"\n'
-        )
+        # Run the documented Step 3 block as-is (codex round 3).
+        bash_full = bash
 
         result = subprocess.run(
             ["bash", "-c", bash_full],

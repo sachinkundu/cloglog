@@ -112,15 +112,43 @@ Never retry a 409 or a 5xx. Never fall back to direct HTTP or `gh api`.
 ## Standard workflow
 
 1. Spawn the inbox monitor (see **Inbox handling** above).
-2. The supervisor already called `register_agent` for this worktree at launch
-   time — do **not** call it again. Echo `agent_started` to the project root
-   inbox so the supervisor sees you live:
+2. **Register this MCP session.** The MCP server keeps `currentWorktreeId`
+   and `agent_token` per-process (`mcp-server/src/server.ts:44-47`,
+   `mcp-server/src/client.ts:99-105`), so the supervisor's prior
+   `register_agent` call in *its* session does not populate this session's
+   state — without an explicit call here, every later
+   `mcp__cloglog__*` call returns `Not registered`. The supervisor's
+   `register_agent` was for the **board row** (so the launch shows up
+   immediately); this call is for the **MCP session** that the agent runs
+   in. The backend handles re-registration idempotently — calling again
+   with the same `worktree_path` returns the existing row.
+   ```
+   mcp__cloglog__register_agent(worktree_path=<WORKTREE_PATH from task.md>)
+   ```
+   Then echo `agent_started` to the project root inbox so the supervisor
+   sees you live:
    ```
    printf '{"type":"agent_started","worktree":"<wt-name>","worktree_id":"<uuid>","ts":"%s"}\n' "$(date -Is)" \
      >> <PROJECT_ROOT>/.cloglog/inbox
    ```
    (`<wt-name>` and `<uuid>` come from `task.md`.)
-3. Call `mcp__cloglog__start_task` with the task UUID from `task.md`.
+3. **Resolve the active task.** Call `mcp__cloglog__get_my_tasks()` and pick
+   the first row with status `backlog` (or `in_progress` if you are
+   resuming after a crash). Call `mcp__cloglog__start_task` with **that
+   row's UUID**, not the UUID in `task.md`.
+
+   Why both: `task.md` carries description / scope / sibling warnings the
+   supervisor wrote at launch, but on continuation sessions the supervisor
+   relaunch flow re-issues the launch prompt without rewriting `task.md`,
+   so its UUID still names the just-merged task. `get_my_tasks` is the
+   live source of truth for "which task is this session working on."
+
+   For initial launches `task.md`'s UUID matches the first backlog row,
+   so this is a no-op consistency check. On continuation it's the
+   correction. If the row's title differs from `task.md`'s title, trust
+   the row and treat `task.md`'s description / scope as stale —
+   `mcp__cloglog__search T-{row.number}` returns the live task data the
+   supervisor would have written.
 4. Run the project's existing tests to establish a green baseline. Run the
    project quality gate (`make quality` for cloglog) so you know any later
    failure is your delta.
@@ -223,6 +251,19 @@ Read <WORKTREE_PATH>/AGENT_PROMPT.md and all shutdown-artifacts/work-log-T-*.md 
 ```
 
 The new session reads this template (already on disk), reads the prior work
-logs (Work-Log Bootstrap section above), reads `task.md` for the next task's
-delta (the supervisor rewrites `task.md` before each relaunch), loads MCP
-tools, calls `start_task` on the next backlog task, and proceeds normally.
+logs (Work-Log Bootstrap section above), loads MCP tools, **calls
+`register_agent` to bind this MCP session to the worktree** (the previous
+session's `unregister_agent` cleared its registration; the MCP server's
+per-process `currentWorktreeId` is gone with the prior process), then
+follows Standard workflow step 3: `get_my_tasks` is the live source of
+truth for which task to start, since the supervisor relaunch flow re-issues
+the launch prompt without rewriting `task.md`. The agent reads `task.md`
+for description / scope hints but trusts `get_my_tasks` for the active
+task UUID.
+
+**Known gap (residual TODO):** the supervisor relaunch flow should rewrite
+`task.md` for the next task before re-issuing the prompt — that's the
+proper fix and lives in the Supervisor Relaunch Flow section of the launch
+SKILL. Until that lands, the agent's `get_my_tasks` defense above is the
+authoritative resolver. Do not remove the defense even after the
+supervisor-side rewrite ships — defense in depth is cheap here.

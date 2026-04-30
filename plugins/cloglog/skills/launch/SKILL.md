@@ -148,9 +148,11 @@ When the supervisor relaunches the same worktree for task N+1, it issues:
 Read ${WORKTREE_PATH}/AGENT_PROMPT.md and all shutdown-artifacts/work-log-T-*.md files in ${WORKTREE_PATH}, then begin the next task.
 ```
 
-The new session reads the template (already on disk in the worktree from the original launch), reads prior work logs, reads `task.md` (the supervisor rewrites `task.md` before each relaunch with the next task's delta), loads MCP tools, calls `start_task` on the next backlog task, and proceeds normally.
+The new session reads the template (already on disk in the worktree from the original launch), reads prior work logs, loads MCP tools, **re-registers via `mcp__cloglog__register_agent` to bind the new MCP session** (the previous session's `unregister_agent` cleared its per-process state), then resolves the active task via `get_my_tasks` (the live source of truth — see the template's Standard workflow step 3 for why `task.md` is read for hints but not trusted for the UUID on continuation), and proceeds normally.
 
 **The launch SKILL writes the initial prompt; the supervisor writes continuation prompts.** Continuation sessions reuse `.cloglog/launch.sh` by passing the prompt as `$1` so the TERM/HUP signal trap and `_unregister_fallback` path from the initial launch are preserved.
+
+**Residual: supervisor-side `task.md` rewrite.** The proper fix for the continuation flow is for the supervisor to rewrite `${WORKTREE_PATH}/task.md` for the next task before issuing the continuation prompt — using the same Step 3 rendering shape. That edit lands in the Supervisor Relaunch Flow section, which T-356 currently owns; this PR (T-360) leaves the agent-side `get_my_tasks` defense as the resolver. Do not remove the defense after the rewrite lands — defense in depth.
 
 ## Supervisor Relaunch Flow
 

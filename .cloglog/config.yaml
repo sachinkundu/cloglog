@@ -30,6 +30,13 @@ reviewer_bot_logins:
 # it without a YAML list parser.
 demo_allowlist_paths: '^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates)/|^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$'
 
+# T-358: operator off-switch for desktop toasts (notify-send). Set to false
+# to suppress every toast class without affecting the persisted Notification
+# row or the dashboard SSE bell. Read by
+# src/gateway/notification_listener.py:load_toast_enabled via the stdlib
+# scalar reader (no PyYAML -- docs/invariants.md hook YAML parsing entry).
+desktop_toast_enabled: true
+
 worktree_scopes:
   board: [src/board/, tests/board/, src/alembic/]
   agent: [src/agent/, tests/agent/, src/alembic/]

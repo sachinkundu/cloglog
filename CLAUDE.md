@@ -102,6 +102,10 @@ Do NOT try to revert via PR on `prod` — `prod` is fast-forward-only by design.
 
 Durable gotchas discovered during worktree tasks. Each bullet is non-obvious and has caused a real failure.
 
+### Notifications
+
+- **Desktop toasts are for operator-attention events only.** Routine status moves (PR opened, → review, `pr_merged`, `agent_started`) get the persisted `Notification` row + dashboard bell, but no `notify-send`. Reason: with parallel worktrees, every PR-opened toast trains the operator to ignore them. T-358 ships two rules: (1) `TASK_STATUS_CHANGED → review` no longer toasts; (2) `AGENT_UNREGISTERED` toasts only when `data.reason` is in a known-non-clean allowlist (`force_unregistered`, `heartbeat_timeout`). A clean unregister via the public API has no `reason` and stays silent — that filter is what keeps a normal post-merge agent exit from toasting. Other operator-attention classes (`agent_blocked`, repeat CHANGES_REQUESTED, auto-merge stalls, `close_wave_failed`) are deferred until they have EventBus producers; today they live only in inbox files / worktree-side scripts. The `desktop_toast_enabled: false` switch in `.cloglog/config.yaml` is the operator off-switch (persisted notifications + SSE are unaffected). Pins: `tests/gateway/test_notification_listener_does_not_toast_on_review_transition.py` and `tests/gateway/test_notification_listener_toasts_on_unregister_filter.py`.
+
 ### Showboat demos
 
 - **`ast.unparse` substring checks need structural scoping.** `ast.unparse(Return_node)` prepends the `return` keyword — `"return"` contains `"turn"` — causing false positives. Always unparse `ret.value` (the expression), not the wrapping statement. Applies equally to `fn.args`, `node.test`, and other statement wrappers.

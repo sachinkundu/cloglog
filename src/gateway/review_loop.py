@@ -341,6 +341,7 @@ class ReviewLoop:
                     annotated,
                     diff,
                     self._token,
+                    head_sha=self._head_sha,
                     client=http,
                 )
                 if not posted:

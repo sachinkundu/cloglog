@@ -1109,6 +1109,44 @@ class TestPostReview:
                 payload = json.loads(route.calls.last.request.content)
                 assert payload["event"] == "COMMENT"
 
+    @pytest.mark.asyncio
+    async def test_commit_id_included_when_head_sha_provided(self) -> None:
+        """commit_id in payload pins the review to the SHA codex actually read."""
+        result = ReviewResult(verdict="comment", summary="ok", findings=[])
+        url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
+        with respx.mock() as mock:
+            route = mock.post(url).mock(return_value=httpx.Response(200, json={"id": 1}))
+            ok = await post_review(
+                "sachinkundu/cloglog",
+                42,
+                result,
+                _SAMPLE_DIFF_WITH_LINE,
+                "ghs_test",
+                head_sha="abc1234def5678901234567890123456789012ab",
+            )
+        assert ok is True
+        payload = json.loads(route.calls.last.request.content)
+        assert payload["commit_id"] == "abc1234def5678901234567890123456789012ab"
+
+    @pytest.mark.asyncio
+    async def test_commit_id_omitted_when_head_sha_empty(self) -> None:
+        """Graceful degradation: empty head_sha falls back to GitHub's default stamping."""
+        result = ReviewResult(verdict="comment", summary="ok", findings=[])
+        url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
+        with respx.mock() as mock:
+            route = mock.post(url).mock(return_value=httpx.Response(200, json={"id": 1}))
+            ok = await post_review(
+                "sachinkundu/cloglog",
+                42,
+                result,
+                _SAMPLE_DIFF_WITH_LINE,
+                "ghs_test",
+                head_sha="",
+            )
+        assert ok is True
+        payload = json.loads(route.calls.last.request.content)
+        assert "commit_id" not in payload
+
 
 # ---------------------------------------------------------------------------
 # Integration test — full flow with subprocess and GitHub both mocked (T-193)

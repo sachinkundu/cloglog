@@ -59,4 +59,5 @@ jobs:
           uv run pytest \
             tests/plugins/test_init_on_fresh_repo.py \
             tests/plugins/test_plugin_no_cloglog_citations.py \
+            tests/plugins/test_skills_no_remote_set_url.py \
             -v --no-cov --tb=short

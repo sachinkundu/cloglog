@@ -50,7 +50,8 @@ invariants: ## Run silent-failure pin tests (see docs/invariants.md)
 	  tests/e2e/test_access_control.py::test_worktrees_with_invalid_mcp_bearer_is_rejected \
 	  tests/gateway/test_review_engine.py::TestResolvePrReviewRoot \
 	  tests/gateway/test_review_engine.py::TestLatestCodexReviewIsApproval \
-	  tests/test_makefile_gunicorn_invocation.py
+	  tests/test_makefile_gunicorn_invocation.py \
+	  tests/plugins/test_skills_no_remote_set_url.py
 
 # ── Quality ───────────────────────────────────
 

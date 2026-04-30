@@ -1473,6 +1473,7 @@ class ReviewEngineConsumer:
                         result,
                         filtered,
                         review_token,
+                        head_sha=head_sha,
                     )
             return
 

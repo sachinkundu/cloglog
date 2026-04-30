@@ -1231,6 +1231,77 @@ class TestFullFlowIntegration:
         assert payload["comments"][0]["path"] == "src/x.py"
         assert payload["comments"][0]["line"] == 1
 
+    @pytest.mark.asyncio
+    async def test_degraded_path_includes_commit_id(self) -> None:
+        """Degraded path (session_factory=None) must forward head_sha as commit_id.
+
+        Regression pin for T-365: the single-turn fallback branch in
+        ReviewEngineConsumer._review_pr() was the one code path that still
+        called post_review() without head_sha after the main fix landed.
+        """
+        consumer = ReviewEngineConsumer(max_per_hour=10)  # session_factory=None → degraded path
+        pr_diff = (
+            "diff --git a/src/x.py b/src/x.py\n"
+            "--- a/src/x.py\n"
+            "+++ b/src/x.py\n"
+            "@@ -1,2 +1,2 @@\n"
+            "-old\n"
+            "+new\n"
+        )
+        review_json = json.dumps({"verdict": "comment", "summary": "ok", "findings": []})
+
+        async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
+            if argv[0] == "gh":
+                return _FakeProcess(stdout=pr_diff.encode())
+            pytest.fail("_spawn should only be called for gh")
+
+        async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
+            for i, arg in enumerate(args):
+                if arg == "-o" and i + 1 < len(args):
+                    Path(args[i + 1]).write_text(review_json)
+                    break
+            return _FakeProcess(returncode=0)
+
+        sha = "1a07b401deadbeefcafe1234567890abcdef5678"
+        event = _event()
+        # Inject a pull_request.head.sha so the consumer resolves head_sha
+        event = WebhookEvent(
+            type=event.type,
+            delivery_id=event.delivery_id,
+            repo_full_name=event.repo_full_name,
+            pr_number=event.pr_number,
+            pr_url=event.pr_url,
+            head_branch=event.head_branch,
+            base_branch=event.base_branch,
+            sender=event.sender,
+            raw={"pull_request": {"head": {"sha": sha}}},
+        )
+
+        url = "https://api.github.com/repos/sachinkundu/cloglog/pulls/42/reviews"
+        with (
+            patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            respx.mock() as mock,
+        ):
+            route = mock.post(url).mock(return_value=httpx.Response(200, json={"id": 1}))
+            await consumer.handle(event)
+
+        assert route.call_count == 1
+        payload = json.loads(route.calls.last.request.content)
+        assert payload.get("commit_id") == sha, (
+            "Degraded path must forward head_sha as commit_id — "
+            "without it, latest_codex_review_is_approval() filters the review out "
+            "and count_bot_reviews double-counts sessions against the 5-session cap."
+        )
+
 
 # ---------------------------------------------------------------------------
 # count_bot_reviews + 2-cycle cap (T-193 follow-up)

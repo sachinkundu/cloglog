@@ -26,6 +26,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 LAUNCH_SKILL = REPO_ROOT / "plugins/cloglog/skills/launch/SKILL.md"
+SETUP_SKILL = REPO_ROOT / "plugins/cloglog/skills/setup/SKILL.md"
 
 DIAGNOSTIC_TOKENS = (
     "query-tab-names",
@@ -59,7 +60,7 @@ def test_step5_pins_agent_started_deadline_and_diagnostic_checklist() -> None:
         "Step 5 must reference the `launch_confirm_timeout_seconds` config "
         "key so operators can tune the deadline (T-356)."
     )
-    assert re.search(r"\b90\b", step5), (
+    assert re.search(r"(?<!\d)90(?!\d)", step5), (
         "Step 5 must document the default deadline of 90 seconds (T-356)."
     )
     for token in DIAGNOSTIC_TOKENS:
@@ -83,9 +84,59 @@ def test_supervisor_relaunch_flow_pins_same_deadline() -> None:
         "Supervisor Relaunch Flow must reference `launch_confirm_timeout_seconds` "
         "so the same deadline applies on both call sites (T-356)."
     )
-    assert re.search(r"\b90\b", section), (
+    assert re.search(r"(?<!\d)90(?!\d)", section), (
         "Supervisor Relaunch Flow must document the default deadline of 90 seconds (T-356)."
     )
+
+
+def test_setup_skill_handle_agent_unregistered_mirrors_relaunch_contract() -> None:
+    """Codex round 1 (HIGH): the supervisor's setup SKILL `Handle
+    agent_unregistered` section must mirror the launch SKILL's relaunch
+    contract — same `agent_started` deadline, same diagnostic checklist,
+    same operator handoff. Without this, a supervisor following the setup
+    SKILL relaunches a worktree and assumes liveness with no deadline,
+    re-introducing the silent-hang T-356 closes.
+    """
+    body = _read(SETUP_SKILL)
+    section = _section(body, r"### Handle `agent_unregistered`")
+
+    assert "agent_started" in section, (
+        "setup SKILL Handle agent_unregistered must mirror the launch "
+        "SKILL's `agent_started` confirmation contract on relaunch (T-356)."
+    )
+    assert "launch_confirm_timeout_seconds" in section, (
+        "setup SKILL relaunch must reference `launch_confirm_timeout_seconds` — "
+        "same deadline as the launch SKILL's call sites (T-356)."
+    )
+    assert re.search(r"(?<!\d)90(?!\d)", section), (
+        "setup SKILL relaunch must document the 90s default deadline (T-356)."
+    )
+
+
+def test_diagnostic_checklist_does_not_probe_env_for_api_key() -> None:
+    """Codex round 1 (MEDIUM): `CLOGLOG_API_KEY` MUST NOT be probed inside
+    `<worktree>/.env`. The launcher's `_api_key` resolves env first, then
+    `~/.cloglog/credentials`; `.env` is not on the resolution path and
+    `tests/test_mcp_json_no_secret.py` pins the invariant. A combined
+    probe (`grep -E 'CLOGLOG_API_KEY|DATABASE_URL' <worktree>/.env`)
+    encodes the opposite of the runtime contract and would push operators
+    toward a secret-placement violation.
+
+    Absence-pin uses an executable-form regex (the actual probe shape) so
+    that *prose* explaining the antipattern doesn't trip the test —
+    consistent with CLAUDE.md "Absence-pins on antipattern substrings
+    collide with documentation that names the antipattern".
+    """
+    forbidden_probe = re.compile(r"grep\s+-E?\s*['\"]\s*CLOGLOG_API_KEY\s*\|\s*DATABASE_URL")
+    for path in (LAUNCH_SKILL, SETUP_SKILL, REPO_ROOT / "CLAUDE.md"):
+        text = _read(path)
+        match = forbidden_probe.search(text)
+        assert match is None, (
+            f"{path.relative_to(REPO_ROOT)} must NOT probe `CLOGLOG_API_KEY` "
+            f"in `<worktree>/.env`. The key lives in env or "
+            "`~/.cloglog/credentials` (T-356 codex round 1). Probe each "
+            f"credential at its real source. Found: {match.group(0)!r}"
+        )
 
 
 def test_skill_does_not_prescribe_imperative_silent_retry() -> None:

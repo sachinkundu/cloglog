@@ -7,8 +7,7 @@ truthfully say "AGENT_PROMPT.md contains your feature assignment and
 task IDs." T-360 split those concerns: AGENT_PROMPT.md is the static
 workflow template (copied verbatim into every worktree), and `task.md`
 is the per-task delta (task UUID / feature UUID / worktree IDs / paths
-/ description / sibling warnings / residual TODOs hint / optional
-workflow_override).
+/ description / sibling warnings / residual TODOs hint).
 
 If `worktree-agent.md` keeps describing the old contract, a relaunched
 session that follows it literally will read `AGENT_PROMPT.md` for the
@@ -30,10 +29,10 @@ def test_worktree_agent_md_points_at_task_md_for_per_task_fields() -> None:
     body = WORKTREE_AGENT.read_text(encoding="utf-8")
     assert "task.md" in body, (
         "worktree-agent.md must reference task.md as the per-task delta "
-        "source — T-360 moved task IDs / paths / description / "
-        "workflow_override out of AGENT_PROMPT.md and into task.md. "
-        "Without this pointer, a relaunched session can read the static "
-        "template and miss that the active task changed."
+        "source — T-360 moved task IDs / paths / description out of "
+        "AGENT_PROMPT.md and into task.md. Without this pointer, a "
+        "relaunched session can read the static template and miss that "
+        "the active task changed."
     )
 
 

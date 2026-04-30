@@ -95,10 +95,6 @@ Feature: @@FEATURE_REF@@
 ## Residual TODOs hint
 
 @@RESIDUAL_NOTES@@
-
-## Workflow override
-
-@@WORKFLOW_OVERRIDE@@
 TASK_EOF
 
 # 3. Substitute per-task placeholders. Task titles / descriptions are
@@ -136,22 +132,25 @@ sed -i \
   "${WORKTREE_PATH}/task.md"
 
 # 4. Multi-line placeholders. Description / sibling warnings / residual
-# notes / workflow override are free-form multi-line strings — sed's
-# replacement-string substitution doesn't handle newlines cleanly, so
-# we write each value to a temp file and use sed's `r FILE` + `d` pair
-# to replace the whole placeholder line with the file's contents.
-# Each placeholder appears on its own line in the heredoc above, which
-# makes whole-line replacement safe.
+# notes are free-form multi-line strings — sed's replacement-string
+# substitution doesn't handle newlines cleanly, so we write each value
+# to a temp file and use sed's `r FILE` + `d` pair to replace the whole
+# placeholder line with the file's contents. Each placeholder appears
+# on its own line in the heredoc above, which makes whole-line
+# replacement safe.
+#
+# Codex round 4 (HIGH): no `WORKFLOW_OVERRIDE` placeholder. The board /
+# MCP contracts have no persisted `workflow_override` field; the
+# template handles `skip_pr` as a runtime decision the agent makes from
+# its own diff at PR time, not as a launch-time stored field.
 TMP_DESC=$(mktemp)
 TMP_SIB=$(mktemp)
 TMP_RES=$(mktemp)
-TMP_OVR=$(mktemp)
-trap 'rm -f "$TMP_DESC" "$TMP_SIB" "$TMP_RES" "$TMP_OVR"' EXIT
+trap 'rm -f "$TMP_DESC" "$TMP_SIB" "$TMP_RES"' EXIT
 
 printf '%s' "${TASK_DESCRIPTION:-(none)}"   > "$TMP_DESC"
 printf '%s' "${SIBLING_WARNINGS:-(none)}"   > "$TMP_SIB"
 printf '%s' "${RESIDUAL_NOTES:-(none)}"     > "$TMP_RES"
-printf '%s' "${WORKFLOW_OVERRIDE:-(none)}"  > "$TMP_OVR"
 
 # `sed -i -e '/@@TOKEN@@/{r FILE' -e 'd}'` reads FILE in place of the
 # matched line, then deletes the placeholder. Two `-e` arguments are
@@ -159,19 +158,18 @@ printf '%s' "${WORKFLOW_OVERRIDE:-(none)}"  > "$TMP_OVR"
 sed -i -e "/@@TASK_DESCRIPTION@@/{r ${TMP_DESC}" -e "d;}" "${WORKTREE_PATH}/task.md"
 sed -i -e "/@@SIBLING_WARNINGS@@/{r ${TMP_SIB}"  -e "d;}" "${WORKTREE_PATH}/task.md"
 sed -i -e "/@@RESIDUAL_NOTES@@/{r ${TMP_RES}"    -e "d;}" "${WORKTREE_PATH}/task.md"
-sed -i -e "/@@WORKFLOW_OVERRIDE@@/{r ${TMP_OVR}" -e "d;}" "${WORKTREE_PATH}/task.md"
 ```
 
 The agent reads `AGENT_PROMPT.md` first; the template's first section instructs it to read `task.md` for the per-task delta. The launch.sh fallback prompt (`Read ${WORKTREE_PATH}/AGENT_PROMPT.md and begin.`) is unchanged — `task.md` is reached transitively from the template.
 
 ### What the template owns vs. what task.md owns
 
-- **Template (`plugins/cloglog/templates/AGENT_PROMPT.md`):** inbox paths (worktree for read, project root for write), MCP preload, stop-on-MCP-failure, standard workflow steps, per-task shutdown sequence, `workflow_override` semantics, continuation-prompt bootstrap, work-log bootstrap. Update this file once and every future agent inherits the change.
-- **`task.md`:** task ID / feature ID / worktree ID / paths, task number / title / priority, description, sibling-task warnings, residual TODOs hint, optional `workflow_override` value (`skip_pr` is the only one defined today).
+- **Template (`plugins/cloglog/templates/AGENT_PROMPT.md`):** inbox paths (worktree for read, project root for write), MCP preload, stop-on-MCP-failure, standard workflow steps, per-task shutdown sequence, runtime `skip_pr` decision rule, continuation-prompt bootstrap, work-log bootstrap. Update this file once and every future agent inherits the change.
+- **`task.md`:** task ID / feature ID / worktree ID / paths, task number / title / priority, description, sibling-task warnings, residual TODOs hint.
 
-### Override mechanism
+### Standalone no-PR tasks (runtime `skip_pr`)
 
-A task that needs to deviate from the standard `pr_merged` flow (e.g. docs/research/prototype with no source-code changes) sets `workflow_override: skip_pr` in `task.md`. The template branches on the field — see the template's **Workflow overrides** section. Future overrides slot into the same field; if the list grows past two values, fold the variants out into named template files rather than branching the template further.
+A task that finishes without a PR (docs / research / prototype / internal-only refactor) is recognised at runtime, not at launch — the agent inspects its own diff at PR time and either calls `update_task_status(task_id, "review", skip_pr=True)` or opens a PR. There is no persisted `workflow_override` field on the board (`src/agent/schemas.py:60-65`, `mcp-server/src/tools.ts:29-35` expose `skip_pr` only at status-update time). See the template's **Standalone no-PR tasks** section for the diff-based decision rule.
 
 ## One task per session
 

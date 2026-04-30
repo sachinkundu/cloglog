@@ -14,7 +14,8 @@ Before doing anything else, read `${WORKTREE_PATH}/task.md`. It carries:
 - Description and scope.
 - Sibling-task warnings (zones owned by other in-flight worktrees).
 - Residual TODOs hint from prior sessions on this worktree.
-- Optional `workflow_override` field (see **Workflow Overrides** below).
+- Whether the task is no-PR-eligible is decided at runtime — see
+  **Standalone no-PR tasks** below.
 
 `<WORKTREE_PATH>` and `<PROJECT_ROOT>` referenced below are absolute paths
 listed in `task.md`. Substitute them mentally — do not hand-paste them into
@@ -132,34 +133,26 @@ Never retry a 409 or a 5xx. Never fall back to direct HTTP or `gh api`.
      >> <PROJECT_ROOT>/.cloglog/inbox
    ```
    (`<wt-name>` and `<uuid>` come from `task.md`.)
-3. **Resolve the active task.** Call `mcp__cloglog__get_my_tasks()` and walk
-   the rows. Apply this resolution order — **do not collapse to "first
-   backlog row"**:
+3. **Start the task named by `task.md`.** Call `mcp__cloglog__start_task`
+   with the UUID from `task.md`. The supervisor wrote `task.md` at launch
+   time and is responsible for rewriting it on every continuation
+   relaunch — task.md is the authoritative pointer.
 
-   - **(a) Prefer `task.md`'s UUID** if a row with that UUID exists *and*
-     its status is `backlog` or `in_progress`. This is the supervisor's
-     authoritative pick — it already accounts for pipeline ordering
-     (spec → plan → impl) which `position` alone doesn't guarantee. Call
-     `start_task` with that UUID.
-   - **(b) Fall back to "first backlog row"** only if `task.md`'s UUID is
-     absent from `get_my_tasks` (continuation session — supervisor
-     relaunched, prior task is now `done`) or already `review`/`done`
-     (also continuation). On fallback, prefer pipeline-aware ordering: a
-     `task_type == "spec"` row beats a `plan` row beats an `impl` row,
-     regardless of `position` — the backend's pipeline guard will reject
-     out-of-order starts with a 409 (`src/agent/services.py:322-345`).
+   If `start_task` returns a backend error (409 because the task is
+   already `done` / `review`, "Not registered", or any other 4xx/5xx),
+   that is a runtime MCP tool error per `${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md`
+   §4.1: emit `mcp_tool_error` to the project root inbox and halt. **Do
+   not** retry the call or fall back to `get_my_tasks`. A 409 specifically
+   means the supervisor's `task.md` rewrite is missing or stale — the
+   supervisor sees the event, re-resolves the next task, rewrites
+   `task.md`, and re-issues the continuation prompt. The agent's job is
+   to surface the failure crisply, not to second-guess the supervisor.
 
-   Why this order: `get_my_tasks` orders rows by `position` only
-   (`src/board/repository.py:359-363`), and `position` is free-form on
-   create (`src/board/schemas.py:133-139`). A feature whose three pipeline
-   tasks were saved with non-spec-first positions would otherwise have the
-   agent pick `plan` or `impl` and trip the guard. Trusting `task.md`
-   first preserves the supervisor's already-correct selection.
-
-   On continuation, if the row's title differs from `task.md`'s title,
-   trust the row and treat `task.md`'s description / scope as stale —
-   `mcp__cloglog__search T-{row.number}` returns the live task data the
-   supervisor would have written.
+   `mcp__cloglog__get_my_tasks()` does not expose `task_type` and
+   `mcp__cloglog__search` does not expose `description`
+   (`src/agent/schemas.py:67-78`, `src/board/schemas.py:272-281`), so an
+   agent-side fallback cannot reproduce the supervisor's pipeline-aware
+   pick or refresh stale scope. Trust `task.md` and escalate on error.
 4. Run the project's existing tests to establish a green baseline. Run the
    project quality gate (`make quality` for cloglog) so you know any later
    failure is your delta.
@@ -222,22 +215,30 @@ Never retry a 409 or a 5xx. Never fall back to direct HTTP or `gh api`.
 7. Call `mcp__cloglog__unregister_agent` and exit. Do **not** call
    `get_my_tasks` to start the next task — the supervisor handles that.
 
-## Workflow overrides
+## Standalone no-PR tasks (`skip_pr`)
 
-`task.md` may carry a `workflow_override` field. Recognised values:
+Some tasks (docs, research, prototypes, internal-only refactors with no
+user-observable surface) finish without a PR. The decision is **runtime**
+— make it when you reach Standard workflow step 8 by inspecting your own
+diff:
 
-- **`skip_pr`** — task has no source-code changes (docs, research,
-  prototype). After committing locally, call
+- If `git diff $(git merge-base origin/main HEAD) HEAD` shows zero changes
+  to `*.py`, `*.ts`, `*.tsx`, `*.js`, `frontend/src/**`, `mcp-server/src/**`
+  — the task is no-PR-eligible. Commit locally, then call
   `mcp__cloglog__update_task_status(task_id, "review", skip_pr=True)`
-  instead of opening a PR. The shutdown sequence runs with
-  `reason: "no_pr_task_complete"`, skipping `mark_pr_merged` and
-  `pr_merged_notification`. The other steps (work log, aggregate, emit
-  `agent_unregistered`, unregister, exit) run unchanged.
+  instead of opening a PR.
+- Otherwise the standard `pr_merged` flow applies.
 
-If `task.md` does not specify `workflow_override`, the standard `pr_merged`
-flow above applies. Future overrides slot into the same field; if the list
-grows past two values, fold the variants out into named template files
-rather than branching this template further.
+When `skip_pr=True` was used the per-task shutdown sequence runs with
+`reason: "no_pr_task_complete"` instead of `"pr_merged"`, skipping
+`mark_pr_merged` and `pr_merged_notification`. The other steps (work log,
+aggregate, emit `agent_unregistered`, unregister, exit) run unchanged.
+
+The `skip_pr` decision is not stored on the board — the backend exposes
+`skip_pr` only at `update_task_status` time
+(`src/agent/schemas.py:60-65`, `mcp-server/src/tools.ts:29-35`), and there
+is no persisted `workflow_override` field. Each agent decides at PR time
+based on the actual diff it produced.
 
 ## One task per session
 

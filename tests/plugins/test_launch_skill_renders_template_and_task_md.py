@@ -70,7 +70,6 @@ def test_step3_emits_both_files_with_substituted_placeholders() -> None:
             "TASK_DESCRIPTION": "Make the thing do the thing.",
             "SIBLING_WARNINGS": "(none)",
             "RESIDUAL_NOTES": "(none)",
-            "WORKFLOW_OVERRIDE": "(none)",
         }
 
         # Codex round 3: the test now executes the documented Step 3
@@ -160,7 +159,6 @@ def test_step3_escapes_sed_replacement_metacharacters() -> None:
             "TASK_DESCRIPTION": "Description with & and \\ chars.",
             "SIBLING_WARNINGS": "(none)",
             "RESIDUAL_NOTES": "(none)",
-            "WORKFLOW_OVERRIDE": "(none)",
         }
 
         # Run the documented Step 3 block as-is (codex round 3).

@@ -28,7 +28,7 @@ When the registry is non-empty AND the PR's `repo_full_name` is absent from it A
 - `src/gateway/review_engine.py` — Path 2 + refusal branch + `_resolve_main_clone_anchor` + `_git_common_dir` helpers; degraded single-turn path now respects the registry refusal subset
 - `src/gateway/review_skip_comments.py` — new `SkipReason.UNCONFIGURED_REPO`
 - `src/shared/config.py` — `Settings.review_repo_roots` (`dict[str, Path]` JSON env var) + tightened `review_source_root` docstring
-- `tests/gateway/test_review_engine.py` — `TestResolvePrReviewRootRepoRouting` class: 8 acceptance + 3 codex-round regression pins
+- `tests/gateway/test_review_engine.py` — `TestResolvePrReviewRootRepoRouting` class: 10 tests covering both acceptance branches (skip unrelated repo, cloglog close-wave routes, branch lookup unchanged for cloglog + foreign, registry lookup, temp-checkout anchor for registry + Path 1 common-dir, stale-registry fall-through, Path 2 non-git refusal, degraded-path refusal)
 - `.env.example` — documents `REVIEW_REPO_ROOTS` JSON shape and the multi-repo deployment requirement
 - `docs/invariants.md` — updated resolver invariant to four strategies + `PrReviewRoot | None` refusal contract
 - `docs/design/two-stage-pr-review.md` — §9.2 renumbered + Path 2 inserted

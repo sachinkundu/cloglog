@@ -60,7 +60,10 @@ BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests "${CLAUDE_PLUGIN_ROOT}
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 git push "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git" "HEAD:${BRANCH}"
-git branch --set-upstream-to=origin/${BRANCH} 2>/dev/null || true
+# A raw-URL push does NOT update refs/remotes/origin/${BRANCH} — fetch
+# through `origin` so --set-upstream-to has a target.
+git fetch origin "${BRANCH}"
+git branch --set-upstream-to=origin/${BRANCH}
 GH_TOKEN="$BOT_TOKEN" gh pr create --title "feat: ..." --body "$(cat <<'EOF'
 ## Demo
 
@@ -101,13 +104,14 @@ EOF
 
 Note: `git push` uses an inline URL (`https://x-access-token:${BOT_TOKEN}@…`) for the bot identity because the `gh` CLI doesn't support push. **Never** mutate `.git/config` via `git remote set-url origin "https://x-access-token:…"` — a persistent bot URL breaks `make promote` (`prod`'s ruleset rejects bot pushes), strands an expired token in config after ~1h, and leaks the credential through `git remote -v`. The `git push <url> HEAD:<branch>` shape pushes once via the bot identity without touching config; the trailing `--set-upstream-to` line preserves operator-side `git pull`/`git push` upstream tracking. All other GitHub operations use `GH_TOKEN="$BOT_TOKEN" gh ...`.
 
-**Operator self-rescue.** If a clone has the bot URL embedded in `.git/config` from a prior wave run (symptom: `make promote` fails with `remote rejected: prod -> prod (push declined due to repository rule violations)`), restore the canonical URL with one line:
+**Operator self-rescue.** If a clone has the bot URL embedded in `.git/config` from a prior wave run (symptom: `make promote` fails with `remote rejected: prod -> prod (push declined due to repository rule violations)`), strip only the `x-access-token:<token>@` credential prefix — preserve whatever scheme (HTTPS or SSH) the operator's clone was bootstrapped with so a later `git fetch origin` / `git push origin` keeps using their existing auth:
 
 ```bash
-git remote set-url origin "https://github.com/${REPO}.git"
+git remote set-url origin "$(git remote get-url origin \
+  | sed 's|https://x-access-token:[^@]*@github.com/|https://github.com/|')"
 ```
 
-Then re-run `make promote`.
+This is a no-op for SSH origins (the `sed` doesn't match), and on HTTPS origins it removes only the embedded token. Then re-run `make promote`.
 
 After creating the PR, do these two things in order — both are mandatory, never skip either:
 

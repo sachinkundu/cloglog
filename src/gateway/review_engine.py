@@ -1128,6 +1128,7 @@ async def post_review(
     diff: str,
     token: str,
     *,
+    head_sha: str = "",
     client: httpx.AsyncClient | None = None,
 ) -> bool:
     """Post a GitHub PR review. Returns ``True`` on success, ``False`` on drop.
@@ -1142,11 +1143,13 @@ async def post_review(
     inline, orphans = _partition_findings(result, valid_lines)
     # The bot never approves or requests changes — only the human reviewer
     # gates merge state. The agent's verdict is recorded in the body instead.
-    payload = {
+    payload: dict[str, object] = {
         "event": "COMMENT",
         "body": _format_review_body(result, orphans),
         "comments": inline,
     }
+    if head_sha:
+        payload["commit_id"] = head_sha
     url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}/reviews"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -1470,6 +1473,7 @@ class ReviewEngineConsumer:
                         result,
                         filtered,
                         review_token,
+                        head_sha=head_sha,
                     )
             return
 

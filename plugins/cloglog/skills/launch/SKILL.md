@@ -101,26 +101,45 @@ Feature: @@FEATURE_REF@@
 @@WORKFLOW_OVERRIDE@@
 TASK_EOF
 
-# 3. Substitute per-task placeholders. Each variable is set above in
-# Steps 1-2 from the resolved task/feature data; SIBLING_WARNINGS,
-# RESIDUAL_NOTES, and WORKFLOW_OVERRIDE default to "(none)" when empty.
+# 3. Substitute per-task placeholders. Task titles / descriptions are
+# free-form board strings (src/board/schemas.py:133-139) so they may
+# contain `&` (which sed expands to the matched text), `\` (escape), or
+# the chosen `|` delimiter. Without escaping, a title like `R&D follow-up`
+# would render `task.md` with the placeholder text spliced back in.
+# `_sed_escape_replacement` escapes the three replacement metacharacters
+# so every value round-trips literally.
+_sed_escape_replacement() {
+  printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
+}
+TASK_NUMBER_E=$(_sed_escape_replacement "${TASK_NUMBER}")
+TASK_TITLE_E=$(_sed_escape_replacement "${TASK_TITLE}")
+PRIORITY_E=$(_sed_escape_replacement "${PRIORITY}")
+FEATURE_REF_E=$(_sed_escape_replacement "${FEATURE_REF:-(none)}")
+TASK_UUID_E=$(_sed_escape_replacement "${TASK_UUID}")
+FEATURE_UUID_E=$(_sed_escape_replacement "${FEATURE_UUID:-(none)}")
+WORKTREE_UUID_E=$(_sed_escape_replacement "${WORKTREE_UUID}")
+WORKTREE_NAME_E=$(_sed_escape_replacement "${WORKTREE_NAME}")
+WORKTREE_PATH_E=$(_sed_escape_replacement "${WORKTREE_PATH}")
+PROJECT_ROOT_E=$(_sed_escape_replacement "${PROJECT_ROOT}")
+
 sed -i \
-  -e "s|@@TASK_NUMBER@@|${TASK_NUMBER}|g" \
-  -e "s|@@TASK_TITLE@@|${TASK_TITLE}|g" \
-  -e "s|@@PRIORITY@@|${PRIORITY}|g" \
-  -e "s|@@FEATURE_REF@@|${FEATURE_REF:-(none)}|g" \
-  -e "s|@@TASK_UUID@@|${TASK_UUID}|g" \
-  -e "s|@@FEATURE_UUID@@|${FEATURE_UUID:-(none)}|g" \
-  -e "s|@@WORKTREE_UUID@@|${WORKTREE_UUID}|g" \
-  -e "s|@@WORKTREE_NAME@@|${WORKTREE_NAME}|g" \
-  -e "s|@@WORKTREE_PATH@@|${WORKTREE_PATH}|g" \
-  -e "s|@@PROJECT_ROOT@@|${PROJECT_ROOT}|g" \
+  -e "s|@@TASK_NUMBER@@|${TASK_NUMBER_E}|g" \
+  -e "s|@@TASK_TITLE@@|${TASK_TITLE_E}|g" \
+  -e "s|@@PRIORITY@@|${PRIORITY_E}|g" \
+  -e "s|@@FEATURE_REF@@|${FEATURE_REF_E}|g" \
+  -e "s|@@TASK_UUID@@|${TASK_UUID_E}|g" \
+  -e "s|@@FEATURE_UUID@@|${FEATURE_UUID_E}|g" \
+  -e "s|@@WORKTREE_UUID@@|${WORKTREE_UUID_E}|g" \
+  -e "s|@@WORKTREE_NAME@@|${WORKTREE_NAME_E}|g" \
+  -e "s|@@WORKTREE_PATH@@|${WORKTREE_PATH_E}|g" \
+  -e "s|@@PROJECT_ROOT@@|${PROJECT_ROOT_E}|g" \
   "${WORKTREE_PATH}/task.md"
 
 # Description / sibling warnings / residual notes / workflow override are
-# multi-line free text — pipe through a temp file rather than shell-quoting
-# them into sed. (Skipped here for brevity; the launching agent writes them
-# with `printf` to dedicated files and inlines via `cat` substitution.)
+# multi-line free text — apply the same `_sed_escape_replacement` helper
+# before substitution. Multi-line content also needs newline-to-`\n`
+# handling; the launching agent writes them via `printf "%s\n"` to a
+# temp file then inlines with `awk 'NR==FNR{...}'` rather than `sed`.
 ```
 
 The agent reads `AGENT_PROMPT.md` first; the template's first section instructs it to read `task.md` for the per-task delta. The launch.sh fallback prompt (`Read ${WORKTREE_PATH}/AGENT_PROMPT.md and begin.`) is unchanged — `task.md` is reached transitively from the template.

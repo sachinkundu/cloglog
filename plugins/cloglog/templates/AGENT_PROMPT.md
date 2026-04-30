@@ -132,21 +132,32 @@ Never retry a 409 or a 5xx. Never fall back to direct HTTP or `gh api`.
      >> <PROJECT_ROOT>/.cloglog/inbox
    ```
    (`<wt-name>` and `<uuid>` come from `task.md`.)
-3. **Resolve the active task.** Call `mcp__cloglog__get_my_tasks()` and pick
-   the first row with status `backlog` (or `in_progress` if you are
-   resuming after a crash). Call `mcp__cloglog__start_task` with **that
-   row's UUID**, not the UUID in `task.md`.
+3. **Resolve the active task.** Call `mcp__cloglog__get_my_tasks()` and walk
+   the rows. Apply this resolution order — **do not collapse to "first
+   backlog row"**:
 
-   Why both: `task.md` carries description / scope / sibling warnings the
-   supervisor wrote at launch, but on continuation sessions the supervisor
-   relaunch flow re-issues the launch prompt without rewriting `task.md`,
-   so its UUID still names the just-merged task. `get_my_tasks` is the
-   live source of truth for "which task is this session working on."
+   - **(a) Prefer `task.md`'s UUID** if a row with that UUID exists *and*
+     its status is `backlog` or `in_progress`. This is the supervisor's
+     authoritative pick — it already accounts for pipeline ordering
+     (spec → plan → impl) which `position` alone doesn't guarantee. Call
+     `start_task` with that UUID.
+   - **(b) Fall back to "first backlog row"** only if `task.md`'s UUID is
+     absent from `get_my_tasks` (continuation session — supervisor
+     relaunched, prior task is now `done`) or already `review`/`done`
+     (also continuation). On fallback, prefer pipeline-aware ordering: a
+     `task_type == "spec"` row beats a `plan` row beats an `impl` row,
+     regardless of `position` — the backend's pipeline guard will reject
+     out-of-order starts with a 409 (`src/agent/services.py:322-345`).
 
-   For initial launches `task.md`'s UUID matches the first backlog row,
-   so this is a no-op consistency check. On continuation it's the
-   correction. If the row's title differs from `task.md`'s title, trust
-   the row and treat `task.md`'s description / scope as stale —
+   Why this order: `get_my_tasks` orders rows by `position` only
+   (`src/board/repository.py:359-363`), and `position` is free-form on
+   create (`src/board/schemas.py:133-139`). A feature whose three pipeline
+   tasks were saved with non-spec-first positions would otherwise have the
+   agent pick `plan` or `impl` and trip the guard. Trusting `task.md`
+   first preserves the supervisor's already-correct selection.
+
+   On continuation, if the row's title differs from `task.md`'s title,
+   trust the row and treat `task.md`'s description / scope as stale —
    `mcp__cloglog__search T-{row.number}` returns the live task data the
    supervisor would have written.
 4. Run the project's existing tests to establish a green baseline. Run the

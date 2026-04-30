@@ -74,19 +74,23 @@ def test_step3_emits_both_files_with_substituted_placeholders() -> None:
         }
 
         # The SKILL's bash references a few variables (TASK_DESCRIPTION etc)
-        # that the prose says are populated via temp files. Add the missing
-        # placeholder substitutions so the test exercises the full shape.
-        # Append two extra `sed` lines for the fields the SKILL prose
-        # delegates to a follow-up step.
+        # that the prose says are populated via temp files. Append the
+        # missing substitutions so the test exercises the full shape;
+        # reuse the same `_sed_escape_replacement` helper the SKILL block
+        # defines so free-form values round-trip literally.
         bash_full = bash + (
             "\n"
-            'sed -i "s|@@TASK_DESCRIPTION@@|${TASK_DESCRIPTION}|g" '
+            'TASK_DESCRIPTION_E=$(_sed_escape_replacement "${TASK_DESCRIPTION}")\n'
+            'SIBLING_WARNINGS_E=$(_sed_escape_replacement "${SIBLING_WARNINGS}")\n'
+            'RESIDUAL_NOTES_E=$(_sed_escape_replacement "${RESIDUAL_NOTES}")\n'
+            'WORKFLOW_OVERRIDE_E=$(_sed_escape_replacement "${WORKFLOW_OVERRIDE}")\n'
+            'sed -i "s|@@TASK_DESCRIPTION@@|${TASK_DESCRIPTION_E}|g" '
             '"${WORKTREE_PATH}/task.md"\n'
-            'sed -i "s|@@SIBLING_WARNINGS@@|${SIBLING_WARNINGS}|g" '
+            'sed -i "s|@@SIBLING_WARNINGS@@|${SIBLING_WARNINGS_E}|g" '
             '"${WORKTREE_PATH}/task.md"\n'
-            'sed -i "s|@@RESIDUAL_NOTES@@|${RESIDUAL_NOTES}|g" '
+            'sed -i "s|@@RESIDUAL_NOTES@@|${RESIDUAL_NOTES_E}|g" '
             '"${WORKTREE_PATH}/task.md"\n'
-            'sed -i "s|@@WORKFLOW_OVERRIDE@@|${WORKFLOW_OVERRIDE}|g" '
+            'sed -i "s|@@WORKFLOW_OVERRIDE@@|${WORKFLOW_OVERRIDE_E}|g" '
             '"${WORKTREE_PATH}/task.md"\n'
         )
 
@@ -131,6 +135,92 @@ def test_step3_emits_both_files_with_substituted_placeholders() -> None:
             "substitution in Step 3 or the per-task delta will leak as "
             "raw tokens into the agent's view."
         )
+
+
+def test_step3_escapes_sed_replacement_metacharacters() -> None:
+    """Codex round 2 (HIGH): task titles / descriptions are free-form
+    board strings (`src/board/schemas.py:133-139`) so a title like
+    ``R&D follow-up`` must round-trip literally. Without escaping, sed
+    expands ``&`` to the matched pattern and ``\\`` to an escape, and
+    `R&D` would render as ``R@@TASK_TITLE@@D follow-up`` (the
+    placeholder text spliced back in via `&`).
+
+    Pin the round-trip with a synthetic title containing all three
+    replacement metacharacters: ``&``, ``\\``, and the chosen ``|``
+    delimiter.
+    """
+    bash = _extract_step3_bash()
+    assert "_sed_escape_replacement" in bash, (
+        "Step 3 must define a `_sed_escape_replacement` helper that "
+        "escapes & / \\ / | before the sed -i pass — free-form board "
+        "metadata otherwise corrupts the rendered task.md."
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wt = Path(tmp) / "wt-fake"
+        wt.mkdir()
+        env = {
+            "CLAUDE_PLUGIN_ROOT": str(REPO_ROOT / "plugins/cloglog"),
+            "WORKTREE_PATH": str(wt),
+            "WORKTREE_NAME": "wt-fake",
+            "WORKTREE_UUID": "11111111-1111-1111-1111-111111111111",
+            "TASK_NUMBER": "T-999",
+            # Adversarial title: ampersand, backslash, AND the sed delimiter.
+            "TASK_TITLE": "R&D follow-up: foo\\bar | baz",
+            "TASK_UUID": "22222222-2222-2222-2222-222222222222",
+            "PRIORITY": "normal",
+            "FEATURE_REF": "F-99 R&D feature",
+            "FEATURE_UUID": "33333333-3333-3333-3333-333333333333",
+            "PROJECT_ROOT": str(REPO_ROOT),
+            "TASK_DESCRIPTION": "Description with & and \\ chars.",
+            "SIBLING_WARNINGS": "(none)",
+            "RESIDUAL_NOTES": "(none)",
+            "WORKFLOW_OVERRIDE": "(none)",
+        }
+
+        bash_full = bash + (
+            "\n"
+            'TASK_DESCRIPTION_E=$(_sed_escape_replacement "${TASK_DESCRIPTION}")\n'
+            'SIBLING_WARNINGS_E=$(_sed_escape_replacement "${SIBLING_WARNINGS}")\n'
+            'RESIDUAL_NOTES_E=$(_sed_escape_replacement "${RESIDUAL_NOTES}")\n'
+            'WORKFLOW_OVERRIDE_E=$(_sed_escape_replacement "${WORKFLOW_OVERRIDE}")\n'
+            'sed -i "s|@@TASK_DESCRIPTION@@|${TASK_DESCRIPTION_E}|g" '
+            '"${WORKTREE_PATH}/task.md"\n'
+            'sed -i "s|@@SIBLING_WARNINGS@@|${SIBLING_WARNINGS_E}|g" '
+            '"${WORKTREE_PATH}/task.md"\n'
+            'sed -i "s|@@RESIDUAL_NOTES@@|${RESIDUAL_NOTES_E}|g" '
+            '"${WORKTREE_PATH}/task.md"\n'
+            'sed -i "s|@@WORKFLOW_OVERRIDE@@|${WORKFLOW_OVERRIDE_E}|g" '
+            '"${WORKTREE_PATH}/task.md"\n'
+        )
+
+        result = subprocess.run(
+            ["bash", "-c", bash_full],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, (
+            f"Step 3 bash failed: rc={result.returncode}\n"
+            f"stdout={result.stdout}\nstderr={result.stderr}"
+        )
+
+        task_body = (wt / "task.md").read_text(encoding="utf-8")
+        # Each adversarial value must appear verbatim — no `&` expansion,
+        # no `\` consumed, no `|`-delimiter break.
+        assert env["TASK_TITLE"] in task_body, (
+            f"Adversarial title {env['TASK_TITLE']!r} did not round-trip "
+            "literally into task.md. Rendered:\n" + task_body
+        )
+        assert env["FEATURE_REF"] in task_body, (
+            f"Adversarial FEATURE_REF {env['FEATURE_REF']!r} did not round-trip literally."
+        )
+        assert env["TASK_DESCRIPTION"] in task_body, (
+            "Adversarial TASK_DESCRIPTION did not round-trip literally."
+        )
+        # Negative pin — placeholder text must not be spliced back in.
+        assert "@@TASK_TITLE@@" not in task_body
+        assert "@@FEATURE_REF@@" not in task_body
 
 
 def test_step3_uses_quoted_heredoc_for_task_md() -> None:

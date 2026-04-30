@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
-# Demo: Desktop toasts narrowed to operator-attention events; routine
-# `TASK_STATUS_CHANGED -> review` no longer fires `notify-send`.
-# Called by `make demo` (server + DB already running, but this demo is
-# pure-process and does not touch either).
+# Demo: Desktop toasts narrowed to operator-attention events.
+# T-358 ships two rules:
+#   1. TASK_STATUS_CHANGED -> review no longer fires notify-send.
+#   2. AGENT_UNREGISTERED toasts only on known-non-clean reasons; clean
+#      shutdowns via the public API stay silent.
+# Pure-process demo -- doesn't touch backend or DB.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 DEMO_DIR="docs/demos/${BRANCH//\//-}"
 DEMO_FILE="$DEMO_DIR/demo.md"
 
 rm -f "$DEMO_FILE"
 uvx showboat init "$DEMO_FILE" \
-  "Desktop toasts now fire only on operator-attention events; routine PR moves go silent."
+  "Desktop toasts now fire only on operator-attention events; routine PR moves and clean shutdowns go silent."
 
 uvx showboat note "$DEMO_FILE" \
   "Before: the inline notify-send call lived inside _handle_review_event so every TASK_STATUS_CHANGED -> review fired a desktop toast. With parallel worktrees that is one toast per PR open -- the operator stops reading them. The persisted Notification row + dashboard bell already covered the routine case; only the toast was noise."
 
 uvx showboat note "$DEMO_FILE" \
-  "Action 1: assert the inline notify-send call has been removed from _handle_review_event. We grep the post-T-358 source for asyncio.create_subprocess_exec inside that function -- the count must be zero."
+  "Action 1: assert the inline notify-send call has been removed from _handle_review_event. Grep the post-T-358 source for asyncio.create_subprocess_exec inside that function -- the count must be zero."
 uvx showboat exec "$DEMO_FILE" bash \
   'python3 -c "
 import ast, pathlib
@@ -45,46 +45,21 @@ print(\"absence-pin holds: review move did not call notify-send\")
 "'
 
 uvx showboat note "$DEMO_FILE" \
-  "Action 3: drive the dispatcher with AGENT_BLOCKED; the operator-attention path DOES toast, with a body that names the block reason."
+  "Action 3: AGENT_UNREGISTERED filter. Default unregister (no reason) stays silent -- the public API path agents take after a successful merge. force_unregister and heartbeat_timeout reasons toast. Unknown reasons fall through to silent (the allowlist is the source of truth). Off-switch suppresses even non-clean reasons."
 uvx showboat exec "$DEMO_FILE" bash \
   'uv run --quiet python -c "
 import asyncio, sys
 sys.path.insert(0, \"tests/gateway\")
-import test_notification_listener_toasts_on_agent_blocked as t
-asyncio.run(t.test_agent_blocked_event_fires_one_notify_send())
-asyncio.run(t.test_agent_blocked_event_skipped_when_disabled())
-print(\"agent_blocked toasts; off-switch suppresses\")
+import test_notification_listener_toasts_on_unregister_filter as t
+asyncio.run(t.test_clean_unregister_does_not_toast())
+asyncio.run(t.test_force_unregister_toasts())
+asyncio.run(t.test_heartbeat_timeout_toasts())
+asyncio.run(t.test_unknown_reason_does_not_toast())
+asyncio.run(t.test_off_switch_suppresses_non_clean_toast())
+print(\"unregister filter: 5 invariants hold\")
 "'
 
 uvx showboat note "$DEMO_FILE" \
-  "Action 4: a single CHANGES_REQUESTED is normal (auto-fix). Two consecutive on the same PR means the agent cannot fix it -- the tracker fires once."
-uvx showboat exec "$DEMO_FILE" bash \
-  'uv run --quiet python -c "
-import sys
-sys.path.insert(0, \"tests/gateway\")
-import test_notification_listener_toasts_on_changes_requested_repeat as t
-t.test_single_changes_requested_does_not_trigger_repeat()
-t.test_two_consecutive_changes_requested_triggers_repeat()
-t.test_intervening_approval_resets_the_streak()
-t.test_streaks_are_tracked_per_pr()
-print(\"two-consecutive rule: 4 invariants hold\")
-"'
-
-uvx showboat note "$DEMO_FILE" \
-  "Action 5: auto-merge stall debouncer -- first ci_not_green poll is silent; once 15 min has elapsed without state change, ONE toast fires; subsequent polls stay silent until the PR transitions out and clear() is called."
-uvx showboat exec "$DEMO_FILE" bash \
-  'uv run --quiet python -c "
-import sys
-sys.path.insert(0, \"tests/gateway\")
-import test_notification_listener_toasts_on_auto_merge_stall as t
-t.test_first_poll_does_not_trip()
-t.test_threshold_crossed_trips_exactly_once()
-t.test_clear_resets_and_allows_a_future_stall_toast()
-t.test_per_pr_scoping()
-print(\"stall debouncer: 4 invariants hold\")
-"'
-
-uvx showboat note "$DEMO_FILE" \
-  "After: routine status moves stay silent; agent_blocked / repeat CHANGES_REQUESTED / auto-merge stall surface immediately. Operator off-switch (desktop_toast_enabled: false in .cloglog/config.yaml) suppresses every toast class without affecting the persisted Notification row or dashboard SSE."
+  "After: routine status moves stay silent; force-unregister and heartbeat-timeout exits surface immediately. Operator off-switch (desktop_toast_enabled: false in .cloglog/config.yaml) suppresses every toast class without affecting the persisted Notification row or dashboard SSE."
 
 uvx showboat verify "$DEMO_FILE"

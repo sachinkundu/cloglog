@@ -104,14 +104,17 @@ EOF
 
 Note: `git push` uses an inline URL (`https://x-access-token:${BOT_TOKEN}@…`) for the bot identity because the `gh` CLI doesn't support push. **Never** mutate `.git/config` via `git remote set-url origin "https://x-access-token:…"` — a persistent bot URL breaks `make promote` (`prod`'s ruleset rejects bot pushes), strands an expired token in config after ~1h, and leaks the credential through `git remote -v`. The `git push <url> HEAD:<branch>` shape pushes once via the bot identity without touching config; the trailing `--set-upstream-to` line preserves operator-side `git pull`/`git push` upstream tracking. All other GitHub operations use `GH_TOKEN="$BOT_TOKEN" gh ...`.
 
-**Operator self-rescue.** If a clone has the bot URL embedded in `.git/config` from a prior wave run (symptom: `make promote` fails with `remote rejected: prod -> prod (push declined due to repository rule violations)`), strip only the `x-access-token:<token>@` credential prefix — preserve whatever scheme (HTTPS or SSH) the operator's clone was bootstrapped with so a later `git fetch origin` / `git push origin` keeps using their existing auth:
+**Operator self-rescue.** If a clone has the bot URL embedded in `.git/config` from a prior wave run (symptom: `make promote` fails with `remote rejected: prod -> prod (push declined due to repository rule violations)`), restore `origin` to the form your clone was originally bootstrapped with. Once the URL has been overwritten with `https://x-access-token:…@github.com/...`, the original scheme cannot be inferred from the current value — pick the matching line below by hand:
 
 ```bash
-git remote set-url origin "$(git remote get-url origin \
-  | sed 's|https://x-access-token:[^@]*@github.com/|https://github.com/|')"
+# If your clone was originally HTTPS (git clone https://github.com/<owner>/<repo>.git)
+git remote set-url origin "https://github.com/${REPO}.git"
+
+# If your clone was originally SSH (git clone git@github.com:<owner>/<repo>.git)
+git remote set-url origin "git@github.com:${REPO}.git"
 ```
 
-This is a no-op for SSH origins (the `sed` doesn't match), and on HTTPS origins it removes only the embedded token. Then re-run `make promote`.
+Picking the wrong form will silently break `git fetch origin` / `make promote` on hosts that only have one of HTTPS or SSH credentials configured — match what `git remote -v` showed before the bot URL was written, not whatever feels canonical. Then re-run `make promote`.
 
 After creating the PR, do these two things in order — both are mandatory, never skip either:
 

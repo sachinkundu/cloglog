@@ -130,8 +130,10 @@ git checkout -b wt-reconcile-<date>-<topic>
 # edits + commit
 BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests "${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py")
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
-git remote set-url origin "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git"
-git push -u origin HEAD
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+git push "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git" "HEAD:${BRANCH}"
+git fetch origin "${BRANCH}"
+git branch --set-upstream-to=origin/${BRANCH}
 GH_TOKEN="$BOT_TOKEN" gh pr create --base main --head wt-reconcile-<date>-<topic> \
   --title "chore(reconcile): <topic>" \
   --body "<what reconcile fixed and why>"

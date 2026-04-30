@@ -362,8 +362,10 @@ Commit all fixes, work log, and CLAUDE.md updates to the `wt-close-<date>-<wave-
 ```bash
 BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests "${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py")
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
-git remote set-url origin "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git"
-git push -u origin HEAD
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+git push "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git" "HEAD:${BRANCH}"
+git fetch origin "${BRANCH}"
+git branch --set-upstream-to=origin/${BRANCH}
 GH_TOKEN="$BOT_TOKEN" gh pr create --base main --head wt-close-<date>-<wave-name> \
   --title "chore(close-wave): <wave-name>" \
   --body "<work-log path + learnings summary, with the standard Demo + Test Report sections>"

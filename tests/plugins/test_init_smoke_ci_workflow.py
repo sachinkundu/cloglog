@@ -46,6 +46,17 @@ def test_workflow_runs_plugin_no_cloglog_citations_pin() -> None:
     )
 
 
+def test_workflow_runs_skills_no_remote_set_url_pin() -> None:
+    body = _read_workflow()
+    assert "tests/plugins/test_skills_no_remote_set_url.py" in body, (
+        "init-smoke.yml must invoke tests/plugins/test_skills_no_remote_set_url.py "
+        "(T-363 inline-URL push pin). ci.yml's `paths:` filter excludes "
+        "`plugins/**` and `CLAUDE.md`, so this every-PR gate is the only "
+        "always-on enforcement that catches a SKILL-only edit reintroducing "
+        "the persistent-bot-token `git remote set-url origin` antipattern."
+    )
+
+
 def test_workflow_triggers_on_pull_request() -> None:
     body = _read_workflow()
     assert re.search(r"^on:\s*$", body, re.MULTILINE), (

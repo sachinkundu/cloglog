@@ -58,8 +58,12 @@ If in doubt about a file, leave it out. A missing file is easy to add in a follo
 ```bash
 BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests "${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py")
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
-git remote set-url origin "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git"
-git push -u origin HEAD
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+git push "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git" "HEAD:${BRANCH}"
+# A raw-URL push does NOT update refs/remotes/origin/${BRANCH} — fetch
+# through `origin` so --set-upstream-to has a target.
+git fetch origin "${BRANCH}"
+git branch --set-upstream-to=origin/${BRANCH}
 GH_TOKEN="$BOT_TOKEN" gh pr create --title "feat: ..." --body "$(cat <<'EOF'
 ## Demo
 
@@ -98,7 +102,19 @@ EOF
 )"
 ```
 
-Note: `git push` requires `remote set-url` because the `gh` CLI doesn't support push. All other GitHub operations use `GH_TOKEN="$BOT_TOKEN" gh ...`.
+Note: `git push` uses an inline URL (`https://x-access-token:${BOT_TOKEN}@…`) for the bot identity because the `gh` CLI doesn't support push. **Never** mutate `.git/config` via `git remote set-url origin "https://x-access-token:…"` — a persistent bot URL breaks `make promote` (`prod`'s ruleset rejects bot pushes), strands an expired token in config after ~1h, and leaks the credential through `git remote -v`. The `git push <url> HEAD:<branch>` shape pushes once via the bot identity without touching config; the trailing `--set-upstream-to` line preserves operator-side `git pull`/`git push` upstream tracking. All other GitHub operations use `GH_TOKEN="$BOT_TOKEN" gh ...`.
+
+**Operator self-rescue.** If a clone has the bot URL embedded in `.git/config` from a prior wave run (symptom: `make promote` fails with `remote rejected: prod -> prod (push declined due to repository rule violations)`), restore `origin` to the form your clone was originally bootstrapped with. Once the URL has been overwritten with `https://x-access-token:…@github.com/...`, the original scheme cannot be inferred from the current value — pick the matching line below by hand:
+
+```bash
+# If your clone was originally HTTPS (git clone https://github.com/<owner>/<repo>.git)
+git remote set-url origin "https://github.com/${REPO}.git"
+
+# If your clone was originally SSH (git clone git@github.com:<owner>/<repo>.git)
+git remote set-url origin "git@github.com:${REPO}.git"
+```
+
+Picking the wrong form will silently break `git fetch origin` / `make promote` on hosts that only have one of HTTPS or SSH credentials configured — match what `git remote -v` showed before the bot URL was written, not whatever feels canonical. Then re-run `make promote`.
 
 After creating the PR, do these two things in order — both are mandatory, never skip either:
 
@@ -347,7 +363,7 @@ Diagnose from the logs, push a fix commit — CI re-triggers automatically on pu
 
 ## Rules
 
-1. **Every `gh` command needs `GH_TOKEN="$BOT_TOKEN"`** — `git remote set-url` only covers git operations. The `gh` CLI uses `GH_TOKEN` independently. Without it, commands fall back to the user's personal auth and comments appear as the user.
+1. **Every `gh` command needs `GH_TOKEN="$BOT_TOKEN"`** — the inline-URL `git push` only covers git operations. The `gh` CLI uses `GH_TOKEN` independently. Without it, commands fall back to the user's personal auth and comments appear as the user.
 2. **Get a fresh token per batch** — tokens last ~1 hour but always get a fresh one at the start of a GitHub operation sequence.
 3. **Check both comment types** — GitHub has inline review comments (`pulls/<N>/comments`) and issue-style comments (`issues/<N>/comments`). Always check both.
 4. **Board update is atomic with PR creation** — creating a PR without updating the board is incomplete.

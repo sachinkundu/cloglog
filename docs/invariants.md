@@ -200,3 +200,24 @@ match. If both `demo.md` and `exemption.md` exist, `demo.md` wins —
 the spec is explicit on this precedence and the test locks it in.
 
 **Pin:** `tests/test_check_demo_exemption_hash.py`
+
+## SKILLs that touch GitHub
+
+### No persistent bot-token origin URL in close-wave / reconcile / github-bot SKILLs
+
+The three SKILLs that push to GitHub (close-wave Step 13, reconcile
+Step 5, github-bot Push + Create) MUST push via inline URL —
+`git push "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git" "HEAD:${BRANCH}"`
+followed by `git fetch origin "${BRANCH}"` and
+`git branch --set-upstream-to=origin/${BRANCH}` — and MUST NOT
+mutate `.git/config` via `git remote set-url origin "https://x-access-token:..."`.
+A persistent bot-token origin URL breaks `make promote` (the `prod`
+ruleset rejects bot pushes), strands an expired token in
+`.git/config` after ~1h, and leaks the credential through
+`git remote -v`. Silent-failure shape: a future PR edits a SKILL
+in isolation, reintroduces the `set-url` mutation, and `ci.yml`'s
+`paths:` filter excludes `plugins/**` so the regression ships
+green. The pin is wired into `make invariants` AND the every-PR
+`init-smoke.yml` workflow so a SKILL-only edit cannot bypass it.
+
+**Pin:** `tests/plugins/test_skills_no_remote_set_url.py`

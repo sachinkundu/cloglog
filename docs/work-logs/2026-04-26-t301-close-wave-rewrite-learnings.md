@@ -6,7 +6,9 @@ Each entry is a non-obvious gotcha that caused a real failure (or a near-failure
 
 **Symptom:** Codex PR #230 round 1 flagged 2 MEDIUM findings: both close-wave Step 13 and reconcile Step 5 showed bare `gh pr create --base main --head wt-...` snippets. An operator following them literally would open the PR under their personal `gh auth` and break the bot-identity invariant the github-bot skill exists to enforce (`plugins/cloglog/skills/github-bot/SKILL.md:34,58-63`).
 
-**Lesson:** when a skill teaches a workflow that touches GitHub, every example command must be bot-authenticated end-to-end (`BOT_TOKEN=$(...)`, `git remote set-url ...`, `git push -u origin HEAD`, `GH_TOKEN="$BOT_TOKEN" gh ...`). Saying "use the github-bot skill's flow" in prose is not enough — readers copy the command they see, not the prose around it. Pin tests should assert the bot-authenticated form is present (positive substring), not just the unauthenticated form is absent.
+**Lesson:** when a skill teaches a workflow that touches GitHub, every example command must be bot-authenticated end-to-end (`BOT_TOKEN=$(...)`, `git push "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git" "HEAD:${BRANCH}"`, `git branch --set-upstream-to=origin/${BRANCH} 2>/dev/null || true`, `GH_TOKEN="$BOT_TOKEN" gh ...`). Saying "use the github-bot skill's flow" in prose is not enough — readers copy the command they see, not the prose around it. Pin tests should assert the bot-authenticated form is present (positive substring), not just the unauthenticated form is absent.
+
+> **Note (T-363):** the original recipe in this lesson used `git remote set-url origin "https://x-access-token:..."` followed by `git push -u origin HEAD`. That mutated `.git/config` persistently and broke `make promote` (`prod`'s ruleset rejects bot pushes). Superseded by the inline-URL push form above; `CLAUDE.md` "Skills that touch GitHub" is the canonical reference.
 
 ## Pin tests — the leak-after-fix rule applies even to retired patterns that were *never* literal strings
 

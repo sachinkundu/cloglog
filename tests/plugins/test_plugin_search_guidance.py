@@ -30,6 +30,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 LAUNCH_SKILL = REPO_ROOT / "plugins/cloglog/skills/launch/SKILL.md"
+AGENT_PROMPT_TEMPLATE = REPO_ROOT / "plugins/cloglog/templates/AGENT_PROMPT.md"
 
 
 def _read(p: Path) -> str:
@@ -54,9 +55,14 @@ def test_step_1b_body_recommends_search() -> None:
 
 
 def test_agent_template_toolsearch_preload_includes_search() -> None:
-    body = _read(LAUNCH_SKILL)
+    """T-360 moved the agent-template MCP preload out of the launch SKILL
+    body and into the standalone template file; pin the new home.
+    """
+    body = _read(AGENT_PROMPT_TEMPLATE)
     select_lists = re.findall(r"select:([^\"')]+)", body)
-    assert select_lists, "No ToolSearch select: lists found in launch SKILL"
+    assert select_lists, (
+        f"No ToolSearch select: lists found in {AGENT_PROMPT_TEMPLATE.relative_to(REPO_ROOT)}"
+    )
     assert any("mcp__cloglog__search" in lst for lst in select_lists), (
         "The agent-template ToolSearch preload must include "
         "mcp__cloglog__search so spawned agents can resolve "

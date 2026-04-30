@@ -1,6 +1,10 @@
 .superpowers/
 .claude/worktrees/
 AGENT_PROMPT.md
+# T-360: the plugin ships a canonical workflow template — un-ignore it
+# so the launch SKILL can copy it into each worktree's per-launch
+# AGENT_PROMPT.md (which stays gitignored by the rule above).
+!plugins/cloglog/templates/AGENT_PROMPT.md
 __pycache__/
 *.pyc
 .venv/

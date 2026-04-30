@@ -26,6 +26,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LIFECYCLE = REPO_ROOT / "docs" / "design" / "agent-lifecycle.md"
 LAUNCH_SKILL = REPO_ROOT / "plugins" / "cloglog" / "skills" / "launch" / "SKILL.md"
+# T-360: agent-prompt content moved out of the launch SKILL into a
+# standalone template that every launch copies verbatim.
+AGENT_PROMPT_TEMPLATE = REPO_ROOT / "plugins" / "cloglog" / "templates" / "AGENT_PROMPT.md"
 GITHUB_BOT_SKILL = REPO_ROOT / "plugins" / "cloglog" / "skills" / "github-bot" / "SKILL.md"
 CLAUDE_MD_FRAGMENT = REPO_ROOT / "plugins" / "cloglog" / "templates" / "claude-md-fragment.md"
 WORKTREE_AGENT = REPO_ROOT / "plugins" / "cloglog" / "agents" / "worktree-agent.md"
@@ -57,24 +60,25 @@ def test_lifecycle_spec_documents_prs_map_in_unregister() -> None:
 
 
 def test_launch_skill_prompts_pr_merged_notification() -> None:
-    prompt = LAUNCH_SKILL.read_text()
+    prompt = AGENT_PROMPT_TEMPLATE.read_text()
     assert "pr_merged_notification" in prompt, (
-        "launch SKILL prompt template must instruct the agent to emit "
-        "pr_merged_notification on pr_merged (T-262)"
+        "agent-prompt template must instruct the agent to emit "
+        "pr_merged_notification on pr_merged (T-262, T-360)"
     )
 
 
 def test_launch_skill_prompts_prs_map_in_unregister() -> None:
-    prompt = LAUNCH_SKILL.read_text()
+    prompt = AGENT_PROMPT_TEMPLATE.read_text()
     # The agent_unregistered example must carry a prs key so the agent
     # has a copy-paste template.
     assert '"prs"' in prompt, (
-        "launch SKILL prompt template's agent_unregistered example must include the prs map (T-262)"
+        "agent-prompt template's agent_unregistered example must include the prs map (T-262, T-360)"
     )
     # And the build instruction (walk get_my_tasks for pr_url) must be
     # present so the agent knows where the data comes from.
     assert "get_my_tasks" in prompt and "pr_url" in prompt, (
-        "launch SKILL must tell the agent to build the prs map from get_my_tasks rows' pr_url field"
+        "agent-prompt template must tell the agent to build the prs map "
+        "from get_my_tasks rows' pr_url field"
     )
 
 

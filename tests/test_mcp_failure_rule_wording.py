@@ -35,8 +35,8 @@ CANONICAL_RULE = (
 EXPECTED_LOCATIONS = (
     "docs/design/agent-lifecycle.md",
     "plugins/cloglog/templates/claude-md-fragment.md",
+    "plugins/cloglog/templates/AGENT_PROMPT.md",
     "plugins/cloglog/skills/setup/SKILL.md",
-    "plugins/cloglog/skills/launch/SKILL.md",
     "CLAUDE.md",
 )
 

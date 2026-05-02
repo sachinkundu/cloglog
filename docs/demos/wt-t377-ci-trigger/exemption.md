@@ -1,30 +1,34 @@
 ---
 verdict: no_demo
-diff_hash: 7f92fd9f80e3250cc39e785fd5b38862f1264d323b3a185cc85400d5b39c1d4c
+diff_hash: 6669037901b995f02cb5ada6218570628be345d0b3c3cada8c7848ce59c2650f
 classifier: demo-classifier
-generated_at: 2026-05-02T20:08:00Z
+generated_at: 2026-05-02T20:35:00Z
 ---
 
 ## Why no demo
 
-Diff is internal CI plumbing: ci.yml gains a `repository_dispatch` trigger
-and check-run mirroring, `src/gateway/review_loop.py` adds
-`dispatch_ci_after_codex` and a `ci_dispatcher` hook fired on codex
-finalization, and `review_engine.py` wires it in. No HTTP route
-decorators, no MCP tool registrations, no frontend changes, no CLI
-output changes, no user-observable schema. The strongest `needs_demo`
-candidate was the new `dispatch_ci_after_codex` function, but it only
-POSTs to GitHub's `repository_dispatch` endpoint — operator-visible only
-as a CI timing change, not a stakeholder-facing surface. If the diff had
-added or changed a `@router.*` in `src/gateway/**` or modified an MCP
-tool's schema, the classifier would have flipped to `needs_demo`.
+Diff is CI/review-pipeline plumbing: `ci.yml` trigger swap
+(`synchronize` → `repository_dispatch: codex-finalized`),
+`init-smoke.yml` pin routing for workflow-YAML coverage, a new
+`dispatch_ci_after_codex` hook in `src/gateway/review_loop.py`, and a
+`ci_dispatcher` injection in `review_engine.py`. No HTTP route
+decorators, no MCP tool registrations, no React component changes, no
+CLI output surface, no DB migrations. Strongest `needs_demo` candidate
+was the new function in `src/gateway/review_loop.py`, but it is an
+internal hook called from the webhook consumer — no user-observable
+surface (operators only notice CI scheduling timing, which is internal
+infra). If the diff had added a new `@router` endpoint exposing review
+state or changed a frontend status indicator, the classifier would
+have flipped to `needs_demo`.
 
 ## Changed files
 
 - .github/workflows/ci.yml
+- .github/workflows/init-smoke.yml
 - CLAUDE.md
 - docs/design/ci-codex-trigger.md
 - src/gateway/review_engine.py
 - src/gateway/review_loop.py
 - tests/gateway/test_review_loop_t377_ci_dispatch.py
 - tests/plugins/test_ci_workflow_codex_finalized_trigger.py
+- tests/plugins/test_init_smoke_ci_workflow.py

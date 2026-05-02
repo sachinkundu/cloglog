@@ -10,6 +10,7 @@ All consensus logic, turn-accounting, and status handling are verified here.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -876,3 +877,119 @@ class TestOpencodePromptPin:
         assert '"overall_correctness"' in text
         assert '"no_further_concerns"' in text
         assert '"review_in_progress"' in text
+
+
+# ---------------------------------------------------------------------------
+# T-374 codex round 1 — head_branch routing + timeout finalization plumbing
+# ---------------------------------------------------------------------------
+
+
+class TestCodexTimeoutOutcomeAndRouting:
+    """The codex stage must surface timeout diagnostics + route via head_branch."""
+
+    @pytest.mark.asyncio
+    async def test_codex_timeout_passes_head_branch_to_emitter(self) -> None:
+        """``head_branch`` ctor arg must reach ``emit_codex_review_timed_out``."""
+        from unittest.mock import AsyncMock as _AsyncMock
+        from unittest.mock import patch as _patch
+
+        from src.gateway.review_loop import ReviewLoop
+
+        # Use a dummy reviewer that hangs on `_last_*` attributes to satisfy
+        # the getattr chain in ReviewLoop's emit branch.
+        class _StubCodex:
+            bot_username = "cloglog-codex-reviewer[bot]"
+            display_label = "codex"
+            _last_diff_lines = 42
+            _last_timeout_seconds = 321.0
+            _last_stderr_excerpt = "stderr tail"
+
+            async def run(self, **_kwargs: Any) -> tuple[None, float, bool]:
+                return (None, 0.5, True)
+
+        reg = FakeRegistry()
+        loop = ReviewLoop(
+            _StubCodex(),
+            max_turns=1,
+            registry=reg,
+            project_id=_PROJECT_ID,
+            pr_url=_PR_URL,
+            pr_number=_PR_NUMBER,
+            repo_full_name=_REPO,
+            head_sha=_SHA,
+            stage="codex",
+            reviewer_token="fake",
+            session_index=1,
+            max_sessions=5,
+            head_branch="wt-feature-x",
+        )
+
+        emit_mock = _AsyncMock()
+        with _patch("src.gateway.review_loop.emit_codex_review_timed_out", emit_mock):
+            outcome = await loop.run(diff="diff")
+
+        assert emit_mock.await_count == 1
+        kwargs = emit_mock.await_args.kwargs
+        assert kwargs["head_branch"] == "wt-feature-x"
+        assert kwargs["diff_size"] == 42
+        assert kwargs["timeout_seconds"] == 321.0
+
+        # Outcome carries the diagnostics for the caller's skip-comment path.
+        assert outcome.last_timed_out is True
+        assert outcome.last_timeout_diff_lines == 42
+        assert outcome.last_timeout_seconds == 321.0
+        assert outcome.last_timeout_stderr_excerpt == "stderr tail"
+        assert outcome.last_timeout_elapsed_seconds == 0.5
+
+    @pytest.mark.asyncio
+    async def test_codex_codexreviewer_captures_stderr_on_timeout(self) -> None:
+        """``CodexReviewer._last_stderr_excerpt`` is populated after a real subprocess timeout."""
+        from unittest.mock import patch as _patch
+
+        from src.gateway.review_loop import CodexReviewer
+
+        class _HangingProc:
+            def __init__(self) -> None:
+                self.kill_calls = 0
+                self.returncode = -1
+                self._hung = True
+
+                class _Stream:
+                    async def read(self, _n: int = -1) -> bytes:
+                        return b"fatal: codex blew up\n"
+
+                self.stderr = _Stream()
+
+            def kill(self) -> None:
+                # Match _FakeProcess in test_review_engine.py: kill flips
+                # the hang flag so a subsequent ``wait()`` returns promptly.
+                self.kill_calls += 1
+                self._hung = False
+
+            async def communicate(self, **_kwargs: object) -> tuple[bytes, bytes]:
+                # ``communicate(input=...)`` is the call shape; accept it via
+                # **kwargs so we don't shadow the builtin.
+                if self._hung:
+                    await asyncio.sleep(3600)
+                return b"", b""
+
+            async def wait(self) -> int:
+                if self._hung:
+                    await asyncio.sleep(3600)
+                return self.returncode
+
+        async def _create(*_a: Any, **_kw: Any) -> _HangingProc:
+            return _HangingProc()
+
+        reviewer = CodexReviewer(Path("/tmp"))
+        # Tiny budget so the timeout fires quickly.
+        with (
+            _patch("src.gateway.review_loop._create_subprocess", side_effect=_create),
+            _patch("src.gateway.review_engine.REVIEW_TIMEOUT_BASE_SECONDS", 0.01),
+            _patch("src.gateway.review_engine.REVIEW_TIMEOUT_CAP_SECONDS", 0.01),
+        ):
+            _, _, timed_out = await reviewer.run(
+                diff="diff --git a/x b/x\n", pr_number=1, turn=1, max_turns=1
+            )
+        assert timed_out is True
+        assert "codex blew up" in reviewer._last_stderr_excerpt

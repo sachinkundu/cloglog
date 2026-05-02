@@ -114,6 +114,17 @@ class LoopOutcome:
     total_elapsed_seconds: float
     reviewer_unavailable: bool = False
     errors: list[str] = field(default_factory=list)
+    # T-374 — diagnostics from the most recent codex turn that returned
+    # ``timed_out=True``. ``ReviewEngineConsumer._review_pr`` reads these
+    # to post the AGENT_TIMEOUT skip comment, mirroring the legacy
+    # ``_run_review_agent`` finalization. ``last_timed_out`` is the
+    # gating flag — diagnostic fields are only meaningful when it is
+    # True. Opencode timeouts deliberately do not populate these fields.
+    last_timed_out: bool = False
+    last_timeout_diff_lines: int = 0
+    last_timeout_seconds: float = 0.0
+    last_timeout_stderr_excerpt: str = ""
+    last_timeout_elapsed_seconds: float = 0.0
 
 
 def _finding_key(finding: dict[str, object] | object) -> tuple[str, int, str]:
@@ -300,6 +311,7 @@ class ReviewLoop:
         session_index: int,
         max_sessions: int,
         session_factory: Any | None = None,
+        head_branch: str = "",
     ) -> None:
         self._reviewer = reviewer
         self._max_turns = max_turns
@@ -314,6 +326,13 @@ class ReviewLoop:
         self._session_index = session_index
         self._max_sessions = max_sessions
         self._session_factory = session_factory
+        # T-374 (codex round 1 CRITICAL): the secondary recipient lookup in
+        # ``AgentNotifierConsumer._resolve_agent`` falls back to branch name
+        # when ``Task.pr_url`` has not been bound yet. Without ``head_branch``
+        # the synthesised webhook event in the timeout emitter skips that
+        # branch lookup and lands in the main-agent inbox or is dropped —
+        # contradicting the routing-parity contract documented on the event.
+        self._head_branch = head_branch
 
     @staticmethod
     def _build_body_header(reviewer: Reviewer, session_index: int, max_sessions: int) -> str:
@@ -458,19 +477,29 @@ class ReviewLoop:
                     if timed_out and self._stage == "codex":
                         # T-374: surface the timeout to the owning agent's
                         # inbox so the supervisor and dashboard see it. The
-                        # diff/budget come from the CodexReviewer's last call;
-                        # opencode timeouts deliberately do not emit here
-                        # (they have their own settings-driven budget and
-                        # are not part of this scope).
+                        # diff/budget/stderr come from the CodexReviewer's
+                        # last call; opencode timeouts deliberately do not
+                        # emit here (they have their own settings-driven
+                        # budget and are not part of this scope).
                         diff_lines = getattr(self._reviewer, "_last_diff_lines", 0)
                         budget = getattr(
                             self._reviewer, "_last_timeout_seconds", REVIEW_TIMEOUT_SECONDS
                         )
+                        stderr_excerpt = getattr(self._reviewer, "_last_stderr_excerpt", "")
+                        # Surface the diagnostics for the caller's skip
+                        # comment finalization (codex round 1 HIGH). Last
+                        # write wins — the most recent timeout is the one
+                        # the user-facing comment must describe.
+                        outcome.last_timed_out = True
+                        outcome.last_timeout_diff_lines = diff_lines
+                        outcome.last_timeout_seconds = budget
+                        outcome.last_timeout_stderr_excerpt = stderr_excerpt
+                        outcome.last_timeout_elapsed_seconds = elapsed
                         await emit_codex_review_timed_out(
                             pr_url=self._pr_url,
                             pr_number=self._pr_number,
                             repo_full_name=self._repo_full_name,
-                            head_branch="",
+                            head_branch=self._head_branch,
                             diff_size=diff_lines,
                             timeout_seconds=budget,
                             session_factory=self._session_factory,
@@ -628,6 +657,9 @@ class CodexReviewer:
         # reports the latest call's values.
         self._last_diff_lines: int = 0
         self._last_timeout_seconds: float = REVIEW_TIMEOUT_SECONDS
+        # Surfaced so the sequenced path can format the AGENT_TIMEOUT skip
+        # comment with the same stderr-tail UX the legacy path emits.
+        self._last_stderr_excerpt: str = ""
 
     async def run(
         self,
@@ -676,6 +708,7 @@ class CodexReviewer:
             )
             self._last_diff_lines, timeout_seconds = compute_review_timeout(diff)
             self._last_timeout_seconds = timeout_seconds
+            self._last_stderr_excerpt = ""
             start = time.monotonic()
             try:
                 stdout, _stderr = await asyncio.wait_for(
@@ -685,7 +718,8 @@ class CodexReviewer:
                 elapsed = time.monotonic() - start
             except TimeoutError:
                 elapsed = time.monotonic() - start
-                await _drain_stderr_after_timeout(proc)
+                captured = await _drain_stderr_after_timeout(proc)
+                self._last_stderr_excerpt = _tail_excerpt(captured)
                 proc.kill()
                 with contextlib.suppress(ProcessLookupError):
                     await proc.wait()

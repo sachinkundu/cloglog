@@ -1656,12 +1656,43 @@ class ReviewEngineConsumer:
                         session_index=session_index,
                         max_sessions=MAX_REVIEWS_PER_PR,
                         session_factory=self._session_factory,
+                        head_branch=event.head_branch,
                     )
-                    await loop_b.run(
+                    outcome_b = await loop_b.run(
                         diff=filtered,
                         prior_context=prior_context,
                         pr_body=pr_body,
                     )
+                    # T-374 (codex round 1 HIGH): finalize a codex timeout
+                    # the same way the legacy ``_run_review_agent`` path
+                    # does — probe codex/github liveness, format the
+                    # AGENT_TIMEOUT body, and post the skip comment as
+                    # the codex bot. Without this, a sequenced-path
+                    # timeout produces no PR comment at all, recreating
+                    # the silent-timeout regression. The inbox event
+                    # ``ReviewLoop`` already emitted is an additional
+                    # supervisor-side signal, not the only user-visible
+                    # one.
+                    if getattr(outcome_b, "last_timed_out", False):
+                        codex_alive, codex_detail = await _probe_codex_alive()
+                        github_reachable, github_detail = await _probe_github_reachable()
+                        timeout_outcome = _AgentAttemptOutcome(
+                            result=None,
+                            timed_out=True,
+                            stderr_excerpt=outcome_b.last_timeout_stderr_excerpt,
+                            elapsed_seconds=outcome_b.last_timeout_elapsed_seconds,
+                        )
+                        body = _format_timeout_body(
+                            timeout_outcome,
+                            codex_alive,
+                            codex_detail,
+                            github_reachable,
+                            github_detail,
+                            outcome_b.last_timeout_seconds,
+                        )
+                        await self._post_agent_skip(
+                            event, SkipReason.AGENT_TIMEOUT, body, review_token
+                        )
             logger.info(
                 "review_session_end pr=%d repo=%s",
                 event.pr_number,

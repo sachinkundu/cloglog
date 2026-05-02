@@ -4817,3 +4817,148 @@ class TestCodexReviewTimedOutEmission:
             await consumer.handle(_event())
 
         assert emit_mock.await_count == 0
+
+
+# ---------------------------------------------------------------------------
+# T-374 codex round 1 HIGH — sequenced codex timeout posts AGENT_TIMEOUT skip
+# ---------------------------------------------------------------------------
+
+
+class TestSequencedCodexTimeoutSkipComment:
+    """When the codex ReviewLoop ends with ``last_timed_out``, ``_review_pr``
+    must post the same AGENT_TIMEOUT skip comment the legacy
+    ``_run_review_agent`` path posts. Without this finalization, a sequenced
+    codex timeout produces no PR-visible signal at all (only the inbox
+    event), recreating the silent-timeout regression.
+    """
+
+    @pytest.mark.asyncio
+    async def test_codex_loop_timeout_posts_agent_timeout_skip(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from src.agent.interfaces import WorktreeRow
+        from src.gateway.review_engine import ReviewEngineConsumer
+        from src.gateway.review_loop import LoopOutcome
+        from src.gateway.review_skip_comments import SkipReason
+
+        project_id = uuid.uuid4()
+        worktree_dir = tmp_path / "wt-timeout"
+        worktree_sha = _init_git_repo_at(worktree_dir)
+
+        row = WorktreeRow(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            worktree_path=str(worktree_dir),
+            branch_name="wt-timeout",
+            status="online",
+        )
+
+        class _MatchingQueryCtx:
+            async def __aenter__(self) -> object:
+                stub = MagicMock()
+                stub.find_by_branch = AsyncMock(return_value=row)
+                stub.find_by_pr_url = AsyncMock(return_value=None)
+                return stub
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        captured_loop_kwargs: dict[str, object] = {}
+
+        class _TimingOutLoop:
+            def __init__(self, _reviewer: object, **kwargs: object) -> None:
+                # Snapshot ctor args so the test can verify head_branch
+                # plumbing alongside the timeout-skip behaviour.
+                captured_loop_kwargs.update(kwargs)
+                self._stage = str(kwargs.get("stage", "?"))
+
+            async def run(self, **_kwargs: object) -> LoopOutcome:
+                outcome = LoopOutcome(
+                    turns_used=2,
+                    consensus_reached=False,
+                    total_elapsed_seconds=1.0,
+                )
+                # Codex stage ended in timeout — populate the diagnostics
+                # _review_pr's finalizer reads.
+                if self._stage == "codex":
+                    outcome.last_timed_out = True
+                    outcome.last_timeout_diff_lines = 123
+                    outcome.last_timeout_seconds = 555.0
+                    outcome.last_timeout_stderr_excerpt = "fatal: codex hung"
+                    outcome.last_timeout_elapsed_seconds = 555.5
+                return outcome
+
+        event = WebhookEvent(
+            type=WebhookEventType.PR_OPENED,
+            delivery_id="d-timeout",
+            repo_full_name="sachinkundu/cloglog",
+            pr_number=999,
+            pr_url="https://github.com/sachinkundu/cloglog/pull/999",
+            head_branch="wt-timeout",
+            base_branch="main",
+            sender="sachinkundu",
+            raw={"pull_request": {"head": {"sha": worktree_sha}}},
+        )
+
+        consumer = ReviewEngineConsumer(
+            codex_available=True,
+            opencode_available=False,
+            session_factory=MagicMock(),
+        )
+
+        post_skip_mock = AsyncMock()
+        with (
+            patch(
+                "src.gateway.review_engine.settings.opencode_enabled",
+                False,
+            ),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="claude-tok"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="codex-tok"),
+            ),
+            patch(
+                "src.gateway.review_engine.count_bot_reviews",
+                new=AsyncMock(return_value=0),
+            ),
+            patch(
+                "src.gateway.review_engine._probe_codex_alive",
+                new=AsyncMock(return_value=(True, "codex 0.1.0")),
+            ),
+            patch(
+                "src.gateway.review_engine._probe_github_reachable",
+                new=AsyncMock(return_value=(True, "200 ok")),
+            ),
+            patch("src.gateway.review_loop.CodexReviewer", new=MagicMock()),
+            patch("src.gateway.review_loop.ReviewLoop", new=_TimingOutLoop),
+            patch.object(consumer, "_fetch_pr_diff", new=AsyncMock(return_value="diff")),
+            patch.object(
+                consumer,
+                "_resolve_project_id",
+                new=AsyncMock(return_value=project_id),
+            ),
+            patch.object(
+                consumer,
+                "_registry",
+                new=lambda: TestReviewPrUsesWorktreeProjectRoot._RecordingRegistryCtx(),
+            ),
+            patch.object(consumer, "_worktree_query", new=lambda: _MatchingQueryCtx()),
+            patch.object(consumer, "_post_agent_skip", new=post_skip_mock),
+        ):
+            await consumer._review_pr(event)
+
+        # Skip comment posted with AGENT_TIMEOUT and the budget that was hit.
+        assert post_skip_mock.await_count == 1
+        call_args = post_skip_mock.await_args.args
+        assert call_args[1] == SkipReason.AGENT_TIMEOUT
+        body = call_args[2]
+        assert "555s" in body
+        assert "fatal: codex hung" in body
+
+        # head_branch plumbing pin (codex round 1 CRITICAL fix): the
+        # ReviewLoop must receive event.head_branch so the timeout
+        # emitter's branch-fallback recipient lookup works.
+        assert captured_loop_kwargs.get("head_branch") == "wt-timeout"

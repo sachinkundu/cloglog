@@ -199,4 +199,14 @@ else
   echo "[$(date -Iseconds)] agent-shutdown.sh: no API_KEY — skipping unregister-by-path (will rely on tier-3 heartbeat timeout)" >> /tmp/agent-shutdown-debug.log
 fi
 
+# T-371: drop the per-worktree state.json so the require-task-for-pr hook
+# does not treat a stale agent_token as proof the shell is still
+# registered. SessionEnd is one of the project's normal shutdown paths
+# (the other being the MCP unregister_agent tool, which has its own
+# clearWorktreeState call); without this rm the next gh pr create in
+# the surviving checkout falls into the hook's "unexpected response"
+# branch instead of the intended "not registered, call register_agent"
+# branch (codex review on PR #287, CRITICAL).
+rm -f "${CWD}/.cloglog/state.json" 2>> /tmp/agent-shutdown-debug.log || true
+
 exit 0

@@ -104,6 +104,56 @@ def test_hook_blocks_gh_pr_create_with_malformed_state_json(tmp_path: Path) -> N
     assert "malformed" in result.stderr.lower() or "missing" in result.stderr.lower()
 
 
+def test_state_json_is_gitignored() -> None:
+    """T-371 codex review HIGH: ``.cloglog/state.json`` carries an
+    ``agent_token`` and MUST never be tracked. The supervisor's main
+    session calls ``register_agent`` from the repo root, so the file
+    lands in the main checkout — without an explicit ignore, the
+    operator's first ``git status`` after ``/cloglog setup`` shows it
+    as untracked and a careless ``git add .`` leaks the live token.
+    """
+    gitignore = REPO_ROOT / ".gitignore"
+    body = gitignore.read_text(encoding="utf-8")
+    assert ".cloglog/state.json" in body, (
+        ".gitignore must list `.cloglog/state.json`. T-371 / codex "
+        "review on PR #287 caught the original draft for shipping the "
+        "ignore alongside the file write that introduced it."
+    )
+    # git check-ignore is the authoritative way to confirm the rule
+    # actually matches the path under the repo root.
+    rc = subprocess.run(
+        ["git", "check-ignore", "-q", ".cloglog/state.json"],
+        cwd=REPO_ROOT,
+    ).returncode
+    assert rc == 0, (
+        "`git check-ignore -q .cloglog/state.json` must succeed (exit 0). "
+        "Exit 1 means the path is NOT being ignored — a future edit "
+        "to .gitignore that re-orders rules or adds a negation could "
+        "silently regress this without tripping the substring assertion."
+    )
+
+
+def test_agent_shutdown_hook_clears_state_json() -> None:
+    """T-371 codex review CRITICAL: SessionEnd shutdown via
+    ``agent-shutdown.sh`` calls ``unregister-by-path`` directly,
+    bypassing the MCP ``unregister_agent`` tool's
+    ``clearWorktreeState`` call. Without an explicit rm in this
+    hook, ``state.json`` survives shutdown and the next
+    ``gh pr create`` in the same checkout uses a dead
+    ``worktree_id`` / ``agent_token`` — the hook then routes through
+    its generic "unexpected response" branch instead of the intended
+    "not registered, call register_agent" branch.
+    """
+    hook = REPO_ROOT / "plugins/cloglog/hooks/agent-shutdown.sh"
+    body = hook.read_text(encoding="utf-8")
+    assert "rm -f " in body and ".cloglog/state.json" in body, (
+        "agent-shutdown.sh must remove `<cwd>/.cloglog/state.json` "
+        "after the unregister-by-path call so the hook's "
+        "presence-of-state-file invariant matches the backend's "
+        "actual registration state. T-371 / codex review on PR #287."
+    )
+
+
 def test_hook_walks_up_to_find_state_json(tmp_path: Path) -> None:
     """state.json at a parent directory must be discovered from a deeper cwd."""
     state_dir = tmp_path / ".cloglog"

@@ -418,6 +418,106 @@ async def test_unassigned_warning_distinguishes_inbox_path_configured(
     )
 
 
+async def test_warning_diagnoses_idempotent_no_backfill_after_setup(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch, caplog
+) -> None:
+    """T-305 codex round-2 pin: when an unassigned close-off was created
+    in a prior call (no main agent then), the operator runs /cloglog setup
+    to register the main agent, and a retry hits the idempotent path —
+    the existing task is returned WITHOUT a backfill of ``worktree_id``,
+    so it stays unassigned. The warning must blame the idempotent
+    no-backfill path, not the inbox env var.
+
+    Codex round 2 caught this on PR #292: the previous warning text
+    branched only on ``settings.main_agent_inbox_path``, so a successful
+    main-agent resolve combined with an existing unassigned row produced
+    a misleading "configured but does not point at a registered worktree"
+    diagnostic — sending the operator to debug the env var instead of
+    backfilling the task.
+    """
+    import logging
+
+    from src.agent.models import Worktree
+
+    _, api_key = await _create_project(client, "no-backfill")
+    wt_path = str(tmp_dir_for_wt())  # uses a /.claude/worktrees/ path
+    await _register(client, api_key, wt_path, "wt-nb")
+
+    # Phase 1: no main agent registered, no env var. First call lands an
+    # unassigned close-off task.
+    from src.shared.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "main_agent_inbox_path", None)
+
+    first = await client.post(
+        "/api/v1/agents/close-off-task",
+        json={"worktree_path": wt_path, "worktree_name": "wt-nb"},
+        headers=_auth(api_key),
+    )
+    assert first.status_code == 201
+    assert first.json()["created"] is True
+    repo = BoardRepository(db_session)
+    task = await repo.get_task(uuid.UUID(first.json()["task_id"]))
+    assert task is not None
+    assert task.worktree_id is None, "Phase 1 must land unassigned"
+
+    # Phase 2: simulate /cloglog setup — register a main agent. Now
+    # main-agent resolution succeeds.
+    main_path = f"/tmp/main-{uuid.uuid4().hex[:8]}"
+    main_wt_id = await _register(client, api_key, main_path, "main")
+    main_row = await db_session.get(Worktree, uuid.UUID(main_wt_id))
+    assert main_row is not None and main_row.role == "main"
+
+    # Phase 3: retry. Idempotent service path returns the existing
+    # unassigned row WITHOUT backfilling worktree_id (services.py only
+    # writes on first creation). The warning must name the idempotent
+    # no-backfill cause, not the env-var path.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="src.agent.routes"):
+        second = await client.post(
+            "/api/v1/agents/close-off-task",
+            json={"worktree_path": wt_path, "worktree_name": "wt-nb"},
+            headers=_auth(api_key),
+        )
+    assert second.status_code == 201
+    assert second.json()["created"] is False, "Phase 3 must hit idempotent path"
+
+    no_backfill_warnings = [
+        r
+        for r in caplog.records
+        if r.levelname == "WARNING"
+        and "is unassigned" in r.message
+        and "did not backfill worktree_id" in r.message
+    ]
+    assert no_backfill_warnings, (
+        "When main agent now resolves but the existing task is still "
+        "unassigned, warning must point at the idempotent no-backfill "
+        f"path. Got: {[r.message for r in caplog.records]}"
+    )
+    misleading = [
+        r
+        for r in caplog.records
+        if r.levelname == "WARNING" and "does not point at a registered worktree" in r.message
+    ]
+    assert not misleading, (
+        "Warning must NOT blame the env-var path when main_agent_worktree_id "
+        f"resolved successfully. Got: {[r.message for r in misleading]}"
+    )
+
+
+def tmp_dir_for_wt() -> Path:
+    """Build a worktree-shaped path that derives role='worktree' (not 'main')
+    via _derive_worktree_role's ``/.claude/worktrees/`` marker check.
+    """
+    return (
+        Path("/tmp")
+        / f"proj-{uuid.uuid4().hex[:6]}"
+        / ".claude"
+        / "worktrees"
+        / (f"wt-nb-{uuid.uuid4().hex[:8]}")
+    )
+
+
 async def test_close_off_task_surfaces_in_main_agent_get_tasks(
     client: AsyncClient, monkeypatch
 ) -> None:

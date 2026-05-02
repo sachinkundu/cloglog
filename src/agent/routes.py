@@ -386,7 +386,27 @@ async def create_close_off_task(
     # ``main_agent_worktree_id`` (this-call resolver state), is the only
     # way to keep the warning truthful across resume calls.
     if task.worktree_id is None:
-        if settings.main_agent_inbox_path is None:
+        # Three distinct causes — only one is true at a time, so the
+        # warning text must branch on resolver outcome FIRST. Codex round 2
+        # caught this: a resume call after the operator runs /cloglog setup
+        # resolves main_agent_worktree_id successfully, but the idempotent
+        # service path returns the existing unassigned row without
+        # backfilling, so blaming "no role='main' worktree" or "inbox_path
+        # misrouted" sends the operator down the wrong remedy. Gate on
+        # resolver outcome first; only fall through to env-var diagnostics
+        # when resolution actually failed.
+        if main_agent_worktree_id is not None:
+            cause = (
+                "main agent now resolves but the idempotent close-off-task "
+                "service path did not backfill worktree_id on the existing "
+                "row (created by an earlier call when no main agent was "
+                "registered)"
+            )
+            remedy = (
+                "Reassign the task to the main agent — e.g. "
+                "mcp__cloglog__assign_task or a direct PATCH on the task."
+            )
+        elif settings.main_agent_inbox_path is None:
             cause = "no role='main' worktree and main_agent_inbox_path is unset"
             remedy = "Run /cloglog setup or backfill worktrees.role to fix."
         else:

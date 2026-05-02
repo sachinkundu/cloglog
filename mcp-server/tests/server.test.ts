@@ -8,6 +8,7 @@ function mockClient(): CloglogClient {
     registerAgent: vi.fn().mockResolvedValue({}),
     setAgentToken: vi.fn(),
     clearAgentToken: vi.fn(),
+    getBaseUrl: vi.fn().mockReturnValue('http://127.0.0.1:8001'),
   } as unknown as CloglogClient
 }
 
@@ -146,6 +147,58 @@ describe('register_agent tool', () => {
         },
       ],
     })
+  })
+})
+
+describe('register_agent state.json side-effect (T-371)', () => {
+  it('writes <worktree_path>/.cloglog/state.json when agent_token is returned', async () => {
+    const fs = await import('node:fs/promises')
+    const os = await import('node:os')
+    const path = await import('node:path')
+    const wt = await fs.mkdtemp(path.join(os.tmpdir(), 'cloglog-reg-'))
+
+    const client = mockClient()
+    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
+      worktree_id: 'wt-abc',
+      project_id: 'proj-1',
+      agent_token: 'tok-abc',
+    })
+
+    const server = createServer(client)
+    const tools = (server as any)._registeredTools
+    await tools.register_agent.handler({ worktree_path: wt })
+
+    const body = JSON.parse(await fs.readFile(path.join(wt, '.cloglog/state.json'), 'utf-8'))
+    expect(body.worktree_id).toBe('wt-abc')
+    expect(body.agent_token).toBe('tok-abc')
+    expect(body.backend_url).toBe('http://127.0.0.1:8001')
+
+    // unregister clears it.
+    await tools.unregister_agent.handler({})
+    await expect(
+      fs.access(path.join(wt, '.cloglog/state.json'))
+    ).rejects.toBeTruthy()
+  })
+
+  it('does NOT write state.json when agent_token is absent (older backend)', async () => {
+    const fs = await import('node:fs/promises')
+    const os = await import('node:os')
+    const path = await import('node:path')
+    const wt = await fs.mkdtemp(path.join(os.tmpdir(), 'cloglog-reg-'))
+
+    const client = mockClient()
+    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValue({
+      worktree_id: 'wt-abc',
+      project_id: 'proj-1',
+    })
+
+    const server = createServer(client)
+    const tools = (server as any)._registeredTools
+    await tools.register_agent.handler({ worktree_path: wt })
+
+    await expect(
+      fs.access(path.join(wt, '.cloglog/state.json'))
+    ).rejects.toBeTruthy()
   })
 })
 

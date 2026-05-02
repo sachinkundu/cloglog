@@ -83,7 +83,8 @@ delegation is a pure entry-point change, not a refactor of the pipeline.
 2. If `$ARGUMENTS` specifies worktree names, filter to only those.
 3. If no worktrees exist, tell the user there's nothing to close.
 4. Determine the wave name by examining existing work logs to figure out the current numbering (e.g., if `wave-1.md` exists, this is `wave-2`).
-5. Show the user what was detected: wave name, worktree list. Ask for confirmation before proceeding.
+5. **Resolve each worktree's close-off task UUID.** Call `mcp__cloglog__get_board()` and, for every `wt-<name>` in scope, find the task with `title == f"Close worktree {wt-name}"` and `status == "backlog"`. Capture the task UUID into a per-worktree map `close_off_task_ids[wt-name] → task_uuid`. The first entry's UUID is `PRIMARY_CLOSE_TASK_ID` — that's the one Step 9.7 marks `in_progress` to satisfy the T-371 `gh pr create` blocker hook. If a worktree has no matching backlog close-off row, fail loud — do not paper over with `create_close_off_task`; the worktree was created before the close-off-row invariant existed and reconcile owns that gap (T-371 reconcile rule).
+6. Show the user what was detected: wave name, worktree list, close-off task IDs. Ask for confirmation before proceeding.
 
 ## Step 2: Detect Repo
 
@@ -306,6 +307,36 @@ A running worktree agent that receives the event follows the protocol in
 the main inbox, wait for a tab relaunch (no MCP hot-reload exists; the tool
 list is cached at session start).
 
+## Step 9.7: Mark the primary close-off task in_progress (T-371)
+
+Before any branch creation or `gh pr create` invocation, mark the
+**primary close-off task** (Step 1's `PRIMARY_CLOSE_TASK_ID`)
+`in_progress` so the wave's PR has a board task linked to it from the
+moment it is opened:
+
+```
+mcp__cloglog__start_task(task_id: "<PRIMARY_CLOSE_TASK_ID>")
+```
+
+This call is mandatory. The T-371 `require-task-for-pr.sh` PreToolUse
+hook hard-blocks `gh pr create` (exit 2) when no task is `in_progress`
+for this working directory, so skipping this step makes Step 13's
+`gh pr create` fail with the hook's actionable error. **Do not** try
+to start more than one close-off task here — `start_task` enforces
+"one active task per agent" (`src/agent/services.py::start_task`).
+Multi-worktree waves move the remaining close-off tasks straight from
+`backlog` → `review` in Step 13.5 with the same `pr_url`; that
+transition does not require an intermediate `in_progress` step
+(`update_task_status` only checks `pr_url` for the `review` move,
+`src/agent/services.py:526`).
+
+If `start_task` returns `task_blocked` because pipeline ordering or
+feature-deps cite an upstream task that has not finished, **that is a
+real bug — stop the wave** and resolve the blocker rather than
+papering over with `force_unregister`. Close-off tasks have no
+predecessors by design (`src/board/templates.py`), so a `task_blocked`
+here is a regression in the close-off template.
+
 ## Step 10: Open a close-wave branch
 
 The dev clone now has a writable local `main`, so the main agent uses the same `wt-*` branch + PR flow as every other agent (no detached-HEAD push, no direct-`main` commit). See `docs/design/prod-branch-tracking.md` §7.
@@ -390,6 +421,25 @@ GH_TOKEN="$BOT_TOKEN" gh pr create --base main --head wt-close-<date>-<wave-name
   --title "chore(close-wave): <wave-name>" \
   --body "<work-log path + learnings summary, with the standard Demo + Test Report sections>"
 ```
+
+### Step 13.5: Move close-off tasks to review (T-371)
+
+Capture the PR URL returned by `gh pr create` (or read it back via
+`gh pr view --json url -q .url`). Then, for **every** close-off task
+UUID resolved in Step 1's `close_off_task_ids` map, call:
+
+```
+mcp__cloglog__update_task_status(task_id: "<close_task_id>", status: "review", pr_url: "<PR_URL>")
+```
+
+The primary task transitions `in_progress` → `review`; remaining tasks
+go `backlog` → `review` directly (the `review` guard at
+`src/agent/services.py:526` only checks for a `pr_url`, no
+intermediate `in_progress` is required). All close-off tasks share the
+same `pr_url` — the wave PR fulfils all of them — and the existing
+`pr_merged` webhook fan-out flips `pr_merged=True` on each row when
+the PR merges; the user then drags them to `done` like every other
+reviewed task. No special server-side handling is needed.
 
 Auto-merge applies per `plugins/cloglog/skills/github-bot/SKILL.md` "Auto-Merge on Codex Pass" once codex review and CI checks pass. After merge, fast-forward main and drop the local branch:
 

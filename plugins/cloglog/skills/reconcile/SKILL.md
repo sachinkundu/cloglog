@@ -320,6 +320,55 @@ Case A/B tier-2 fallback, or Case C directly.
 - **Local branch**: `git branch -D <branch>`.
 - **Remote branch** (if stale per Check 4): use bot token — `git push origin --delete <branch>`.
 
+### Stale close-off tasks (T-371)
+
+Any backlog task whose title matches `Close worktree wt-<X>` for a `wt-<X>`
+that **no longer exists** is stale: the wave's PR already merged, the
+worktree was torn down, but pre-T-371 close-wave runs never moved the
+close-off row through `in_progress → review → done`. The 2026-04 cohort
+(T-355, T-357, T-359, T-361, T-364, T-366, T-369) prompted this rule.
+
+For each `Close worktree wt-<X>` row in `backlog`:
+
+1. Check whether `wt-<X>` is still active. The worktree is **gone** when:
+   - `mcp__cloglog__list_worktrees` has no row whose `name == "wt-<X>"`, AND
+   - `<repo_root>/.claude/worktrees/wt-<X>` does not exist on disk.
+
+   If either check shows the worktree is alive, leave the row alone — it
+   is a real pending close-off, not stale.
+
+2. Try to recover the wave's `pr_url` from `git log` so the closed-out
+   task carries the same merge URL the live close-wave flow would have
+   set in Step 13.5. The branch convention is
+   `wt-close-<date>-<wave>`, and merge commits land with
+   `Merge pull request #<num>` in the subject:
+
+   ```bash
+   git log --merges --grep "wt-close-.*${wt_X}" --pretty='%H %s' origin/main \
+     | head -1
+   ```
+
+   Extract the PR number, then resolve the URL with
+   `gh pr view <num> --json url -q .url`. If no matching merge commit is
+   findable, leave `pr_url` unset (the row still moves to `done`; the
+   reconcile work log records the absence).
+
+3. Move the row through to `done` and note the action in the reconcile
+   work log:
+
+   ```
+   mcp__cloglog__update_task_status(task_id, "in_progress")
+   mcp__cloglog__update_task_status(task_id, "review", pr_url=<url-or-skip_pr=True>)
+   mcp__cloglog__update_task_status(task_id, "done")    # user-only step today
+   ```
+
+   The third call will currently 422 — agents cannot mark tasks `done`
+   (`src/agent/services.py::update_task_status`). Surface the row to the
+   operator with a one-line summary so they can drag it across; do not
+   bypass the guard. Once T-371's close-wave wiring is live this rule
+   only fires for the existing stale cohort and never accumulates new
+   rows.
+
 ### Other drift
 
 - **Stale local branches without a worktree**: `git branch -d <branch>`

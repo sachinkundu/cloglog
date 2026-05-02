@@ -438,8 +438,20 @@ go `backlog` → `review` directly (the `review` guard at
 intermediate `in_progress` is required). All close-off tasks share the
 same `pr_url` — the wave PR fulfils all of them — and the existing
 `pr_merged` webhook fan-out flips `pr_merged=True` on each row when
-the PR merges; the user then drags them to `done` like every other
-reviewed task. No special server-side handling is needed.
+the PR merges.
+
+**Terminal state — `review + pr_merged=True`, awaiting user drag.**
+Close-off rows follow the standard agent task lifecycle: agents move
+tasks to `review` with a `pr_url`, the merge webhook flips
+`pr_merged=True`, and the **user** drags the card to `done` on the
+board (`src/agent/services.py:502-508` rejects any agent attempt to
+move tasks to `done`; this is the load-bearing user-only-done
+invariant). T-371 originally framed acceptance as "leaves the
+close-off task in `done` with no manual operator step", but
+implementing a system-owned automatic merge → done transition would
+violate that invariant project-wide. The narrowed acceptance — `review
++ pr_merged=True`, user drags as the single closing click — matches
+how every other reviewed task ships in this project.
 
 Auto-merge applies per `plugins/cloglog/skills/github-bot/SKILL.md` "Auto-Merge on Codex Pass" once codex review and CI checks pass. After merge, fast-forward main and drop the local branch:
 

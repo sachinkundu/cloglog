@@ -369,21 +369,38 @@ For each `Close worktree wt-<X>` row in `backlog`:
    review hop. The reconcile work log records the absence so the
    operator has a paper trail.
 
-3. Move the row through to `done` and note the action in the reconcile
-   work log:
+3. Move the row through to `review` and surface to the operator. Use
+   `start_task` for the `backlog` → `in_progress` hop, NOT
+   `update_task_status(..., "in_progress")` — `start_task`
+   (`src/agent/services.py:374-398`) is the only entry point that
+   enforces the one-active-task rule and writes
+   `worktrees.current_task_id`. Bypassing it via `update_task_status`
+   would let reconcile open a second active task on the main agent
+   while the supervisor still has its own task in flight, leaving
+   `current_task_id` stale and breaking every subsequent `start_task`
+   guard until force-unregister.
 
    ```
-   mcp__cloglog__update_task_status(task_id, "in_progress")
-   mcp__cloglog__update_task_status(task_id, "review", pr_url=<url-or-skip_pr=True>)
-   mcp__cloglog__update_task_status(task_id, "done")    # user-only step today
+   mcp__cloglog__start_task(task_id=<close_off_task_id>)
+   mcp__cloglog__update_task_status(task_id, "review", pr_url=<url>)
+   # OR, when no PR was findable in step 2:
+   mcp__cloglog__update_task_status(task_id, "review", skip_pr=True)
    ```
 
-   The third call will currently 422 — agents cannot mark tasks `done`
-   (`src/agent/services.py::update_task_status`). Surface the row to the
-   operator with a one-line summary so they can drag it across; do not
-   bypass the guard. Once T-371's close-wave wiring is live this rule
-   only fires for the existing stale cohort and never accumulates new
-   rows.
+   If `start_task` returns "agent already has active task(s)", **stop
+   the cleanup of this row** and surface the conflict to the operator
+   — the active task must clear (merge / drag / abandon) before
+   reconcile can revive the stale close-off. Do not work around the
+   guard.
+
+   Agents cannot move tasks to `done` (the user-only-done invariant —
+   `src/agent/services.py:502-508`); the row terminates at `review +
+   pr_merged=True` (or `review + skip_pr=True` for the legacy cohort)
+   and the operator drags the card on the board, the same single click
+   they make for every other reviewed task. Surface the row in the
+   reconcile work log with a one-line summary so they know where to
+   look. Once T-371's close-wave wiring is live, this rule only fires
+   for the existing stale cohort and never accumulates new rows.
 
 ### Other drift
 

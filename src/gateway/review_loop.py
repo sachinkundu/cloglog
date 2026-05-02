@@ -462,6 +462,21 @@ class ReviewLoop:
                     pr_body=pr_body,
                 )
 
+                # T-374 codex round 2 HIGH: ``last_timed_out`` (and the
+                # related ``last_timeout_*`` diagnostics) must reflect the
+                # *terminal* state of the codex stage, not "some prior turn
+                # timed out". Reset on each iteration; the timeout branch
+                # below re-sets them only for this turn. A subsequent
+                # successful turn will not re-enter this block, and the
+                # per-iteration reset stops a stale ``True`` from leaking
+                # past the loop. Only diagnostics — ``errors`` is the
+                # cumulative log and stays as-is.
+                outcome.last_timed_out = False
+                outcome.last_timeout_diff_lines = 0
+                outcome.last_timeout_seconds = 0.0
+                outcome.last_timeout_stderr_excerpt = ""
+                outcome.last_timeout_elapsed_seconds = 0.0
+
                 if result is None:
                     status = _TURN_STATUS_TIMED_OUT if timed_out else _TURN_STATUS_FAILED
                     await self._registry.complete_turn(
@@ -486,15 +501,17 @@ class ReviewLoop:
                             self._reviewer, "_last_timeout_seconds", REVIEW_TIMEOUT_SECONDS
                         )
                         stderr_excerpt = getattr(self._reviewer, "_last_stderr_excerpt", "")
-                        # Surface the diagnostics for the caller's skip
-                        # comment finalization (codex round 1 HIGH). Last
-                        # write wins — the most recent timeout is the one
-                        # the user-facing comment must describe.
                         outcome.last_timed_out = True
                         outcome.last_timeout_diff_lines = diff_lines
                         outcome.last_timeout_seconds = budget
                         outcome.last_timeout_stderr_excerpt = stderr_excerpt
                         outcome.last_timeout_elapsed_seconds = elapsed
+                        # Inbox emission stays per-timeout (not gated on
+                        # terminal state) — the supervisor/dashboard signal
+                        # is "this codex turn timed out", same shape as the
+                        # other inbox events that fire per-turn. The PR
+                        # comment remains gated on terminal state via
+                        # ``last_timed_out`` in ``_review_pr``.
                         await emit_codex_review_timed_out(
                             pr_url=self._pr_url,
                             pr_number=self._pr_number,

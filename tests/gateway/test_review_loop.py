@@ -993,3 +993,59 @@ class TestCodexTimeoutOutcomeAndRouting:
             )
         assert timed_out is True
         assert "codex blew up" in reviewer._last_stderr_excerpt
+
+    @pytest.mark.asyncio
+    async def test_last_timed_out_clears_when_later_turn_succeeds(self) -> None:
+        """``LoopOutcome.last_timed_out`` must reflect the terminal turn, not "any prior timeout".
+
+        Pin for codex round 2 HIGH: when ``codex_max_turns > 1`` and turn 1
+        times out but turn 2 succeeds, the sticky flag would otherwise
+        cause ``_review_pr`` to post a false AGENT_TIMEOUT skip comment
+        after a successful review.
+        """
+        from src.gateway.review_loop import ReviewLoop
+
+        class _MixedCodex:
+            bot_username = "cloglog-codex-reviewer[bot]"
+            display_label = "codex"
+            _last_diff_lines = 10
+            _last_timeout_seconds = 5.0
+            _last_stderr_excerpt = ""
+
+            def __init__(self) -> None:
+                self._n = 0
+
+            async def run(self, **_kwargs: Any) -> tuple[Any, float, bool]:
+                self._n += 1
+                if self._n == 1:
+                    return (None, 0.5, True)  # turn 1 — timeout
+                return (_ok_result(), 0.5, False)  # turn 2 — success
+
+        loop = ReviewLoop(
+            _MixedCodex(),
+            max_turns=2,
+            registry=FakeRegistry(),
+            project_id=_PROJECT_ID,
+            pr_url=_PR_URL,
+            pr_number=_PR_NUMBER,
+            repo_full_name=_REPO,
+            head_sha=_SHA,
+            stage="codex",
+            reviewer_token="fake",
+            session_index=1,
+            max_sessions=5,
+            head_branch="wt-x",
+        )
+        with (
+            patch(_PATCH_POST_REVIEW, new=AsyncMock(return_value=True)),
+            patch("src.gateway.review_loop.emit_codex_review_timed_out", new=AsyncMock()),
+        ):
+            outcome = await loop.run(diff="diff")
+
+        assert outcome.last_timed_out is False, (
+            "A successful turn must reset last_timed_out so _review_pr does not "
+            "falsely post AGENT_TIMEOUT after a converging review."
+        )
+        assert outcome.last_timeout_diff_lines == 0
+        assert outcome.last_timeout_seconds == 0.0
+        assert outcome.last_timeout_stderr_excerpt == ""

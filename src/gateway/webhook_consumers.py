@@ -395,7 +395,7 @@ async def emit_codex_review_timed_out(
         "message": (
             f"Codex review on PR #{pr_number} timed out after "
             f"{int(timeout_seconds)}s ({diff_size} changed lines). "
-            "A skip comment was posted on the PR; push a new commit to retry."
+            "Push a new commit to retry."
         ),
     }
     inbox_path = recipient.inbox_path

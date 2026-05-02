@@ -65,13 +65,24 @@ The proposed fix removes all three consequences with a one-line conceptual chang
 | Operation | What it does today | What it does after this spec |
 |---|---|---|
 | `make prod` | Starts gunicorn + vite preview from `../cloglog-prod` (foreground). Asserts no other prod process owns `:8001`. | Unchanged — boots/serves whatever is currently checked out on `prod`. No git operations. |
-| `make promote` | `git -C ../cloglog-prod pull origin main`, then `uv sync`, `npm ci`, `vite build`, `alembic upgrade head`, `kill -HUP gunicorn`, restart preview. | `git -C ../cloglog-prod fetch origin && git -C ../cloglog-prod merge --ff-only origin/main && git -C ../cloglog-prod push origin prod` (the prod branch is now `prod`, advances by ff-merging `origin/main`, and the resulting tip is pushed back so `origin/prod` always reflects deployed code), then everything else as today. |
+| `make promote` | `git -C ../cloglog-prod pull origin main`, then `uv sync`, `npm ci`, `vite build`, `alembic upgrade head`, `kill -HUP gunicorn`, restart preview. | `git -C ../cloglog-prod fetch origin && git -C ../cloglog-prod merge --ff-only origin/main`, then the deploy block (`uv sync`, `npm ci`, `vite build`, `alembic upgrade head`, `kill -HUP gunicorn`, restart preview), and **only after successful rotation/restart** `git -C ../cloglog-prod push origin prod` so `origin/prod` advertises the SHA that is actually serving (publish-the-pointer-comes-last; see §4.2.1). |
 
 ### 4.2 Why separate
 
 - **Restartability without redeploy.** If the prod machine reboots or the gunicorn process dies, `make prod` should bring the service back on the *currently deployed* code. Folding promotion into boot would silently advance `prod` on every restart, defeating the gate.
 - **Promotion is a deliberate user act.** The whole point of putting `main ≠ prod` is that "merged" and "deployed" are two states. `make promote` should remain the one human-driven moment.
 - **Smaller blast radius for boot bugs.** A bad migration on `main` should not auto-apply on a service restart. With a separate `make promote`, an operator can `prod-stop && prod` to roll back to the deployed worker generation while investigating, without `make prod` re-running migrations.
+
+### 4.2.1 Publish-the-pointer comes last
+
+`origin/prod` is the canonical "what is live" pointer. `make promote` MUST
+advance the ref **after** the deploy block (build, migrate, worker
+rotation), not before. Pushing first creates a window where the ref
+advanced but the running service is still on the previous SHA — a silent
+lie any deploy tooling reading the ref will believe. The same shape
+applies beyond `make promote`: any "ground truth from a remote ref"
+pattern (deploy tags, downstream auto-pulls, etc.) updates the ref only
+after the contract holds.
 
 ### 4.3 Edge cases
 
@@ -84,7 +95,7 @@ For each, **STAY** = no change needed; **UPDATE** = change required; **CONSIDER*
 
 ### 5.1 Makefile
 
-- `Makefile:235-253` (`promote` target). **UPDATE** — replace `git -C ../cloglog-prod pull origin main` with three lines: `git -C ../cloglog-prod fetch origin`, `git -C ../cloglog-prod merge --ff-only origin/main`, `git -C ../cloglog-prod push origin prod`. The `push` is load-bearing: without it, `origin/prod` is created at migration time and then never advances, so the live service drifts ahead of `origin/prod` after the first promotion — breaking the §3.3 invariant that `prod` represents deployed code (and the future Railway deploy source). The downstream `uv sync`, `vite build`, `alembic upgrade head`, `kill -HUP` steps are unchanged.
+- `Makefile:235-253` (`promote` target). **UPDATE** — replace `git -C ../cloglog-prod pull origin main` with `git -C ../cloglog-prod fetch origin` followed by `git -C ../cloglog-prod merge --ff-only origin/main`, run the deploy block (`uv sync`, `vite build`, `alembic upgrade head`, `kill -HUP gunicorn`, restart preview), and **only after successful rotation/restart** issue `git -C ../cloglog-prod push origin prod` (publish-the-pointer-comes-last; see §4.2.1). The trailing `push` is load-bearing: without it, `origin/prod` is created at migration time and then never advances, so the live service drifts ahead of `origin/prod` after the first promotion — breaking the §3.3 invariant that `prod` represents deployed code. Pushing it *before* the deploy block creates the opposite hazard: `origin/prod` advertises a SHA that is not yet serving.
 - `Makefile:156-195` (`prod` target). **STAY** — boots from `../cloglog-prod`, no branch reference in the body.
 - `Makefile:197-233` (`prod-bg`). **STAY** — same reason as `prod`.
 - `Makefile:1` `.PHONY` line. **STAY** — `promote` already declared.
@@ -260,7 +271,7 @@ Listed for the user to file on the board. Not created here.
 | Task | Scope (one line) |
 |---|---|
 | T-prod-1 | Create `prod` branch on origin (one-time push) and switch the cloglog-prod worktree to track it. (Manual; user-run; verification commands provided.) |
-| T-prod-2 | Update `Makefile`'s `promote` target to `fetch + merge --ff-only origin/main + push origin prod` instead of `pull origin main`. The `push` keeps `origin/prod` honest. |
+| T-prod-2 | Update `Makefile`'s `promote` target: replace `pull origin main` with `fetch origin` + `merge --ff-only origin/main`, run the deploy block (`uv sync`, `vite build`, `alembic upgrade head`, worker rotation, restart preview), and **only after successful rotation/restart** issue `push origin prod`. The trailing `push` keeps `origin/prod` honest; placing it last avoids the stale-pointer window where `origin/prod` advertises a SHA that is not yet serving (publish-the-pointer-comes-last; see §4.2.1). |
 | T-prod-3 | Apply GitHub branch protection on `prod` (linear history, restricted push) and add `make verify-prod-protection` that asserts the rules via `gh api`. |
 | T-prod-4 | Update `CLAUDE.md` Runtime & Deployment section: document `prod` branch, promotion semantics, and the rollback subsection from §8. |
 | T-prod-5 | Header-supersede `docs/superpowers/specs/2026-04-18-dev-prod-separation-design.md` with a one-line forward reference to this spec. |

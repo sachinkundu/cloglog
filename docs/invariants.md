@@ -221,3 +221,144 @@ green. The pin is wired into `make invariants` AND the every-PR
 `init-smoke.yml` workflow so a SKILL-only edit cannot bypass it.
 
 **Pin:** `tests/plugins/test_skills_no_remote_set_url.py`
+
+## Notifications
+
+### Desktop toasts fire only for operator-attention events
+
+The `TASK_STATUS_CHANGED → review` transition still creates the persisted
+`Notification` row + dashboard bell, but **not** a `notify-send` desktop
+toast. With parallel worktrees, every PR-opened toast trained the operator
+to ignore them. T-358 codifies two rules: (1) `TASK_STATUS_CHANGED → review`
+does not toast; (2) `AGENT_UNREGISTERED` toasts only when `data.reason` is
+in a known-non-clean allowlist (`force_unregistered`, `heartbeat_timeout`).
+A clean unregister via the public API has no `reason` and stays silent —
+that filter keeps a normal post-merge agent exit from toasting. The
+`desktop_toast_enabled: false` switch in `.cloglog/config.yaml` is the
+operator off-switch (the persisted row + SSE for the review transition
+are unaffected).
+
+**Pins:**
+- `tests/gateway/test_notification_listener_does_not_toast_on_review_transition.py`
+- `tests/gateway/test_notification_listener_toasts_on_unregister_filter.py`
+
+## Review engine
+
+### `post_review` stamps `commit_id` from `head_sha`
+
+`post_review` MUST pass `"commit_id": head_sha` in the GitHub create-review
+POST. Omitted, GitHub stamps the review against the branch head at the time
+the POST lands — so a push that races the review write attributes it to a
+different SHA than the one codex actually inspected. Downstream
+`count_bot_reviews` dedupes by `commit_id` and `_codex_passed_for_head`
+filters by `commit_id == head_sha`; both silently mis-count without the
+stamp. The `ReviewLoop` happy path AND the degraded single-turn path
+(`session_factory is None`) BOTH need `head_sha` plumbed through. T-365.
+
+**Pins:**
+- `tests/gateway/test_review_engine.py::TestPostReview::test_commit_id_included_when_head_sha_provided`
+- `tests/gateway/test_review_engine.py::TestPostReview::test_commit_id_omitted_when_head_sha_empty`
+- `tests/gateway/test_review_engine.py::TestFullFlowIntegration::test_degraded_path_includes_commit_id`
+
+### Opencode-only host must not call `count_bot_reviews`
+
+When `_codex_available=False`, `count_bot_reviews` MUST NOT be called. Any
+future code that needs a prior session count must gate the HTTP call on
+`_codex_available` or pre-seed `prior = 0` before the capability-gated
+block.
+
+**Pin:** `tests/gateway/test_review_engine_t248.py::TestOpencodeOnlyHost::test_session_cap_check_skipped_when_codex_unavailable`
+
+## EventBus / cross-worker
+
+### Postgres `NOTIFY` echoes back to the publishing connection
+
+Any cross-process pub/sub layered on `LISTEN`/`NOTIFY` must dedupe by a
+per-process `source_id` embedded in the payload — otherwise the publisher
+sees every event twice (local fan-out + LISTEN echo).
+
+**Pin:** `tests/shared/test_event_bus_cross_worker.py::test_publisher_does_not_double_deliver_its_own_notify_echo`
+
+### Mirrored events go to project subscribers only
+
+Cross-worker mirrors must distinguish project subscribers from
+`subscribe_all()` (global) subscribers. A global consumer that does
+write-side work (e.g. `notification_listener` inserting a row) runs on
+every gunicorn worker. Mirrored events go to project subscribers only;
+the originating worker handles global delivery via local fan-out.
+Otherwise N workers do the same write for one logical event.
+
+**Pin:** `tests/shared/test_event_bus_cross_worker.py::test_mirrored_events_do_not_reach_global_subscribers`
+
+### `NOTIFY` payload caps at 8000 bytes
+
+Larger payloads silently drop at the wire. Cross-worker mirrors must
+size-check client-side, log WARN, and keep local fan-out — degraded
+delivery beats raising on the publish path.
+
+**Pin:** `tests/shared/test_event_bus_cross_worker.py::test_oversize_payload_is_dropped_locally_logged_no_crash`
+
+## Plugin: MCP server registration
+
+### Project-scoped MCP servers live in `.mcp.json`, not `.claude/settings.json`
+
+Claude Code's MCP loader only reads project-scoped `mcpServers` from
+`.mcp.json` at repo root. `mcpServers` placed under `.claude/settings.json`
+is silently ignored — the server never starts, `mcp__*` tools never
+resolve, and `/cloglog setup` fails with `register_agent doesn't exist`.
+Generalises beyond cloglog: any plugin that registers an MCP server for a
+downstream project must write to `.mcp.json`.
+
+**Pin:** `tests/plugins/test_init_on_fresh_repo.py::test_step3_block_writes_settings_with_no_placeholders`
+
+### Config migration preserves sibling MCP entries
+
+When moving config between files (e.g. T-344 hoisting `mcpServers.cloglog`
+from settings.json into `.mcp.json`), pop only the migrated subkey, not
+the parent map — operators hand-maintain sibling entries (`github`,
+`linear`, etc.). Drop the parent only if empty.
+
+**Pin:** `tests/plugins/test_init_on_fresh_repo.py::test_step3_migration_preserves_non_cloglog_mcp_servers`
+
+## Workflow templating
+
+### Worktree agents tail the worktree inbox, write supervisor events to the project root inbox
+
+The two inbox paths are distinct and load-bearing. Tail the **worktree**
+inbox (`<WORKTREE_PATH>/.cloglog/inbox`) — the backend webhook fan-out
+delivers `review_submitted` / `pr_merged` / `ci_failed` / operator messages
+there. Write lifecycle events (`agent_started`,
+`pr_merged_notification`, `agent_unregistered`, `mcp_unavailable`,
+`mcp_tool_error`) to the **project root** inbox
+(`<PROJECT_ROOT>/.cloglog/inbox`) — the supervisor watches that.
+Collapsing the two paths to one absolute path is the antipattern (the
+2026-04-30 incident: three agents told to tail the project root inbox sat
+idle for 25 minutes through operator retries).
+
+**Pin:** `tests/plugins/test_agent_prompt_template_correct_inbox_paths.py`
+
+### `launch.sh` heredoc renders cleanly
+
+The launch SKILL emits `.cloglog/launch.sh` via a heredoc. Use the
+**quoted** delimiter (`<< 'EOF'`) so bash performs zero expansion inside,
+then substitute operator-host paths via post-render `sed -i
+"s|@@WORKTREE_PATH@@|...|g"`. Unquoted heredocs combined with `\$N`
+positional refs collapse inconsistently across the SKILL → Bash-tool →
+bash boundary (T-353 antisocial: rendered launch.sh contained `local
+file="\"; local key="\""` and tripped `unexpected EOF while looking for
+matching '"'` at exec time, so the spawned tab silently failed and no
+`agent_started` event ever fired).
+
+**Pin:** `tests/plugins/test_launch_skill_renders_clean_launch_sh.py`
+
+### Agents must echo `agent_started` and the supervisor must enforce a deadline
+
+`agent_started` is the only authoritative liveness signal — a spawned
+zellij tab proves nothing about the claude session inside it. The main
+agent must wait up to `launch_confirm_timeout_seconds` (default 90 s, in
+`.cloglog/config.yaml`) for `agent_started` per spawned worktree, then
+hand off to the operator with a probe checklist instead of silently
+retrying. Same deadline applies to supervisor relaunches between tasks.
+T-356.
+
+**Pin:** `tests/plugins/test_launch_skill_has_agent_started_timeout.py`

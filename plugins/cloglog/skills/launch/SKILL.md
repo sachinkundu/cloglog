@@ -508,3 +508,34 @@ After all agents are launched, the main agent does NOT trust tab creation as pro
 - **Only close tabs you created** — never close tabs that were there before.
 - **Sequential launch only** — worktrees share git state and must be created one at a time.
 - **Board update is mandatory** — every launched agent must have its task tracked on the board.
+
+## Gotchas
+
+### Worktrees branch from `origin/main`, never `HEAD`
+
+A worktree created from a stale local `main` will show phantom diffs
+relative to `origin/main` and trip the demo classifier, PR-body drafting,
+or any diff-based check. Always `git fetch origin` and create the worktree
+off `origin/main` (or `git merge --ff-only origin/main` first).
+
+### Worktree env propagation across `/clear`
+
+`/clear` re-execs the agent in the same zellij tab, which re-invokes
+`bash`. Whether the operator's RC-file env (`GH_APP_ID`,
+`GH_APP_INSTALLATION_ID`, etc.) survives that re-invocation is host-specific
+(DE / login-shell / RC ordering), and silent flakes have shipped where
+`gh-app-token.py` exited with `Error: GH_APP_ID environment variable is
+required` mid-task. Two-pronged defence (T-348): (a) `gh-app-token.py`
+resolves App ID / Installation ID itself from env → `.cloglog/local.yaml` →
+`.cloglog/config.yaml`, so non-worktree callers (close-wave, reconcile,
+init Step 6c) work without env priming; (b) `launch.sh`'s heredoc still
+exports them into the worktree-agent shell so downstream `gh` calls that
+read the env directly keep working across `/clear`.
+
+Per-operator identifiers (App ID + Installation ID) live in gitignored
+`.cloglog/local.yaml`, never in tracked `.cloglog/config.yaml` — committing
+them would point other clones at the wrong installation. Same constraint
+applies to any future per-operator value (PEM path overrides,
+host-specific webhook tunnel names, etc.).
+
+**Pin:** `tests/plugins/test_launch_skill_exports_gh_app_env.py`

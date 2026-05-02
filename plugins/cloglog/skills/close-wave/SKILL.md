@@ -342,7 +342,27 @@ Spawn a subagent to review all merged PRs and extract learnings:
 - Read the consolidated Step 5d shutdown-artifacts (the real source of
   learnings the agents wrote themselves).
 - Identify patterns, gotchas, or rules that future agents should know.
-- Update the project CLAUDE.md with new learnings if any are found.
+- **Route each learning to its proper home — never back into `CLAUDE.md`'s
+  Agent Learnings section (T-368 retired it).** The routing rules:
+  - **Silent-failure invariants** (a rule whose breakage ships through
+    lint/typecheck/tests undetected and only fails in production) →
+    `docs/invariants.md`. New entries require a pin test; if you don't
+    have one, file a follow-up task instead of adding the entry.
+  - **Workflow / SKILL gotchas** (something a worktree agent or supervisor
+    should do differently) → the relevant
+    `plugins/cloglog/skills/<skill>/SKILL.md` (or
+    `plugins/cloglog/templates/AGENT_PROMPT.md` for cross-skill agent
+    behaviour, or `plugins/cloglog/agents/<agent>.md` for subagent
+    behaviour).
+  - **Architectural / design decisions** → the matching design /
+    architecture doc — most live under `docs/design/` (e.g.
+    `docs/design/prod-branch-tracking.md`), with the DDD context map at
+    `docs/ddd-context-map.md` (top-level, not under `docs/design/`).
+  - **Top-level project rules that every contributor must read** —
+    `CLAUDE.md` (only for the rare structural rule, not session-specific
+    gotchas).
+  - **One-off fixes / meta observations** → drop. Not every learning
+    deserves persistence.
 
 ## Step 12: Complete Work Log
 
@@ -357,7 +377,7 @@ Fill in "State After This Wave" with what's now implemented and verified working
 
 ## Step 13: Commit, push, and PR
 
-Commit all fixes, work log, and CLAUDE.md updates to the `wt-close-<date>-<wave-name>` branch from Step 10. Push the branch and open a PR against `main` using the **exact `Push + Create PR` sequence** from `plugins/cloglog/skills/github-bot/SKILL.md` — every `git push` and every `gh` invocation MUST go through the bot identity. A bare `gh pr create` falls back to the operator's personal `gh auth` and breaks the bot-identity invariant the github-bot skill exists to enforce; only the bot-authenticated form below is correct:
+Commit all fixes, the work log, and any learnings routed by Step 11 (to `docs/invariants.md`, the relevant `plugins/cloglog/**/SKILL.md`, a design doc under `docs/design/`, or — rarely — `CLAUDE.md`) on the `wt-close-<date>-<wave-name>` branch from Step 10. Push the branch and open a PR against `main` using the **exact `Push + Create PR` sequence** from `plugins/cloglog/skills/github-bot/SKILL.md` — every `git push` and every `gh` invocation MUST go through the bot identity. A bare `gh pr create` falls back to the operator's personal `gh auth` and breaks the bot-identity invariant the github-bot skill exists to enforce; only the bot-authenticated form below is correct:
 
 ```bash
 BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests "${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py")
@@ -397,3 +417,24 @@ Print a summary table showing:
 - Work log location.
 - New learnings added.
 - What's ready for the next wave.
+
+## Gotcha: `gh pr merge --delete-branch` exit code from a worktree
+
+`gh pr merge --delete-branch` exits non-zero from a worktree when `main`
+is checked out by the parent clone — the squash merge succeeds
+server-side, but the local post-merge cleanup (`git checkout main && git
+branch -D <branch>`) fails with `fatal: 'main' is already used by
+worktree at '<parent>'`, masking the successful merge. Do not panic on a
+non-zero exit — verify with the `pr_merged` inbox event or `gh pr view
+<num> --json state,mergedAt`. If you need clean post-merge state on the
+worktree side, do the ff-and-prune from the main clone, not as a
+side-effect of `gh pr merge`.
+
+## Gotcha: pytest subprocess with extra deps
+
+When a test subprocess in a closing wave needs packages not in the test
+venv (`requests`, `PyJWT[crypto]`), `[sys.executable, str(script)]`
+resolves to `.venv/bin/python3` which lacks them and fails under
+`--cov=src`. Use `["uv", "run", "--with", "PyJWT[crypto]", "--with",
+"requests", "python", str(script)]` so dependencies are resolved at run
+time.

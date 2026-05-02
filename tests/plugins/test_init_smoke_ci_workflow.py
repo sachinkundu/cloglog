@@ -57,6 +57,30 @@ def test_workflow_runs_skills_no_remote_set_url_pin() -> None:
     )
 
 
+def test_workflow_runs_launch_and_template_pins() -> None:
+    """T-368: the launch SKILL and AGENT_PROMPT.md template pins guard
+    workflow-templating invariants (env propagation across `/clear`,
+    quoted-heredoc launch.sh rendering, agent_started liveness
+    deadline, and worktree-vs-project-root inbox path direction). All
+    four are SKILL/template-only edits, so a regression on any of them
+    would slip past `ci.yml`'s `paths:` filter that excludes
+    `plugins/**`. The init-smoke job is the only always-on gate.
+    """
+    body = _read_workflow()
+    for path in (
+        "tests/plugins/test_launch_skill_exports_gh_app_env.py",
+        "tests/plugins/test_launch_skill_renders_clean_launch_sh.py",
+        "tests/plugins/test_launch_skill_has_agent_started_timeout.py",
+        "tests/plugins/test_agent_prompt_template_correct_inbox_paths.py",
+    ):
+        assert path in body, (
+            f"init-smoke.yml must invoke {path} — workflow-templating "
+            "regressions only fire on operator machines (no production "
+            "code path) and ci.yml's `paths:` filter does not cover "
+            "plugins/**."
+        )
+
+
 def test_workflow_triggers_on_pull_request() -> None:
     body = _read_workflow()
     assert re.search(r"^on:\s*$", body, re.MULTILINE), (

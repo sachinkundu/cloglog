@@ -26,15 +26,36 @@ GIT_COMMON=$(cd "$CWD" && cd "$GIT_COMMON" && pwd)
 
 # If git-dir == git-common-dir, this is the main repo, not a worktree
 if [[ "$GIT_DIR" == "$GIT_COMMON" ]]; then
+  # Resolve the repo root so cleanup targets the canonical
+  # `.cloglog/` directory even if the SessionEnd-reported `cwd` is a
+  # nested subdir (codex review on PR #287 round 4).
+  MAIN_ROOT=$(cd "$CWD" && git rev-parse --show-toplevel 2>/dev/null) || MAIN_ROOT="$CWD"
   # Main agent: clear the inbox on exit so next session starts clean
-  INBOX="${CWD}/.cloglog/inbox"
+  INBOX="${MAIN_ROOT}/.cloglog/inbox"
   if [[ -f "$INBOX" ]]; then
     > "$INBOX"
   fi
+  # T-371 codex review round 5: the supervisor's main-session
+  # `register_agent` writes `<repo_root>/.cloglog/state.json` too
+  # (setup SKILL §1). Without an rm here, ending a main-agent
+  # session and reopening before `/cloglog setup` lets the next
+  # `gh pr create` find the stale state.json and treat the shell as
+  # registered, defeating the "not registered, call register_agent"
+  # invariant the blocker hook is built around.
+  rm -f "${MAIN_ROOT}/.cloglog/state.json" 2>> /tmp/agent-shutdown-debug.log || true
   exit 0
 fi
 
 WORKTREE_NAME=$(basename "$CWD")
+# T-371 codex review round 4: Bash's reported `cwd` can be a nested
+# subdirectory (e.g. `<worktree>/src`) — Claude does not pin it to the
+# worktree root. Resolve the worktree root once and use it for the
+# canonical state.json path AND the unregister-by-path payload, so
+# both sides agree on what `worktree_path` means even when the agent
+# happened to `cd` somewhere deeper before exiting. Falls back to
+# `$CWD` if the resolution fails (e.g. very early shell teardown
+# breaks `git rev-parse`); the rm then degrades to best-effort.
+WORKTREE_ROOT=$(cd "$CWD" && git rev-parse --show-toplevel 2>/dev/null) || WORKTREE_ROOT="$CWD"
 ARTIFACTS_DIR="${CWD}/shutdown-artifacts"
 mkdir -p "$ARTIFACTS_DIR"
 
@@ -189,7 +210,7 @@ if [[ -n "$API_KEY" ]]; then
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer ${API_KEY}" \
     -d "{
-      \"worktree_path\": \"${CWD}\",
+      \"worktree_path\": \"${WORKTREE_ROOT}\",
       \"artifacts\": {
         \"work_log\": \"${ARTIFACTS_DIR}/work-log.md\",
         \"learnings\": \"${ARTIFACTS_DIR}/learnings.md\"
@@ -198,5 +219,15 @@ if [[ -n "$API_KEY" ]]; then
 else
   echo "[$(date -Iseconds)] agent-shutdown.sh: no API_KEY — skipping unregister-by-path (will rely on tier-3 heartbeat timeout)" >> /tmp/agent-shutdown-debug.log
 fi
+
+# T-371: drop the per-worktree state.json so the require-task-for-pr hook
+# does not treat a stale agent_token as proof the shell is still
+# registered. SessionEnd is one of the project's normal shutdown paths
+# (the other being the MCP unregister_agent tool, which has its own
+# clearWorktreeState call); without this rm the next gh pr create in
+# the surviving checkout falls into the hook's "unexpected response"
+# branch instead of the intended "not registered, call register_agent"
+# branch (codex review on PR #287, CRITICAL).
+rm -f "${WORKTREE_ROOT}/.cloglog/state.json" 2>> /tmp/agent-shutdown-debug.log || true
 
 exit 0

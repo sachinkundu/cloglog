@@ -41,6 +41,10 @@ export class CloglogClient {
     this.agentToken = null
   }
 
+  getBaseUrl(): string {
+    return this.baseUrl
+  }
+
   async registerAgent(worktreePath: string): Promise<RegisterAgentResult> {
     return this.request('POST', '/api/v1/agents/register', {
       worktree_path: worktreePath,

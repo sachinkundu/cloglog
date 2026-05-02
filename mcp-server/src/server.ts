@@ -4,6 +4,7 @@ import { CloglogClient } from './client.js'
 import { CloglogApiError } from './errors.js'
 import { HeartbeatTimer } from './heartbeat.js'
 import { createToolHandlers } from './tools.js'
+import { writeWorktreeState, clearWorktreeState } from './state.js'
 
 /**
  * Render a structured blocker (as emitted by the F-11 ``task_blocked``
@@ -29,6 +30,7 @@ export function createServer(client: CloglogClient): McpServer {
   const handlers = createToolHandlers(client)
   let currentWorktreeId: string | null = null
   let currentProjectId: string | null = null
+  let currentWorktreePath: string | null = null
   const heartbeat = new HeartbeatTimer(async () => {
     if (currentWorktreeId) {
       await client.request('POST', `/api/v1/agents/${currentWorktreeId}/heartbeat`)
@@ -109,10 +111,31 @@ export function createServer(client: CloglogClient): McpServer {
       const result = await handlers.register_agent({ worktree_path }) as Record<string, unknown>
       currentWorktreeId = result.worktree_id as string
       currentProjectId = result.project_id as string
+      currentWorktreePath = worktree_path
       // Store agent token for subsequent agent-scoped requests
       const agentToken = result.agent_token as string | undefined
       if (agentToken) {
         client.setAgentToken(agentToken)
+      }
+      // T-371: persist state.json so out-of-process tooling (the
+      // require-task-for-pr.sh PreToolUse hook in particular) can
+      // resolve worktree_id + agent_token for ``gh pr create`` and
+      // hard-block PR creation when no task is in_progress.
+      if (agentToken) {
+        try {
+          await writeWorktreeState(worktree_path, {
+            worktree_id: currentWorktreeId,
+            project_id: currentProjectId,
+            agent_token: agentToken,
+            backend_url: client.getBaseUrl(),
+            ts: new Date().toISOString(),
+          })
+        } catch (err) {
+          // Persisting state is best-effort — a write failure must not
+          // break registration. The hook degrades to its "not registered"
+          // exit-2 path, which is the correct fail-loud behaviour.
+          console.error(`cloglog-mcp: failed to write state.json: ${String(err)}`)
+        }
       }
       heartbeat.start()
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] }
@@ -129,8 +152,16 @@ export function createServer(client: CloglogClient): McpServer {
       heartbeat.stop()
       await handlers.unregister_agent({ worktree_id: wt })
       client.clearAgentToken()
+      if (currentWorktreePath) {
+        try {
+          await clearWorktreeState(currentWorktreePath)
+        } catch (err) {
+          console.error(`cloglog-mcp: failed to clear state.json: ${String(err)}`)
+        }
+      }
       currentWorktreeId = null
       currentProjectId = null
+      currentWorktreePath = null
       return { content: [{ type: 'text' as const, text: `Unregistered ${wt}.` }] }
     }
   )

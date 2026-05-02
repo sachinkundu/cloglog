@@ -19,6 +19,10 @@ CONTRACT.yaml
 .cloglog/inbox
 .cloglog/db-schema.sql
 .cloglog/launch.sh
+# T-371: per-worktree state file written by mcp-server register_agent —
+# carries the agent_token so out-of-process tooling (the require-task-for-pr
+# hook) can hit /api/v1/agents/{worktree_id}/tasks. Sensitive; never tracked.
+.cloglog/state.json
 # T-348: per-host bot identifiers (gh_app_id / gh_app_installation_id) and
 # any other operator-specific overrides. Each operator installs the App into
 # their own org/repo and gets a distinct Installation ID; tracking these

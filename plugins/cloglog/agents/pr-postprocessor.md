@@ -111,7 +111,10 @@ or work logs were consolidated, commit the changes. Stage explicitly the
 files you actually wrote to (never `git add -A`):
 
 ```bash
-git add docs/work-logs/   # always, if a work log was consolidated
+# Stage the exact work-log filename you just wrote — never stage the
+# whole docs/work-logs/ directory (other touched logs would bleed into
+# this commit, exactly the antipattern github-bot SKILL forbids).
+git add "docs/work-logs/$(date +%Y-%m-%d)-<worktree_name>.md"
 # Plus whichever of the routing destinations you touched, e.g.:
 # git add docs/invariants.md
 # git add plugins/cloglog/skills/<skill>/SKILL.md

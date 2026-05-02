@@ -226,16 +226,17 @@ green. The pin is wired into `make invariants` AND the every-PR
 
 ### Desktop toasts fire only for operator-attention events
 
-Routine status moves (PR opened, → review, `pr_merged`, `agent_started`) get
-the persisted `Notification` row + dashboard bell, but **not** `notify-send`.
-With parallel worktrees, every PR-opened toast trains the operator to ignore
-them. T-358 codifies two rules: (1) `TASK_STATUS_CHANGED → review` does not
-toast; (2) `AGENT_UNREGISTERED` toasts only when `data.reason` is in a
-known-non-clean allowlist (`force_unregistered`, `heartbeat_timeout`). A
-clean unregister via the public API has no `reason` and stays silent — that
-filter keeps a normal post-merge agent exit from toasting. The
+The `TASK_STATUS_CHANGED → review` transition still creates the persisted
+`Notification` row + dashboard bell, but **not** a `notify-send` desktop
+toast. With parallel worktrees, every PR-opened toast trained the operator
+to ignore them. T-358 codifies two rules: (1) `TASK_STATUS_CHANGED → review`
+does not toast; (2) `AGENT_UNREGISTERED` toasts only when `data.reason` is
+in a known-non-clean allowlist (`force_unregistered`, `heartbeat_timeout`).
+A clean unregister via the public API has no `reason` and stays silent —
+that filter keeps a normal post-merge agent exit from toasting. The
 `desktop_toast_enabled: false` switch in `.cloglog/config.yaml` is the
-operator off-switch (persisted rows + SSE are unaffected).
+operator off-switch (the persisted row + SSE for the review transition
+are unaffected).
 
 **Pins:**
 - `tests/gateway/test_notification_listener_does_not_toast_on_review_transition.py`
@@ -255,9 +256,9 @@ stamp. The `ReviewLoop` happy path AND the degraded single-turn path
 (`session_factory is None`) BOTH need `head_sha` plumbed through. T-365.
 
 **Pins:**
-- `tests/gateway/test_review_engine.py::test_commit_id_included_when_head_sha_provided`
-- `tests/gateway/test_review_engine.py::test_commit_id_omitted_when_head_sha_empty`
-- `tests/gateway/test_review_engine.py::test_degraded_path_includes_commit_id`
+- `tests/gateway/test_review_engine.py::TestPostReview::test_commit_id_included_when_head_sha_provided`
+- `tests/gateway/test_review_engine.py::TestPostReview::test_commit_id_omitted_when_head_sha_empty`
+- `tests/gateway/test_review_engine.py::TestFullFlowIntegration::test_degraded_path_includes_commit_id`
 
 ### Opencode-only host must not call `count_bot_reviews`
 

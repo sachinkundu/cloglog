@@ -362,3 +362,18 @@ retrying. Same deadline applies to supervisor relaunches between tasks.
 T-356.
 
 **Pin:** `tests/plugins/test_launch_skill_has_agent_started_timeout.py`
+
+### Zellij tab teardown must go through `close-zellij-tab.sh`
+
+`zellij action close-tab` takes no positional argument and closes the
+*focused* tab — not the named one. Pairing `query-tab-names` with a bare
+`close-tab` killed the supervisor's own tab twice in production (T-339).
+All teardown call sites (`close-wave` Step 5c, `reconcile` teardown,
+`worktree-remove.sh`) MUST route through
+`plugins/cloglog/hooks/lib/close-zellij-tab.sh`, which resolves the
+target by name, refuses (exit 2) when the resolved target equals the
+focused tab id, and only then issues a `--tab-id`-scoped close. Callers
+must surface exit 2 as a hard error, never fall back to a bare
+`close-tab`.
+
+**Pin:** `tests/plugins/test_close_tab_safety.py`

@@ -42,10 +42,19 @@ if [[ -n "$CONFIG_DIR" ]] && [[ -x "${CONFIG_DIR}/on-worktree-destroy.sh" ]]; th
 fi
 
 # --- Close zellij tab for the worktree (if running in zellij) ---
-if command -v zellij &>/dev/null && [[ -n "$ZELLIJ" ]]; then
-  TAB_ID=$(zellij action list-tabs 2>/dev/null | awk -v name="$WORKTREE_NAME" '$3 == name {print $1}')
-  if [[ -n "$TAB_ID" ]]; then
-    zellij action close-tab --tab-id "$TAB_ID" 2>/dev/null || true
+# Routed through close-zellij-tab.sh which refuses to close the focused
+# (supervisor) tab — see T-339. Exit 2 from the helper means "would have
+# killed the supervisor"; surface it as a hard error instead of swallowing
+# it like other failures, so the operator can re-focus and retry.
+if [[ -n "${ZELLIJ:-}" ]]; then
+  HELPER="$(dirname "$0")/lib/close-zellij-tab.sh"
+  if [[ -x "$HELPER" ]]; then
+    "$HELPER" "$WORKTREE_NAME"
+    rc=$?
+    if [[ $rc -eq 2 ]]; then
+      echo "worktree-remove: close-zellij-tab refused (focused tab); leave the tab open and re-run after focusing elsewhere" >&2
+      exit 2
+    fi
   fi
 fi
 

@@ -377,15 +377,33 @@ async def emit_codex_review_timed_out(
         async with factory() as session:
             board_repo = BoardRepository(session)
             project = await board_repo.find_project_by_repo(repo_full_name)
-            if project is not None:
-                agent_repo = AgentRepository(session)
-                main_worktree = await agent_repo.get_main_agent_worktree(project.id)
-                if main_worktree is not None:
-                    inbox_path = Path(main_worktree.worktree_path) / ".cloglog" / "inbox"
+            # T-374 codex round 5 HIGH: gate ALL main-inbox routing on
+            # the repo being a known cloglog project. The legacy env-var
+            # fallback (``settings.main_agent_inbox_path``) is a
+            # compat path for **known projects** that have not yet
+            # registered a role='main' worktree — it must NOT be used
+            # for unknown repos. Without this guard, a signed webhook
+            # from a foreign repo sharing the endpoint/secret could
+            # leak ``codex_review_timed_out`` into THIS project's
+            # supervisor inbox, the exact cross-repo leak
+            # ``_resolve_agent`` was written to block.
+            if project is None:
+                logger.warning(
+                    "codex_review_timed_out: no cloglog project matches repo=%s "
+                    "(pr=%s) — dropping (env-var fallback is gated on a known repo)",
+                    repo_full_name,
+                    pr_url,
+                )
+                return
+            agent_repo = AgentRepository(session)
+            main_worktree = await agent_repo.get_main_agent_worktree(project.id)
+            if main_worktree is not None:
+                inbox_path = Path(main_worktree.worktree_path) / ".cloglog" / "inbox"
         if inbox_path is None and settings.main_agent_inbox_path is not None:
             # T-253 compat — operators that set the env var but have not
             # yet run ``/cloglog setup`` (which registers the role='main'
-            # worktree) still get the signal.
+            # worktree) still get the signal. Only reachable when the
+            # project lookup above succeeded.
             inbox_path = settings.main_agent_inbox_path
     except Exception as err:  # noqa: BLE001 - best-effort signal, never raise into the loop
         logger.warning(

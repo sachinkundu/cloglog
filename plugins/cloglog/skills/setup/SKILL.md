@@ -130,7 +130,7 @@ See `${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md` §4.1 for the full rule, bot
 
 ### Handle `codex_review_timed_out` (T-374)
 
-The backend writes `codex_review_timed_out` to the supervisor inbox when the codex review subprocess times out on a terminal stage. The PR author already received the AGENT_TIMEOUT skip comment on GitHub from the codex bot — the supervisor signal exists so the operator notices recurring timeouts (a sign that `REVIEW_TIMEOUT_BASE_SECONDS` / `REVIEW_TIMEOUT_PER_LINE_SECONDS` / `REVIEW_TIMEOUT_CAP_SECONDS` in `src/gateway/review_engine.py` need retuning, or that codex itself is degraded).
+The backend writes `codex_review_timed_out` to the supervisor inbox when the codex review subprocess times out on a terminal stage. The backend ATTEMPTED to post the AGENT_TIMEOUT skip comment on the PR, but comment delivery is best-effort — `_post_agent_skip` swallows GitHub failures (`src/gateway/review_engine.py`), so the author may not have received it. The supervisor signal exists so the operator notices recurring timeouts (a sign that `REVIEW_TIMEOUT_BASE_SECONDS` / `REVIEW_TIMEOUT_PER_LINE_SECONDS` / `REVIEW_TIMEOUT_CAP_SECONDS` in `src/gateway/review_engine.py` need retuning, or that codex itself is degraded) and so a clustered timeout with no PR comment is diagnosable.
 
 Required response:
 

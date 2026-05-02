@@ -1693,6 +1693,22 @@ class ReviewEngineConsumer:
                         await self._post_agent_skip(
                             event, SkipReason.AGENT_TIMEOUT, body, review_token
                         )
+                        # T-374 codex round 5 HIGH: emit the supervisor
+                        # event ONLY when the codex stage has actually
+                        # ended in timeout — i.e. after this terminal
+                        # check, not from inside ``ReviewLoop.run``'s
+                        # per-turn branch (which can fire on a
+                        # non-terminal timeout when ``codex_max_turns >
+                        # 1`` and a later turn succeeds).
+                        await emit_codex_review_timed_out(
+                            pr_url=event.pr_url,
+                            pr_number=event.pr_number,
+                            repo_full_name=event.repo_full_name,
+                            head_branch=event.head_branch,
+                            diff_size=outcome_b.last_timeout_diff_lines,
+                            timeout_seconds=outcome_b.last_timeout_seconds,
+                            session_factory=self._session_factory,
+                        )
             logger.info(
                 "review_session_end pr=%d repo=%s",
                 event.pr_number,

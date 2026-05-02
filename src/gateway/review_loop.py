@@ -45,7 +45,6 @@ from src.gateway.review_engine import (
     parse_reviewer_output,
     post_review,
 )
-from src.gateway.webhook_consumers import emit_codex_review_timed_out
 from src.review.interfaces import (
     IReviewTurnRegistry,
     PriorContext,
@@ -490,12 +489,17 @@ class ReviewLoop:
                         elapsed_seconds=elapsed,
                     )
                     if timed_out and self._stage == "codex":
-                        # T-374: surface the timeout to the owning agent's
-                        # inbox so the supervisor and dashboard see it. The
-                        # diff/budget/stderr come from the CodexReviewer's
-                        # last call; opencode timeouts deliberately do not
-                        # emit here (they have their own settings-driven
-                        # budget and are not part of this scope).
+                        # T-374 (codex round 5 HIGH): record the timeout
+                        # diagnostics on the outcome only — do NOT emit the
+                        # supervisor event from inside the per-turn branch.
+                        # ``ReviewLoop.run`` is allowed to continue after a
+                        # timed-out turn (`docs/design/two-stage-pr-review.md`),
+                        # so a per-turn emit would falsely tell the
+                        # supervisor about a non-terminal timeout if a
+                        # subsequent turn succeeds. Terminal-state
+                        # emission lives in
+                        # ``ReviewEngineConsumer._review_pr`` after the
+                        # loop returns and ``last_timed_out`` is read.
                         diff_lines = getattr(self._reviewer, "_last_diff_lines", 0)
                         budget = getattr(
                             self._reviewer, "_last_timeout_seconds", REVIEW_TIMEOUT_SECONDS
@@ -506,21 +510,6 @@ class ReviewLoop:
                         outcome.last_timeout_seconds = budget
                         outcome.last_timeout_stderr_excerpt = stderr_excerpt
                         outcome.last_timeout_elapsed_seconds = elapsed
-                        # Inbox emission stays per-timeout (not gated on
-                        # terminal state) — the supervisor/dashboard signal
-                        # is "this codex turn timed out", same shape as the
-                        # other inbox events that fire per-turn. The PR
-                        # comment remains gated on terminal state via
-                        # ``last_timed_out`` in ``_review_pr``.
-                        await emit_codex_review_timed_out(
-                            pr_url=self._pr_url,
-                            pr_number=self._pr_number,
-                            repo_full_name=self._repo_full_name,
-                            head_branch=self._head_branch,
-                            diff_size=diff_lines,
-                            timeout_seconds=budget,
-                            session_factory=self._session_factory,
-                        )
                     outcome.turns_used = turn
                     outcome.errors.append(f"turn {turn}: {status}")
                     # A failed turn doesn't short-circuit — try the next turn.

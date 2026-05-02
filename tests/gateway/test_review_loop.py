@@ -888,15 +888,14 @@ class TestCodexTimeoutOutcomeAndRouting:
     """The codex stage must surface timeout diagnostics + route via head_branch."""
 
     @pytest.mark.asyncio
-    async def test_codex_timeout_passes_head_branch_to_emitter(self) -> None:
-        """``head_branch`` ctor arg must reach ``emit_codex_review_timed_out``."""
-        from unittest.mock import AsyncMock as _AsyncMock
-        from unittest.mock import patch as _patch
-
+    async def test_codex_timeout_surfaces_diagnostics_on_outcome(self) -> None:
+        """``ReviewLoop`` must record codex timeout diagnostics on ``outcome``
+        for the caller's terminal-state finalizer, but MUST NOT emit the
+        supervisor event itself (codex round 5 HIGH — emission is gated on
+        terminal state and lives in ``ReviewEngineConsumer._review_pr``).
+        """
         from src.gateway.review_loop import ReviewLoop
 
-        # Use a dummy reviewer that hangs on `_last_*` attributes to satisfy
-        # the getattr chain in ReviewLoop's emit branch.
         class _StubCodex:
             bot_username = "cloglog-codex-reviewer[bot]"
             display_label = "codex"
@@ -924,17 +923,10 @@ class TestCodexTimeoutOutcomeAndRouting:
             head_branch="wt-feature-x",
         )
 
-        emit_mock = _AsyncMock()
-        with _patch("src.gateway.review_loop.emit_codex_review_timed_out", emit_mock):
-            outcome = await loop.run(diff="diff")
+        outcome = await loop.run(diff="diff")
 
-        assert emit_mock.await_count == 1
-        kwargs = emit_mock.await_args.kwargs
-        assert kwargs["head_branch"] == "wt-feature-x"
-        assert kwargs["diff_size"] == 42
-        assert kwargs["timeout_seconds"] == 321.0
-
-        # Outcome carries the diagnostics for the caller's skip-comment path.
+        # Outcome carries the diagnostics for the caller's skip-comment +
+        # supervisor-event finalization (both live in ``_review_pr``).
         assert outcome.last_timed_out is True
         assert outcome.last_timeout_diff_lines == 42
         assert outcome.last_timeout_seconds == 321.0
@@ -1036,10 +1028,7 @@ class TestCodexTimeoutOutcomeAndRouting:
             max_sessions=5,
             head_branch="wt-x",
         )
-        with (
-            patch(_PATCH_POST_REVIEW, new=AsyncMock(return_value=True)),
-            patch("src.gateway.review_loop.emit_codex_review_timed_out", new=AsyncMock()),
-        ):
+        with patch(_PATCH_POST_REVIEW, new=AsyncMock(return_value=True)):
             outcome = await loop.run(diff="diff")
 
         assert outcome.last_timed_out is False, (

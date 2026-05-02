@@ -1406,3 +1406,46 @@ class TestEmitCodexReviewTimedOutMainInboxRouting:
         assert any(
             "no main-agent inbox" in r.message for r in caplog.records if r.levelname == "WARNING"
         )
+
+    @pytest.mark.asyncio
+    async def test_drops_with_warning_on_unknown_repo_even_with_env_var_fallback(
+        self,
+        db_session: AsyncSession,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Codex round 5 HIGH cross-repo leak guard.
+
+        When ``find_project_by_repo`` returns None (the repo is not a
+        cloglog project), the env-var fallback ``main_agent_inbox_path``
+        must NOT be used. Otherwise a signed webhook from a foreign repo
+        sharing the endpoint/secret would leak ``codex_review_timed_out``
+        into THIS project's supervisor inbox.
+        """
+        from src.gateway.webhook_consumers import emit_codex_review_timed_out
+
+        env_inbox = tmp_path / "env-inbox"
+        env_inbox.parent.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(settings, "main_agent_inbox_path", env_inbox)
+
+        with caplog.at_level("WARNING", logger="src.gateway.webhook_consumers"):
+            await emit_codex_review_timed_out(
+                pr_url="https://github.com/foreign/repo/pull/9",
+                pr_number=9,
+                repo_full_name="foreign/unknown-repo-no-project",
+                head_branch="main",
+                diff_size=10,
+                timeout_seconds=100.0,
+                session_factory=_SessionFactoryStub(db_session),
+            )
+
+        assert not env_inbox.exists(), (
+            "Env-var fallback must not be used for repos that are not registered "
+            "cloglog projects — that path was the cross-repo leak vector."
+        )
+        assert any(
+            "no cloglog project matches" in r.message
+            for r in caplog.records
+            if r.levelname == "WARNING"
+        )

@@ -4907,6 +4907,7 @@ class TestSequencedCodexTimeoutSkipComment:
         )
 
         post_skip_mock = AsyncMock()
+        emit_mock = AsyncMock()
         with (
             patch(
                 "src.gateway.review_engine.settings.opencode_enabled",
@@ -4934,6 +4935,7 @@ class TestSequencedCodexTimeoutSkipComment:
             ),
             patch("src.gateway.review_loop.CodexReviewer", new=MagicMock()),
             patch("src.gateway.review_loop.ReviewLoop", new=_TimingOutLoop),
+            patch("src.gateway.review_engine.emit_codex_review_timed_out", emit_mock),
             patch.object(consumer, "_fetch_pr_diff", new=AsyncMock(return_value="diff")),
             patch.object(
                 consumer,
@@ -4958,7 +4960,121 @@ class TestSequencedCodexTimeoutSkipComment:
         assert "555s" in body
         assert "fatal: codex hung" in body
 
+        # codex round 5 HIGH: supervisor event fires from the terminal
+        # finalizer, not from inside ReviewLoop's per-turn branch.
+        assert emit_mock.await_count == 1
+        emit_kwargs = emit_mock.await_args.kwargs
+        assert emit_kwargs["pr_number"] == 999
+        assert emit_kwargs["diff_size"] == 123
+        assert emit_kwargs["timeout_seconds"] == 555.0
+        assert emit_kwargs["head_branch"] == "wt-timeout"
+
         # head_branch plumbing pin (codex round 1 CRITICAL fix): the
-        # ReviewLoop must receive event.head_branch so the timeout
-        # emitter's branch-fallback recipient lookup works.
+        # ReviewLoop still receives event.head_branch (kept on the
+        # signature so a future fan-out variant can use it).
         assert captured_loop_kwargs.get("head_branch") == "wt-timeout"
+
+
+class TestSequencedCodexNonTerminalTimeoutNoEmit:
+    """Codex round 5 HIGH regression test: when ``codex_max_turns > 1``
+    and turn 1 times out but turn 2 succeeds, ``_review_pr`` must NOT
+    post AGENT_TIMEOUT and must NOT emit ``codex_review_timed_out``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_emit_when_turn1_timeout_turn2_succeeds(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from src.agent.interfaces import WorktreeRow
+        from src.gateway.review_engine import ReviewEngineConsumer
+        from src.gateway.review_loop import LoopOutcome
+
+        project_id = uuid.uuid4()
+        worktree_dir = tmp_path / "wt-nonterminal"
+        worktree_sha = _init_git_repo_at(worktree_dir)
+        row = WorktreeRow(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            worktree_path=str(worktree_dir),
+            branch_name="wt-nonterminal",
+            status="online",
+        )
+
+        class _MatchingQueryCtx:
+            async def __aenter__(self) -> object:
+                stub = MagicMock()
+                stub.find_by_branch = AsyncMock(return_value=row)
+                stub.find_by_pr_url = AsyncMock(return_value=None)
+                return stub
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        class _ConvergedLoop:
+            def __init__(self, _reviewer: object, **_kwargs: object) -> None:
+                pass
+
+            async def run(self, **_kwargs: object) -> LoopOutcome:
+                # Stage ended in success; per-iteration reset cleared
+                # the timeout flag from turn 1.
+                return LoopOutcome(
+                    turns_used=2,
+                    consensus_reached=True,
+                    total_elapsed_seconds=1.0,
+                )
+
+        event = WebhookEvent(
+            type=WebhookEventType.PR_OPENED,
+            delivery_id="d-nonterm",
+            repo_full_name="sachinkundu/cloglog",
+            pr_number=1000,
+            pr_url="https://github.com/sachinkundu/cloglog/pull/1000",
+            head_branch="wt-nonterminal",
+            base_branch="main",
+            sender="sachinkundu",
+            raw={"pull_request": {"head": {"sha": worktree_sha}}},
+        )
+        consumer = ReviewEngineConsumer(
+            codex_available=True,
+            opencode_available=False,
+            session_factory=MagicMock(),
+        )
+        post_skip_mock = AsyncMock()
+        emit_mock = AsyncMock()
+        with (
+            patch("src.gateway.review_engine.settings.opencode_enabled", False),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="claude-tok"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="codex-tok"),
+            ),
+            patch(
+                "src.gateway.review_engine.count_bot_reviews",
+                new=AsyncMock(return_value=0),
+            ),
+            patch("src.gateway.review_loop.CodexReviewer", new=MagicMock()),
+            patch("src.gateway.review_loop.ReviewLoop", new=_ConvergedLoop),
+            patch("src.gateway.review_engine.emit_codex_review_timed_out", emit_mock),
+            patch.object(consumer, "_fetch_pr_diff", new=AsyncMock(return_value="diff")),
+            patch.object(consumer, "_resolve_project_id", new=AsyncMock(return_value=project_id)),
+            patch.object(
+                consumer,
+                "_registry",
+                new=lambda: TestReviewPrUsesWorktreeProjectRoot._RecordingRegistryCtx(),
+            ),
+            patch.object(consumer, "_worktree_query", new=lambda: _MatchingQueryCtx()),
+            patch.object(consumer, "_post_agent_skip", new=post_skip_mock),
+        ):
+            await consumer._review_pr(event)
+
+        assert post_skip_mock.await_count == 0, (
+            "A converging review (turn 1 timeout, turn 2 success) must NOT trigger "
+            "the AGENT_TIMEOUT skip comment."
+        )
+        assert emit_mock.await_count == 0, (
+            "A converging review must NOT emit codex_review_timed_out — emission "
+            "is gated on the codex stage's terminal state."
+        )

@@ -590,7 +590,8 @@ class TestHandleOrchestration:
         with (
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
             patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
-            patch("src.gateway.review_engine.REVIEW_TIMEOUT_SECONDS", 0.01),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_BASE_SECONDS", 0.01),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_CAP_SECONDS", 0.01),
             patch(
                 "src.gateway.github_token.get_github_app_token",
                 new=AsyncMock(return_value="ghs_test"),
@@ -2383,7 +2384,8 @@ class TestTimeoutRetryAndProbes:
         with (
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
             patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
-            patch("src.gateway.review_engine.REVIEW_TIMEOUT_SECONDS", 0.01),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_BASE_SECONDS", 0.01),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_CAP_SECONDS", 0.01),
             patch(
                 "src.gateway.review_engine._probe_codex_alive",
                 new=AsyncMock(return_value=(True, "codex 0.1.0")),
@@ -2430,7 +2432,8 @@ class TestTimeoutRetryAndProbes:
         with (
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
             patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
-            patch("src.gateway.review_engine.REVIEW_TIMEOUT_SECONDS", 0.01),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_BASE_SECONDS", 0.01),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_CAP_SECONDS", 0.01),
             patch(
                 "src.gateway.review_engine._probe_codex_alive",
                 new=AsyncMock(return_value=(True, "codex 0.1.0")),
@@ -2471,7 +2474,8 @@ class TestTimeoutRetryAndProbes:
         with (
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
             patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
-            patch("src.gateway.review_engine.REVIEW_TIMEOUT_SECONDS", 0.01),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_BASE_SECONDS", 0.01),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_CAP_SECONDS", 0.01),
             patch(
                 "src.gateway.review_engine._probe_codex_alive",
                 new=AsyncMock(return_value=(True, "ok")),
@@ -2509,7 +2513,8 @@ class TestTimeoutRetryAndProbes:
         with (
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
             patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
-            patch("src.gateway.review_engine.REVIEW_TIMEOUT_SECONDS", 0.01),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_BASE_SECONDS", 0.01),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_CAP_SECONDS", 0.01),
             patch(
                 "src.gateway.review_engine._probe_codex_alive",
                 new=AsyncMock(return_value=(True, "codex 0.1.0")),
@@ -4615,3 +4620,200 @@ class TestReviewPrUsesWorktreeProjectRoot:
             await consumer._review_pr(event)
 
         remove_mock.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# T-374: timeout scales with diff size + emits codex_review_timed_out event
+# ---------------------------------------------------------------------------
+
+
+class TestComputeReviewTimeout:
+    """``compute_review_timeout`` scales the codex subprocess budget by diff size."""
+
+    def test_empty_diff_returns_base_timeout(self) -> None:
+        from src.gateway.review_engine import (
+            REVIEW_TIMEOUT_BASE_SECONDS,
+            compute_review_timeout,
+        )
+
+        lines, timeout = compute_review_timeout("")
+        assert lines == 0
+        assert timeout == REVIEW_TIMEOUT_BASE_SECONDS
+
+    def test_small_diff_stays_at_base(self) -> None:
+        """A 4-line diff should not exceed the base by much."""
+        from src.gateway.review_engine import (
+            REVIEW_TIMEOUT_BASE_SECONDS,
+            REVIEW_TIMEOUT_PER_LINE_SECONDS,
+            compute_review_timeout,
+        )
+
+        diff = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-old1\n-old2\n+new1\n+new2\n"
+        lines, timeout = compute_review_timeout(diff)
+        assert lines == 4
+        expected = REVIEW_TIMEOUT_BASE_SECONDS + 4 * REVIEW_TIMEOUT_PER_LINE_SECONDS
+        assert timeout == expected
+
+    def test_large_diff_scales(self) -> None:
+        """A 1 000-line diff should produce a timeout above base + per_line*1000."""
+        from src.gateway.review_engine import (
+            REVIEW_TIMEOUT_BASE_SECONDS,
+            REVIEW_TIMEOUT_CAP_SECONDS,
+            REVIEW_TIMEOUT_PER_LINE_SECONDS,
+            compute_review_timeout,
+        )
+
+        diff_lines = ["diff --git a/x b/x", "--- a/x", "+++ b/x", "@@ -1,1000 +1,1000 @@"]
+        diff_lines += [f"+line {i}" for i in range(1000)]
+        diff = "\n".join(diff_lines)
+
+        lines, timeout = compute_review_timeout(diff)
+        assert lines == 1000
+        expected = min(
+            REVIEW_TIMEOUT_CAP_SECONDS,
+            REVIEW_TIMEOUT_BASE_SECONDS + 1000 * REVIEW_TIMEOUT_PER_LINE_SECONDS,
+        )
+        assert timeout == expected
+        assert timeout > REVIEW_TIMEOUT_BASE_SECONDS
+
+    def test_timeout_caps_at_max(self) -> None:
+        """A diff whose linear timeout would exceed the cap clamps to the cap."""
+        from src.gateway.review_engine import (
+            REVIEW_TIMEOUT_CAP_SECONDS,
+            compute_review_timeout,
+        )
+
+        diff_lines = ["diff --git a/x b/x", "--- a/x", "+++ b/x", "@@ -1,5000 +1,5000 @@"]
+        diff_lines += [f"+line {i}" for i in range(5000)]
+        diff = "\n".join(diff_lines)
+
+        lines, timeout = compute_review_timeout(diff)
+        assert lines == 5000
+        assert timeout == REVIEW_TIMEOUT_CAP_SECONDS
+
+    def test_file_headers_excluded_from_count(self) -> None:
+        """``+++`` and ``---`` file headers must not inflate the changed-line count."""
+        from src.gateway.review_engine import compute_review_timeout
+
+        diff = (
+            "diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new\n"
+            "diff --git a/b b/b\n--- a/b\n+++ b/b\n@@ -1 +1 @@\n-old\n+new\n"
+        )
+        lines, _ = compute_review_timeout(diff)
+        assert lines == 4  # two -/+ pairs only — file headers excluded
+
+
+class TestCodexReviewTimedOutEmission:
+    """The post-retry timeout path emits a ``codex_review_timed_out`` inbox event."""
+
+    @pytest.fixture(autouse=True)
+    def _stubs(self) -> Any:
+        with (
+            patch(
+                "src.gateway.review_engine.count_bot_reviews",
+                new=AsyncMock(return_value=0),
+            ),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+        ):
+            yield
+
+    @pytest.mark.asyncio
+    async def test_emits_inbox_event_on_second_timeout(self, sample_diff: str) -> None:
+        consumer = ReviewEngineConsumer(max_per_hour=10)
+
+        async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
+            if argv[0] == "gh":
+                return _FakeProcess(stdout=sample_diff.encode())
+            pytest.fail("_spawn should only be called for gh")
+
+        async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
+            return _FakeProcess(hang=True)
+
+        emit_mock = AsyncMock()
+        with (
+            patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
+            # Force a tiny timeout so the test does not actually wait minutes.
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_BASE_SECONDS", 0.01),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_CAP_SECONDS", 0.01),
+            patch("src.gateway.review_engine.emit_codex_review_timed_out", emit_mock),
+            patch(
+                "src.gateway.review_engine._probe_codex_alive",
+                new=AsyncMock(return_value=(True, "ok")),
+            ),
+            patch(
+                "src.gateway.review_engine._probe_github_reachable",
+                new=AsyncMock(return_value=(True, "ok")),
+            ),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            respx.mock() as mock,
+        ):
+            mock.post(_ISSUES_COMMENTS_URL).mock(return_value=httpx.Response(201, json={"id": 1}))
+            await consumer.handle(_event())
+
+        assert emit_mock.await_count == 1
+        kwargs = emit_mock.await_args.kwargs
+        assert kwargs["pr_url"] == "https://github.com/sachinkundu/cloglog/pull/42"
+        assert kwargs["pr_number"] == 42
+        assert kwargs["repo_full_name"] == "sachinkundu/cloglog"
+        assert kwargs["diff_size"] >= 0
+        assert kwargs["timeout_seconds"] > 0
+
+    @pytest.mark.asyncio
+    async def test_no_emission_when_first_attempt_succeeds(
+        self, sample_diff: str, sample_review_json: str
+    ) -> None:
+        """A successful review must NOT emit a timeout event."""
+        from src.gateway import review_engine as engine_mod
+
+        consumer = ReviewEngineConsumer(max_per_hour=10)
+
+        async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
+            if argv[0] == "gh":
+                return _FakeProcess(stdout=sample_diff.encode())
+            pytest.fail("_spawn should only be called for gh")
+
+        async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
+            # Write parseable review.json into the -o output path
+            # (mirrors the existing happy-path tests).
+            for i, a in enumerate(args):
+                if a == "-o" and i + 1 < len(args):
+                    Path(args[i + 1]).write_text(sample_review_json)
+                    break
+            return _FakeProcess(stdout=b"")
+
+        emit_mock = AsyncMock()
+        with (
+            patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
+            patch.object(engine_mod, "emit_codex_review_timed_out", emit_mock),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            respx.mock() as mock,
+        ):
+            mock.post(re.compile(r".*/pulls/\d+/reviews$")).mock(
+                return_value=httpx.Response(201, json={"id": 1})
+            )
+            await consumer.handle(_event())
+
+        assert emit_mock.await_count == 0

@@ -40,6 +40,7 @@ import httpx
 from pydantic import BaseModel, Field, field_validator
 
 from src.gateway.review_skip_comments import SkipReason, post_skip_comment
+from src.gateway.webhook_consumers import emit_codex_review_timed_out
 from src.gateway.webhook_dispatcher import WebhookEvent, WebhookEventType
 from src.shared.config import settings
 
@@ -59,7 +60,21 @@ _OPENCODE_BOT: Final = "cloglog-opencode-reviewer[bot]"
 _REVIEWER_BOTS: Final = frozenset({_CODEX_BOT, _OPENCODE_BOT})
 _BOT_USERNAMES: Final = frozenset({_CLAUDE_BOT, _CODEX_BOT, _OPENCODE_BOT})
 MAX_DIFF_CHARS: Final = 200_000
-REVIEW_TIMEOUT_SECONDS: Final = 300.0
+# T-374 timeout scaling. Small diffs run fast; a 4 000-line diff genuinely
+# needs longer than the historical 5-minute fixed budget to read through.
+# The curve is ``base + per_line * changed_lines`` clamped to ``cap``.
+# ``base`` keeps the floor at the prior fixed value (300s) so existing
+# small-PR behaviour is unchanged; ``per_line`` was sized so a 1 000-line
+# diff gets ~13 minutes (300 + 1000*0.5 = 800s), and ``cap`` (1800s = 30 min)
+# covers the largest reviewable diff (MAX_DIFF_CHARS ≈ 4-5 k changed lines)
+# without unbounding the subprocess. Document changes here when retuning.
+REVIEW_TIMEOUT_BASE_SECONDS: Final = 300.0
+REVIEW_TIMEOUT_PER_LINE_SECONDS: Final = 0.5
+REVIEW_TIMEOUT_CAP_SECONDS: Final = 1800.0
+# Historical fixed budget — retained for callers that have not yet adopted
+# ``compute_review_timeout`` (e.g. the opencode loop, which has its own
+# settings-driven budget). New codex paths must use ``compute_review_timeout``.
+REVIEW_TIMEOUT_SECONDS: Final = REVIEW_TIMEOUT_BASE_SECONDS
 RATE_LIMIT_WINDOW_SECONDS: Final = 3600.0
 REVIEW_POST_RETRY_DELAY_SECONDS: Final = 5.0
 REVIEW_REQUEST_TIMEOUT_SECONDS: Final = 30.0
@@ -278,6 +293,36 @@ def filter_diff(diff: str) -> str:
     if preamble and body:
         return preamble.rstrip("\n") + "\n" + body
     return body if body else preamble
+
+
+def count_changed_lines(diff: str) -> int:
+    """Count added/removed lines in a unified diff (file headers excluded).
+
+    Used by ``compute_review_timeout`` to size the codex subprocess budget.
+    Lines starting with ``+++`` / ``---`` are file headers, not changes — they
+    are filtered out so a 50-file diff with one-line edits is not credited
+    100 changes.
+    """
+    total = 0
+    for line in diff.splitlines():
+        if line.startswith(("+++", "---")):
+            continue
+        if line and line[0] in "+-":
+            total += 1
+    return total
+
+
+def compute_review_timeout(diff: str) -> tuple[int, float]:
+    """Return ``(changed_lines, timeout_seconds)`` for a codex review subprocess.
+
+    Curve: ``base + per_line * lines`` clamped to ``cap``. See the
+    ``REVIEW_TIMEOUT_*`` constants for the parameters and the rationale.
+    Callers pass the same diff they'll send to the agent so the budget
+    reflects the work the subprocess actually has to do.
+    """
+    lines = count_changed_lines(diff)
+    timeout = REVIEW_TIMEOUT_BASE_SECONDS + lines * REVIEW_TIMEOUT_PER_LINE_SECONDS
+    return lines, min(REVIEW_TIMEOUT_CAP_SECONDS, timeout)
 
 
 def _load_project_prompt(project_root: Path) -> str:
@@ -1610,6 +1655,7 @@ class ReviewEngineConsumer:
                         reviewer_token=review_token,
                         session_index=session_index,
                         max_sessions=MAX_REVIEWS_PER_PR,
+                        session_factory=self._session_factory,
                     )
                     await loop_b.run(
                         diff=filtered,
@@ -1759,13 +1805,14 @@ class ReviewEngineConsumer:
         prompt = _load_project_prompt(project_root)
         schema_path = _get_schema_path(project_root)
         full_prompt = f"{prompt}\n\nDIFF:\n{diff}"
+        diff_lines, timeout_seconds = compute_review_timeout(diff)
 
         last_outcome: _AgentAttemptOutcome | None = None
         # Matches T-229's retry philosophy: one retry swallows a transient
         # stall; a second consecutive timeout is systemic and must surface.
         for attempt in (1, 2):
             outcome = await self._run_agent_once(
-                full_prompt, project_root, schema_path, event.pr_number
+                full_prompt, project_root, schema_path, event.pr_number, timeout_seconds
             )
             last_outcome = outcome
             if outcome.result is not None:
@@ -1789,10 +1836,26 @@ class ReviewEngineConsumer:
                     "github_reachable": github_reachable,
                     "github_probe": github_detail,
                     "elapsed_seconds": round(outcome.elapsed_seconds, 2),
+                    "diff_size": diff_lines,
+                    "timeout_seconds": timeout_seconds,
                 }
                 logger.warning("review_timeout %s", log_entry)
+                await emit_codex_review_timed_out(
+                    pr_url=event.pr_url,
+                    pr_number=event.pr_number,
+                    repo_full_name=event.repo_full_name,
+                    head_branch=event.head_branch,
+                    diff_size=diff_lines,
+                    timeout_seconds=timeout_seconds,
+                    session_factory=self._session_factory,
+                )
                 body = _format_timeout_body(
-                    outcome, codex_alive, codex_detail, github_reachable, github_detail
+                    outcome,
+                    codex_alive,
+                    codex_detail,
+                    github_reachable,
+                    github_detail,
+                    timeout_seconds,
                 )
                 await self._post_agent_skip(event, SkipReason.AGENT_TIMEOUT, body, codex_token)
                 return None
@@ -1813,6 +1876,7 @@ class ReviewEngineConsumer:
         project_root: Path,
         schema_path: Path | None,
         pr_number: int,
+        timeout_seconds: float = REVIEW_TIMEOUT_BASE_SECONDS,
     ) -> _AgentAttemptOutcome:
         """One invocation of the review agent — returns a typed outcome.
 
@@ -1854,7 +1918,7 @@ class ReviewEngineConsumer:
             try:
                 stdout, stderr = await asyncio.wait_for(
                     proc.communicate(input=full_prompt.encode()),
-                    timeout=REVIEW_TIMEOUT_SECONDS,
+                    timeout=timeout_seconds,
                 )
                 elapsed = time.monotonic() - start
             except TimeoutError:
@@ -2058,11 +2122,12 @@ def _format_timeout_body(
     codex_detail: str,
     github_reachable: bool,
     github_detail: str,
+    timeout_seconds: float = REVIEW_TIMEOUT_BASE_SECONDS,
 ) -> str:
     """PR comment body for a post-retry timeout."""
     lines = [
         f"Codex review failed: agent timed out after "
-        f"{int(REVIEW_TIMEOUT_SECONDS)}s (retried once). "
+        f"{int(timeout_seconds)}s (retried once). "
         f"Push a new commit to retry.",
         "",
         f"- codex binary alive: **{'yes' if codex_alive else 'no'}**"

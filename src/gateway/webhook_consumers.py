@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -325,3 +326,94 @@ class AgentNotifierConsumer:
                 ),
             }
         return None
+
+
+async def emit_codex_review_timed_out(
+    *,
+    pr_url: str,
+    pr_number: int,
+    repo_full_name: str,
+    head_branch: str,
+    diff_size: int,
+    timeout_seconds: float,
+    session_factory: Any | None = None,
+) -> None:
+    """Append a ``codex_review_timed_out`` event to the owning agent's inbox.
+
+    The recipient is resolved via the same chain ``AgentNotifierConsumer``
+    uses for real GitHub webhooks (pr_url → branch → main-agent fallback)
+    so timeouts surface in the same inbox the author already tails. A
+    timeout that cannot be routed (no project, no main-agent worktree)
+    is logged and dropped — the PR comment posted from
+    ``_run_review_agent`` keeps the author informed even when the
+    routing chain misses.
+
+    The synthesised ``WebhookEvent`` carries ``REVIEW_SUBMITTED`` so the
+    main-agent fallback (which is gated to ``MAIN_AGENT_EVENTS``) fires
+    when no worktree owns the PR.
+    """
+    from src.shared.database import async_session_factory
+
+    factory = session_factory or async_session_factory
+    synthetic = WebhookEvent(
+        type=WebhookEventType.REVIEW_SUBMITTED,
+        delivery_id=f"codex-timeout-{pr_url}",
+        repo_full_name=repo_full_name,
+        pr_number=pr_number,
+        pr_url=pr_url,
+        head_branch=head_branch,
+        base_branch="",
+        sender="cloglog-codex-reviewer[bot]",
+        raw={},
+    )
+    notifier = AgentNotifierConsumer(factory)
+    try:
+        async with factory() as session:
+            recipient = await notifier._resolve_agent(synthetic, session)
+    except Exception as err:  # noqa: BLE001 - best-effort signal, never raise into the loop
+        logger.warning(
+            "codex_review_timed_out: recipient resolution failed for pr=%s (%s) — dropping",
+            pr_url,
+            err,
+        )
+        return
+    if recipient is None:
+        logger.info(
+            "codex_review_timed_out: no recipient for pr=%s repo=%s — dropping",
+            pr_url,
+            repo_full_name,
+        )
+        return
+    payload = {
+        "type": "codex_review_timed_out",
+        "pr_url": pr_url,
+        "pr_number": pr_number,
+        "repo_full_name": repo_full_name,
+        "diff_size": diff_size,
+        "timeout_seconds": timeout_seconds,
+        "ts": datetime.now(UTC).isoformat(),
+        "message": (
+            f"Codex review on PR #{pr_number} timed out after "
+            f"{int(timeout_seconds)}s ({diff_size} changed lines). "
+            "A skip comment was posted on the PR; push a new commit to retry."
+        ),
+    }
+    inbox_path = recipient.inbox_path
+    try:
+        inbox_path.parent.mkdir(parents=True, exist_ok=True)
+        with inbox_path.open("a") as f:
+            f.write(json.dumps(payload) + "\n")
+    except OSError as err:
+        logger.warning(
+            "codex_review_timed_out: could not append to %s (%s) — dropping",
+            inbox_path,
+            err,
+        )
+        return
+    logger.info(
+        "codex_review_timed_out: notified %s of timeout on PR #%d (%d lines, %.0fs)",
+        recipient.worktree_id,
+        pr_number,
+        diff_size,
+        timeout_seconds,
+    )

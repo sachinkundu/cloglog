@@ -28,7 +28,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final, Protocol
+from typing import Any, Final, Protocol
 from uuid import UUID
 
 import httpx
@@ -41,9 +41,11 @@ from src.gateway.review_engine import (
     _get_schema_path,
     _load_project_prompt,
     _tail_excerpt,
+    compute_review_timeout,
     parse_reviewer_output,
     post_review,
 )
+from src.gateway.webhook_consumers import emit_codex_review_timed_out
 from src.review.interfaces import (
     IReviewTurnRegistry,
     PriorContext,
@@ -297,6 +299,7 @@ class ReviewLoop:
         reviewer_token: str,
         session_index: int,
         max_sessions: int,
+        session_factory: Any | None = None,
     ) -> None:
         self._reviewer = reviewer
         self._max_turns = max_turns
@@ -310,6 +313,7 @@ class ReviewLoop:
         self._token = reviewer_token
         self._session_index = session_index
         self._max_sessions = max_sessions
+        self._session_factory = session_factory
 
     @staticmethod
     def _build_body_header(reviewer: Reviewer, session_index: int, max_sessions: int) -> str:
@@ -451,6 +455,26 @@ class ReviewLoop:
                         consensus_reached=False,
                         elapsed_seconds=elapsed,
                     )
+                    if timed_out and self._stage == "codex":
+                        # T-374: surface the timeout to the owning agent's
+                        # inbox so the supervisor and dashboard see it. The
+                        # diff/budget come from the CodexReviewer's last call;
+                        # opencode timeouts deliberately do not emit here
+                        # (they have their own settings-driven budget and
+                        # are not part of this scope).
+                        diff_lines = getattr(self._reviewer, "_last_diff_lines", 0)
+                        budget = getattr(
+                            self._reviewer, "_last_timeout_seconds", REVIEW_TIMEOUT_SECONDS
+                        )
+                        await emit_codex_review_timed_out(
+                            pr_url=self._pr_url,
+                            pr_number=self._pr_number,
+                            repo_full_name=self._repo_full_name,
+                            head_branch="",
+                            diff_size=diff_lines,
+                            timeout_seconds=budget,
+                            session_factory=self._session_factory,
+                        )
                     outcome.turns_used = turn
                     outcome.errors.append(f"turn {turn}: {status}")
                     # A failed turn doesn't short-circuit — try the next turn.
@@ -598,6 +622,12 @@ class CodexReviewer:
 
     def __init__(self, project_root: Path) -> None:
         self._project_root = project_root
+        # Surfaced for the ReviewLoop's timeout-event emitter — the inbox
+        # event needs both the diff size that drove the budget and the
+        # budget itself. Reset on every ``run`` call so a sequence of turns
+        # reports the latest call's values.
+        self._last_diff_lines: int = 0
+        self._last_timeout_seconds: float = REVIEW_TIMEOUT_SECONDS
 
     async def run(
         self,
@@ -644,11 +674,13 @@ class CodexReviewer:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self._project_root),
             )
+            self._last_diff_lines, timeout_seconds = compute_review_timeout(diff)
+            self._last_timeout_seconds = timeout_seconds
             start = time.monotonic()
             try:
                 stdout, _stderr = await asyncio.wait_for(
                     proc.communicate(input=full_prompt.encode()),
-                    timeout=REVIEW_TIMEOUT_SECONDS,
+                    timeout=timeout_seconds,
                 )
                 elapsed = time.monotonic() - start
             except TimeoutError:
@@ -657,7 +689,13 @@ class CodexReviewer:
                 proc.kill()
                 with contextlib.suppress(ProcessLookupError):
                     await proc.wait()
-                logger.warning("codex turn timeout after %.1fs (pr=%d)", elapsed, pr_number)
+                logger.warning(
+                    "codex turn timeout after %.1fs (pr=%d, diff_lines=%d, budget=%.0fs)",
+                    elapsed,
+                    pr_number,
+                    self._last_diff_lines,
+                    timeout_seconds,
+                )
                 return (None, elapsed, True)
 
             if output_path.exists():

@@ -134,7 +134,7 @@ You don't spawn this yourself. When the main agent detects your PR merged, it sp
 Agent(subagent_type: "pr-postprocessor", prompt: "PR #<num> merged. Worktree: <name>. Path: <path>")
 ```
 
-This handles CLAUDE.md learnings, work log consolidation, and worktree cleanup.
+This handles work log consolidation, worktree cleanup, and routing any extracted learnings to their proper homes (`docs/invariants.md` for silent-failure invariants with a pin, the relevant `plugins/cloglog/skills/<skill>/SKILL.md` / `templates/AGENT_PROMPT.md` / `agents/<agent>.md` for workflow gotchas, a design doc under `docs/design/` for architectural decisions, or — rarely — `CLAUDE.md` for top-level project rules; T-368 retired the `CLAUDE.md` Agent Learnings section).
 
 ## Agent Communication
 

@@ -1,6 +1,6 @@
 # Wave: t339-t305-close-tab-webhook (2026-05-02)
 
-Two parallel single-task worktrees under feature **F-32 Worktree Close-off**, both shipped via cooperative shutdown. Wave-level close-off rows backfilled manually (T-379, T-380) because the launch SKILL ran `on-worktree-create.sh` before `register_agent`, leaving the original `create_close_off_task` calls 404'd — root cause filed as **T-378 (expedite)**.
+Two parallel single-task worktrees under feature **F-32 Worktree Close-off**, both shipped via cooperative shutdown. Wave-level close-off rows backfilled manually (T-379, T-380) because the main agent (this session) ran `on-worktree-create.sh` before `register_agent` — `plugins/cloglog/skills/launch/SKILL.md:242-253` documents the correct Step 4b → 4c order, but the script silently `WARN`s on the resulting 404 instead of failing loud, so the gap was invisible until close-wave fired. **T-378 (expedite)** tracks enforcing the documented order and changing `.cloglog/on-worktree-create.sh` to fail loud on a non-201 close-off-task response.
 
 ## Worktrees in this wave
 
@@ -124,4 +124,4 @@ Both routed-as-tasks rather than baked into this PR.
 - Zellij tab teardown is now guarded (T-339); supervisor's tab cannot be killed by close-wave/reconcile teardown paths — pin tests block regression.
 - Webhook silent-drop signatures from PR #231 are now visible via `WARNING` logs (T-305) — operator can grep `Webhook drop` to diagnose missing inbox events without reading source.
 - Both worktrees + branches removed; remote branches deleted; close-off rows T-379 + T-380 will move to `review` with this PR.
-- Outstanding follow-ups: T-377 (CI trigger narrowing), T-378 (launch SKILL ordering bug).
+- Outstanding follow-ups: T-377 (CI trigger narrowing), T-378 (launch order enforcement + fail-loud close-off-task creation in `.cloglog/on-worktree-create.sh`).

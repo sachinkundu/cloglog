@@ -2,11 +2,23 @@ name: Init Smoke
 
 # Plugin portability gate. Runs on every PR (no paths filter) so a change
 # anywhere in the tree — plugin skills, hooks, settings, docs — cannot ship
-# a portability regression that breaks `init` on a fresh downstream repo.
+# a portability regression that breaks init on a fresh downstream repo.
+#
+# T-377 also routes the workflow YAML pin tests through this job: with
+# ci.yml no longer triggered on pull_request: synchronize, post-T-377
+# CI runs come from repository_dispatch: codex-finalized and execute the
+# workflow definition from the **default branch**, NOT the PR head
+# (https://docs.github.com/actions/learn-github-actions/events-that-trigger-workflows#repository_dispatch).
+# That means a self-disabling edit to ci.yml or init-smoke.yml on a PR
+# would never run its own pin tests against the modified workflow under
+# the post-T-377 regime. init-smoke.yml is the always-on per-push
+# PR-branch gate, so the workflow YAML pins live here.
 #
 # Pin tests executed:
 #   - tests/plugins/test_init_on_fresh_repo.py    (T-319/T-321 placeholder + scope-template behaviour)
 #   - tests/plugins/test_plugin_no_cloglog_citations.py (T-323 host-literal sweep)
+#   - tests/plugins/test_init_smoke_ci_workflow.py (T-324 init-smoke self-pin + T-377 ci.yml cross-coverage)
+#   - tests/plugins/test_ci_workflow_codex_finalized_trigger.py (T-377 trigger pin)
 
 on:
   pull_request:
@@ -64,4 +76,6 @@ jobs:
             tests/plugins/test_launch_skill_renders_clean_launch_sh.py \
             tests/plugins/test_launch_skill_has_agent_started_timeout.py \
             tests/plugins/test_agent_prompt_template_correct_inbox_paths.py \
+            tests/plugins/test_init_smoke_ci_workflow.py \
+            tests/plugins/test_ci_workflow_codex_finalized_trigger.py \
             -v --no-cov --tb=short

@@ -93,24 +93,49 @@ def test_workflow_triggers_on_pull_request() -> None:
 
 
 def test_main_ci_runs_on_init_smoke_workflow_changes() -> None:
-    """Cross-coverage pin: `ci.yml` must trigger when `init-smoke.yml`
-    changes. Without this, a PR that edits `init-smoke.yml` to add a
-    self-excluding `paths:` filter would disable the smoke workflow on
-    its own modifying commit AND leave `ci.yml` idle (no `paths:` match
-    on `init-smoke.yml`). The pin tests in this file would never run on
-    the regression they exist to catch. Adding `init-smoke.yml` to
-    `ci.yml`'s paths means the pytest suite (which includes this file)
-    runs on any workflow edit and catches the self-disabling rewrite
-    before merge.
+    """Cross-coverage pin: `ci.yml` must list `init-smoke.yml` in its
+    `pull_request.paths:` filter so that the PR-creation surface
+    (`opened`/`reopened`/`ready_for_review` — see T-377) still triggers
+    the main suite when the smoke workflow itself is being edited.
+
+    Note: post-T-377 ``ci.yml`` no longer fires on ``synchronize``, so
+    the always-on per-push catch for self-disabling workflow edits has
+    moved to ``init-smoke.yml`` itself (which runs the workflow YAML
+    pin tests on every PR push from the PR branch). This `paths:`
+    pin still matters for the very first PR push.
     """
     assert MAIN_CI_WORKFLOW.exists(), f"{MAIN_CI_WORKFLOW} missing"
     body = MAIN_CI_WORKFLOW.read_text(encoding="utf-8")
     assert ".github/workflows/init-smoke.yml" in body, (
         "ci.yml's `pull_request.paths:` list must include "
-        "`.github/workflows/init-smoke.yml` so changes to the smoke "
-        "workflow trigger the main test suite (and `test_init_smoke_ci_workflow.py`). "
-        "Otherwise a self-disabling edit to init-smoke.yml could merge with no CI."
+        "`.github/workflows/init-smoke.yml` so the first PR push (PR-creation "
+        "events) re-runs the workflow YAML pins."
     )
+
+
+def test_init_smoke_runs_workflow_yaml_pins() -> None:
+    """T-377 cross-coverage pin: with ci.yml no longer triggered on
+    `pull_request: synchronize`, the post-T-377 CI runs come from
+    `repository_dispatch: codex-finalized` and execute ci.yml from the
+    DEFAULT branch — not the PR head. That means a self-disabling edit
+    to ci.yml on a PR would never run its own pin tests against the
+    modified workflow. ``init-smoke.yml`` is the always-on per-push
+    PR-branch gate, so the workflow YAML pin tests must live here.
+    Without this pin, a future revert of ``init-smoke.yml`` could quietly
+    drop the workflow YAML coverage and a broken ci.yml could ship.
+    """
+    body = _read_workflow()
+    for path in (
+        "tests/plugins/test_init_smoke_ci_workflow.py",
+        "tests/plugins/test_ci_workflow_codex_finalized_trigger.py",
+    ):
+        assert path in body, (
+            f"init-smoke.yml must invoke {path} — repository_dispatch CI "
+            "runs ci.yml from the default branch, so workflow YAML pins "
+            "MUST execute on the PR branch via init-smoke for self-"
+            "disabling-workflow-edit coverage. See "
+            "docs/design/ci-codex-trigger.md."
+        )
 
 
 def test_workflow_has_no_paths_filter() -> None:

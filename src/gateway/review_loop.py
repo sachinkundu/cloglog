@@ -631,26 +631,29 @@ class ReviewLoop:
             outcome.total_elapsed_seconds,
         )
 
-        # T-377: codex finalization → CI dispatch hook. Fired once per (PR,
-        # head_sha) when stage B is terminal: either consensus reached or
-        # all max_turns ran without a webhook-re-fire-retryable failure.
-        # ``post_failed`` excluded because ``_compute_next_turn`` resumes
-        # those (status=='failed' rows are retried) — dispatching now would
-        # let CI race the not-yet-final review. ``timed_out`` is NOT
-        # retryable (only ``failed`` is) so an exhausted stage with timed-
-        # out tail-end still dispatches. The early-return paths above
-        # (lines 351 / 366) skip this entirely — those are webhook
-        # re-fires for an already-finalized stage; the original firing
-        # already dispatched.
+        # T-377: codex finalization → CI dispatch hook. Fired once per
+        # (PR, head_sha) when stage B is terminal: either consensus reached
+        # or all max_turns ran with no retryable-on-re-fire failure on any
+        # turn. ``_compute_next_turn`` (line 581-583) resumes the lowest
+        # ``status=='failed'`` row on a webhook re-fire, and BOTH the
+        # subprocess-crash path (`result is None and timed_out=False` →
+        # status=failed) and the GitHub-POST-failed path (status=failed,
+        # outcome.errors carries "post_failed") are retryable. Dispatching
+        # then would let CI race a review the system still considers
+        # rerunnable. ``timed_out`` is NOT retryable (status=='timed_out',
+        # not failed) so an exhausted stage whose tail-end timed out still
+        # dispatches. The early-return paths above (lines 351 / 366) skip
+        # this entirely — those are webhook re-fires for an already-
+        # finalized stage; the original firing already dispatched.
+        retryable_failure = any(
+            err.endswith(": failed") or "post_failed" in err for err in outcome.errors
+        )
         if (
             self._stage == "codex"
             and self._ci_dispatcher is not None
             and (
                 outcome.consensus_reached
-                or (
-                    outcome.turns_used == self._max_turns
-                    and not any("post_failed" in err for err in outcome.errors)
-                )
+                or (outcome.turns_used == self._max_turns and not retryable_failure)
             )
         ):
             try:

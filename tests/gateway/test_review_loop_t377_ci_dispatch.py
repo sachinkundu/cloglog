@@ -146,6 +146,32 @@ class TestCodexFinalizationDispatch:
         dispatcher.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_failed_turn_at_max_turns_does_not_fire(self) -> None:
+        """Codex subprocess crash / parse error on the final turn records a
+        ``status='failed'`` row that ``_compute_next_turn`` would resume on
+        webhook re-fire — so the stage is NOT terminal even though
+        ``turns_used == max_turns``. Dispatching now would let CI race a
+        review the system still considers rerunnable. PR #294 codex review
+        caught this regression in the original ``post_failed``-only check.
+        """
+        dispatcher = AsyncMock()
+        stub = StubReviewer(
+            responses=[
+                (_ok_result(findings=[_finding(line=1, title="f1")]), 1.0, False),
+                (None, 2.0, False),  # turn 2: subprocess crash, NOT a timeout
+            ]
+        )
+        registry = FakeRegistry()
+        loop = _make_codex_loop(stub, max_turns=2, registry=registry, ci_dispatcher=dispatcher)
+
+        with patch(_PATCH_POST_REVIEW, new=AsyncMock(return_value=True)):
+            outcome = await loop.run(diff="d")
+
+        assert outcome.turns_used == 2
+        assert any(err.endswith(": failed") for err in outcome.errors)
+        dispatcher.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_opencode_stage_never_fires_dispatch(self) -> None:
         """Stage A (opencode) is advisory and must not gate CI."""
         dispatcher = AsyncMock()

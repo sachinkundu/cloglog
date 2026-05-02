@@ -89,6 +89,33 @@ job.status`. The auto-attached default-branch checks become harmless
 noise; the mirrored head_sha checks are what branch protection and the
 auto-merge gate consume.
 
+### Workflow YAML pins move to init-smoke
+
+`repository_dispatch` runs the workflow file from the **default
+branch**, not the PR head ([GitHub
+docs](https://docs.github.com/actions/learn-github-actions/events-that-trigger-workflows#repository_dispatch)).
+With `ci.yml` no longer triggered on `pull_request: synchronize`,
+post-T-377 CI never executes the PR branch's workflow definitions on
+later commits. That means a self-disabling edit to `ci.yml` or
+`init-smoke.yml` on a PR would slip past the pin tests unless those
+pins also run from a per-push trigger that uses the PR-branch workflow
+file.
+
+`init-smoke.yml` is that gate: default `pull_request` trigger, no
+`paths:` filter, fires on every PR push from the PR head. Its pytest
+invocation now also runs:
+
+- `tests/plugins/test_init_smoke_ci_workflow.py` (T-324 init-smoke
+  self-pin — and now also asserts the init-smoke job runs the
+  workflow YAML pins for T-377 cross-coverage).
+- `tests/plugins/test_ci_workflow_codex_finalized_trigger.py`
+  (T-377 trigger pin).
+
+Caught regression (PR #294 codex review): without this routing, a
+follow-up commit on a PR could rewrite `init-smoke.yml`'s `paths:` or
+remove a step and merge with no CI ever exercising the PR-branch
+workflow shape.
+
 ### Idempotency
 
 `ReviewLoop.run()` has three early-return paths that already

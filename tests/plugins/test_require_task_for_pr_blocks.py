@@ -168,6 +168,25 @@ def test_agent_shutdown_hook_clears_state_json() -> None:
         "earlier $CWD-based draft that left stale tokens behind on "
         "subdirectory-cwd shutdowns."
     )
+    # T-371 codex round 5: the main-repo branch of agent-shutdown.sh
+    # (GIT_DIR == GIT_COMMON) must also rm state.json. The supervisor
+    # writes <repo_root>/.cloglog/state.json on every /cloglog setup,
+    # and without symmetric cleanup the blocker hook treats a stale
+    # registration as live across main-session restarts.
+    assert 'rm -f "${MAIN_ROOT}/.cloglog/state.json"' in body, (
+        "agent-shutdown.sh's main-repo branch (GIT_DIR == GIT_COMMON) "
+        "must rm <repo_root>/.cloglog/state.json before exiting, "
+        "mirroring the worktree-branch cleanup. Without it, ending a "
+        "main-agent session leaves a stale state.json behind that "
+        "the blocker hook will use to authorize gh pr create on the "
+        "next session start, defeating the not-registered guidance."
+    )
+    assert "MAIN_ROOT=" in body, (
+        "agent-shutdown.sh must resolve MAIN_ROOT via "
+        "`git rev-parse --show-toplevel` in the main-repo branch — "
+        "$CWD can be a nested subdir, same hazard the worktree "
+        "branch was fixed for in round 4."
+    )
 
 
 def test_hook_walks_up_to_find_state_json(tmp_path: Path) -> None:

@@ -26,11 +26,23 @@ GIT_COMMON=$(cd "$CWD" && cd "$GIT_COMMON" && pwd)
 
 # If git-dir == git-common-dir, this is the main repo, not a worktree
 if [[ "$GIT_DIR" == "$GIT_COMMON" ]]; then
+  # Resolve the repo root so cleanup targets the canonical
+  # `.cloglog/` directory even if the SessionEnd-reported `cwd` is a
+  # nested subdir (codex review on PR #287 round 4).
+  MAIN_ROOT=$(cd "$CWD" && git rev-parse --show-toplevel 2>/dev/null) || MAIN_ROOT="$CWD"
   # Main agent: clear the inbox on exit so next session starts clean
-  INBOX="${CWD}/.cloglog/inbox"
+  INBOX="${MAIN_ROOT}/.cloglog/inbox"
   if [[ -f "$INBOX" ]]; then
     > "$INBOX"
   fi
+  # T-371 codex review round 5: the supervisor's main-session
+  # `register_agent` writes `<repo_root>/.cloglog/state.json` too
+  # (setup SKILL §1). Without an rm here, ending a main-agent
+  # session and reopening before `/cloglog setup` lets the next
+  # `gh pr create` find the stale state.json and treat the shell as
+  # registered, defeating the "not registered, call register_agent"
+  # invariant the blocker hook is built around.
+  rm -f "${MAIN_ROOT}/.cloglog/state.json" 2>> /tmp/agent-shutdown-debug.log || true
   exit 0
 fi
 

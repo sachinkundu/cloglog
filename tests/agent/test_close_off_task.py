@@ -39,6 +39,19 @@ async def _register(client: AsyncClient, api_key: str, path: str, branch: str) -
     return resp.json()["worktree_id"]
 
 
+async def _register_with_token(
+    client: AsyncClient, api_key: str, path: str, branch: str
+) -> tuple[str, str]:
+    resp = await client.post(
+        "/api/v1/agents/register",
+        json={"worktree_path": path, "branch_name": branch},
+        headers=_auth(api_key),
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    return body["worktree_id"], body["agent_token"]
+
+
 async def _create_project(client: AsyncClient, name_suffix: str) -> tuple[str, str]:
     resp = await client.post(
         "/api/v1/projects",
@@ -270,3 +283,289 @@ async def test_webhook_routes_pr_events_to_main_via_task_pr_url(
     assert payload["type"] == "pr_merged"
     assert payload["pr_url"] == pr_url
     assert payload["pr_number"] == 999
+
+
+async def test_resume_does_not_warn_when_task_already_assigned(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch, caplog
+) -> None:
+    """T-305 codex pin: a resume/retry call where main-agent resolution
+    has since broken MUST NOT re-emit the unassigned warning if the
+    persisted task is already assigned to the main agent.
+
+    Sequence: (1) register main + register wt + first close-off call —
+    task gets ``worktree_id=main_wt_id`` persisted. (2) Force resolution
+    to fail (main_agent_inbox_path None and no role='main' present) by
+    deleting the role from the main row. (3) Re-call the endpoint — the
+    idempotent path returns the existing assigned task. The warning must
+    NOT fire because the close-off is still correctly assigned in the DB.
+
+    Codex review on PR #292 caught this: the original implementation
+    warned based on the per-call resolver state instead of the persisted
+    ``Task.worktree_id``, producing false-positive ``"is unassigned"``
+    log lines on legitimate resume calls.
+    """
+    import logging
+
+    from src.agent.models import Worktree
+
+    _, api_key = await _create_project(client, "resume-noop")
+
+    main_path = f"/tmp/main-{uuid.uuid4().hex[:8]}"
+    wt_path = f"/tmp/wt-resume-{uuid.uuid4().hex[:8]}"
+
+    main_wt_id, _ = await _register_with_token(client, api_key, main_path, "main")
+    await _register(client, api_key, wt_path, "wt-resume")
+
+    from src.shared.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "main_agent_inbox_path", Path(f"{main_path}/.cloglog/inbox"))
+
+    first = await client.post(
+        "/api/v1/agents/close-off-task",
+        json={"worktree_path": wt_path, "worktree_name": "wt-resume"},
+        headers=_auth(api_key),
+    )
+    assert first.status_code == 201, first.text
+    assert first.json()["created"] is True
+
+    # Break main-agent resolution for the resume call: drop role and
+    # unset the env-var compat fallback. The persisted task still
+    # carries the original main-agent assignment.
+    main_uuid = uuid.UUID(main_wt_id)
+    main_row = await db_session.get(Worktree, main_uuid)
+    assert main_row is not None
+    main_row.role = "worktree"
+    await db_session.commit()
+    monkeypatch.setattr(_settings, "main_agent_inbox_path", None)
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="src.agent.routes"):
+        second = await client.post(
+            "/api/v1/agents/close-off-task",
+            json={"worktree_path": wt_path, "worktree_name": "wt-resume"},
+            headers=_auth(api_key),
+        )
+
+    assert second.status_code == 201
+    body = second.json()
+    assert body["created"] is False, "Idempotent resume must return created=false"
+
+    unassigned_warnings = [
+        r for r in caplog.records if "is unassigned" in r.message and r.levelname == "WARNING"
+    ]
+    assert not unassigned_warnings, (
+        "Resume of an already-assigned close-off task must NOT warn; "
+        f"got: {[r.message for r in unassigned_warnings]}"
+    )
+
+    # Confirm the persisted assignment survived: the task still points
+    # at the original main agent.
+    repo = BoardRepository(db_session)
+    task = await repo.get_task(uuid.UUID(body["task_id"]))
+    assert task is not None
+    assert task.worktree_id == main_uuid
+
+
+async def test_unassigned_warning_distinguishes_inbox_path_configured(
+    client: AsyncClient, monkeypatch, caplog, tmp_path
+) -> None:
+    """T-305 codex pin: the warning text must distinguish the two failure
+    modes (no env-var configured vs. configured-but-misrouted) so the
+    operator's remedy step is correct.
+
+    Configured-but-misrouted: main_agent_inbox_path is set but points at
+    a path that is NOT a registered worktree, AND no role='main' row
+    exists. The route lands an unassigned task and must emit a warning
+    that names the configured path so the operator can fix it.
+    """
+    import logging
+
+    _, api_key = await _create_project(client, "configured-misrouted")
+    # Path must contain ``/.claude/worktrees/`` so registration derives
+    # role='worktree' (see _derive_worktree_role in src/agent/services.py).
+    # Otherwise the wt row itself becomes role='main' and the resolver
+    # picks it up via get_main_agent_worktree, defeating the test.
+    wt_path = str(tmp_path / ".claude" / "worktrees" / f"wt-mis-{uuid.uuid4().hex[:8]}")
+    await _register(client, api_key, wt_path, "wt-mis")
+
+    # Misrouted env-var: parent.parent points at /tmp/no-such-main, which
+    # was never registered, so get_worktree_by_path returns None and the
+    # task lands unassigned.
+    bogus = tmp_path / "no-such-main" / ".cloglog" / "inbox"
+    from src.shared.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "main_agent_inbox_path", bogus)
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="src.agent.routes"):
+        resp = await client.post(
+            "/api/v1/agents/close-off-task",
+            json={"worktree_path": wt_path, "worktree_name": "wt-mis"},
+            headers=_auth(api_key),
+        )
+    assert resp.status_code == 201
+
+    misrouted = [
+        r
+        for r in caplog.records
+        if r.levelname == "WARNING"
+        and "is unassigned" in r.message
+        and "does not point at a registered worktree" in r.message
+    ]
+    assert misrouted, (
+        "Configured-but-misrouted env-var case must emit a distinct warning "
+        f"naming the failure mode; got records: {[r.message for r in caplog.records]}"
+    )
+
+
+async def test_warning_diagnoses_idempotent_no_backfill_after_setup(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch, caplog
+) -> None:
+    """T-305 codex round-2 pin: when an unassigned close-off was created
+    in a prior call (no main agent then), the operator runs /cloglog setup
+    to register the main agent, and a retry hits the idempotent path —
+    the existing task is returned WITHOUT a backfill of ``worktree_id``,
+    so it stays unassigned. The warning must blame the idempotent
+    no-backfill path, not the inbox env var.
+
+    Codex round 2 caught this on PR #292: the previous warning text
+    branched only on ``settings.main_agent_inbox_path``, so a successful
+    main-agent resolve combined with an existing unassigned row produced
+    a misleading "configured but does not point at a registered worktree"
+    diagnostic — sending the operator to debug the env var instead of
+    backfilling the task.
+    """
+    import logging
+
+    from src.agent.models import Worktree
+
+    _, api_key = await _create_project(client, "no-backfill")
+    wt_path = str(tmp_dir_for_wt())  # uses a /.claude/worktrees/ path
+    await _register(client, api_key, wt_path, "wt-nb")
+
+    # Phase 1: no main agent registered, no env var. First call lands an
+    # unassigned close-off task.
+    from src.shared.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "main_agent_inbox_path", None)
+
+    first = await client.post(
+        "/api/v1/agents/close-off-task",
+        json={"worktree_path": wt_path, "worktree_name": "wt-nb"},
+        headers=_auth(api_key),
+    )
+    assert first.status_code == 201
+    assert first.json()["created"] is True
+    repo = BoardRepository(db_session)
+    task = await repo.get_task(uuid.UUID(first.json()["task_id"]))
+    assert task is not None
+    assert task.worktree_id is None, "Phase 1 must land unassigned"
+
+    # Phase 2: simulate /cloglog setup — register a main agent. Now
+    # main-agent resolution succeeds.
+    main_path = f"/tmp/main-{uuid.uuid4().hex[:8]}"
+    main_wt_id = await _register(client, api_key, main_path, "main")
+    main_row = await db_session.get(Worktree, uuid.UUID(main_wt_id))
+    assert main_row is not None and main_row.role == "main"
+
+    # Phase 3: retry. Idempotent service path returns the existing
+    # unassigned row WITHOUT backfilling worktree_id (services.py only
+    # writes on first creation). The warning must name the idempotent
+    # no-backfill cause, not the env-var path.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="src.agent.routes"):
+        second = await client.post(
+            "/api/v1/agents/close-off-task",
+            json={"worktree_path": wt_path, "worktree_name": "wt-nb"},
+            headers=_auth(api_key),
+        )
+    assert second.status_code == 201
+    assert second.json()["created"] is False, "Phase 3 must hit idempotent path"
+
+    no_backfill_warnings = [
+        r
+        for r in caplog.records
+        if r.levelname == "WARNING"
+        and "is unassigned" in r.message
+        and "did not backfill worktree_id" in r.message
+    ]
+    assert no_backfill_warnings, (
+        "When main agent now resolves but the existing task is still "
+        "unassigned, warning must point at the idempotent no-backfill "
+        f"path. Got: {[r.message for r in caplog.records]}"
+    )
+    misleading = [
+        r
+        for r in caplog.records
+        if r.levelname == "WARNING" and "does not point at a registered worktree" in r.message
+    ]
+    assert not misleading, (
+        "Warning must NOT blame the env-var path when main_agent_worktree_id "
+        f"resolved successfully. Got: {[r.message for r in misleading]}"
+    )
+
+
+def tmp_dir_for_wt() -> Path:
+    """Build a worktree-shaped path that derives role='worktree' (not 'main')
+    via _derive_worktree_role's ``/.claude/worktrees/`` marker check.
+    """
+    return (
+        Path("/tmp")
+        / f"proj-{uuid.uuid4().hex[:6]}"
+        / ".claude"
+        / "worktrees"
+        / (f"wt-nb-{uuid.uuid4().hex[:8]}")
+    )
+
+
+async def test_close_off_task_surfaces_in_main_agent_get_tasks(
+    client: AsyncClient, monkeypatch
+) -> None:
+    """T-305 pin: a close-off task filed by the worktree-bootstrap hook must
+    surface in the main agent's ``GET /api/v1/agents/{wt}/tasks`` response.
+
+    The 2026-04-26 incident on PR #231 showed the supervisor's
+    ``mcp__cloglog__get_my_tasks`` returning zero close-offs even though the
+    hook had filed them — diagnosed as the close-off lacking ``worktree_id``
+    pointing at the main agent. This pin asserts the documented contract:
+    bootstrap → close-off task assigned to main → main agent sees it via
+    the agent-scoped tasks endpoint.
+    """
+    _, api_key = await _create_project(client, "main-sees-close-off")
+
+    main_path = f"/tmp/main-{uuid.uuid4().hex[:8]}"
+    wt_path = f"/tmp/wt-pin-{uuid.uuid4().hex[:8]}"
+
+    main_wt_id, main_token = await _register_with_token(client, api_key, main_path, "main")
+    await _register(client, api_key, wt_path, "wt-pin")
+
+    from src.shared.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "main_agent_inbox_path", Path(f"{main_path}/.cloglog/inbox"))
+
+    co_resp = await client.post(
+        "/api/v1/agents/close-off-task",
+        json={"worktree_path": wt_path, "worktree_name": "wt-pin"},
+        headers=_auth(api_key),
+    )
+    assert co_resp.status_code == 201, co_resp.text
+    close_off_task_id = co_resp.json()["task_id"]
+
+    # The main agent calls its own /tasks endpoint with its agent token —
+    # exactly the path mcp__cloglog__get_my_tasks takes from the supervisor.
+    tasks_resp = await client.get(
+        f"/api/v1/agents/{main_wt_id}/tasks",
+        headers={"Authorization": f"Bearer {main_token}"},
+    )
+    assert tasks_resp.status_code == 200, tasks_resp.text
+    tasks = tasks_resp.json()
+    task_ids = [t["id"] for t in tasks]
+    assert close_off_task_id in task_ids, (
+        "Close-off task must surface in main agent's get_my_tasks "
+        f"(got task ids {task_ids}, expected {close_off_task_id})"
+    )
+    close_off = next(t for t in tasks if t["id"] == close_off_task_id)
+    assert close_off["status"] == "backlog", (
+        "Close-off must surface as backlog so the supervisor picks it up; "
+        f"got status={close_off['status']}"
+    )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 from uuid import UUID
 
@@ -42,6 +43,8 @@ from src.gateway.auth import (
 from src.shared.config import settings
 from src.shared.database import get_session
 from src.shared.events import Event, EventType, event_bus
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -373,6 +376,57 @@ async def create_close_off_task(
         worktree_name=body.worktree_name,
         main_agent_worktree_id=main_agent_worktree_id,
     )
+
+    # T-305: warn iff the persisted close-off task is unassigned. The
+    # endpoint is idempotent (services.py find_close_off_task returns the
+    # existing row before recomputing assignment), so a resume/retry where
+    # the main agent was registered earlier but no longer resolves now
+    # MUST NOT re-emit the diagnostic — the task is already assigned in
+    # the DB. Gating on ``task.worktree_id`` (the persisted state), not
+    # ``main_agent_worktree_id`` (this-call resolver state), is the only
+    # way to keep the warning truthful across resume calls.
+    if task.worktree_id is None:
+        # Three distinct causes — only one is true at a time, so the
+        # warning text must branch on resolver outcome FIRST. Codex round 2
+        # caught this: a resume call after the operator runs /cloglog setup
+        # resolves main_agent_worktree_id successfully, but the idempotent
+        # service path returns the existing unassigned row without
+        # backfilling, so blaming "no role='main' worktree" or "inbox_path
+        # misrouted" sends the operator down the wrong remedy. Gate on
+        # resolver outcome first; only fall through to env-var diagnostics
+        # when resolution actually failed.
+        if main_agent_worktree_id is not None:
+            cause = (
+                "main agent now resolves but the idempotent close-off-task "
+                "service path did not backfill worktree_id on the existing "
+                "row (created by an earlier call when no main agent was "
+                "registered)"
+            )
+            remedy = (
+                "Reassign the task to the main agent — e.g. "
+                "mcp__cloglog__assign_task or a direct PATCH on the task."
+            )
+        elif settings.main_agent_inbox_path is None:
+            cause = "no role='main' worktree and main_agent_inbox_path is unset"
+            remedy = "Run /cloglog setup or backfill worktrees.role to fix."
+        else:
+            cause = (
+                "no role='main' worktree; main_agent_inbox_path is configured "
+                f"({settings.main_agent_inbox_path}) but does not point at a "
+                "registered worktree"
+            )
+            remedy = (
+                "Run /cloglog setup so the main agent registers, or correct "
+                "MAIN_AGENT_INBOX_PATH to point at a registered worktree."
+            )
+        logger.warning(
+            "Close-off task for worktree %s (%s) is unassigned: %s for project %s. %s",
+            body.worktree_path,
+            body.worktree_name,
+            cause,
+            project.id,
+            remedy,
+        )
 
     if created:
         await event_bus.publish(

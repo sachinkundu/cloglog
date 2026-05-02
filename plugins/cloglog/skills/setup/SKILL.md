@@ -57,7 +57,7 @@ The new monitor starts at end-of-file (`-n 0`), which is correct for `/clear` an
 
 **If this is a normal session start** (no prior crash): skip this step.
 
-**If you just recovered from a crash** (the previous supervisor session ended unexpectedly, you're not sure whether worktree agents finished while you were down, or close-wave is stuck waiting): inspect the inbox tail one-shot — `Read` the last 100 lines of `<current working directory>/.cloglog/inbox` and look for any line where `"type"` is `"agent_unregistered"`, `"agent_started"`, `"mcp_unavailable"`, `"mcp_tool_error"`, or `"pr_merged"`. Treat each one as if it had just arrived. (A proper offset-tracked replay — analogous to `${CLAUDE_PLUGIN_ROOT}/scripts/wait_for_agent_unregistered.py` which already uses byte offsets for exactly this reason — is the durable fix and is filed as follow-up work; it's out of scope for T-294.)
+**If you just recovered from a crash** (the previous supervisor session ended unexpectedly, you're not sure whether worktree agents finished while you were down, or close-wave is stuck waiting): inspect the inbox tail one-shot — `Read` the last 100 lines of `<current working directory>/.cloglog/inbox` and look for any line where `"type"` is `"agent_unregistered"`, `"agent_started"`, `"mcp_unavailable"`, `"mcp_tool_error"`, `"pr_merged"`, or `"codex_review_timed_out"` (T-374). Treat each one as if it had just arrived. (A proper offset-tracked replay — analogous to `${CLAUDE_PLUGIN_ROOT}/scripts/wait_for_agent_unregistered.py` which already uses byte offsets for exactly this reason — is the durable fix and is filed as follow-up work; it's out of scope for T-294.)
 
 ### 4. Confirm
 
@@ -127,3 +127,15 @@ Two distinct inbox events can land from a worktree agent hitting MCP trouble —
 - **`mcp_tool_error`** — the agent reached MCP but a tool call returned a 5xx, 409 state guard, auth rejection, schema error, or (after one backoff retry) a transient network error. The agent is **still running and waiting** on its inbox Monitor. Inspect the `tool` + `error` fields, fix the root cause (advance a stuck pipeline predecessor, correct board state, resolve a conflict), then write a resume instruction to the agent's inbox (`<worktree_path>/.cloglog/inbox`) or force-unregister if the agent is beyond recovery. Do not ignore the event — the agent cannot self-resume.
 
 See `${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md` §4.1 for the full rule, both event shapes, and the retry policy that agents must follow.
+
+### Handle `codex_review_timed_out` (T-374)
+
+The backend writes `codex_review_timed_out` to the supervisor inbox when the codex review subprocess times out on a terminal stage. The PR author already received the AGENT_TIMEOUT skip comment on GitHub from the codex bot — the supervisor signal exists so the operator notices recurring timeouts (a sign that `REVIEW_TIMEOUT_BASE_SECONDS` / `REVIEW_TIMEOUT_PER_LINE_SECONDS` / `REVIEW_TIMEOUT_CAP_SECONDS` in `src/gateway/review_engine.py` need retuning, or that codex itself is degraded).
+
+Required response:
+
+1. Read the event's `pr_url`, `pr_number`, `diff_size`, `timeout_seconds`. If `diff_size` is unusually large (say > 80% of the cap), surface it to the operator with a one-line summary: *"Codex timed out on PR #NNN at the budget cap (Llines × Bs/line ≥ Cs). Consider raising the cap or splitting the PR."*
+2. If timeouts are clustering on a single repo or in quick succession, suggest probing codex liveness directly — the backend's `_probe_codex_alive` ran during the timeout, but a sustained outage warrants an out-of-band check.
+3. **Do NOT auto-retry the review.** Codex re-runs naturally on the next `synchronize` webhook (the next push). Force-unregistering or relaunching the worktree is wrong — the worktree is still healthy; only the review subprocess hit the budget. Telling the agent to push a no-op commit is also wrong; that masks whether the original work converged.
+
+The full event contract lives in `${CLAUDE_PLUGIN_ROOT}/docs/agent-lifecycle.md` under *Backend-emitted supervisor events*.

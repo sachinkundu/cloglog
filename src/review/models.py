@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid as _uuid
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any
 
 from sqlalchemy import (
     Boolean,
@@ -18,6 +19,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.shared.database import Base
@@ -62,6 +64,12 @@ class PrReviewTurn(Base):
         Boolean, nullable=False, default=False, server_default=text("false")
     )
     elapsed_seconds: Mapped[float | None] = mapped_column(Numeric(10, 3), nullable=True)
+    # T-367 cross-push memory: persist the codex findings array + learnings array
+    # so the next turn's prompt can replay them without re-deriving. Both nullable
+    # because (a) historical rows pre-date this column, and (b) opencode rows
+    # never carry learnings (the learnings field is codex-only).
+    findings_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+    learnings_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),

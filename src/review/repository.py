@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.review.interfaces import ReviewTurnSnapshot
+from src.review.interfaces import PriorContext, PriorTurnSummary, ReviewTurnSnapshot
 from src.review.models import PrReviewTurn, PrReviewTurnStatus
 
 
@@ -152,6 +153,57 @@ class ReviewTurnRepository:
         await self._session.commit()
         rowcount = getattr(result, "rowcount", 0) or 0
         return rowcount > 0
+
+    async def record_findings_and_learnings(
+        self,
+        *,
+        pr_url: str,
+        head_sha: str,
+        stage: str,
+        turn_number: int,
+        findings_json: list[dict[str, Any]],
+        learnings_json: list[dict[str, Any]],
+    ) -> None:
+        stmt = (
+            update(PrReviewTurn)
+            .where(
+                PrReviewTurn.pr_url == pr_url,
+                PrReviewTurn.head_sha == head_sha,
+                PrReviewTurn.stage == stage,
+                PrReviewTurn.turn_number == turn_number,
+            )
+            .values(findings_json=findings_json, learnings_json=learnings_json)
+        )
+        await self._session.execute(stmt)
+        await self._session.commit()
+
+    async def prior_findings_and_learnings(
+        self,
+        *,
+        pr_url: str,
+        stage: str,
+    ) -> PriorContext:
+        stmt = (
+            select(PrReviewTurn)
+            .where(
+                PrReviewTurn.pr_url == pr_url,
+                PrReviewTurn.stage == stage,
+                PrReviewTurn.status == PrReviewTurnStatus.COMPLETED.value,
+                PrReviewTurn.findings_json.is_not(None),
+            )
+            .order_by(PrReviewTurn.created_at.asc())
+        )
+        rows = (await self._session.execute(stmt)).scalars().all()
+        turns = [
+            PriorTurnSummary(
+                head_sha=row.head_sha,
+                turn_number=row.turn_number,
+                findings=list(row.findings_json or []),
+                learnings=list(row.learnings_json or []),
+            )
+            for row in rows
+        ]
+        return PriorContext(pr_url=pr_url, turns=turns)
 
     async def codex_touched_pr_urls(self, *, project_id: UUID, pr_urls: list[str]) -> set[str]:
         if not pr_urls:

@@ -65,7 +65,19 @@ git push "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git" "HEAD:${BR
 git fetch origin "${BRANCH}"
 git branch --set-upstream-to=origin/${BRANCH}
 GH_TOKEN="$BOT_TOKEN" gh pr create --title "feat: ..." --body "$(cat <<'EOF'
-## Demo
+## Feature
+
+F-NN — <feature title from the cloglog board, or "n/a — <reason>">
+
+## Task
+
+T-NNN — <task title from the cloglog board, or "n/a — <reason>">
+
+## What changed
+
+<Narrative of what the diff does and why. The codex reviewer reads this verbatim — be specific about intent so it can verify the diff matches the goal, not just that the code compiles.>
+
+## Test or demo
 
 <Choose ONE of the three variants below, matching what the cloglog:demo skill produced:>
 
@@ -91,16 +103,14 @@ Re-verify: `bash scripts/check-demo.sh` (recomputes the diff_hash; passes while 
 Every changed file is developer infrastructure (e.g., `docs/`, `tests/`, `scripts/`, `.claude/`, `plugins/*/skills/`). `bash scripts/check-demo.sh` prints `Docs-only branch — no demo required.`
 -->
 
-## Tests
+## Out of scope
 
-...
-
-## Changes
-
-...
+<What this PR deliberately does not address. Helps codex avoid flagging "missing X" findings on things you intentionally deferred. Write "n/a" if everything in the natural scope is included.>
 EOF
 )"
 ```
+
+**Fill every section.** The five-section template above mirrors `.github/pull_request_template.md`. The codex reviewer (`docs/design/codex-exhaustive-review.md` §3.1) reads the entire PR body verbatim into its prompt — `Feature` / `Task` / `What changed` / `Out of scope` are how codex learns *what problem the diff is solving*, not just *what the diff is*. Skipping a section silently degrades review quality. For an agent-authored PR there is no "n/a" justification for missing `Task` — every agent-authored PR is tied to a `T-NNN`.
 
 Note: `git push` uses an inline URL (`https://x-access-token:${BOT_TOKEN}@…`) for the bot identity because the `gh` CLI doesn't support push. **Never** mutate `.git/config` via `git remote set-url origin "https://x-access-token:…"` — a persistent bot URL breaks `make promote` (`prod`'s ruleset rejects bot pushes), strands an expired token in config after ~1h, and leaks the credential through `git remote -v`. The `git push <url> HEAD:<branch>` shape pushes once via the bot identity without touching config; the trailing `--set-upstream-to` line preserves operator-side `git pull`/`git push` upstream tracking. All other GitHub operations use `GH_TOKEN="$BOT_TOKEN" gh ...`.
 

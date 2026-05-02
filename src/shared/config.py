@@ -32,7 +32,15 @@ class Settings(BaseSettings):
     # diff cap / ``MAX_DIFF_CHARS=200_000``) — larger PRs already skip review.
     opencode_model: str = "ollama/gemma4-e4b-32k"
     opencode_max_turns: int = 5
-    codex_max_turns: int = 2
+    # T-367: codex now runs ONE turn per webhook (was 2). The lifetime cap
+    # across pushes is enforced separately by ``MAX_REVIEWS_PER_PR=5`` in
+    # review_engine.py. The old per-webhook 2-turn loop wasted a paid codex
+    # invocation: turn 2 had nothing new to review (same diff, same code) and
+    # consistently tripped the consensus subset rule on a near-identical
+    # finding set. With one-turn-per-webhook + cross-push memory replay,
+    # successive pushes still iterate codex toward consensus — just paced by
+    # the author's pushes instead of stacked in one webhook handler.
+    codex_max_turns: int = 1
     opencode_turn_timeout_seconds: float = 240.0
     review_source_root: Path | None = Field(
         default=None,

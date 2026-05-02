@@ -44,7 +44,12 @@ from src.gateway.review_engine import (
     parse_reviewer_output,
     post_review,
 )
-from src.review.interfaces import IReviewTurnRegistry, ReviewTurnSnapshot
+from src.review.interfaces import (
+    IReviewTurnRegistry,
+    PriorContext,
+    PriorTurnSummary,
+    ReviewTurnSnapshot,
+)
 from src.shared.config import settings
 from src.shared.events import Event, EventType, event_bus
 
@@ -78,12 +83,22 @@ class Reviewer(Protocol):
         pr_number: int,
         turn: int,
         max_turns: int,
+        prior_context: PriorContext | None = None,
+        pr_body: str | None = None,
     ) -> tuple[ReviewResult | None, float, bool]:
         """Run one turn.
 
         Returns ``(result, elapsed_seconds, timed_out)``. ``result`` is None on
         failure (parse error, crash) or timeout (``timed_out=True``). The loop
         maps these to ``PrReviewTurnStatus`` values.
+
+        ``prior_context`` carries findings + learnings from earlier turns of
+        this stage on this PR (T-367 cross-push memory). Implementations may
+        ignore it — opencode does today; codex renders it as a prompt
+        preamble. ``pr_body`` is the raw PR description (the
+        ``.github/pull_request_template.md`` sections an agent filled);
+        codex injects it under "What this PR is doing" so the reviewer has
+        the human-equivalent context.
         """
         ...
 
@@ -122,6 +137,118 @@ def _finding_key(finding: dict[str, object] | object) -> tuple[str, int, str]:
 
 
 _SEVERE_SEVERITIES: Final = frozenset({"critical", "high"})
+
+
+def _render_pr_body_section(pr_body: str | None) -> str:
+    """Render the "What this PR is doing" preamble section for codex.
+
+    ``pr_body`` is the raw PR description authored by Claude (or the human).
+    Empty body or all-whitespace body collapses to a one-line "no PR
+    description provided" so codex can see *that* fact rather than silently
+    being given less context.
+    """
+    body = (pr_body or "").strip()
+    if not body:
+        return (
+            "## What this PR is doing\n\n"
+            "(The PR has no description. Reviewing diff intent unverified.)\n"
+        )
+    return f"## What this PR is doing\n\n{body}\n"
+
+
+def _dedupe_learnings(turns: list[PriorTurnSummary]) -> list[dict[str, str]]:
+    """Collapse prior-turn learnings by ``topic``, last-write-wins on ``note``.
+
+    A topic restated across turns means codex re-emitted the same fact —
+    show it once. Last-turn note wins because that is the freshest framing
+    of the same fact. Stable order: first-seen-topic order.
+    """
+    seen: dict[str, str] = {}
+    order: list[str] = []
+    for turn in turns:
+        for learning in turn.learnings:
+            topic = str(learning.get("topic", "")).strip()
+            note = str(learning.get("note", "")).strip()
+            if not topic or not note:
+                continue
+            if topic not in seen:
+                order.append(topic)
+            seen[topic] = note
+    return [{"topic": t, "note": seen[t]} for t in order]
+
+
+def _render_prior_history_section(prior_context: PriorContext | None) -> str:
+    """Render the "Prior review history" preamble, or an empty string.
+
+    Empty when no prior turns exist — i.e., this is turn 1 of the codex
+    stage on this PR. Otherwise emits dedupe'd learnings followed by every
+    finding from every prior turn (oldest first), grouped by turn header so
+    codex can see which commit each finding was filed against.
+
+    Author responses to findings are not fetched here — the spec defers
+    that to a follow-up. The placeholder ``Author response: (not fetched)``
+    is rendered so the prompt shape is stable when the wiring lands.
+    """
+    if prior_context is None or not prior_context.turns:
+        return ""
+    lines = [
+        "## Prior review history",
+        "",
+        (
+            "You have reviewed earlier commits of this PR. Findings you raised "
+            "previously and codebase facts you noted are listed below. Use the "
+            'rules in the prompt\'s "Prior review history" section to decide '
+            "whether to re-state, drop, or supersede each."
+        ),
+        "",
+    ]
+    deduped = _dedupe_learnings(prior_context.turns)
+    if deduped:
+        lines += ["### Codebase learnings from prior turns", ""]
+        for item in deduped:
+            lines.append(f"- **{item['topic']}** — {item['note']}")
+        lines.append("")
+    lines += ["### Prior findings", ""]
+    for turn in prior_context.turns:
+        sha7 = (turn.head_sha or "")[:7] or "unknown"
+        lines.append(f"#### Turn {turn.turn_number} (commit `{sha7}`)")
+        lines.append("")
+        if not turn.findings:
+            lines.append("(no findings filed this turn)")
+            lines.append("")
+            continue
+        for finding in turn.findings:
+            file_ = finding.get("file", "?")
+            line = finding.get("line", "?")
+            title = finding.get("title") or finding.get("body", "")
+            severity = finding.get("severity", "info")
+            body = finding.get("body", "")
+            lines.append(f"- `{file_}:{line}` **[{str(severity).upper()}]** {title}")
+            if body and body != title:
+                lines.append(f"  - Body: {body}")
+            lines.append("  - Author response: (not fetched)")
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def build_codex_prompt(
+    *,
+    base_prompt: str,
+    pr_body: str | None,
+    prior_context: PriorContext | None,
+    diff: str,
+) -> str:
+    """Assemble the final codex prompt: base + PR body + prior history + diff.
+
+    Pulled out of ``CodexReviewer.run`` so tests can pin the exact rendered
+    shape without spawning a subprocess.
+    """
+    parts = [base_prompt, _render_pr_body_section(pr_body)]
+    history = _render_prior_history_section(prior_context)
+    if history:
+        parts.append(history)
+    parts.append(f"DIFF:\n{diff}")
+    return "\n\n".join(parts)
 
 
 def _reached_consensus(
@@ -198,7 +325,13 @@ class ReviewLoop:
         """
         return f"**{reviewer.display_label} — session {session_index}/{max_sessions}**"
 
-    async def run(self, *, diff: str) -> LoopOutcome:
+    async def run(
+        self,
+        *,
+        diff: str,
+        prior_context: PriorContext | None = None,
+        pr_body: str | None = None,
+    ) -> LoopOutcome:
         start_all = time.monotonic()
         prior_keys: set[tuple[str, int, str]] = set()
         # Hydrate prior keys from already-persisted turns for this (pr, sha).
@@ -302,6 +435,8 @@ class ReviewLoop:
                     pr_number=self._pr_number,
                     turn=turn,
                     max_turns=self._max_turns,
+                    prior_context=prior_context,
+                    pr_body=pr_body,
                 )
 
                 if result is None:
@@ -383,6 +518,20 @@ class ReviewLoop:
                     consensus_reached=consensus,
                     elapsed_seconds=elapsed,
                 )
+                # T-367 cross-push memory: persist the findings + learnings on
+                # the same row complete_turn just updated, so the next turn's
+                # prompt can replay them. Only meaningful for codex
+                # (opencode emits no learnings and the codex stage's preamble
+                # is the only consumer); harmless to write on opencode rows
+                # too — learnings will be empty.
+                await self._registry.record_findings_and_learnings(
+                    pr_url=self._pr_url,
+                    head_sha=self._head_sha,
+                    stage=self._stage,
+                    turn_number=turn,
+                    findings_json=[f.model_dump() for f in result.findings],
+                    learnings_json=list(result.learnings),
+                )
                 logger.info(
                     "review_turn_end stage=%s turn=%d/%d pr=%d findings=%d "
                     "consensus=%s elapsed=%.1fs",
@@ -457,11 +606,18 @@ class CodexReviewer:
         pr_number: int,
         turn: int,
         max_turns: int,
+        prior_context: PriorContext | None = None,
+        pr_body: str | None = None,
     ) -> tuple[ReviewResult | None, float, bool]:
         del turn, max_turns  # codex prompt is turn-agnostic; header is added by loop
         prompt = _load_project_prompt(self._project_root)
         schema_path = _get_schema_path(self._project_root)
-        full_prompt = f"{prompt}\n\nDIFF:\n{diff}"
+        full_prompt = build_codex_prompt(
+            base_prompt=prompt,
+            pr_body=pr_body,
+            prior_context=prior_context,
+            diff=diff,
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "review.json"
@@ -564,7 +720,10 @@ class OpencodeReviewer:
         pr_number: int,
         turn: int,
         max_turns: int,
+        prior_context: PriorContext | None = None,
+        pr_body: str | None = None,
     ) -> tuple[ReviewResult | None, float, bool]:
+        del prior_context, pr_body  # opencode runs without cross-push memory (T-367 §2)
         prompt = self._load_prompt(self._project_root)
         full_prompt = f"{prompt}\n\nCurrent turn: {turn}/{max_turns}.\n\nDIFF:\n{diff}"
         args = self._build_args(full_prompt)

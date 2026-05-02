@@ -384,6 +384,221 @@ class TestTurnsForStage:
 
 
 # ---------------------------------------------------------------------------
+# T-367: record_findings_and_learnings + prior_findings_and_learnings
+# ---------------------------------------------------------------------------
+
+
+class TestRecordAndReplayFindings:
+    async def test_record_then_prior_round_trip(self, db_session: AsyncSession) -> None:
+        """Persist findings + learnings on a completed turn, then read them
+        back via the PR-scoped aggregate. Pin both arrays survive the JSONB
+        round-trip with their inner shape intact."""
+        project = await _make_project(db_session)
+        repo = ReviewTurnRepository(db_session)
+        pr_url, head_sha = _unique_pr("recplay")
+
+        await repo.claim_turn(
+            project_id=project.id,
+            pr_url=pr_url,
+            pr_number=11,
+            head_sha=head_sha,
+            stage="codex",
+            turn_number=1,
+        )
+        await repo.complete_turn(
+            pr_url=pr_url,
+            head_sha=head_sha,
+            stage="codex",
+            turn_number=1,
+            status=PrReviewTurnStatus.COMPLETED.value,
+            finding_count=1,
+            consensus_reached=False,
+            elapsed_seconds=1.5,
+        )
+
+        finding = {
+            "file": "src/x.py",
+            "line": 42,
+            "severity": "high",
+            "title": "missing await",
+            "body": "calling async without await",
+        }
+        learning = {"topic": "DDD", "note": "Gateway owns no tables"}
+        await repo.record_findings_and_learnings(
+            pr_url=pr_url,
+            head_sha=head_sha,
+            stage="codex",
+            turn_number=1,
+            findings_json=[finding],
+            learnings_json=[learning],
+        )
+
+        prior = await repo.prior_findings_and_learnings(pr_url=pr_url, stage="codex")
+        assert len(prior.turns) == 1
+        only = prior.turns[0]
+        assert only.head_sha == head_sha
+        assert only.turn_number == 1
+        assert only.findings == [finding]
+        assert only.learnings == [learning]
+
+    async def test_prior_excludes_failed_turns(self, db_session: AsyncSession) -> None:
+        """A turn whose status is NOT 'completed' must not surface in the
+        replay — the preamble would render an empty/garbled entry that
+        confuses the next-turn prompt."""
+        project = await _make_project(db_session)
+        repo = ReviewTurnRepository(db_session)
+        pr_url, head_sha = _unique_pr("failexc")
+
+        await repo.claim_turn(
+            project_id=project.id,
+            pr_url=pr_url,
+            pr_number=12,
+            head_sha=head_sha,
+            stage="codex",
+            turn_number=1,
+        )
+        await repo.complete_turn(
+            pr_url=pr_url,
+            head_sha=head_sha,
+            stage="codex",
+            turn_number=1,
+            status=PrReviewTurnStatus.FAILED.value,
+            finding_count=None,
+            consensus_reached=False,
+            elapsed_seconds=0.1,
+        )
+
+        prior = await repo.prior_findings_and_learnings(pr_url=pr_url, stage="codex")
+        assert prior.turns == []
+        assert prior.codex_turn_count == 0
+
+    async def test_prior_excludes_completed_with_null_findings(
+        self, db_session: AsyncSession
+    ) -> None:
+        """A completed turn that never had record_findings_and_learnings
+        called on it (transient bug, partial deploy) carries findings_json
+        IS NULL — must be excluded from replay so the preamble doesn't
+        render a meaningless entry."""
+        project = await _make_project(db_session)
+        repo = ReviewTurnRepository(db_session)
+        pr_url, head_sha = _unique_pr("nullfind")
+
+        await repo.claim_turn(
+            project_id=project.id,
+            pr_url=pr_url,
+            pr_number=13,
+            head_sha=head_sha,
+            stage="codex",
+            turn_number=1,
+        )
+        await repo.complete_turn(
+            pr_url=pr_url,
+            head_sha=head_sha,
+            stage="codex",
+            turn_number=1,
+            status=PrReviewTurnStatus.COMPLETED.value,
+            finding_count=0,
+            consensus_reached=True,
+            elapsed_seconds=2.0,
+        )
+
+        prior = await repo.prior_findings_and_learnings(pr_url=pr_url, stage="codex")
+        assert prior.turns == []
+
+    async def test_prior_aggregates_across_head_shas(self, db_session: AsyncSession) -> None:
+        """The whole point of cross-PUSH memory: a turn on commit A and a
+        turn on commit B for the same pr_url BOTH appear in prior context,
+        oldest first."""
+        project = await _make_project(db_session)
+        repo = ReviewTurnRepository(db_session)
+        pr_url = f"https://github.com/owner/repo/pull/{uuid.uuid4().hex[:8]}"
+        sha_a = "a" * 40
+        sha_b = "b" * 40
+
+        for i, sha in enumerate([sha_a, sha_b], start=1):
+            await repo.claim_turn(
+                project_id=project.id,
+                pr_url=pr_url,
+                pr_number=14,
+                head_sha=sha,
+                stage="codex",
+                turn_number=1,
+            )
+            await repo.complete_turn(
+                pr_url=pr_url,
+                head_sha=sha,
+                stage="codex",
+                turn_number=1,
+                status=PrReviewTurnStatus.COMPLETED.value,
+                finding_count=1,
+                consensus_reached=False,
+                elapsed_seconds=1.0,
+            )
+            await repo.record_findings_and_learnings(
+                pr_url=pr_url,
+                head_sha=sha,
+                stage="codex",
+                turn_number=1,
+                findings_json=[
+                    {
+                        "file": f"f{i}.py",
+                        "line": i,
+                        "severity": "info",
+                        "title": f"t{i}",
+                        "body": "",
+                    }
+                ],
+                learnings_json=[],
+            )
+
+        prior = await repo.prior_findings_and_learnings(pr_url=pr_url, stage="codex")
+        assert prior.codex_turn_count == 2
+        assert {t.head_sha for t in prior.turns} == {sha_a, sha_b}
+
+    async def test_prior_filters_by_stage(self, db_session: AsyncSession) -> None:
+        """Memory is per-stage. An opencode turn does NOT show up in the
+        codex prior context — they have separate prompts and separate
+        replay needs."""
+        project = await _make_project(db_session)
+        repo = ReviewTurnRepository(db_session)
+        pr_url, head_sha = _unique_pr("stagefilt")
+
+        for stage in ["opencode", "codex"]:
+            await repo.claim_turn(
+                project_id=project.id,
+                pr_url=pr_url,
+                pr_number=15,
+                head_sha=head_sha,
+                stage=stage,
+                turn_number=1,
+            )
+            await repo.complete_turn(
+                pr_url=pr_url,
+                head_sha=head_sha,
+                stage=stage,
+                turn_number=1,
+                status=PrReviewTurnStatus.COMPLETED.value,
+                finding_count=1,
+                consensus_reached=False,
+                elapsed_seconds=1.0,
+            )
+            await repo.record_findings_and_learnings(
+                pr_url=pr_url,
+                head_sha=head_sha,
+                stage=stage,
+                turn_number=1,
+                findings_json=[
+                    {"file": "x.py", "line": 1, "severity": "info", "title": stage, "body": ""}
+                ],
+                learnings_json=[],
+            )
+
+        codex_prior = await repo.prior_findings_and_learnings(pr_url=pr_url, stage="codex")
+        assert codex_prior.codex_turn_count == 1
+        assert codex_prior.turns[0].findings[0]["title"] == "codex"
+
+
+# ---------------------------------------------------------------------------
 # FK cascade on project delete
 # ---------------------------------------------------------------------------
 

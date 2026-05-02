@@ -2723,9 +2723,18 @@ class TestOpencodeEnabledFlag:
 
     class _NoopRegistryCtx:
         async def __aenter__(self) -> object:
-            from unittest.mock import MagicMock
+            from unittest.mock import AsyncMock, MagicMock
 
-            return MagicMock()
+            from src.review.interfaces import PriorContext
+
+            mock = MagicMock()
+            # T-367: codex stage now reads prior_findings_and_learnings before
+            # running the loop. Sequencer-level tests don't exercise memory —
+            # return an empty PriorContext so the call resolves cleanly.
+            mock.prior_findings_and_learnings = AsyncMock(
+                return_value=PriorContext(pr_url="", turns=[])
+            )
+            return mock
 
         async def __aexit__(self, *exc: object) -> bool:
             return False
@@ -2772,7 +2781,7 @@ class TestOpencodeEnabledFlag:
             def __init__(self, _reviewer: object, **kwargs: object) -> None:
                 self._stage = str(kwargs.get("stage", "?"))
 
-            async def run(self, *, diff: str) -> object:
+            async def run(self, **_kwargs: object) -> object:
                 stage_runs.setdefault(self._stage, []).append(self._stage)
                 return TestOpencodeEnabledFlag._fake_outcome()
 
@@ -4276,9 +4285,18 @@ class TestReviewPrUsesWorktreeProjectRoot:
 
     class _RecordingRegistryCtx:
         async def __aenter__(self) -> object:
-            from unittest.mock import MagicMock
+            from unittest.mock import AsyncMock, MagicMock
 
-            return MagicMock()
+            from src.review.interfaces import PriorContext
+
+            mock = MagicMock()
+            # T-367: codex stage now reads prior_findings_and_learnings before
+            # running the loop. These T-278 tests don't exercise memory —
+            # return an empty PriorContext so the call resolves cleanly.
+            mock.prior_findings_and_learnings = AsyncMock(
+                return_value=PriorContext(pr_url="", turns=[])
+            )
+            return mock
 
         async def __aexit__(self, *exc: object) -> bool:
             return False
@@ -4320,7 +4338,7 @@ class TestReviewPrUsesWorktreeProjectRoot:
                 # patch instead — see ``captured_roots`` below.
                 self._stage = str(kwargs.get("stage", "?"))
 
-            async def run(self, *, diff: str) -> object:
+            async def run(self, **_kwargs: object) -> object:
                 return type("Outcome", (), {"turns_used": 1, "errors": []})()
 
         # SHA matches the worktree HEAD so the resolver returns the worktree
@@ -4425,7 +4443,7 @@ class TestReviewPrUsesWorktreeProjectRoot:
             def __init__(self, reviewer: object, **kwargs: object) -> None:
                 self._stage = str(kwargs.get("stage", "?"))
 
-            async def run(self, *, diff: str) -> object:
+            async def run(self, **_kwargs: object) -> object:
                 return type("Outcome", (), {"turns_used": 1, "errors": []})()
 
         event = WebhookEvent(
@@ -4532,7 +4550,7 @@ class TestReviewPrUsesWorktreeProjectRoot:
             def __init__(self, reviewer: object, **kwargs: object) -> None:
                 self._stage = str(kwargs.get("stage", "?"))
 
-            async def run(self, *, diff: str) -> object:
+            async def run(self, **_kwargs: object) -> object:
                 raise RuntimeError("simulated reviewer crash")
 
         event = WebhookEvent(

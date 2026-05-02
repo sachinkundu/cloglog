@@ -596,8 +596,13 @@ respective skills for the concrete command invocations.
 The three tiers above cover the *session side* of shutdown: ending the
 backend row and flushing the agent's last MCP calls. Teardown — removing
 the worktree path, deleting the branch, closing the zellij tab, archiving
-`shutdown-artifacts/` into `docs/work-logs/`, and folding learnings into
-CLAUDE.md — is a separate concern with a single ownership rule:
+`shutdown-artifacts/` into `docs/work-logs/`, and routing any extracted
+learnings to their proper homes (`docs/invariants.md` for silent-failure
+invariants with a pin, the relevant SKILL/template/agent for workflow
+gotchas, a design doc for architectural decisions, or — rarely —
+`CLAUDE.md` for top-level project rules; T-368 retired the `CLAUDE.md`
+Agent Learnings section) — is a separate concern with a single ownership
+rule:
 
 > **Reconcile is the arbiter. Close-wave is the clean path.
 > `force_unregister` is the dirty path.**
@@ -607,8 +612,10 @@ what teardown meant:
 
 - **close-wave** treats teardown as the *final* step of a pipeline that
   first archives `shutdown-artifacts/{work-log,learnings}.md` into
-  `docs/work-logs/`, runs pr-postprocessor to fold lessons into
-  CLAUDE.md, files follow-up tasks, and opens a close-off PR.
+  `docs/work-logs/`, runs pr-postprocessor to route any extracted
+  learnings to their proper homes (per T-368: `docs/invariants.md`,
+  the relevant SKILL/template/agent file, a design doc, or rarely
+  `CLAUDE.md`), files follow-up tasks, and opens a close-off PR.
 - **reconcile** treated teardown as a *direct* action: Case A / Case C
   would `git worktree remove --force` the path, and the artifacts would
   vaporize before close-wave ever saw them.

@@ -1,24 +1,23 @@
 ---
 verdict: no_demo
-diff_hash: f566b6a2e278c965ed608e8598810b050515173454336f6eb4f3a869060078a5
+diff_hash: f11c4df971ffed1df9c4c445beec0b4f533af77e5a82bd18d3ede45994de0ea5
 classifier: demo-classifier
-generated_at: 2026-05-02T00:00:00Z
+generated_at: 2026-05-02T00:01:00Z
 ---
 
 ## Why no demo
 
-Signal: diff is logging-only in production code — `src/agent/routes.py` adds
-a `logger.warning` for an unassigned close-off path, and
-`src/gateway/webhook_consumers.py` adds warning/debug log lines on webhook
-drop branches. No router decorators added/changed, no response shapes
-touched, no schemas modified. Test files
-(`tests/agent/test_close_off_task.py`, `tests/gateway/test_webhook_consumers.py`)
-are test-only. Strongest needs_demo candidate considered: the new behaviour
-around close-off task assignment, but the production change is only a log
-line — control flow and response remain identical. Counterfactual: if the
-route had begun assigning `worktree_id` to the main agent (changing what
-`GET /agents/{wt}/tasks` returns to the supervisor) rather than just logging
-when it can't, that would be user-observable and flip to needs_demo.
+Diff is logging-only plus tests. `src/agent/routes.py` adds a
+`logger.warning` on an existing close-off task code path (no decorator,
+schema, or response shape changes). `src/gateway/webhook_consumers.py`
+adds warning/debug log lines on existing webhook drop branches with no
+behavior or response change. Strongest needs_demo candidate considered:
+`src/agent/routes.py` touches a router file, but no `@router.*` decorator
+was added/modified and no response shape changed — pure observability.
+Counterfactual: had the diff added or changed an `@router.*` decorator,
+request body, or response payload in `src/agent/routes.py` or
+`src/gateway/*.py`, the verdict would have flipped to needs_demo with
+backend-curl.
 
 ## Changed files
 

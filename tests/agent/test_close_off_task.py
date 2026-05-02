@@ -285,6 +285,139 @@ async def test_webhook_routes_pr_events_to_main_via_task_pr_url(
     assert payload["pr_number"] == 999
 
 
+async def test_resume_does_not_warn_when_task_already_assigned(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch, caplog
+) -> None:
+    """T-305 codex pin: a resume/retry call where main-agent resolution
+    has since broken MUST NOT re-emit the unassigned warning if the
+    persisted task is already assigned to the main agent.
+
+    Sequence: (1) register main + register wt + first close-off call —
+    task gets ``worktree_id=main_wt_id`` persisted. (2) Force resolution
+    to fail (main_agent_inbox_path None and no role='main' present) by
+    deleting the role from the main row. (3) Re-call the endpoint — the
+    idempotent path returns the existing assigned task. The warning must
+    NOT fire because the close-off is still correctly assigned in the DB.
+
+    Codex review on PR #292 caught this: the original implementation
+    warned based on the per-call resolver state instead of the persisted
+    ``Task.worktree_id``, producing false-positive ``"is unassigned"``
+    log lines on legitimate resume calls.
+    """
+    import logging
+
+    from src.agent.models import Worktree
+
+    _, api_key = await _create_project(client, "resume-noop")
+
+    main_path = f"/tmp/main-{uuid.uuid4().hex[:8]}"
+    wt_path = f"/tmp/wt-resume-{uuid.uuid4().hex[:8]}"
+
+    main_wt_id, _ = await _register_with_token(client, api_key, main_path, "main")
+    await _register(client, api_key, wt_path, "wt-resume")
+
+    from src.shared.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "main_agent_inbox_path", Path(f"{main_path}/.cloglog/inbox"))
+
+    first = await client.post(
+        "/api/v1/agents/close-off-task",
+        json={"worktree_path": wt_path, "worktree_name": "wt-resume"},
+        headers=_auth(api_key),
+    )
+    assert first.status_code == 201, first.text
+    assert first.json()["created"] is True
+
+    # Break main-agent resolution for the resume call: drop role and
+    # unset the env-var compat fallback. The persisted task still
+    # carries the original main-agent assignment.
+    main_uuid = uuid.UUID(main_wt_id)
+    main_row = await db_session.get(Worktree, main_uuid)
+    assert main_row is not None
+    main_row.role = "worktree"
+    await db_session.commit()
+    monkeypatch.setattr(_settings, "main_agent_inbox_path", None)
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="src.agent.routes"):
+        second = await client.post(
+            "/api/v1/agents/close-off-task",
+            json={"worktree_path": wt_path, "worktree_name": "wt-resume"},
+            headers=_auth(api_key),
+        )
+
+    assert second.status_code == 201
+    body = second.json()
+    assert body["created"] is False, "Idempotent resume must return created=false"
+
+    unassigned_warnings = [
+        r for r in caplog.records if "is unassigned" in r.message and r.levelname == "WARNING"
+    ]
+    assert not unassigned_warnings, (
+        "Resume of an already-assigned close-off task must NOT warn; "
+        f"got: {[r.message for r in unassigned_warnings]}"
+    )
+
+    # Confirm the persisted assignment survived: the task still points
+    # at the original main agent.
+    repo = BoardRepository(db_session)
+    task = await repo.get_task(uuid.UUID(body["task_id"]))
+    assert task is not None
+    assert task.worktree_id == main_uuid
+
+
+async def test_unassigned_warning_distinguishes_inbox_path_configured(
+    client: AsyncClient, monkeypatch, caplog, tmp_path
+) -> None:
+    """T-305 codex pin: the warning text must distinguish the two failure
+    modes (no env-var configured vs. configured-but-misrouted) so the
+    operator's remedy step is correct.
+
+    Configured-but-misrouted: main_agent_inbox_path is set but points at
+    a path that is NOT a registered worktree, AND no role='main' row
+    exists. The route lands an unassigned task and must emit a warning
+    that names the configured path so the operator can fix it.
+    """
+    import logging
+
+    _, api_key = await _create_project(client, "configured-misrouted")
+    # Path must contain ``/.claude/worktrees/`` so registration derives
+    # role='worktree' (see _derive_worktree_role in src/agent/services.py).
+    # Otherwise the wt row itself becomes role='main' and the resolver
+    # picks it up via get_main_agent_worktree, defeating the test.
+    wt_path = str(tmp_path / ".claude" / "worktrees" / f"wt-mis-{uuid.uuid4().hex[:8]}")
+    await _register(client, api_key, wt_path, "wt-mis")
+
+    # Misrouted env-var: parent.parent points at /tmp/no-such-main, which
+    # was never registered, so get_worktree_by_path returns None and the
+    # task lands unassigned.
+    bogus = tmp_path / "no-such-main" / ".cloglog" / "inbox"
+    from src.shared.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "main_agent_inbox_path", bogus)
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="src.agent.routes"):
+        resp = await client.post(
+            "/api/v1/agents/close-off-task",
+            json={"worktree_path": wt_path, "worktree_name": "wt-mis"},
+            headers=_auth(api_key),
+        )
+    assert resp.status_code == 201
+
+    misrouted = [
+        r
+        for r in caplog.records
+        if r.levelname == "WARNING"
+        and "is unassigned" in r.message
+        and "does not point at a registered worktree" in r.message
+    ]
+    assert misrouted, (
+        "Configured-but-misrouted env-var case must emit a distinct warning "
+        f"naming the failure mode; got records: {[r.message for r in caplog.records]}"
+    )
+
+
 async def test_close_off_task_surfaces_in_main_agent_get_tasks(
     client: AsyncClient, monkeypatch
 ) -> None:

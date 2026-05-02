@@ -368,21 +368,6 @@ async def create_close_off_task(
         legacy_path = str(settings.main_agent_inbox_path.parent.parent)
         main_agent = await agent_repo.get_worktree_by_path(project.id, legacy_path)
     main_agent_worktree_id: UUID | None = main_agent.id if main_agent is not None else None
-    if main_agent_worktree_id is None:
-        # T-305: when neither role='main' nor MAIN_AGENT_INBOX_PATH resolves,
-        # the close-off task lands unassigned (worktree_id=NULL) and never
-        # surfaces in the supervisor's get_my_tasks. Operators on PR #231
-        # (2026-04-26) hit exactly this — the bootstrapping hook fired before
-        # the main agent was registered with role='main', so close-offs went
-        # silent. Log loudly so the operator catches it before the next wave.
-        logger.warning(
-            "Close-off task for worktree %s (%s) is unassigned: "
-            "no role='main' worktree and main_agent_inbox_path unset for project %s. "
-            "Run /cloglog setup or backfill worktrees.role to fix.",
-            body.worktree_path,
-            body.worktree_name,
-            project.id,
-        )
 
     board_service = BoardService(BoardRepository(session))
     task, created = await board_service.create_close_off_task(
@@ -391,6 +376,37 @@ async def create_close_off_task(
         worktree_name=body.worktree_name,
         main_agent_worktree_id=main_agent_worktree_id,
     )
+
+    # T-305: warn iff the persisted close-off task is unassigned. The
+    # endpoint is idempotent (services.py find_close_off_task returns the
+    # existing row before recomputing assignment), so a resume/retry where
+    # the main agent was registered earlier but no longer resolves now
+    # MUST NOT re-emit the diagnostic — the task is already assigned in
+    # the DB. Gating on ``task.worktree_id`` (the persisted state), not
+    # ``main_agent_worktree_id`` (this-call resolver state), is the only
+    # way to keep the warning truthful across resume calls.
+    if task.worktree_id is None:
+        if settings.main_agent_inbox_path is None:
+            cause = "no role='main' worktree and main_agent_inbox_path is unset"
+            remedy = "Run /cloglog setup or backfill worktrees.role to fix."
+        else:
+            cause = (
+                "no role='main' worktree; main_agent_inbox_path is configured "
+                f"({settings.main_agent_inbox_path}) but does not point at a "
+                "registered worktree"
+            )
+            remedy = (
+                "Run /cloglog setup so the main agent registers, or correct "
+                "MAIN_AGENT_INBOX_PATH to point at a registered worktree."
+            )
+        logger.warning(
+            "Close-off task for worktree %s (%s) is unassigned: %s for project %s. %s",
+            body.worktree_path,
+            body.worktree_name,
+            cause,
+            project.id,
+            remedy,
+        )
 
     if created:
         await event_bus.publish(

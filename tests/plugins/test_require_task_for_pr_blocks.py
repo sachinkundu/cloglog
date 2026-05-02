@@ -147,10 +147,26 @@ def test_agent_shutdown_hook_clears_state_json() -> None:
     hook = REPO_ROOT / "plugins/cloglog/hooks/agent-shutdown.sh"
     body = hook.read_text(encoding="utf-8")
     assert "rm -f " in body and ".cloglog/state.json" in body, (
-        "agent-shutdown.sh must remove `<cwd>/.cloglog/state.json` "
-        "after the unregister-by-path call so the hook's "
+        "agent-shutdown.sh must remove `<worktree_root>/.cloglog/"
+        "state.json` after the unregister-by-path call so the hook's "
         "presence-of-state-file invariant matches the backend's "
         "actual registration state. T-371 / codex review on PR #287."
+    )
+    # T-371 codex round 4: the rm and the unregister-by-path payload
+    # must both target the worktree ROOT, not the SessionEnd-reported
+    # `$CWD` (which can be a nested subdir like `<worktree>/src`).
+    assert "WORKTREE_ROOT" in body, (
+        "agent-shutdown.sh must resolve the worktree root via "
+        "`git rev-parse --show-toplevel` before the cleanup — "
+        "Bash's reported `cwd` is not pinned to the worktree root, "
+        "so a subdirectory-cwd shutdown would `rm` the wrong path "
+        "and leave the canonical state.json behind."
+    )
+    assert 'rm -f "${WORKTREE_ROOT}/.cloglog/state.json"' in body, (
+        "agent-shutdown.sh's state.json rm must use $WORKTREE_ROOT, "
+        "not $CWD. Codex review on PR #287 round 4 caught the "
+        "earlier $CWD-based draft that left stale tokens behind on "
+        "subdirectory-cwd shutdowns."
     )
 
 

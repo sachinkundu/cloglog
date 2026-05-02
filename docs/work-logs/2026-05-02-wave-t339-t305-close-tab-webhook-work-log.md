@@ -73,7 +73,7 @@ The audit verified that `BoardService.create_close_off_task` does pass `main_age
 
 - `src/gateway/webhook_consumers.py` — diagnostic warnings on the two `_resolve_agent` drop branches; debug line on the deliberate non-main drop.
 - `src/agent/routes.py` — module-level `logger`, `logger.warning` after `BoardService.create_close_off_task`, gated on persisted `task.worktree_id`, branched on resolver outcome.
-- `tests/agent/test_close_off_task.py` — three new pin tests:
+- `tests/agent/test_close_off_task.py` — four new pin tests:
   - `test_close_off_task_surfaces_in_main_agent_get_tasks` — register main + create close-off + GET `/api/v1/agents/{main_wt_id}/tasks`; assert close-off appears with status=backlog.
   - `test_resume_does_not_warn_when_task_already_assigned` — first call assigns; break role + env-var; resume returns `created=false` with NO `"is unassigned"` warning.
   - `test_warning_diagnoses_idempotent_no_backfill_after_setup` — unassigned create → register main → retry hits idempotent path → assert warning names the no-backfill cause and does NOT emit the env-var diagnostic.
@@ -107,8 +107,8 @@ The audit verified that `BoardService.create_close_off_task` does pass `main_age
 
 Routed (Step 11):
 
-- **Launch SKILL ordering bug — register_agent must precede on-worktree-create.sh.** Filed as **T-378 (expedite)**. The script silently WARNs and continues on a 404, hiding the gap until close-wave fails Step 1.5 much later. Fix: reorder Step 4 in `plugins/cloglog/skills/launch/SKILL.md`, change WARN to fail-loud in `.cloglog/on-worktree-create.sh`, add a pin asserting the call order.
-- **CI fires on every PR push — switch to fire only on codex finalization (`:pass` or 5/5 turns).** Filed as **T-377**. Both `ci.yml` and `init-smoke.yml` use `pull_request: types: [opened, synchronize, reopened]` (default). Empirical observation: runs almost always pass; the per-push gate is noisy and expensive vs. one run after codex terminal state.
+- **Launch SKILL enforcement gap — register_agent must precede on-worktree-create.sh.** Filed as **T-378 (expedite)**. The launch SKILL prose at `plugins/cloglog/skills/launch/SKILL.md:242-253` already orders Step 4b (register) before Step 4c (on-worktree-create) — but in this session the main agent ran the bash commands in the wrong order, and `.cloglog/on-worktree-create.sh:135` silently `WARN`s and continues on a non-201 response, hiding the gap until close-wave failed Step 1.5 much later. Remaining fix scope (SKILL doc is correct as-is): change WARN to fail-loud in `.cloglog/on-worktree-create.sh`, add a pin asserting register-then-create order is enforced (script-level or hook-level, since SKILL prose alone isn't enough).
+- **CI fires on every PR push — switch to fire only on codex finalization (`:pass` or 5/5 turns).** Filed as **T-377**. `init-smoke.yml` runs unconditionally on every PR push (no `paths:` filter); `ci.yml` is `pull_request`-triggered with a `paths:` filter scoped to runtime code/tests, so docs-only or unrelated PR pushes do NOT trigger it. Empirical observation: runs almost always pass; the per-push gate is noisy and expensive (especially `init-smoke.yml`) vs. one run after codex terminal state.
 
 Both routed-as-tasks rather than baked into this PR.
 

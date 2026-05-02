@@ -51,7 +51,21 @@ invariants: ## Run silent-failure pin tests (see docs/invariants.md)
 	  tests/gateway/test_review_engine.py::TestResolvePrReviewRoot \
 	  tests/gateway/test_review_engine.py::TestLatestCodexReviewIsApproval \
 	  tests/test_makefile_gunicorn_invocation.py \
-	  tests/plugins/test_skills_no_remote_set_url.py
+	  tests/plugins/test_skills_no_remote_set_url.py \
+	  tests/gateway/test_notification_listener_does_not_toast_on_review_transition.py \
+	  tests/gateway/test_notification_listener_toasts_on_unregister_filter.py \
+	  tests/gateway/test_review_engine.py::TestPostReview::test_commit_id_included_when_head_sha_provided \
+	  tests/gateway/test_review_engine.py::TestPostReview::test_commit_id_omitted_when_head_sha_empty \
+	  tests/gateway/test_review_engine.py::TestFullFlowIntegration::test_degraded_path_includes_commit_id \
+	  tests/gateway/test_review_engine_t248.py::TestOpencodeOnlyHost::test_session_cap_check_skipped_when_codex_unavailable \
+	  tests/shared/test_event_bus_cross_worker.py::test_publisher_does_not_double_deliver_its_own_notify_echo \
+	  tests/shared/test_event_bus_cross_worker.py::test_mirrored_events_do_not_reach_global_subscribers \
+	  tests/shared/test_event_bus_cross_worker.py::test_oversize_payload_is_dropped_locally_logged_no_crash \
+	  tests/plugins/test_init_on_fresh_repo.py::test_step3_block_writes_settings_with_no_placeholders \
+	  tests/plugins/test_init_on_fresh_repo.py::test_step3_migration_preserves_non_cloglog_mcp_servers \
+	  tests/plugins/test_agent_prompt_template_correct_inbox_paths.py \
+	  tests/plugins/test_launch_skill_renders_clean_launch_sh.py \
+	  tests/plugins/test_launch_skill_has_agent_started_timeout.py
 
 # ── Quality ───────────────────────────────────
 

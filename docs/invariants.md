@@ -266,7 +266,7 @@ future code that needs a prior session count must gate the HTTP call on
 `_codex_available` or pre-seed `prior = 0` before the capability-gated
 block.
 
-**Pin:** `tests/gateway/test_review_engine.py::TestOpencodeOnlyHost::test_session_cap_check_skipped_when_codex_unavailable`
+**Pin:** `tests/gateway/test_review_engine_t248.py::TestOpencodeOnlyHost::test_session_cap_check_skipped_when_codex_unavailable`
 
 ## EventBus / cross-worker
 

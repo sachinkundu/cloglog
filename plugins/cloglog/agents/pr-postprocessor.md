@@ -62,9 +62,10 @@ retired it)**:
   `plugins/cloglog/skills/<skill>/SKILL.md`,
   `plugins/cloglog/templates/AGENT_PROMPT.md`, or
   `plugins/cloglog/agents/<agent>.md`.
-- **Architectural / design decisions** → the matching design doc under
-  `docs/design/` (e.g. `prod-branch-tracking.md`, `agent-lifecycle.md`,
-  `ddd-context-map.md`).
+- **Architectural / design decisions** → the matching design /
+  architecture doc (e.g. `docs/design/prod-branch-tracking.md`,
+  `docs/design/agent-lifecycle.md`, or `docs/ddd-context-map.md` —
+  the DDD context map lives at `docs/`, not under `docs/design/`).
 - **Top-level project rules every contributor must read** → `CLAUDE.md`,
   only for rare structural rules, never session-specific gotchas.
 - **One-off fixes / meta observations** → drop.

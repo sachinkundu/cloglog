@@ -153,9 +153,11 @@ check the **completed-cleanly predicate** for that worktree. When it holds,
 **delegate the entire teardown to close-wave** instead of running reconcile's
 own teardown path. If reconcile tore down the worktree first, `git worktree
 remove --force` would vaporize `<worktree_path>/shutdown-artifacts/` before
-close-wave gets a chance to archive them to `docs/work-logs/` and fold the
-learnings into CLAUDE.md — the exact split-brain observed on 2026-04-23
-during the T-268 close-out (T-270).
+close-wave gets a chance to archive them to `docs/work-logs/` and route any
+extracted learnings to their proper homes (`docs/invariants.md`, the
+relevant SKILL/agent/template, a design doc, or — rarely — `CLAUDE.md`;
+T-368 retired the `CLAUDE.md` Agent Learnings section). The exact
+split-brain observed on 2026-04-23 during the T-268 close-out (T-270).
 
 Reconcile is the arbiter: close-wave is the clean path (cleanly-completed
 worktrees with artifacts), `force_unregister` is the dirty path (everything

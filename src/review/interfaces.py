@@ -7,8 +7,8 @@ This is the Open Host Service boundary in ``docs/ddd-context-map.md``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Protocol
+from dataclasses import dataclass, field
+from typing import Any, Protocol
 from uuid import UUID
 
 
@@ -30,6 +30,44 @@ class ReviewTurnSnapshot:
     finding_count: int | None
     consensus_reached: bool
     elapsed_seconds: float | None
+
+
+@dataclass(frozen=True)
+class PriorTurnSummary:
+    """One prior turn's findings + learnings, as carried into a later turn's prompt.
+
+    Carries everything the next turn needs to render its preamble without
+    re-fetching from the database. ``findings`` is the raw JSON array as codex
+    emitted it (validated against ``.github/codex/review-schema.json``);
+    ``learnings`` is the optional ``learnings`` array from the same schema
+    (empty list if codex didn't emit any). ``head_sha`` is included so the
+    preamble can group findings by commit ("turn 1 on abc123 found …").
+    """
+
+    head_sha: str
+    turn_number: int
+    findings: list[dict[str, Any]] = field(default_factory=list)
+    learnings: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class PriorContext:
+    """PR-life-aggregated prior turns for the codex stage.
+
+    Returned by ``IReviewTurnRegistry.prior_findings_and_learnings`` and used
+    by the Gateway sequencer to build the "Prior review history" preamble for
+    turn N (N ≥ 2). Excludes turns whose status is not ``completed`` —
+    failed/timed-out turns have nothing to replay.
+    """
+
+    pr_url: str
+    turns: list[PriorTurnSummary] = field(default_factory=list)
+
+    @property
+    def codex_turn_count(self) -> int:
+        """Number of completed codex turns on this PR. Used to enforce the
+        5-turn lifetime cap."""
+        return len(self.turns)
 
 
 class IReviewTurnRegistry(Protocol):
@@ -108,6 +146,45 @@ class IReviewTurnRegistry(Protocol):
         or the turn never existed, or it is in a terminal non-failed state).
         Used on webhook re-fire to retry a turn whose GitHub review POST
         previously failed — see PR #187 round 1 HIGH-3 fix.
+        """
+        ...
+
+    async def record_findings_and_learnings(
+        self,
+        *,
+        pr_url: str,
+        head_sha: str,
+        stage: str,
+        turn_number: int,
+        findings_json: list[dict[str, Any]],
+        learnings_json: list[dict[str, Any]],
+    ) -> None:
+        """Persist the codex findings array + learnings array for one turn.
+
+        Called by the Gateway sequencer after a codex review completes
+        successfully (the JSON parsed cleanly and validated against the
+        review schema). Idempotent on re-call: if the row already carries
+        non-null findings/learnings, this overwrites — caller is responsible
+        for not double-running. T-367 cross-push memory.
+        """
+        ...
+
+    async def prior_findings_and_learnings(
+        self,
+        *,
+        pr_url: str,
+        stage: str,
+    ) -> PriorContext:
+        """Aggregate all completed prior turns of ``stage`` for this PR.
+
+        PR-scoped (not commit-scoped) because a fix-up commit changes
+        ``head_sha`` but the prior findings/learnings are still the relevant
+        memory for the next turn's prompt. Returns turns oldest-first. Only
+        includes turns with ``status='completed'`` AND non-null
+        ``findings_json`` — failed/timed-out turns have nothing to replay,
+        and a row created by ``claim_turn`` but never written by
+        ``record_findings_and_learnings`` would carry zero findings and zero
+        learnings (a meaningless preamble entry).
         """
         ...
 

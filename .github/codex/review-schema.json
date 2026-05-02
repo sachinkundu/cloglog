@@ -65,8 +65,29 @@
     "status": {
       "type": ["string", "null"],
       "enum": ["no_further_concerns", "review_in_progress", null]
+    },
+    "learnings": {
+      "type": "array",
+      "description": "Optional, codex-only. Free-form notes about the codebase (NOT about the diff) that the reviewer learned by reading source files this turn. Persisted by the backend and replayed into the next turn's prompt so the reviewer doesn't re-derive the same architectural facts. Empty array or omission both mean 'nothing notable learned this turn'.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "topic": {
+            "type": "string",
+            "maxLength": 80,
+            "description": "Short stable handle so prior turns' learnings can be deduped by topic. Use the same string when re-noting the same fact across turns."
+          },
+          "note": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The learned fact itself. One paragraph, prose. Cite the file(s) you read to learn it."
+          }
+        },
+        "required": ["topic", "note"],
+        "additionalProperties": false
+      }
     }
   },
-  "required": ["findings", "overall_correctness", "overall_explanation", "overall_confidence_score", "status"],
+  "required": ["findings", "overall_correctness", "overall_explanation", "overall_confidence_score", "status", "learnings"],
   "additionalProperties": false
 }

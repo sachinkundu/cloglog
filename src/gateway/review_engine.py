@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
 import httpx
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from src.gateway.review_skip_comments import SkipReason, post_skip_comment
 from src.gateway.webhook_dispatcher import WebhookEvent, WebhookEventType
@@ -177,6 +177,12 @@ class ReviewResult(BaseModel):
     # means "not yet consensus"; ``no_further_concerns`` short-circuits the
     # per-reviewer loop before its max-turn cap.
     status: str | None = None
+    # T-367: optional learnings array codex emits about the *codebase* (not the
+    # diff). Persisted by ReviewLoop after a successful turn and replayed into
+    # the next turn's prompt as a primer so codex doesn't re-derive the same
+    # architectural facts on every push. Empty list = "nothing notable learned
+    # this turn"; opencode never emits learnings.
+    learnings: list[dict[str, Any]] = Field(default_factory=list)
 
     @field_validator("verdict")
     @classmethod
@@ -1578,7 +1584,19 @@ class ReviewEngineConsumer:
             # ----- Stage B: codex (Claude-API) — up to codex_max_turns -----
             if self._codex_available:
                 review_token = await get_codex_reviewer_token()
+                # T-367 cross-push memory: fetch every prior completed codex
+                # turn on this PR (across pushes — keyed by pr_url, NOT by
+                # head_sha) so CodexReviewer can render the "Prior review
+                # history" preamble. Returns an empty PriorContext on the
+                # first webhook for a PR — preamble is then suppressed.
+                # Also lift the PR body from the webhook payload so codex
+                # gets the human-equivalent context (pull_request_template
+                # sections an agent filled).
+                pr_body = (event.raw.get("pull_request") or {}).get("body") or ""
                 async with self._registry() as registry:
+                    prior_context = await registry.prior_findings_and_learnings(
+                        pr_url=event.pr_url, stage="codex"
+                    )
                     loop_b = ReviewLoop(
                         CodexReviewer(project_root),
                         max_turns=settings.codex_max_turns,
@@ -1593,7 +1611,11 @@ class ReviewEngineConsumer:
                         session_index=session_index,
                         max_sessions=MAX_REVIEWS_PER_PR,
                     )
-                    await loop_b.run(diff=filtered)
+                    await loop_b.run(
+                        diff=filtered,
+                        prior_context=prior_context,
+                        pr_body=pr_body,
+                    )
             logger.info(
                 "review_session_end pr=%d repo=%s",
                 event.pr_number,
@@ -1965,11 +1987,23 @@ def parse_reviewer_output(raw: str, pr_number: int | None = None) -> ReviewResul
                     "title": f.get("title", ""),
                 }
             )
+        # T-367: carry the optional learnings array through. Codex emits a
+        # list of {"topic", "note"} objects per the extended review-schema;
+        # absent / empty / wrong-type all collapse to []. Persisted by
+        # ReviewLoop into pr_review_turns.learnings_json for cross-push
+        # replay.
+        raw_learnings = data.get("learnings") or []
+        learnings: list[dict[str, Any]] = (
+            [item for item in raw_learnings if isinstance(item, dict)]
+            if isinstance(raw_learnings, list)
+            else []
+        )
         data = {
             "verdict": verdict,
             "summary": data.get("overall_explanation", ""),
             "findings": findings,
             "status": status,
+            "learnings": learnings,
         }
 
     return parse_review_output(json.dumps(data))

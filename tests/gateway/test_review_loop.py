@@ -25,7 +25,7 @@ from src.gateway.review_loop import (
     _finding_key,
     _reached_consensus,
 )
-from src.review.interfaces import ReviewTurnSnapshot
+from src.review.interfaces import PriorContext, PriorTurnSummary, ReviewTurnSnapshot
 
 # ---------------------------------------------------------------------------
 # In-memory fake registry
@@ -38,6 +38,13 @@ class FakeRegistry:
     def __init__(self) -> None:
         # key: (pr_url, head_sha, stage, turn_number) -> ReviewTurnSnapshot
         self._turns: dict[tuple[str, str, str, int], ReviewTurnSnapshot] = {}
+        # T-367: persisted findings + learnings keyed the same way; populated
+        # by record_findings_and_learnings, replayed by
+        # prior_findings_and_learnings. Kept on the side instead of widening
+        # ReviewTurnSnapshot so callers that only care about turn-count
+        # behaviour are unaffected.
+        self._findings: dict[tuple[str, str, str, int], list[dict[str, Any]]] = {}
+        self._learnings: dict[tuple[str, str, str, int], list[dict[str, Any]]] = {}
 
     async def claim_turn(
         self,
@@ -133,6 +140,45 @@ class FakeRegistry:
         )
         return True
 
+    async def record_findings_and_learnings(
+        self,
+        *,
+        pr_url: str,
+        head_sha: str,
+        stage: str,
+        turn_number: int,
+        findings_json: list[dict[str, Any]],
+        learnings_json: list[dict[str, Any]],
+    ) -> None:
+        key = (pr_url, head_sha, stage, turn_number)
+        self._findings[key] = list(findings_json)
+        self._learnings[key] = list(learnings_json)
+
+    async def prior_findings_and_learnings(self, *, pr_url: str, stage: str) -> PriorContext:
+        # Order by (head_sha, turn_number) — tests use stable insertion shape.
+        rows = sorted(
+            (
+                (key, snap)
+                for key, snap in self._turns.items()
+                if key[0] == pr_url and key[2] == stage and snap.status == "completed"
+            ),
+            key=lambda x: (x[0][1], x[0][3]),
+        )
+        turns: list[PriorTurnSummary] = []
+        for key, snap in rows:
+            findings = self._findings.get(key)
+            if findings is None:
+                continue
+            turns.append(
+                PriorTurnSummary(
+                    head_sha=snap.head_sha,
+                    turn_number=snap.turn_number,
+                    findings=list(findings),
+                    learnings=list(self._learnings.get(key, [])),
+                )
+            )
+        return PriorContext(pr_url=pr_url, turns=turns)
+
 
 # ---------------------------------------------------------------------------
 # Stub reviewer
@@ -156,7 +202,10 @@ class StubReviewer:
         pr_number: int,
         turn: int,
         max_turns: int,
+        prior_context: Any = None,
+        pr_body: str | None = None,
     ) -> tuple[ReviewResult | None, float, bool]:
+        del prior_context, pr_body  # not exercised by these unit tests
         idx = min(self._call_count, len(self.responses) - 1)
         self._call_count += 1
         return self.responses[idx]

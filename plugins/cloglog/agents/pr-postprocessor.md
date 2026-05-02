@@ -1,6 +1,6 @@
 ---
 name: pr-postprocessor
-description: Post-merge cleanup — reads PR diff, extracts learnings for CLAUDE.md, consolidates work logs, removes worktree
+description: Post-merge cleanup — reads PR diff, routes learnings to their proper homes (docs/invariants.md, SKILL.md, design docs), consolidates work logs, removes worktree
 model: sonnet
 tools:
   - Read
@@ -49,11 +49,30 @@ Read the PR diff and PR comments for patterns that future agents should know:
 - Cross-module integration issues that came up
 - Workarounds that were needed
 
-If there are learnings worth preserving:
-- Check if they are already in the project's CLAUDE.md Agent Learnings section
-- If not, add them to the appropriate subsection
-- Keep additions concise — one bullet per learning
-- Only add learnings that are **non-obvious and recurring** — do not add one-off fixes
+If there are learnings worth preserving, **route each one to its proper
+home — never back into `CLAUDE.md`'s Agent Learnings section (T-368
+retired it)**:
+
+- **Silent-failure invariants** (a rule whose breakage ships undetected
+  through lint/typecheck/tests and only fails in production) →
+  `docs/invariants.md`. New entries require a pin test; if you don't have
+  one, file a follow-up task instead of adding the entry.
+- **Workflow / SKILL gotchas** (something a worktree agent or supervisor
+  should do differently) → the relevant
+  `plugins/cloglog/skills/<skill>/SKILL.md`,
+  `plugins/cloglog/templates/AGENT_PROMPT.md`, or
+  `plugins/cloglog/agents/<agent>.md`.
+- **Architectural / design decisions** → the matching design doc under
+  `docs/design/` (e.g. `prod-branch-tracking.md`, `agent-lifecycle.md`,
+  `ddd-context-map.md`).
+- **Top-level project rules every contributor must read** → `CLAUDE.md`,
+  only for rare structural rules, never session-specific gotchas.
+- **One-off fixes / meta observations** → drop.
+
+Check the chosen home for an existing entry before adding; if it already
+covers the learning, skip. Keep additions concise — one bullet per
+learning. Only add learnings that are **non-obvious and recurring** — do
+not add one-off fixes.
 
 ### 3. Consolidate Work Log
 
@@ -85,10 +104,18 @@ git branch -D wt-<worktree_name>
 
 ### 5. Commit Changes
 
-If CLAUDE.md was updated or work logs were consolidated, commit the changes:
+If learnings were routed to any home (`docs/invariants.md`,
+`plugins/cloglog/**/SKILL.md`, `docs/design/*`, or — rarely — `CLAUDE.md`)
+or work logs were consolidated, commit the changes. Stage explicitly the
+files you actually wrote to (never `git add -A`):
 
 ```bash
-git add CLAUDE.md docs/work-logs/
+git add docs/work-logs/   # always, if a work log was consolidated
+# Plus whichever of the routing destinations you touched, e.g.:
+# git add docs/invariants.md
+# git add plugins/cloglog/skills/<skill>/SKILL.md
+# git add docs/design/<doc>.md
+# git add CLAUDE.md
 git commit -m "docs: post-merge cleanup for PR #<PR_NUM>"
 ```
 
@@ -98,7 +125,7 @@ Use the `github-bot` skill for pushing if the project requires bot identity for 
 
 Output a summary:
 - PR title and what it changed
-- Learnings added to CLAUDE.md (if any)
+- Learnings routed (with destination filename for each, if any)
 - Work log consolidated (if artifacts existed)
 - Worktree removed
 

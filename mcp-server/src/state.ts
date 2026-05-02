@@ -11,7 +11,7 @@
  * ``gh pr create`` when no task is in_progress (T-371).
  */
 
-import { mkdir, writeFile, unlink } from 'node:fs/promises'
+import { mkdir, writeFile, unlink, chmod } from 'node:fs/promises'
 import { join } from 'node:path'
 
 export interface WorktreeState {
@@ -29,8 +29,15 @@ export async function writeWorktreeState(
   const dir = join(worktreePath, '.cloglog')
   await mkdir(dir, { recursive: true })
   const path = join(dir, 'state.json')
-  // 0o600 — token is sensitive; readable by the agent uid only.
+  // 0o600 — token is sensitive; readable by the agent uid only. The
+  // ``mode`` option on ``writeFile`` only applies on file *creation*,
+  // so an existing file with looser permissions (e.g. a stray manual
+  // copy at 0o644) keeps its old mode while the rotated agent_token
+  // lands inside it. The unconditional ``chmod`` after the write
+  // closes that gap so every registration tightens the file —
+  // codex review on PR #287 round 2 (HIGH).
   await writeFile(path, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 })
+  await chmod(path, 0o600)
 }
 
 export async function clearWorktreeState(worktreePath: string): Promise<void> {

@@ -337,21 +337,37 @@ For each `Close worktree wt-<X>` row in `backlog`:
    If either check shows the worktree is alive, leave the row alone — it
    is a real pending close-off, not stale.
 
-2. Try to recover the wave's `pr_url` from `git log` so the closed-out
-   task carries the same merge URL the live close-wave flow would have
-   set in Step 13.5. The branch convention is
-   `wt-close-<date>-<wave>`, and merge commits land with
-   `Merge pull request #<num>` in the subject:
+2. Try to recover the wave's `pr_url` so the closed-out task carries
+   the same merge URL the live close-wave flow would have set in
+   Step 13.5. **Do not grep merged commits by `${wt_X}`** —
+   the canonical close-wave branch is `wt-close-<date>-<wave-name>`
+   (`plugins/cloglog/skills/close-wave/SKILL.md` Step 10), and the
+   `<wave-name>` is `wave-N` for ordinary runs and only carries the
+   worktree name on the reconcile-delegated variant
+   (`reconcile-<wt-name>`). Subject lines from the merging close-wave
+   PR therefore mention `wt-<X>` only by coincidence (e.g. when the
+   PR description happens to enumerate the worktrees being closed).
+   The reliable lookup is the merged close-wave PR by title, scoped
+   to recent history:
 
    ```bash
-   git log --merges --grep "wt-close-.*${wt_X}" --pretty='%H %s' origin/main \
+   # List recent close-wave PRs and look for one whose body mentions
+   # this stale row's worktree name. The bot identity is required
+   # here — see github-bot SKILL.md.
+   GH_TOKEN="$BOT_TOKEN" gh pr list \
+     --state merged \
+     --search "in:title chore(close-wave)" \
+     --json number,title,body,url,mergedAt --limit 50 \
+     | jq -r --arg wt "$wt_X" \
+         '.[] | select((.body // "") | contains($wt)) | .url' \
      | head -1
    ```
 
-   Extract the PR number, then resolve the URL with
-   `gh pr view <num> --json url -q .url`. If no matching merge commit is
-   findable, leave `pr_url` unset (the row still moves to `done`; the
-   reconcile work log records the absence).
+   If no matching close-wave PR is findable (the row predates the
+   convention, or the wave was never PR'd — the original 7-row
+   cohort), leave `pr_url` unset and rely on `skip_pr=True` for the
+   review hop. The reconcile work log records the absence so the
+   operator has a paper trail.
 
 3. Move the row through to `done` and note the action in the reconcile
    work log:

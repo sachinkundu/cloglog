@@ -73,6 +73,17 @@ The proposed fix removes all three consequences with a one-line conceptual chang
 - **Promotion is a deliberate user act.** The whole point of putting `main ≠ prod` is that "merged" and "deployed" are two states. `make promote` should remain the one human-driven moment.
 - **Smaller blast radius for boot bugs.** A bad migration on `main` should not auto-apply on a service restart. With a separate `make promote`, an operator can `prod-stop && prod` to roll back to the deployed worker generation while investigating, without `make prod` re-running migrations.
 
+### 4.2.1 Publish-the-pointer comes last
+
+`origin/prod` is the canonical "what is live" pointer. `make promote` MUST
+advance the ref **after** the deploy block (build, migrate, worker
+rotation), not before. Pushing first creates a window where the ref
+advanced but the running service is still on the previous SHA — a silent
+lie any deploy tooling reading the ref will believe. The same shape
+applies beyond `make promote`: any "ground truth from a remote ref"
+pattern (deploy tags, downstream auto-pulls, etc.) updates the ref only
+after the contract holds.
+
 ### 4.3 Edge cases
 
 - **Non-fast-forward `prod` advance.** Should not happen — `main` only ever has linear history relative to `prod` because `prod` is *only* advanced from `main`. If it ever does (someone force-pushed `main`), `git merge --ff-only` aborts and surfaces the conflict to the operator. Do not silently `--rebase` or `pull -X theirs`.

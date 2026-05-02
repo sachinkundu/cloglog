@@ -397,3 +397,24 @@ Print a summary table showing:
 - Work log location.
 - New learnings added.
 - What's ready for the next wave.
+
+## Gotcha: `gh pr merge --delete-branch` exit code from a worktree
+
+`gh pr merge --delete-branch` exits non-zero from a worktree when `main`
+is checked out by the parent clone — the squash merge succeeds
+server-side, but the local post-merge cleanup (`git checkout main && git
+branch -D <branch>`) fails with `fatal: 'main' is already used by
+worktree at '<parent>'`, masking the successful merge. Do not panic on a
+non-zero exit — verify with the `pr_merged` inbox event or `gh pr view
+<num> --json state,mergedAt`. If you need clean post-merge state on the
+worktree side, do the ff-and-prune from the main clone, not as a
+side-effect of `gh pr merge`.
+
+## Gotcha: pytest subprocess with extra deps
+
+When a test subprocess in a closing wave needs packages not in the test
+venv (`requests`, `PyJWT[crypto]`), `[sys.executable, str(script)]`
+resolves to `.venv/bin/python3` which lacks them and fails under
+`--cov=src`. Use `["uv", "run", "--with", "PyJWT[crypto]", "--with",
+"requests", "python", str(script)]` so dependencies are resolved at run
+time.

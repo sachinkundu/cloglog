@@ -432,3 +432,51 @@ If both `demo.md` and `exemption.md` exist, `demo.md` wins.
 - Explicit `echo` of the interesting boolean (`echo "fix applied: $(grep -c "\-\-dangerously-bypass" src/gateway/review_engine.py)"`) rather than streaming a whole file.
 
 Rule of thumb: if you couldn't bet that two successive runs produce **identical bytes**, reduce it first. Raw streaming of `pytest`, `codex`, `gh`, `curl -v`, or anything with a progress bar will bite on the next `make demo-check`.
+
+## Demo proof gotchas
+
+- **`ast.unparse(Return_node)` prepends the `return` keyword** — `"return"`
+  contains `"turn"`, so substring checks against the unparsed statement get
+  false positives. Always unparse `ret.value` (the expression), not the
+  wrapping `Return` node. Same applies to `fn.args`, `node.test`, and other
+  statement wrappers.
+- **`async def` route handlers are `AsyncFunctionDef` in `ast.walk`, not
+  `FunctionDef`.** Demo proofs that filter `ast.FunctionDef` will silently
+  skip async routes. Use `isinstance(n, (ast.FunctionDef,
+  ast.AsyncFunctionDef))` for any route-handler inspection.
+- **Cross-language pins need each language's own interpolation token.**
+  Pinning URL parity between Python f-strings (`{var}`) and TS template
+  literals (`${var}`) requires grepping with each language's actual
+  syntax — a TS-shape grep silently fails on Python.
+- **`uv run --quiet python` for demos that import project modules.** Plain
+  `python3 - <<PY` works for stdlib-only proofs. Proofs that import project
+  code need `uv run --quiet python - <<PY`; `--quiet` keeps stdout
+  deterministic across runs.
+- **Plain Python `import` does NOT trigger `conftest.py`.**
+  `python -c "from tests.foo import bar; bar.TestX().test_y()"` runs the
+  test method without activating pytest's conftest auto-discovery. Use this
+  pattern when a demo proof needs test-asserted behaviour without the
+  session-autouse Postgres fixture firing.
+- **SSE wire format uses CRLF.** `\r` is invisible in diff output but
+  breaks `showboat verify`'s byte-equality check. Pipe SSE captures through
+  `tr -d '\r'` before grep-ing for stable matches.
+- **Exemption hash refresh after every commit round.** `make demo-check`
+  pins the exemption to `sha256` over `git diff "$MERGE_BASE" HEAD -- .
+  ':(exclude)docs/demos/'`. The pathspec exclude binds the hash to *code*
+  changes, not the exemption file itself — but every new commit on the
+  branch (codex-fix, ruff fix, lint round) shifts the diff and invalidates
+  the stored `diff_hash`. Refresh `docs/demos/<wt>/exemption.md`'s
+  `diff_hash` after every commit round, or the next `make quality` rejects
+  the PR.
+
+## Demo-classifier allowlist
+
+When extending the auto-exempt regex in `scripts/check-demo.sh`, validate
+each path class against the actual repo tree before writing — a
+narrow-by-accident regex blocks the feature it enables (e.g.,
+`plugins/*/hooks/` once broke rollout PRs that touch
+`plugins/cloglog/skills/`; nested `package-lock.json` lives at `frontend/`
+and `mcp-server/`, not root). Route rules (whether a file is "user-observable
+HTTP route") key on the decorator pattern
+`@[A-Za-z_]*router\.(get|post|patch|put|delete)\(` across all bounded
+contexts, not on filename like `src/gateway/**/routes.py`.

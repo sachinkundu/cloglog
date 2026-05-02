@@ -370,3 +370,51 @@ Diagnose from the logs, push a fix commit — CI re-triggers automatically on pu
 5. **Inbox monitor is atomic with PR creation** — creating a PR without an active `Monitor` on your worktree `.cloglog/inbox` means you'll never see review comments, CI failures, or merge notifications. Webhook events arrive there directly — no `/loop` needed. Board update + inbox monitor are both mandatory after every PR.
 6. **Use dynamic repo detection** — never hardcode the repository name. Always use `$REPO` derived from `gh repo view` or `git remote`.
 7. **Never `git add .` or `git add -A`** — always stage files explicitly by path. Review every changed file against the task scope before staging. Unrelated files in a PR are a review burden and a sign of sloppy worktree hygiene.
+
+## Gotchas
+
+### Long-lived branches: prefer `merge` over `rebase`
+
+For long-lived branches, `git merge origin/main` beats `git rebase
+origin/main` on conflict economics. A 10-commit branch rebased against an
+advanced `main` surfaces conflicts at every replayed commit that touches a
+shared file; merge resolves the same conflicts once. Use rebase only for
+short clean linear history before first review.
+
+### `git pull` against a writable local branch must be ff-only
+
+Plain `git pull origin <branch>` happily creates a merge commit when the
+local branch has diverged. Skills that ran `git pull origin main` were
+safe while the dev worktree couldn't check out `main` (sat on detached
+HEAD); the moment the dev worktree got a writable local `main`, every
+`git pull` line became a hazard. Use `git fetch origin && git merge
+--ff-only origin/main` and surface divergence as an investigation prompt
+— never paper over with a merge commit. **When you change *who* checks
+out a branch, audit every `git pull` line against that branch before
+shipping the worktree-arrangement change.**
+
+### `gh pr view --json statusCheckRollup` shape
+
+`gh pr view --json statusCheckRollup` has no `bucket` field — that
+normalised enum exists only on `gh pr checks --json name,bucket`. `gh pr
+view` returns `conclusion` / `status` enums in CheckRun shape. `gh pr
+view` also rejects `--arg` (that flag is `gh api` / standalone `jq` only).
+Run any executable command sequence end-to-end before merging the docs
+that describe it.
+
+### Empty `statusCheckRollup` on docs-only PRs
+
+The `paths:` filter in `.github/workflows/ci.yml` produces an empty
+`statusCheckRollup` on docs-only PRs. Auto-merge gates that treat "empty
+checks list" as "still pending" deadlock those PRs. The semantically
+right answer is "no CI signal to wait for ⇒ green" — codex still ran;
+spec PRs are docs-only by intent.
+
+### Codex `event="COMMENT"` is not a GitHub approval
+
+Codex's `event="COMMENT"` is a body marker, not a GitHub approval. A
+human `CHANGES_REQUESTED` review still blocks merge. Auto-merge gates
+must fetch `gh api repos/.../pulls/<n>/reviews`, filter to non-bot users,
+group by login, take the latest review per author, and refuse the merge
+if any latest is `CHANGES_REQUESTED` — user-block fires before
+label / CI checks.

@@ -1267,13 +1267,18 @@ class ReviewEngineConsumer:
         codex_available: bool = True,
         opencode_available: bool = False,
         session_factory: Any | None = None,
+        ci_dispatcher: Any | None = None,
     ) -> None:
+        from src.gateway.review_loop import dispatch_ci_after_codex
+
         rate = max_per_hour if max_per_hour is not None else settings.review_max_per_hour
         self._rate_limiter = RateLimiter(max_per_hour=rate)
         self._lock = asyncio.Lock()
         self._codex_available = codex_available
         self._opencode_available = opencode_available
         self._session_factory = session_factory
+        # T-377: default to the real httpx dispatcher; tests inject a fake.
+        self._ci_dispatcher = ci_dispatcher or dispatch_ci_after_codex
 
     def handles(self, event: WebhookEvent) -> bool:
         # Skip if ANY reviewer bot authored the PR (prevents review-of-review
@@ -1610,6 +1615,12 @@ class ReviewEngineConsumer:
                         reviewer_token=review_token,
                         session_index=session_index,
                         max_sessions=MAX_REVIEWS_PER_PR,
+                        # T-377: only the codex stage fires CI; opencode is
+                        # advisory and never gates merge. Inject the
+                        # dispatcher as a hook so unit tests can pin the
+                        # firing rule with a fake — see
+                        # tests/gateway/test_review_loop_t377_ci_dispatch.py.
+                        ci_dispatcher=self._ci_dispatcher,
                     )
                     await loop_b.run(
                         diff=filtered,

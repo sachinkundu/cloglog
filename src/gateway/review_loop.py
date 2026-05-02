@@ -26,6 +26,7 @@ import contextlib
 import logging
 import tempfile
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Protocol
@@ -63,6 +64,71 @@ _OPENCODE_PROMPT_PATH = Path(".github/opencode/prompts/review.md")
 _TURN_STATUS_COMPLETED = "completed"
 _TURN_STATUS_TIMED_OUT = "timed_out"
 _TURN_STATUS_FAILED = "failed"
+
+
+# T-377: signature for the codex-finalization → CI dispatch hook. Defined as a
+# Callable so tests can inject a fake dispatcher without monkey-patching httpx
+# or token plumbing. Called exactly once per (pr_url, head_sha) when stage B
+# reaches a terminal state — either consensus or codex_max_turns exhausted.
+CIDispatcher = Callable[..., Awaitable[None]]
+
+
+async def dispatch_ci_after_codex(
+    *,
+    repo_full_name: str,
+    head_sha: str,
+    pr_number: int,
+) -> None:
+    """Trigger CI on (repo, head_sha) via the ``codex-finalized`` repository_dispatch.
+
+    Issued once stage B reaches a terminal state — consensus or
+    codex_max_turns exhausted. ci.yml's ``repository_dispatch:
+    types: [codex-finalized]`` trigger checks out ``client_payload.head_sha``
+    and runs the full suite against the SHA the reviewer signed off on (or
+    gave up on). See docs/design/ci-codex-trigger.md for the full flow.
+
+    Permissions: uses the Claude bot token (``contents: write``) — the
+    codex-reviewer App is intentionally read-only and lacks the
+    ``contents:write`` permission that the dispatches endpoint requires.
+
+    Failure is logged but does not raise — a missed dispatch surfaces as a
+    PR with no CI signal post-finalization, which the operator can recover
+    by re-pushing or by manually re-issuing the dispatch.
+    """
+    from src.gateway.github_token import get_github_app_token
+
+    token = await get_github_app_token()
+    url = f"https://api.github.com/repos/{repo_full_name}/dispatches"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    payload = {
+        "event_type": "codex-finalized",
+        "client_payload": {
+            "head_sha": head_sha,
+            "pr_number": pr_number,
+        },
+    }
+    try:
+        async with httpx.AsyncClient() as http:
+            resp = await http.post(url, headers=headers, json=payload, timeout=10.0)
+            resp.raise_for_status()
+        logger.info(
+            "ci_dispatch_codex_finalized pr=%d sha=%s repo=%s",
+            pr_number,
+            head_sha[:7],
+            repo_full_name,
+        )
+    except (httpx.HTTPError, httpx.HTTPStatusError) as err:
+        logger.error(
+            "ci_dispatch_failed pr=%d sha=%s repo=%s err=%s",
+            pr_number,
+            head_sha[:7],
+            repo_full_name,
+            err,
+        )
 
 
 class Reviewer(Protocol):
@@ -297,6 +363,7 @@ class ReviewLoop:
         reviewer_token: str,
         session_index: int,
         max_sessions: int,
+        ci_dispatcher: CIDispatcher | None = None,
     ) -> None:
         self._reviewer = reviewer
         self._max_turns = max_turns
@@ -310,6 +377,9 @@ class ReviewLoop:
         self._token = reviewer_token
         self._session_index = session_index
         self._max_sessions = max_sessions
+        # T-377: only the codex stage triggers CI; opencode (stage A) is
+        # advisory and never gates merge. Callers wire this for codex only.
+        self._ci_dispatcher = ci_dispatcher
 
     @staticmethod
     def _build_body_header(reviewer: Reviewer, session_index: int, max_sessions: int) -> str:
@@ -560,6 +630,46 @@ class ReviewLoop:
             outcome.consensus_reached,
             outcome.total_elapsed_seconds,
         )
+
+        # T-377: codex finalization → CI dispatch hook. Fired once per
+        # (PR, head_sha) when stage B is terminal: either consensus reached
+        # or all max_turns ran with no retryable-on-re-fire failure on any
+        # turn. ``_compute_next_turn`` (line 581-583) resumes the lowest
+        # ``status=='failed'`` row on a webhook re-fire, and BOTH the
+        # subprocess-crash path (`result is None and timed_out=False` →
+        # status=failed) and the GitHub-POST-failed path (status=failed,
+        # outcome.errors carries "post_failed") are retryable. Dispatching
+        # then would let CI race a review the system still considers
+        # rerunnable. ``timed_out`` is NOT retryable (status=='timed_out',
+        # not failed) so an exhausted stage whose tail-end timed out still
+        # dispatches. The early-return paths above (lines 351 / 366) skip
+        # this entirely — those are webhook re-fires for an already-
+        # finalized stage; the original firing already dispatched.
+        retryable_failure = any(
+            err.endswith(": failed") or "post_failed" in err for err in outcome.errors
+        )
+        if (
+            self._stage == "codex"
+            and self._ci_dispatcher is not None
+            and (
+                outcome.consensus_reached
+                or (outcome.turns_used == self._max_turns and not retryable_failure)
+            )
+        ):
+            try:
+                await self._ci_dispatcher(
+                    repo_full_name=self._repo_full_name,
+                    head_sha=self._head_sha,
+                    pr_number=self._pr_number,
+                )
+            except Exception as err:  # pragma: no cover — defensive
+                logger.warning(
+                    "ci_dispatch_hook_raised pr=%d sha=%s err=%s",
+                    self._pr_number,
+                    self._head_sha[:7],
+                    err,
+                )
+
         return outcome
 
     @staticmethod

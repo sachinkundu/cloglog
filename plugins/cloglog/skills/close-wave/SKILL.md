@@ -201,13 +201,22 @@ mcp__cloglog__force_unregister(worktree_id: "<uuid>")
 ```
 
 Then, and only then, close the zellij tab to stop the wedged agent from
-re-issuing MCP calls that will now fail auth (§5 tier 2). Finding the tab:
+re-issuing MCP calls that will now fail auth (§5 tier 2). **Always go
+through `plugins/cloglog/hooks/lib/close-zellij-tab.sh`** — `zellij action
+close-tab` takes no positional argument and closes the *focused* tab, so
+a bare `close-tab` after `query-tab-names` has twice killed the
+supervisor's own tab (T-339). The helper resolves the target by name,
+refuses (exit 2) if it would close the focused tab, and only then issues
+a tab-id-scoped close.
 
 ```bash
-zellij action query-tab-names
-# Close the tab whose name matches this worktree (never close the one
-# you're running in).
-zellij action close-tab
+"${CLAUDE_PLUGIN_ROOT}/hooks/lib/close-zellij-tab.sh" "<wt-name>"
+rc=$?
+# rc=0 → tab closed (or absent, idempotent).
+# rc=2 → would have closed the supervisor's own tab. Surface as a hard
+#        error in the work log's Shutdown summary; the supervisor must
+#        focus a different tab and re-run, NOT silently retry. Never
+#        fall back to a bare `zellij action close-tab`.
 ```
 
 Record the fallback in the work log's **Shutdown summary** under the

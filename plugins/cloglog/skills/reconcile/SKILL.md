@@ -313,8 +313,13 @@ cooperative wait, no `request_shutdown`.
 After the worktree has unregistered — by Case A/B cooperative success,
 Case A/B tier-2 fallback, or Case C directly.
 
-- **Zellij tab**: find via `zellij action query-tab-names`, close with
-  `zellij action close-tab` (never the tab you are running in).
+- **Zellij tab**: close via
+  `"${CLAUDE_PLUGIN_ROOT}/hooks/lib/close-zellij-tab.sh" "<wt-name>"`.
+  Never call `zellij action close-tab` directly — it takes no argument
+  and closes the focused tab, which has twice been the supervisor's own
+  tab (T-339). The helper refuses (exit 2) when the resolved target is
+  the focused tab; on exit 2, log the refusal and skip teardown for that
+  worktree this round — do NOT fall back to a bare `close-tab`.
 - **Worktree path**: `git worktree remove --force <path>`. Run
   `.cloglog/on-worktree-destroy.sh` if it exists.
 - **Local branch**: `git branch -D <branch>`.

@@ -935,14 +935,23 @@ class TestMainAgentFallback:
 
     @pytest.mark.asyncio
     async def test_resolver_returns_none_when_no_main_agent_registered(
-        self, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+        self,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Acceptance: a project with no main-agent worktree AND no legacy
-        ``main_agent_inbox_path`` configured → DEBUG log + drop.
+        ``main_agent_inbox_path`` configured → WARNING log + drop.
 
         The project exists (``find_project_by_repo`` succeeds) but no row carries
         ``role='main'`` and the env-var compat fallback is not configured, so
         the resolver returns ``None`` — same outcome as the pre-T-253 baseline.
+
+        T-305 pin: this drop MUST be a structured warning, not a silent debug
+        line. Production incident on PR #231 (2026-04-26) was diagnosed only
+        because the operator ran ``gh api`` manually; backend logs offered no
+        signal. The warning gives the operator a one-grep clue ("Webhook drop")
+        the next time the fallback fails.
         """
         monkeypatch.setattr(settings, "main_agent_inbox_path", None)
         _project, repo_full_name = await _seed_isolated_project(db_session)
@@ -955,9 +964,21 @@ class TestMainAgentFallback:
         event = WebhookEvent(**{**event.__dict__, "repo_full_name": repo_full_name})
         consumer = AgentNotifierConsumer()
 
-        result = await consumer._resolve_agent(event, db_session)
+        with caplog.at_level("WARNING", logger="src.gateway.webhook_consumers"):
+            result = await consumer._resolve_agent(event, db_session)
 
         assert result is None
+        warnings = [
+            r for r in caplog.records if r.levelname == "WARNING" and "Webhook drop" in r.message
+        ]
+        assert warnings, (
+            "T-305: silent fallback miss must emit a 'Webhook drop' warning so "
+            "the operator can diagnose without grepping production by hand. "
+            f"Got log records: {[(r.levelname, r.message) for r in caplog.records]}"
+        )
+        assert "no role='main'" in warnings[-1].message, (
+            f"Warning should name the failing fallback condition; got: {warnings[-1].message}"
+        )
 
     @pytest.mark.asyncio
     async def test_resolver_picks_earliest_when_multiple_main_agents(

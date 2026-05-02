@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 from uuid import UUID
 
@@ -42,6 +43,8 @@ from src.gateway.auth import (
 from src.shared.config import settings
 from src.shared.database import get_session
 from src.shared.events import Event, EventType, event_bus
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -365,6 +368,21 @@ async def create_close_off_task(
         legacy_path = str(settings.main_agent_inbox_path.parent.parent)
         main_agent = await agent_repo.get_worktree_by_path(project.id, legacy_path)
     main_agent_worktree_id: UUID | None = main_agent.id if main_agent is not None else None
+    if main_agent_worktree_id is None:
+        # T-305: when neither role='main' nor MAIN_AGENT_INBOX_PATH resolves,
+        # the close-off task lands unassigned (worktree_id=NULL) and never
+        # surfaces in the supervisor's get_my_tasks. Operators on PR #231
+        # (2026-04-26) hit exactly this — the bootstrapping hook fired before
+        # the main agent was registered with role='main', so close-offs went
+        # silent. Log loudly so the operator catches it before the next wave.
+        logger.warning(
+            "Close-off task for worktree %s (%s) is unassigned: "
+            "no role='main' worktree and main_agent_inbox_path unset for project %s. "
+            "Run /cloglog setup or backfill worktrees.role to fix.",
+            body.worktree_path,
+            body.worktree_name,
+            project.id,
+        )
 
     board_service = BoardService(BoardRepository(session))
     task, created = await board_service.create_close_off_task(

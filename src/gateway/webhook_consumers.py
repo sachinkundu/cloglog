@@ -84,6 +84,8 @@ class AgentNotifierConsumer:
                 await self._mark_pr_merged(event.pr_url, session)
 
             if result is None:
+                # _resolve_agent already logged the specific drop reason
+                # (T-305); this debug line keeps the per-event trace.
                 logger.debug("No agent found for PR %s", event.pr_url)
                 return
 
@@ -149,6 +151,15 @@ class AgentNotifierConsumer:
         # pr_url lookup missed.
         project = await repo.find_project_by_repo(event.repo_full_name)
         if project is None:
+            # T-305: silent drops for unmatched PRs were impossible to diagnose
+            # in production (PR #231, 2026-04-26: codex review never reached
+            # the main inbox; root cause invisible without this log line).
+            logger.warning(
+                "Webhook drop: no cloglog project matches repo %s (event=%s pr=%s)",
+                event.repo_full_name,
+                event.type,
+                event.pr_url,
+            )
             return None
 
         # Secondary: match by branch name. Issue-comment webhooks don't carry
@@ -179,6 +190,30 @@ class AgentNotifierConsumer:
                     inbox_path=settings.main_agent_inbox_path, worktree_id=None
                 )
 
+            # T-305: both T-245 (role='main') and T-253 (env-var compat)
+            # fallbacks missed — this is the silent-drop signature seen on
+            # PR #231. Surface it as a warning so the operator can backfill
+            # the role or set MAIN_AGENT_INBOX_PATH instead of guessing.
+            logger.warning(
+                "Webhook drop: project %s has no role='main' worktree and "
+                "main_agent_inbox_path is unset (event=%s pr=%s repo=%s)",
+                project.id,
+                event.type,
+                event.pr_url,
+                event.repo_full_name,
+            )
+            return None
+
+        # ISSUE_COMMENT (or any non-main-agent event) with no branch/pr_url
+        # match: deliberate drop, but log at debug so it stays out of warning
+        # noise while remaining traceable when inspecting backend logs.
+        logger.debug(
+            "Webhook drop: no recipient for event=%s pr=%s repo=%s "
+            "(non-main-agent event with no branch/pr_url match)",
+            event.type,
+            event.pr_url,
+            event.repo_full_name,
+        )
         return None
 
     async def _mark_pr_merged(self, pr_url: str, session: AsyncSession) -> None:

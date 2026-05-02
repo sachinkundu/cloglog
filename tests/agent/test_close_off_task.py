@@ -39,6 +39,19 @@ async def _register(client: AsyncClient, api_key: str, path: str, branch: str) -
     return resp.json()["worktree_id"]
 
 
+async def _register_with_token(
+    client: AsyncClient, api_key: str, path: str, branch: str
+) -> tuple[str, str]:
+    resp = await client.post(
+        "/api/v1/agents/register",
+        json={"worktree_path": path, "branch_name": branch},
+        headers=_auth(api_key),
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    return body["worktree_id"], body["agent_token"]
+
+
 async def _create_project(client: AsyncClient, name_suffix: str) -> tuple[str, str]:
     resp = await client.post(
         "/api/v1/projects",
@@ -270,3 +283,56 @@ async def test_webhook_routes_pr_events_to_main_via_task_pr_url(
     assert payload["type"] == "pr_merged"
     assert payload["pr_url"] == pr_url
     assert payload["pr_number"] == 999
+
+
+async def test_close_off_task_surfaces_in_main_agent_get_tasks(
+    client: AsyncClient, monkeypatch
+) -> None:
+    """T-305 pin: a close-off task filed by the worktree-bootstrap hook must
+    surface in the main agent's ``GET /api/v1/agents/{wt}/tasks`` response.
+
+    The 2026-04-26 incident on PR #231 showed the supervisor's
+    ``mcp__cloglog__get_my_tasks`` returning zero close-offs even though the
+    hook had filed them — diagnosed as the close-off lacking ``worktree_id``
+    pointing at the main agent. This pin asserts the documented contract:
+    bootstrap → close-off task assigned to main → main agent sees it via
+    the agent-scoped tasks endpoint.
+    """
+    _, api_key = await _create_project(client, "main-sees-close-off")
+
+    main_path = f"/tmp/main-{uuid.uuid4().hex[:8]}"
+    wt_path = f"/tmp/wt-pin-{uuid.uuid4().hex[:8]}"
+
+    main_wt_id, main_token = await _register_with_token(client, api_key, main_path, "main")
+    await _register(client, api_key, wt_path, "wt-pin")
+
+    from src.shared.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "main_agent_inbox_path", Path(f"{main_path}/.cloglog/inbox"))
+
+    co_resp = await client.post(
+        "/api/v1/agents/close-off-task",
+        json={"worktree_path": wt_path, "worktree_name": "wt-pin"},
+        headers=_auth(api_key),
+    )
+    assert co_resp.status_code == 201, co_resp.text
+    close_off_task_id = co_resp.json()["task_id"]
+
+    # The main agent calls its own /tasks endpoint with its agent token —
+    # exactly the path mcp__cloglog__get_my_tasks takes from the supervisor.
+    tasks_resp = await client.get(
+        f"/api/v1/agents/{main_wt_id}/tasks",
+        headers={"Authorization": f"Bearer {main_token}"},
+    )
+    assert tasks_resp.status_code == 200, tasks_resp.text
+    tasks = tasks_resp.json()
+    task_ids = [t["id"] for t in tasks]
+    assert close_off_task_id in task_ids, (
+        "Close-off task must surface in main agent's get_my_tasks "
+        f"(got task ids {task_ids}, expected {close_off_task_id})"
+    )
+    close_off = next(t for t in tasks if t["id"] == close_off_task_id)
+    assert close_off["status"] == "backlog", (
+        "Close-off must surface as backlog so the supervisor picks it up; "
+        f"got status={close_off['status']}"
+    )

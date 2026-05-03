@@ -408,12 +408,14 @@ class ReviewLoop:
         """Per-session review-body header.
 
         Example: ``**codex (Claude 4.x) — session 2/5**``. Always the first
-        line of the review summary. The counter is cross-session (T-227
-        approval-based stop + 5-session backstop): every webhook firing
-        starts a fresh session, so a reader needs to see which of the five
-        per-PR sessions they are looking at. The intra-session turn index
-        (``opencode_max_turns``/``codex_max_turns``) is an implementation
-        detail no reader acts on and is deliberately not shown.
+        line of the review summary. T-376: the counter is the post number,
+        not the session-attempt number — ``session_index`` is now
+        ``count_posted_codex_sessions + 1``, so a reader sees "review 2 of
+        the 5 reviews this PR is allowed." Sessions that hit a non-post
+        terminal don't reuse a number: the next firing computes the same
+        ``session_index`` until it lands a post, at which point the count
+        advances. The wording stays "session" for back-compat with PRs that
+        already carry the older header — the value is what changed.
         """
         return f"**{reviewer.display_label} — session {session_index}/{max_sessions}**"
 

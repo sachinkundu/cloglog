@@ -243,6 +243,21 @@ class ReviewTurnRepository:
         ]
         return PriorContext(pr_url=pr_url, turns=turns)
 
+    async def count_posted_codex_sessions(self, *, pr_url: str) -> int:
+        """Distinct ``session_index`` over posted codex turns. T-376."""
+        stmt = (
+            select(PrReviewTurn.session_index)
+            .where(
+                PrReviewTurn.pr_url == pr_url,
+                PrReviewTurn.stage == "codex",
+                PrReviewTurn.posted_at.is_not(None),
+                PrReviewTurn.session_index.is_not(None),
+            )
+            .distinct()
+        )
+        result = await self._session.execute(stmt)
+        return len(result.scalars().all())
+
     async def codex_touched_pr_urls(self, *, project_id: UUID, pr_urls: list[str]) -> set[str]:
         if not pr_urls:
             return set()

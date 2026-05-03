@@ -191,6 +191,18 @@ class FakeRegistry:
         self._findings[key] = list(findings_json)
         self._learnings[key] = list(learnings_json)
 
+    async def count_posted_codex_sessions(self, *, pr_url: str) -> int:
+        seen: set[int] = set()
+        for (pu, _hs, st, _tn), snap in self._turns.items():
+            if (
+                pu == pr_url
+                and st == "codex"
+                and snap.posted_at is not None
+                and snap.session_index is not None
+            ):
+                seen.add(snap.session_index)
+        return len(seen)
+
     async def prior_findings_and_learnings(self, *, pr_url: str, stage: str) -> PriorContext:
         # Order by (head_sha, turn_number) — tests use stable insertion shape.
         rows = sorted(

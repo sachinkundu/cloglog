@@ -1426,20 +1426,35 @@ class ReviewEngineConsumer:
         #
         # ``prior`` also feeds the review-body header counter (T-290): the
         # per-turn header renders ``session {prior + 1}/{MAX_REVIEWS_PER_PR}``
-        # so a reader can tell one codex comment on a PR from another
-        # (before T-290 every session's first comment said ``turn 1/2``, which
-        # looked identical across sessions). Opencode-only hosts have no
-        # session count and fall back to ``1`` — the cap is not enforced there
-        # either.
+        # so a reader can tell one codex comment on a PR from another. T-376:
+        # ``prior`` is now the posted-review count, so the displayed number is
+        # the post index, not the session-attempt index. Opencode-only hosts
+        # have no session count and fall back to ``1`` — the cap is not
+        # enforced there either.
         prior = 0
         if self._codex_available:
             codex_token_for_cap = await get_codex_reviewer_token()
-            prior = await count_bot_reviews(
-                event.repo_full_name, event.pr_number, codex_token_for_cap
-            )
-            # Short-circuit: zero prior reviews cannot include an approval, so
-            # no need for the extra HTTP call. Keeps existing tests with
-            # ``count_bot_reviews = 0`` stubs working unchanged.
+            # T-376: count POSTED codex reviews from the registry, not session
+            # attempts. A session that hits a non-post terminal (rate-limit
+            # skip, codex_unavailable, post_failed) does not consume the cap
+            # because the author never saw a review. Pre-T-376 the cap counted
+            # ``count_bot_reviews`` (GitHub-side review count), which was
+            # cap-correct for happy paths but wrong for non-post terminals.
+            #
+            # The registry path is gated on ``self._session_factory`` because
+            # the degraded harness (no Review context wired up — see line ~1510
+            # below) cannot read ``pr_review_turns``. In that path we fall back
+            # to ``count_bot_reviews``; the degraded path is a single-turn
+            # codex with no multi-session loop, so the cap there is best-effort.
+            if self._session_factory is not None:
+                async with self._registry() as registry_for_cap:
+                    prior = await registry_for_cap.count_posted_codex_sessions(pr_url=event.pr_url)
+            else:
+                prior = await count_bot_reviews(
+                    event.repo_full_name, event.pr_number, codex_token_for_cap
+                )
+            # Short-circuit: zero prior posts cannot include an approval, so
+            # no need for the extra HTTP call.
             latest_is_approval = prior > 0 and await latest_codex_review_is_approval(
                 event.repo_full_name,
                 event.pr_number,

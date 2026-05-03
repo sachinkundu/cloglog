@@ -100,13 +100,13 @@ class IReviewTurnRegistry(Protocol):
         Implementation uses ``INSERT ... ON CONFLICT DO NOTHING`` on the
         unique index ``uq_pr_review_turns_key``.
 
-        ``session_index`` (T-375) is the cross-session counter computed by
-        ``ReviewEngineConsumer._review_pr`` (``count_bot_reviews + 1``) and
-        stamped on the row so the partial unique index
-        ``uq_pr_review_turns_one_post_per_session`` can enforce at-most-one
-        posted row per ``(pr_url, stage, session_index)``. Optional with
-        default ``None`` for back-compat; new ReviewLoop callers always
-        pass it.
+        ``session_index`` (T-375 / T-376) is the cross-session counter
+        stamped on the row so a webhook re-fire on the same SHA can detect
+        "this session already posted" via ``posted_at``. T-376 changed the
+        counter source from GitHub-review count to
+        ``count_posted_codex_sessions + 1`` so the cap counts actual posted
+        reviews, not session attempts. Optional with default ``None`` for
+        back-compat; new ReviewLoop callers always pass it.
         """
         ...
 
@@ -157,13 +157,32 @@ class IReviewTurnRegistry(Protocol):
     ) -> bool:
         """Stamp ``posted_at = now()`` on a turn row after a successful POST.
 
-        Returns ``True`` iff the row existed and the update applied. The
-        partial unique index ``uq_pr_review_turns_one_post_per_session``
-        will reject a second update that would create a duplicate
-        ``posted_at IS NOT NULL`` row for the same
-        ``(pr_url, stage, session_index)`` — implementations must surface
-        that as ``False`` so the loop logs and skips, rather than
-        propagating the IntegrityError. T-375.
+        Returns ``True`` iff the row existed with NULL ``posted_at`` and
+        was updated. A second call on a row that already carries
+        ``posted_at`` returns ``False`` (no-op) so a webhook re-fire is a
+        clean noop. There is intentionally no DB-level uniqueness across
+        rows: the per-turn POST contract
+        (``docs/design/two-stage-pr-review.md`` §3.3) allows multiple
+        successful posts within one session when ``codex_max_turns > 1``.
+        T-375.
+        """
+        ...
+
+    async def count_posted_codex_sessions(self, *, pr_url: str) -> int:
+        """Return the number of distinct codex sessions that have posted on this PR.
+
+        T-376: the per-PR cap (``MAX_REVIEWS_PER_PR``) counts POSTED
+        reviews, not session attempts. A session that hits a non-post
+        terminal (rate-limit skip, codex unavailable, post_failed) does
+        NOT consume the cap because it never produced a review the
+        author can read.
+
+        Implementation: distinct ``session_index`` over rows where
+        ``stage='codex'`` and ``posted_at IS NOT NULL``. Rows from before
+        T-375 (``session_index IS NULL``) are not counted — pre-T-375
+        rows belong to PRs that have either merged or rolled past the
+        upgrade window; the upgrade-window cost is at most a few extra
+        reviews on a long-lived PR straddling the deploy.
         """
         ...
 

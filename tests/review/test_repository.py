@@ -723,6 +723,161 @@ class TestT375SessionAuditColumns:
 
 
 # ---------------------------------------------------------------------------
+# T-376: count_posted_codex_sessions — cap counts posts, not session attempts
+# ---------------------------------------------------------------------------
+
+
+class TestT376CountPostedCodexSessions:
+    """T-376 pin tests for ``count_posted_codex_sessions``.
+
+    The cap (``MAX_REVIEWS_PER_PR=5``) must count POSTED reviews, not
+    session attempts. A session that hits a non-post terminal
+    (rate-limit skip, codex_unavailable, post_failed) leaves a row
+    with ``posted_at IS NULL`` — those don't consume the cap.
+    """
+
+    async def test_returns_zero_when_no_rows(self, db_session: AsyncSession) -> None:
+        repo = ReviewTurnRepository(db_session)
+        n = await repo.count_posted_codex_sessions(pr_url="https://example.com/pr/none")
+        assert n == 0
+
+    async def test_returns_zero_when_rows_unposted(self, db_session: AsyncSession) -> None:
+        """Two non-post-terminal sessions claim turns but never call
+        ``mark_posted`` — the cap counts zero, leaving the full budget."""
+        project = await _make_project(db_session)
+        repo = ReviewTurnRepository(db_session)
+        pr_url, head_sha = _unique_pr("unposted")
+
+        for s in (1, 2):
+            await repo.claim_turn(
+                project_id=project.id,
+                pr_url=pr_url,
+                pr_number=1,
+                head_sha=head_sha,
+                stage="codex",
+                turn_number=1,
+                session_index=s,
+            )
+        n = await repo.count_posted_codex_sessions(pr_url=pr_url)
+        assert n == 0
+
+    async def test_counts_distinct_session_indexes_with_posted_at(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Three sessions post (each on its own SHA) and two non-post
+        terminals leave un-posted rows — the cap reads 3, not 5."""
+        project = await _make_project(db_session)
+        repo = ReviewTurnRepository(db_session)
+        pr_url, _ = _unique_pr("mixed")
+
+        def _sha(suffix: str) -> str:
+            return ("1" * 40)[: 40 - len(suffix)] + suffix
+
+        # 3 posted sessions, each on its own SHA.
+        for s, sha_suffix in ((1, "aaa"), (2, "bbb"), (3, "ccc")):
+            sha = _sha(sha_suffix)
+            await repo.claim_turn(
+                project_id=project.id,
+                pr_url=pr_url,
+                pr_number=1,
+                head_sha=sha,
+                stage="codex",
+                turn_number=1,
+                session_index=s,
+            )
+            await repo.mark_posted(pr_url=pr_url, head_sha=sha, stage="codex", turn_number=1)
+
+        # 2 non-post-terminal sessions: claim_turn but no mark_posted.
+        for s, sha_suffix in ((4, "ddd"), (5, "eee")):
+            sha = _sha(sha_suffix)
+            await repo.claim_turn(
+                project_id=project.id,
+                pr_url=pr_url,
+                pr_number=1,
+                head_sha=sha,
+                stage="codex",
+                turn_number=1,
+                session_index=s,
+            )
+
+        n = await repo.count_posted_codex_sessions(pr_url=pr_url)
+        assert n == 3, (
+            "Cap must count POSTED sessions only — non-post terminals are free. "
+            "Pre-T-376 the cap was session-attempt count (would read 5)."
+        )
+
+    async def test_multi_turn_same_session_collapses_to_one(self, db_session: AsyncSession) -> None:
+        """Two turns within one session both post — the session counts
+        once, not twice. ``codex_max_turns > 1`` must not over-consume the
+        cap (per-turn POST contract preserved)."""
+        project = await _make_project(db_session)
+        repo = ReviewTurnRepository(db_session)
+        pr_url, head_sha = _unique_pr("multi-turn-cap")
+
+        for turn in (1, 2):
+            await repo.claim_turn(
+                project_id=project.id,
+                pr_url=pr_url,
+                pr_number=1,
+                head_sha=head_sha,
+                stage="codex",
+                turn_number=turn,
+                session_index=7,
+            )
+            await repo.mark_posted(
+                pr_url=pr_url, head_sha=head_sha, stage="codex", turn_number=turn
+            )
+
+        n = await repo.count_posted_codex_sessions(pr_url=pr_url)
+        assert n == 1
+
+    async def test_filters_by_stage_codex_only(self, db_session: AsyncSession) -> None:
+        """Opencode (stage A) posts must not consume the codex cap.
+        Stage A is advisory and never gates merge — it has its own budget."""
+        project = await _make_project(db_session)
+        repo = ReviewTurnRepository(db_session)
+        pr_url, head_sha = _unique_pr("stage-filter")
+
+        await repo.claim_turn(
+            project_id=project.id,
+            pr_url=pr_url,
+            pr_number=1,
+            head_sha=head_sha,
+            stage="opencode",
+            turn_number=1,
+            session_index=1,
+        )
+        await repo.mark_posted(pr_url=pr_url, head_sha=head_sha, stage="opencode", turn_number=1)
+
+        n = await repo.count_posted_codex_sessions(pr_url=pr_url)
+        assert n == 0
+
+    async def test_pre_t375_legacy_rows_excluded(self, db_session: AsyncSession) -> None:
+        """Pre-T-375 rows have ``session_index IS NULL`` and
+        ``posted_at IS NULL`` — they don't count. The upgrade-window cost
+        is at most a few extra reviews on a long-lived PR straddling the
+        deploy; documented at the interface."""
+        project = await _make_project(db_session)
+        repo = ReviewTurnRepository(db_session)
+        pr_url, head_sha = _unique_pr("legacy")
+
+        # Pre-T-375 row: claim_turn with session_index=None.
+        await repo.claim_turn(
+            project_id=project.id,
+            pr_url=pr_url,
+            pr_number=1,
+            head_sha=head_sha,
+            stage="codex",
+            turn_number=1,
+            session_index=None,
+        )
+        # No mark_posted (legacy pre-T-375 path didn't stamp posted_at).
+
+        n = await repo.count_posted_codex_sessions(pr_url=pr_url)
+        assert n == 0
+
+
+# ---------------------------------------------------------------------------
 # FK cascade on project delete
 # ---------------------------------------------------------------------------
 

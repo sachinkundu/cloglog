@@ -50,9 +50,15 @@ def test_helper_exists_and_executable() -> None:
 
 def test_helper_has_focused_tab_guard() -> None:
     body = _read(HELPER)
-    # Guard signal: helper compares target tab id to current tab id and exits 2.
-    assert "current-tab-info" in body, (
-        "helper must read current-tab-info to guard against closing the focused tab"
+    # T-384: helper now reads `list-tabs --json` once and uses `.active` to
+    # identify the focused tab, instead of pairing `list-tabs` with a
+    # separate `current-tab-info` call. Guard signal: still exits 2 when
+    # target tab id equals the active tab id.
+    assert "list-tabs --json" in body, (
+        "helper must use list-tabs --json (single contract) for tab lookup"
+    )
+    assert "select(.active)" in body, (
+        "helper must identify the focused tab via .active, not current-tab-info"
     )
     assert "exit 2" in body, "helper must exit 2 when refusing to close the focused tab"
     # Helper itself is the one place a tab-id-scoped close is allowed.
@@ -116,10 +122,11 @@ def test_helper_runtime_guard_refuses_focused_tab(tmp_path: Path) -> None:
         "#!/usr/bin/env bash\n"
         f'MARKER="{marker}"\n'
         'case "$*" in\n'
-        '  "action list-tabs")\n'
-        '    printf "TAB_ID\\tPOSITION\\tNAME\\n7\\t2\\twt-fake\\n";;\n'
-        '  "action current-tab-info")\n'
-        '    printf "name: wt-fake\\nid: 7\\nposition: 2\\n";;\n'
+        '  "action list-tabs --json")\n'
+        "    cat <<JSON\n"
+        '[{"tab_id":7,"name":"wt-fake","active":true,"position":2}]\n'
+        "JSON\n"
+        "    ;;\n"
         '  "action close-tab"*)\n'
         '    : > "$MARKER"; exit 0;;\n'
         "  *) exit 0;;\n"
@@ -161,10 +168,12 @@ def test_helper_runtime_closes_unfocused_tab(tmp_path: Path) -> None:
         "#!/usr/bin/env bash\n"
         f'LOG="{log}"\n'
         'case "$*" in\n'
-        '  "action list-tabs")\n'
-        '    printf "TAB_ID\\tPOSITION\\tNAME\\n0\\t0\\tcloglog\\n7\\t2\\twt-fake\\n";;\n'
-        '  "action current-tab-info")\n'
-        '    printf "name: cloglog\\nid: 0\\nposition: 0\\n";;\n'
+        '  "action list-tabs --json")\n'
+        "    cat <<JSON\n"
+        '[{"tab_id":0,"name":"cloglog","active":true,"position":0},'
+        '{"tab_id":7,"name":"wt-fake","active":false,"position":2}]\n'
+        "JSON\n"
+        "    ;;\n"
         '  "action close-tab "*)\n'
         '    echo "$*" > "$LOG"; exit 0;;\n'
         "  *) exit 0;;\n"
@@ -226,10 +235,11 @@ def test_helper_idempotent_when_tab_absent(tmp_path: Path) -> None:
     shim.write_text(
         "#!/usr/bin/env bash\n"
         'case "$*" in\n'
-        '  "action list-tabs")\n'
-        '    printf "TAB_ID\\tPOSITION\\tNAME\\n0\\t0\\tcloglog\\n";;\n'
-        '  "action current-tab-info")\n'
-        '    printf "name: cloglog\\nid: 0\\nposition: 0\\n";;\n'
+        '  "action list-tabs --json")\n'
+        "    cat <<JSON\n"
+        '[{"tab_id":0,"name":"cloglog","active":true,"position":0}]\n'
+        "JSON\n"
+        "    ;;\n"
         "  *) exit 0;;\n"
         "esac\n"
     )

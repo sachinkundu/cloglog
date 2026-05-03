@@ -117,6 +117,23 @@ a secret.
 
 ## Persistence
 
+### `DATABASE_URL` is required, no silent shared-DB fallback
+
+`Settings.database_url` (`src/shared/config.py`) has **no default**.
+`alembic.ini` carries no `sqlalchemy.url` default. `src/alembic/env.py`
+sources its URL from `Settings`, which loads `.env` and raises
+`ValidationError` when `DATABASE_URL` is unset. A backend or alembic
+invocation without an explicit `DATABASE_URL` aborts at startup instead of
+silently connecting to the shared `cloglog` DB. Each environment supplies
+its own `DATABASE_URL` via `.env`: prod (`cloglog`), dev (`cloglog_dev` —
+created by `make dev-env`), each worktree (`cloglog_wt_<name>` — created
+by `scripts/worktree-infra.sh`). Silent-failure shape this guards: a
+worktree backend started without sourcing its `.env` used to migrate the
+prod `cloglog` DB; a `make dev` run without a dev `.env` did the same.
+Now both fail with a clear ValidationError naming `database_url`.
+
+**Pin:** `tests/test_database_url_required.py`
+
 ### Upsert preserves existing columns on empty input
 
 When an upsert accepts partial data (e.g., `upsert_worktree(branch_name=...)`),

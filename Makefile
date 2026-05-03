@@ -1,4 +1,4 @@
-.PHONY: help install test test-board test-agent test-document test-gateway test-e2e test-e2e-browser test-e2e-browser-ui test-e2e-browser-headed test-e2e-browser-report invariants lint typecheck coverage contract-check demo demo-check quality run-backend prod prod-bg promote verify-prod-protection prod-logs prod-stop db-up db-down db-migrate db-revision db-refresh-from-prod sync-mcp-dist
+.PHONY: help install test test-board test-agent test-document test-gateway test-e2e test-e2e-browser test-e2e-browser-ui test-e2e-browser-headed test-e2e-browser-report invariants lint typecheck coverage contract-check demo demo-check quality run-backend dev dev-env prod prod-bg promote verify-prod-protection prod-logs prod-stop db-up db-down db-migrate db-revision db-refresh-from-prod sync-mcp-dist
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -40,6 +40,7 @@ test-e2e-browser-report: ## Run Playwright E2E tests and open HTML report
 
 invariants: ## Run silent-failure pin tests (see docs/invariants.md)
 	uv run pytest --tb=short -q \
+	  tests/test_database_url_required.py \
 	  tests/test_on_worktree_create_backend_url.py::test_hook_does_not_invoke_python_yaml \
 	  tests/test_mcp_json_no_secret.py \
 	  tests/test_no_destructive_migrations.py \
@@ -136,7 +137,7 @@ quality: ## Run full quality gate (invariants fail-fast → lint → typecheck �
 
 # ── Run ───────────────────────────────────────
 
-dev: ## Start everything (db + migrate + backend + frontend)
+dev: dev-env ## Start everything (db + migrate + backend + frontend)
 	@scripts/preflight.sh
 	@echo "Starting cloglog dev environment..."
 	@docker compose up -d 2>/dev/null || true
@@ -359,6 +360,30 @@ prod-stop: ## Stop the prod server (backend + frontend only — tunnel is system
 	@fuser -k 4173/tcp 2>/dev/null && echo "  Frontend: killed by port." || true
 
 # ── Database ──────────────────────────────────
+
+dev-env: ## Bootstrap dev .env (DATABASE_URL=cloglog_dev) — fail-loud if Postgres not reachable
+	@# T-388: dev checkout must point at cloglog_dev, never the prod `cloglog`
+	@# DB. Settings now refuses to start without an explicit DATABASE_URL, so
+	@# the dev .env is no longer optional. The dev DB is created here
+	@# explicitly — no silent CREATE-on-first-connect.
+	@docker compose up -d 2>/dev/null || true
+	@for i in 1 2 3 4 5 6 7 8 9 10; do \
+		PGPASSWORD=cloglog_dev psql -h 127.0.0.1 -U cloglog -d postgres -c '\q' 2>/dev/null && break; \
+		[ $$i -eq 10 ] && { echo "ERROR: postgres on 127.0.0.1:5432 unreachable after 10 attempts. Run 'make db-up' and check 'docker compose logs postgres'." >&2; exit 1; }; \
+		sleep 1; \
+	done
+	@if ! PGPASSWORD=cloglog_dev psql -h 127.0.0.1 -U cloglog -tc "SELECT 1 FROM pg_database WHERE datname='cloglog_dev'" | grep -q 1; then \
+		PGPASSWORD=cloglog_dev psql -h 127.0.0.1 -U cloglog -d postgres -c "CREATE DATABASE cloglog_dev OWNER cloglog;" >/dev/null \
+			|| { echo "ERROR: failed to create cloglog_dev database. Refusing to fall back to the prod 'cloglog' DB." >&2; exit 1; }; \
+		echo "  cloglog_dev: created"; \
+	fi
+	@if [ ! -f .env ]; then \
+		printf 'DATABASE_URL=postgresql+asyncpg://cloglog:cloglog_dev@127.0.0.1:5432/cloglog_dev\n' > .env; \
+		echo "  .env: written (DATABASE_URL → cloglog_dev)"; \
+	elif ! grep -q '^DATABASE_URL=' .env; then \
+		printf 'DATABASE_URL=postgresql+asyncpg://cloglog:cloglog_dev@127.0.0.1:5432/cloglog_dev\n' >> .env; \
+		echo "  .env: appended DATABASE_URL → cloglog_dev"; \
+	fi
 
 db-up: ## Start PostgreSQL
 	docker compose up -d

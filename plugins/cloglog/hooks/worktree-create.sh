@@ -66,9 +66,20 @@ if [[ -n "$API_KEY" ]]; then
 fi
 
 # --- Run project-specific setup hook if it exists ---
+# T-378: propagate the bootstrap script's exit status. The pre-T-378 `|| true`
+# suppression masked silent partial setup on the WorktreeCreate path —
+# .cloglog/on-worktree-create.sh now exits non-zero on missing credentials
+# or any non-201 close-off-task response, and discarding that signal here
+# would let the hook return success while the worktree shipped without a
+# close-off task (the exact failure mode T-378 closes on the launch path).
 if [[ -x "${CONFIG_DIR}/on-worktree-create.sh" ]]; then
   WORKTREE_PATH="$WORKTREE_PATH" WORKTREE_NAME="$WORKTREE_NAME" \
-    "${CONFIG_DIR}/on-worktree-create.sh" || true
+    "${CONFIG_DIR}/on-worktree-create.sh"
+  _bootstrap_status=$?
+  if [[ "$_bootstrap_status" -ne 0 ]]; then
+    echo "[worktree-create] FATAL ${CONFIG_DIR}/on-worktree-create.sh exited ${_bootstrap_status}; worktree bootstrap incomplete." >&2
+    exit "$_bootstrap_status"
+  fi
 fi
 
 exit 0

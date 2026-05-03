@@ -55,6 +55,24 @@ def stub_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
     # path passed via env.
     (shim / "npm").write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> "$NPM_LOG"\nexit 0\n')
     (shim / "npm").chmod(0o755)
+    # T-378 stub curl: the close-off-task POST is now fail-loud, so the
+    # hook needs a real-looking 201 response or it aborts before reaching
+    # the npm-install branch this test exercises. The stub writes the body
+    # file curl would have written and prints "201" so the hook's HTTP-code
+    # capture parses cleanly.
+    (shim / "curl").write_text(
+        "#!/bin/bash\n"
+        "# Find the -o argument and touch the output file so the hook's\n"
+        "# `[[ -s ... ]]` check on the body file is well-defined.\n"
+        "while [[ $# -gt 0 ]]; do\n"
+        '  case "$1" in\n'
+        '    -o) : > "$2"; shift 2 ;;\n'
+        "    *) shift ;;\n"
+        "  esac\n"
+        "done\n"
+        'echo -n "201"\n'
+    )
+    (shim / "curl").chmod(0o755)
 
     return repo, wt, shim
 
@@ -72,6 +90,9 @@ def _run_hook(
         "WORKTREE_PATH": str(wt),
         "WORKTREE_NAME": worktree_name,
         "NPM_LOG": str(npm_log),
+        # T-378 fail-loud: the close-off-task POST aborts on missing API
+        # key. Provide a sentinel value so the curl shim is exercised.
+        "CLOGLOG_API_KEY": "stub-key-for-tests",
     }
     return subprocess.run(
         ["bash", str(repo / ".cloglog" / "on-worktree-create.sh")],

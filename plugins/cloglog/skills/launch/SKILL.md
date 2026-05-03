@@ -243,6 +243,8 @@ git worktree add -b "${WORKTREE_NAME}" "${WORKTREE_PATH}" origin/main
 
 Call `mcp__cloglog__register_agent` with the worktree name and path. This is done here (not deferred to the agent) so the board reflects the launch immediately.
 
+**Run this before Step 4c.** The project-specific `on-worktree-create.sh` posts to `/api/v1/agents/close-off-task`, which requires the worktree to be registered first; if 4c runs before 4b the backend returns HTTP 404 and (with T-378's fail-loud) the bootstrap aborts. Memory 2026-04-24: "always register agent first" — pinned by `tests/plugins/test_launch_skill_register_before_on_worktree_create.py`.
+
 ### 4c. Run project-specific worktree setup
 
 If the project has `.cloglog/on-worktree-create.sh`, run it. **Use absolute paths and pass `WORKTREE_PATH` as an env var — never `cd` into the new worktree.** The Bash tool's shell persists `cwd` between calls, so a `cd` into the new worktree leaks into every subsequent main-agent command and the main agent ends up looking like it's working inside the worktree it just spawned.

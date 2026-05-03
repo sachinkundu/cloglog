@@ -434,6 +434,9 @@ class TestHandleOrchestration:
 
         review.assert_not_called()
         assert any("rate limit exceeded" in r.message.lower() for r in caplog.records)
+        # Cancel the T-381 retry task so it does not drag the test suite.
+        for task in list(consumer._pending_retries.values()):
+            task.cancel()
 
     @pytest.mark.asyncio
     async def test_happy_path_produces_review_result(
@@ -788,6 +791,90 @@ class TestHandleOrchestration:
         assert "danger-full-access" not in argv, (
             "danger-full-access does NOT skip bwrap; it still fails on unshare-net."
         )
+
+
+# ---------------------------------------------------------------------------
+# T-381: rate-limit retry scheduling — the skip comment promises a retry; this
+# class pins that the promise is honored by an actual scheduled task that calls
+# ``_review_pr`` after the wait window. Removing the schedule call (or letting
+# it fail to fire) reproduces the original lie.
+# ---------------------------------------------------------------------------
+
+
+class TestRateLimitRetry:
+    @pytest.mark.asyncio
+    async def test_handle_schedules_real_retry_task(self) -> None:
+        consumer = ReviewEngineConsumer(max_per_hour=0)
+        with (
+            patch.object(consumer, "_notify_skip", new=AsyncMock()) as notify,
+            patch.object(consumer, "_review_pr", new=AsyncMock()),
+        ):
+            await consumer.handle(_event())
+
+        try:
+            notify.assert_called_once()
+            key = ("sachinkundu/cloglog", 42)
+            assert key in consumer._pending_retries, (
+                "rate-limit skip must schedule a retry task — the user-facing "
+                "comment promises one (T-381)"
+            )
+            task = consumer._pending_retries[key]
+            assert isinstance(task, asyncio.Task)
+            assert not task.done()
+        finally:
+            for task in list(consumer._pending_retries.values()):
+                task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_retry_task_invokes_review_pr_after_wait(self) -> None:
+        consumer = ReviewEngineConsumer(max_per_hour=0)
+        original_sleep = asyncio.sleep
+        slept: list[float] = []
+
+        async def fast_sleep(delay: float) -> None:
+            slept.append(delay)
+            await original_sleep(0)
+
+        review_done = asyncio.Event()
+
+        async def fake_review(event: WebhookEvent) -> None:
+            review_done.set()
+
+        with (
+            patch.object(consumer, "_notify_skip", new=AsyncMock()),
+            patch.object(consumer, "_review_pr", new=AsyncMock(side_effect=fake_review)) as review,
+            patch("src.gateway.review_engine.asyncio.sleep", new=fast_sleep),
+        ):
+            await consumer.handle(_event())
+            # Allow the retry task to run.
+            await asyncio.wait_for(review_done.wait(), timeout=1.0)
+
+        review.assert_called_once()
+        # The scheduled delay must respect the rate-limiter window — a 0-second
+        # delay would reproduce the original lie by retrying instantly while
+        # the limiter is still saturated. Buffer adds 1s for clock skew.
+        assert slept and slept[0] >= 1.0
+
+    @pytest.mark.asyncio
+    async def test_second_push_during_window_replaces_pending_retry(self) -> None:
+        consumer = ReviewEngineConsumer(max_per_hour=0)
+        with (
+            patch.object(consumer, "_notify_skip", new=AsyncMock()),
+            patch.object(consumer, "_review_pr", new=AsyncMock()),
+        ):
+            await consumer.handle(_event(pr_number=99))
+            first_task = consumer._pending_retries[("sachinkundu/cloglog", 99)]
+            await consumer.handle(_event(pr_number=99))
+            second_task = consumer._pending_retries[("sachinkundu/cloglog", 99)]
+            # Give the cancellation a tick to settle.
+            await asyncio.sleep(0)
+
+        try:
+            assert first_task is not second_task
+            assert first_task.cancelled() or first_task.done()
+        finally:
+            for task in list(consumer._pending_retries.values()):
+                task.cancel()
 
 
 # ---------------------------------------------------------------------------

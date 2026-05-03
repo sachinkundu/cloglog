@@ -76,6 +76,11 @@ REVIEW_TIMEOUT_CAP_SECONDS: Final = 1800.0
 # settings-driven budget). New codex paths must use ``compute_review_timeout``.
 REVIEW_TIMEOUT_SECONDS: Final = REVIEW_TIMEOUT_BASE_SECONDS
 RATE_LIMIT_WINDOW_SECONDS: Final = 3600.0
+# T-381: extra delay added to ``seconds_until_next_slot()`` when scheduling a
+# rate-limit retry. The slot ages out at ``oldest + RATE_LIMIT_WINDOW_SECONDS``;
+# add a small buffer so the retry's ``allow()`` call is past the boundary even
+# under monotonic-clock skew.
+RATE_LIMIT_RETRY_BUFFER_SECONDS: Final = 1.0
 REVIEW_POST_RETRY_DELAY_SECONDS: Final = 5.0
 REVIEW_REQUEST_TIMEOUT_SECONDS: Final = 30.0
 # Backstop cap on bot review sessions per PR (T-227). The primary stop
@@ -1324,6 +1329,12 @@ class ReviewEngineConsumer:
         self._session_factory = session_factory
         # T-377: default to the real httpx dispatcher; tests inject a fake.
         self._ci_dispatcher = ci_dispatcher or dispatch_ci_after_codex
+        # T-381: in-flight rate-limit retries, keyed by (repo_full_name, pr_number).
+        # The skip comment promises a retry; this dict makes that promise truthful
+        # by holding the scheduled ``asyncio.Task``. A second push to the same PR
+        # cancels the pending retry and reschedules with the newer event so the
+        # eventual review runs on the latest head.
+        self._pending_retries: dict[tuple[str, int], asyncio.Task[None]] = {}
 
     def handles(self, event: WebhookEvent) -> bool:
         # Skip if ANY reviewer bot authored the PR (prevents review-of-review
@@ -1353,6 +1364,10 @@ class ReviewEngineConsumer:
                     f"Will retry after ~{int(wait_seconds // 60)} minutes."
                 ),
             )
+            # T-381: the comment above promises a retry — schedule a real one.
+            # Without this, the comment is a lie; the user waits for a review
+            # that never arrives unless they push another commit.
+            self._schedule_rate_limit_retry(event, wait_seconds)
             return
 
         async with self._lock:
@@ -1364,6 +1379,59 @@ class ReviewEngineConsumer:
                     event.pr_number,
                     event.repo_full_name,
                 )
+
+    def _schedule_rate_limit_retry(self, event: WebhookEvent, wait_seconds: float) -> None:
+        """Schedule a delayed retry for a rate-limited webhook event (T-381).
+
+        Honors the "Will retry after ~N minutes" promise posted in the skip
+        comment. Dedupes by ``(repo, pr_number)``: if a second push lands on
+        the same PR while a retry is pending, the older task is cancelled
+        and rescheduled with the newer event so the eventual review runs on
+        the latest head SHA.
+        """
+        key = (event.repo_full_name, event.pr_number)
+        existing = self._pending_retries.get(key)
+        if existing is not None and not existing.done():
+            existing.cancel()
+        delay = max(0.0, wait_seconds) + RATE_LIMIT_RETRY_BUFFER_SECONDS
+        task = asyncio.create_task(self._run_rate_limit_retry(event, delay))
+        self._pending_retries[key] = task
+
+    async def _run_rate_limit_retry(self, event: WebhookEvent, delay: float) -> None:
+        """Sleep ``delay`` then re-attempt the review for a rate-limited PR.
+
+        Bypasses the rate-limiter on the retry attempt — the slot was already
+        promised to this PR by the skip comment, so a second skip would
+        reproduce the original lie. Any other failure mode (codex unavailable,
+        post failed, etc.) flows through ``_review_pr`` exactly as on the
+        normal path; the user-visible outcome of the retry is whatever
+        ``_review_pr`` would have produced if the rate limiter had let the
+        original event through.
+        """
+        key = (event.repo_full_name, event.pr_number)
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        try:
+            # Take a slot best-effort so the retry counts toward the rolling
+            # window; if the limiter is still full we proceed anyway (we
+            # already promised this slot to the user).
+            self._rate_limiter.allow()
+            async with self._lock:
+                await self._review_pr(event)
+        except Exception:
+            logger.exception(
+                "Rate-limit retry failed for PR #%d (%s)",
+                event.pr_number,
+                event.repo_full_name,
+            )
+        finally:
+            # Only clear our own entry — a newer push may have replaced it
+            # while ``_review_pr`` was running, and that task should keep
+            # tracking under the same key.
+            if self._pending_retries.get(key) is asyncio.current_task():
+                self._pending_retries.pop(key, None)
 
     async def _notify_skip(self, event: WebhookEvent, reason: SkipReason, body: str) -> None:
         """Post a skip-notification comment on the PR as the Codex bot.

@@ -178,25 +178,48 @@ T-214 change) so the working `.mcp.json` no longer has the key.
 
 ## Production / `make promote`
 
-The same file applies on the production host. After `make promote` (or any
-fresh deploy of the backend + MCP server), check that
-`~/.cloglog/credentials` exists for the user that runs the supervisor
-session. If it does not, agents launched on that host will fail to register.
+The same files apply on the production host. After `make promote` (or any
+fresh deploy of the backend + MCP server), check that the credentials
+file the resolver will read for this project exists for the user that
+runs the supervisor session. On a single-project prod host that's
+`~/.cloglog/credentials`; on a host that runs cloglog alongside another
+cloglog-managed project, prefer `~/.cloglog/credentials.d/<project_slug>`
+so promoting one project never disturbs the other. If neither file is
+present, agents launched on that host will fail to register.
 
 ## Operational notes
 
 - **Rotation.** `scripts/rotate-project-key.py` rotates the key in the
-  database. Replace the `CLOGLOG_API_KEY=` line in `~/.cloglog/credentials`
-  on every host that has an MCP server (dev workstation, prod, any
-  alt-checkout) — the loader does not watch the file, so each MCP server
-  picks up the new key on its next start.
-- **Permissions.** `chmod 600` is checked best-effort by the loader; looser
-  modes log a warning to stderr but do not block startup. Tighten them.
+  database. Then update **the file the resolver actually reads for this
+  project**:
+  - **Single-project host:** replace the `CLOGLOG_API_KEY=` line in
+    `~/.cloglog/credentials`.
+  - **Multi-project host:** replace the `CLOGLOG_API_KEY=` line in
+    `~/.cloglog/credentials.d/<project_slug>`. The slug is the value of
+    `project:` in this repo's `.cloglog/config.yaml`. Leave the legacy
+    `~/.cloglog/credentials` alone — it belongs to a different project.
+  Repeat on every host that has an MCP server (dev workstation, prod,
+  any alt-checkout) — the loader does not watch the file, so each MCP
+  server picks up the new key on its next start. **Stale per-project
+  files block fallback (T-382 fail-loud invariant): rotating the key
+  but forgetting to update `credentials.d/<slug>` will leave the MCP
+  server starting up against the OLD key (or refusing to start if the
+  file is now blank).** Restart Claude Code after every rotation so the
+  refresh actually takes effect.
+- **Permissions.** `chmod 600` is checked best-effort by the loader on
+  every file it reads (legacy global AND each `credentials.d/<slug>`);
+  looser modes log a warning to stderr but do not block startup.
+  Tighten them.
 - **Ignored locations.** The loader does **not** read `.env`, the
   worktree's `.mcp.json`, the repo-root `.mcp.json`, or any other
-  per-worktree file. The hooks (`plugins/cloglog/hooks/worktree-create.sh`,
-  `plugins/cloglog/hooks/agent-shutdown.sh`) match: they accept env or
-  `~/.cloglog/credentials` only. This is intentional — see T-214.
+  per-worktree file. The hooks
+  (`plugins/cloglog/hooks/worktree-create.sh`,
+  `plugins/cloglog/hooks/agent-shutdown.sh`) match the MCP server's
+  resolution exactly via the shared helper at
+  `plugins/cloglog/hooks/lib/resolve-api-key.sh`: env →
+  `~/.cloglog/credentials.d/<slug>` → `~/.cloglog/credentials`. This is
+  intentional — see T-214 for the per-worktree exclusion and T-382 for
+  the per-project layer.
 
 ## Related
 

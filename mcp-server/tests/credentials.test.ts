@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, chmodSync, mkdirSync } from 'node:fs'
+import {
+  mkdtempSync,
+  readFileSync as fsReadFileSync,
+  rmSync,
+  writeFileSync,
+  chmodSync,
+  mkdirSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve as pathResolve } from 'node:path'
 
 import {
   DEFAULT_CREDENTIALS_PATH,
@@ -486,5 +493,28 @@ describe('findProjectRoot', () => {
     const stray = join(workDir, 'stray')
     mkdirSync(stray)
     expect(findProjectRoot(stray)).toBeNull()
+  })
+})
+
+describe('MCP server startup error handling (T-382 codex round 4)', () => {
+  it('index.ts catches UnusableProjectCredentialsError alongside MissingCredentialsError', () => {
+    // Text-level pin: process.exit(78) on a credential-config error must
+    // cover BOTH error classes, otherwise a present-but-broken
+    // credentials.d/<slug> file produces a Node stack trace at startup
+    // instead of the EX_CONFIG diagnostic Claude Code's MCP loader
+    // expects. Failure mode caught locally before this pin: starting
+    // claude in a project with `~/.cloglog/credentials.d/<slug>` set to
+    // a directory crashed with "TypeError: ..." instead of exiting 78.
+    const indexPath = pathResolve(__dirname, '..', 'src', 'index.ts')
+    const src = fsReadFileSync(indexPath, 'utf8')
+
+    expect(src).toContain('UnusableProjectCredentialsError')
+    // The catch block must use instanceof for both error classes; a bare
+    // `if (err instanceof MissingCredentialsError)` without the second
+    // check means the new error type still escapes uncaught.
+    expect(src).toMatch(/instanceof\s+MissingCredentialsError\s*\|\|\s*err\s+instanceof\s+UnusableProjectCredentialsError/)
+    // Sanity: process.exit(78) is still wired in so the catch handler
+    // actually short-circuits startup, not just logs.
+    expect(src).toContain('process.exit(78)')
   })
 })

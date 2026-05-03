@@ -276,6 +276,49 @@ def test_hook_resolves_per_project_credentials(
     )
 
 
+def test_hook_resolves_per_project_credentials_with_single_quoted_slug(
+    stub_worktree: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """T-382 codex round 4: a YAML config with `project: 'beta'` (single
+    quotes — fully valid YAML, accepted by every other reader) MUST be
+    slug-stripped just like double quotes. The shared scalar reader
+    (lib/parse-yaml-scalar.sh) handles this correctly; this pin makes
+    sure the credential resolver routes through that helper instead of
+    rolling its own quote-stripping that omits one of the quote shapes.
+    """
+    main, wt = stub_worktree
+    # Use single quotes — a previous custom parser stripped only " ",
+    # leaving 'beta' as slug-invalid and falling back to basename.
+    (wt / ".cloglog").mkdir(exist_ok=True)
+    (wt / ".cloglog" / "config.yaml").write_text(
+        "project: 'beta'\nbackend_url: http://127.0.0.1:1\n"
+    )
+    (main / ".cloglog" / "config.yaml").write_text(
+        "project: 'beta'\nbackend_url: http://127.0.0.1:1\n"
+    )
+    fake_home = tmp_path / "home-q"
+    cred_dir = fake_home / ".cloglog" / "credentials.d"
+    cred_dir.mkdir(parents=True)
+    cred_path = cred_dir / "beta"
+    cred_path.write_text("CLOGLOG_API_KEY=beta-quoted-key\n")
+    os.chmod(cred_path, 0o600)
+
+    env = {"HOME": str(fake_home), "PATH": os.environ["PATH"]}
+    before = (
+        Path("/tmp/agent-shutdown-debug.log").read_text()
+        if Path("/tmp/agent-shutdown-debug.log").exists()
+        else ""
+    )
+    _run_hook(wt, env)
+    after = Path("/tmp/agent-shutdown-debug.log").read_text()
+    new_lines = after[len(before) :]
+
+    assert "calling unregister-by-path" in new_lines, (
+        "Hook must accept single-quoted `project: 'beta'` and resolve via "
+        "credentials.d/beta. Debug log delta:\n" + new_lines
+    )
+
+
 def test_hook_is_idempotent_across_multiple_firings(
     stub_worktree: tuple[Path, Path], tmp_path: Path
 ) -> None:

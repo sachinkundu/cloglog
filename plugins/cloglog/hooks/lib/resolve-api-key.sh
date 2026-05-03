@@ -25,15 +25,21 @@
 
 # resolve_api_key_slug <config-path>
 #   Echoes the project slug for credentials.d/<slug> lookup. Empty on miss.
+#   Sources the canonical scalar reader at lib/parse-yaml-scalar.sh so any
+#   future quote-handling fix lands in one place — drift between the two
+#   parsers would let a quoted `project: 'beta'` be MCP-resolvable but
+#   hook-invisible (the codex round-4 risk).
 resolve_api_key_slug() {
   local cfg="$1"
   local re='^[A-Za-z0-9._-]+$'
+  # The lib path is co-located with this file; resolve once at first call.
+  local _lib_dir
+  _lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # shellcheck source=parse-yaml-scalar.sh
+  source "${_lib_dir}/parse-yaml-scalar.sh"
   local slug=""
   if [[ -n "$cfg" && -f "$cfg" ]]; then
-    slug=$(grep '^project:' "$cfg" 2>/dev/null | head -n1 \
-            | sed 's/^project:[[:space:]]*//' \
-            | sed 's/[[:space:]]*#.*$//' \
-            | tr -d '"'"'")
+    slug=$(read_yaml_scalar "$cfg" "project" "")
   fi
   if [[ -n "$slug" && "$slug" =~ $re ]]; then
     printf '%s\n' "$slug"

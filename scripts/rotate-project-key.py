@@ -46,19 +46,38 @@ async def rotate(project_name: str | None) -> None:
         project.api_key_hash = hashlib.sha256(new_key.encode()).hexdigest()
         await session.commit()
 
+        # Slug used by the T-382 per-project resolver. Matches the same
+        # validator the resolver applies (`[A-Za-z0-9._-]+`); leave the
+        # actual slug derivation to the operator on their host since the
+        # config field they use is per-checkout.
+        slug = project.name
+
         print(f"Project: {project.name} ({project.id})")
         print(f"New API key: {new_key}")
         print()
-        print("Replace the value in ~/.cloglog/credentials on every host that runs an")
-        print("MCP server (dev workstation, prod, alt-checkouts):")
+        print("Update the credentials file the resolver actually reads for THIS")
+        print("project on every host that runs an MCP server (dev workstation, prod,")
+        print("alt-checkouts). Pick the right destination — the wrong one clobbers")
+        print("another project's key on a multi-project host:")
         print()
-        print(f"  printf 'CLOGLOG_API_KEY={new_key}\\n' > ~/.cloglog/credentials")
-        print("  chmod 600 ~/.cloglog/credentials")
+        print("  Single-project host (only this project on the box):")
+        print(f"    printf 'CLOGLOG_API_KEY={new_key}\\n' > ~/.cloglog/credentials")
+        print("    chmod 600 ~/.cloglog/credentials")
         print()
-        print("Or export in the launcher's environment:")
+        print("  Multi-project host (this project shares the box with others):")
+        print(f"    printf 'CLOGLOG_API_KEY={new_key}\\n' > ~/.cloglog/credentials.d/{slug}")
+        print(f"    chmod 600 ~/.cloglog/credentials.d/{slug}")
+        print()
+        print(f"  (The slug above mirrors `project: {slug}` in this repo's")
+        print("   .cloglog/config.yaml. If your config uses a different slug, write")
+        print("   the file under THAT name, not this one.)")
+        print()
+        print("Or export in the launcher's environment (one-shot override):")
         print(f"  export CLOGLOG_API_KEY={new_key}")
         print()
-        print("Each MCP server picks up the new key on its next start. See")
+        print("Restart Claude Code on each host so the MCP server picks up the new")
+        print("key. T-382 fail-loud invariant: a stale credentials.d/<slug> file")
+        print("will keep the OLD key in use until you update it. See")
         print("docs/setup-credentials.md.")
 
 

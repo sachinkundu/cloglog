@@ -54,6 +54,7 @@ def _inputs(**overrides):
         checks=_green_checks(),
         labels=["enhancement"],
         has_human_changes_requested=False,
+        mergeable_state="CLEAN",
         reviewer_bot_logins=_TEST_REVIEWER_BOTS,
     )
     base.update(overrides)
@@ -172,6 +173,89 @@ def test_cancelled_ci_check_blocks() -> None:
     decision = gate.should_auto_merge(_inputs(checks=[{"name": "quality", "bucket": "cancel"}]))
     assert decision.merge is False
     assert decision.reason == "ci_not_green"
+
+
+# ── merge conflict detection (T-362) ──────────────────────────────────
+
+
+def test_dirty_merge_state_blocks_with_pr_dirty_reason() -> None:
+    """A sibling PR landing first leaves this PR's mergeStateStatus DIRTY.
+
+    GitHub does not webhook the affected PR when conflicts emerge from
+    someone else's merge, so the agent's own ``gh pr view`` lookup at
+    gate-evaluation time is the only signal. The gate must surface this
+    as ``pr_dirty`` so the agent falls into the conflict-resolve flow
+    instead of attempting a merge GitHub will reject.
+    """
+    decision = gate.should_auto_merge(_inputs(mergeable_state="DIRTY"))
+    assert decision.merge is False
+    assert decision.reason == "pr_dirty"
+
+
+def test_dirty_blocks_before_ci_not_green() -> None:
+    """``pr_dirty`` must fire before ``ci_not_green``.
+
+    Otherwise a DIRTY PR with pending CI would block on
+    ``gh pr checks --watch`` waiting for a result that cannot help —
+    GitHub has already disabled the merge button. Resolving the conflict
+    + pushing restarts CI anyway.
+    """
+    decision = gate.should_auto_merge(
+        _inputs(
+            mergeable_state="DIRTY",
+            checks=[{"name": "quality", "bucket": "pending"}],
+        )
+    )
+    assert decision.reason == "pr_dirty"
+
+
+def test_clean_merge_state_does_not_block() -> None:
+    decision = gate.should_auto_merge(_inputs(mergeable_state="CLEAN"))
+    assert decision.merge is True
+
+
+def test_unknown_merge_state_does_not_block() -> None:
+    """``UNKNOWN`` is GitHub's transient state while it recomputes mergeability.
+
+    Treating it as a hold would deadlock every PR for the seconds-to-minutes
+    window after a sibling merge while GitHub catches up. The agent retries
+    the lookup on the next gate evaluation.
+    """
+    decision = gate.should_auto_merge(_inputs(mergeable_state="UNKNOWN"))
+    assert decision.merge is True
+
+
+def test_empty_merge_state_does_not_block() -> None:
+    """Older payload shape that omits ``mergeable_state`` must not regress."""
+    decision = gate.should_auto_merge(_inputs(mergeable_state=""))
+    assert decision.merge is True
+
+
+def test_blocked_merge_state_does_not_match_pr_dirty() -> None:
+    """``BLOCKED`` is a GitHub branch-protection hold, not a merge conflict.
+
+    The conflict-resolve flow (``git merge origin/main``) would not
+    unblock it. Only ``DIRTY`` triggers the conflict path; other states
+    fall through to the existing CI / label / approval semantics.
+    """
+    decision = gate.should_auto_merge(_inputs(mergeable_state="BLOCKED"))
+    assert decision.merge is True
+    assert decision.reason == "merge"
+
+
+def test_cli_propagates_dirty_merge_state(monkeypatch, capsys) -> None:
+    payload = {
+        "reviewer": _TEST_REVIEWER,
+        "body": ":pass: ok",
+        "checks": _green_checks(),
+        "labels": [],
+        "mergeable_state": "DIRTY",
+        "reviewer_bot_logins": list(_TEST_REVIEWER_BOTS),
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    rc = gate.main([])
+    assert rc == 1
+    assert capsys.readouterr().out.strip() == "pr_dirty"
 
 
 # ── ordering: cheap checks first ──────────────────────────────────────

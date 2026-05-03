@@ -169,8 +169,13 @@ Never retry a 409 or a 5xx. Never fall back to direct HTTP or `gh api`.
 10. Your inbox monitor delivers review/merge/CI events automatically. On
     `review_submitted` from a login listed in
     `.cloglog/config.yaml: reviewer_bot_logins`, run the auto-merge gate per
-    the `github-bot` skill's **Auto-Merge on Codex Pass** section. On
-    `pr_merged`, run the per-task shutdown sequence below.
+    the `github-bot` skill's **Auto-Merge on Codex Pass** section. The gate
+    detects sibling-merge conflicts via `mergeStateStatus` (T-362) and
+    returns `pr_dirty` — handle it by moving back to `in_progress`,
+    `git fetch origin main && git merge origin/main`, resolving conflicts,
+    and pushing; the resulting `synchronize` triggers a fresh codex review
+    that re-runs the gate. On `pr_merged`, run the per-task shutdown
+    sequence below.
 
 ## Per-task shutdown sequence — `pr_merged`
 

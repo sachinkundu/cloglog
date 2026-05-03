@@ -208,15 +208,16 @@ If the inbox monitor is not running, events pile up silently in the file and not
 
 ### Auto-Merge on Codex Pass
 
-After a `review_submitted` inbox event, the worktree agent decides whether to merge its own PR via a four-condition gate (T-295). The gate is implemented as a pure-Python helper; the agent shells out to it, never reproduces the logic inline.
+After a `review_submitted` inbox event, the worktree agent decides whether to merge its own PR via a six-condition gate (T-295, T-362). The gate is implemented as a pure-Python helper; the agent shells out to it, never reproduces the logic inline.
 
-**Conditions (all five must hold):**
+**Conditions (all six must hold):**
 
 1. Reviewer's GitHub login appears in `reviewer_bot_logins` of `.cloglog/config.yaml` — the `reviewer` field on the inbox event payload is matched against that list. **This list is the auto-merge-eligible *final-stage* reviewer set, not every bot that can post a review.** Cloglog's two-stage pipeline (`${CLAUDE_PLUGIN_ROOT}/docs/two-stage-pr-review.md`) runs opencode first (stage A), then codex (stage B); only codex sits in `reviewer_bot_logins`. Stage-A approvals fall through `not_codex_reviewer` into the standard in_progress flow and never trigger an auto-merge.
 2. Review body, `lstrip()`ed, starts with `:pass:` — matches `_APPROVE_BODY_PREFIX` in `src/gateway/review_engine.py`. The bot deliberately never posts with `event="APPROVE"`; body content is the canonical approval marker.
 3. No human reviewer's most recent review is `CHANGES_REQUESTED`. Codex always posts as `event="COMMENT"` (`post_review` in `src/gateway/review_engine.py`), so a codex `:pass:` does NOT clear a human's outstanding change request — GitHub still blocks the merge from the human's side, and this gate must too. Computed from `gh api repos/${REPO}/pulls/${PR_NUM}/reviews`, filtered to non-bot users, latest review per author.
 4. Every check on `gh pr checks <PR_NUM> --json name,bucket` is `pass` or `skipping`. **Empty rollup also passes** — docs-only spec PRs attach no checks because [`ci.yml`](../../../.github/workflows/ci.yml) filters by `paths:`. Pending or failing → see *When the gate holds* below; do not assume an inbox event will retrigger.
 5. The PR does not carry the `hold-merge` label — set via `gh pr edit --add-label hold-merge` when a human wants to override auto-merge for a specific PR. Label REMOVAL fires no webhook the consumer surfaces (see [`src/gateway/webhook.py`](../../../src/gateway/webhook.py): only `opened/synchronize/closed` map through), so removing `hold-merge` does NOT re-run the gate by itself — see *When the gate holds*.
+6. The PR's `mergeStateStatus` is not `DIRTY` (T-362). A DIRTY PR has merge conflicts against base — most often because a sibling PR landed first while this one was sitting in review. GitHub does NOT fire a webhook on the affected PR when conflicts emerge from someone else's merge (the only `pull_request` actions [`src/gateway/webhook.py`](../../../src/gateway/webhook.py) maps through are `opened/synchronize/closed`), so the agent's own `gh pr view <PR_NUM> --json mergeStateStatus` lookup at gate-evaluation time is the only reliable signal. `UNKNOWN` (GitHub still recomputing) does NOT block — the next codex review re-runs the gate.
 
 **Invocation:**
 
@@ -241,6 +242,12 @@ HAS_HUMAN_CR=$(GH_TOKEN="$BOT_TOKEN" gh api "repos/${REPO}/pulls/${PR_NUM}/revie
 LABELS=$(GH_TOKEN="$BOT_TOKEN" gh pr view "$PR_NUM" --json labels --jq '[.labels[].name]')
 CHECKS=$(GH_TOKEN="$BOT_TOKEN" gh pr checks "$PR_NUM" --json name,bucket 2>/dev/null || echo '[]')
 
+# T-362: mergeStateStatus surfaces sibling-merge conflicts that no
+# webhook reports against this PR. A missing/empty result must not
+# regress the gate to spurious holds — default to empty, which the
+# helper treats as "not dirty".
+MERGE_STATE=$(GH_TOKEN="$BOT_TOKEN" gh pr view "$PR_NUM" --json mergeStateStatus --jq .mergeStateStatus 2>/dev/null || echo "")
+
 # Assemble with `jq -n` so we can inject every field as a typed argument
 # (`--argjson` for already-JSON values, `--arg` for strings). This is the
 # only invocation shape that survives `gh pr view --jq` not accepting `--arg`.
@@ -248,6 +255,7 @@ PAYLOAD=$(jq -nc \
   --arg reviewer "<reviewer field from inbox event>" \
   --arg body "<body field from inbox event>" \
   --arg has_human_cr "$HAS_HUMAN_CR" \
+  --arg merge_state "$MERGE_STATE" \
   --argjson checks "$CHECKS" \
   --argjson labels "$LABELS" \
   '{
@@ -255,7 +263,8 @@ PAYLOAD=$(jq -nc \
     body: $body,
     checks: $checks,
     labels: $labels,
-    has_human_changes_requested: ($has_human_cr == "true")
+    has_human_changes_requested: ($has_human_cr == "true"),
+    mergeable_state: $merge_state
   }')
 
 REASON=$(printf '%s' "$PAYLOAD" | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/auto_merge_gate.py")
@@ -287,19 +296,38 @@ else
         --jq '[.[] | select(.user.type != "Bot")] | group_by(.user.login) | map(last) | any(.state == "CHANGES_REQUESTED")')
       LABELS=$(GH_TOKEN="$BOT_TOKEN" gh pr view "$PR_NUM" --json labels --jq '[.labels[].name]')
       CHECKS=$(GH_TOKEN="$BOT_TOKEN" gh pr checks "$PR_NUM" --json name,bucket 2>/dev/null || echo '[]')
+      MERGE_STATE=$(GH_TOKEN="$BOT_TOKEN" gh pr view "$PR_NUM" --json mergeStateStatus --jq .mergeStateStatus 2>/dev/null || echo "")
       PAYLOAD=$(jq -nc \
         --arg reviewer "<reviewer field from inbox event>" \
         --arg body "<body field from inbox event>" \
         --arg has_human_cr "$HAS_HUMAN_CR" \
+        --arg merge_state "$MERGE_STATE" \
         --argjson checks "$CHECKS" \
         --argjson labels "$LABELS" \
-        '{reviewer: $reviewer, body: $body, checks: $checks, labels: $labels, has_human_changes_requested: ($has_human_cr == "true")}')
+        '{reviewer: $reviewer, body: $body, checks: $checks, labels: $labels, has_human_changes_requested: ($has_human_cr == "true"), mergeable_state: $merge_state}')
       REASON=$(printf '%s' "$PAYLOAD" | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/auto_merge_gate.py")
       if [[ "$REASON" == "merge" ]]; then
         GH_TOKEN="$BOT_TOKEN" gh pr merge "$PR_NUM" --squash --delete-branch
       fi
       # If still not_green here, CI ended red — let the existing CI failure
       # flow take over.
+      ;;
+    pr_dirty)
+      # T-362: a sibling PR landed first, leaving this PR with merge
+      # conflicts against base. GitHub does not webhook us about it —
+      # the gate's mergeStateStatus lookup is the only signal. Resolve
+      # in-line: move back to in_progress, fetch base, merge it into
+      # the branch (NOT rebase — long-lived branches handle conflicts
+      # better via merge), resolve, push. The resulting `synchronize`
+      # webhook triggers a fresh codex review which re-runs the gate.
+      # mcp__cloglog__add_task_note(task_id, "auto-merge held: PR is DIRTY (sibling merge conflict). Resolving against origin/main.")
+      # mcp__cloglog__update_task_status(task_id, "in_progress")
+      git fetch origin main
+      git merge origin/main || true   # conflicts are expected — resolve them, then commit
+      # After resolving + committing the merge, push via the bot identity
+      # exactly as in *Push and Create* above. Do NOT call gh pr merge
+      # here; let the standard review_submitted → gate cycle take over
+      # once codex re-reviews the new tip.
       ;;
     hold_label)
       # mcp__cloglog__add_task_note(task_id, "auto-merge skipped: hold-merge label set; clear by manual merge or by pushing a no-op commit")
@@ -326,6 +354,7 @@ fi
 | `human_changes_requested` | No | Address the human's review, push a fix — `synchronize` triggers a fresh codex review and re-runs the gate (assuming the human dismisses or supersedes their change request). |
 | `ci_not_green` | **Yes — the handler `gh pr checks --watch`s in-line** | Synchronous wait inside the same handler invocation, then a single re-evaluation. CI success does not produce an inbox event. |
 | `hold_label` | No | Human action: manual merge OR a push that triggers a fresh codex review. The webhook consumer does not surface label-changed events. |
+| `pr_dirty` | No | The handler resolves conflicts inline (`git fetch origin main && git merge origin/main` → resolve → push). The resulting `synchronize` webhook triggers a fresh codex review which re-runs the gate. GitHub does not webhook the affected PR when conflicts emerge from a sibling merge — `mergeStateStatus` is checked only at gate-evaluation time. |
 
 **Why a pure-Python helper, not inline bash.** Tests pin the four-condition truth table at `tests/test_auto_merge_gate.py`. Reproducing the logic in shell would split the source of truth between the test and the agent. The helper takes JSON in, prints the reason, exits 0/1.
 

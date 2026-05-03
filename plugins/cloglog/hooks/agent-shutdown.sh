@@ -95,12 +95,19 @@ if [[ -n "$CONFIG" ]]; then
 fi
 
 # --- Resolve API key ---
-# T-214: env or ~/.cloglog/credentials only. The project key MUST NOT live
+# T-214: env or ~/.cloglog/credentials* only. The project key MUST NOT live
 # inside any per-worktree file.
-API_KEY="${CLOGLOG_API_KEY:-}"
-if [[ -z "$API_KEY" ]] && [[ -r "${HOME}/.cloglog/credentials" ]]; then
-  API_KEY=$(grep -E '^CLOGLOG_API_KEY=' "${HOME}/.cloglog/credentials" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '"'"'" || true)
-fi
+# T-382: lookup order is env → ~/.cloglog/credentials.d/<project_slug> →
+# ~/.cloglog/credentials. Mirrors mcp-server/src/credentials.ts and the
+# launch SKILL `_api_key` helper. On a multi-project host where the
+# project's key only lives under credentials.d/<slug>, the legacy-only
+# resolver here previously fell through to "no API_KEY" and the SessionEnd
+# unregister POST got skipped — leaving the worktree registered until the
+# heartbeat timeout instead of unregistering immediately.
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/resolve-api-key.sh
+source "${HOOK_DIR}/lib/resolve-api-key.sh"
+API_KEY=$(resolve_api_key "$CONFIG")
 
 # --- Generate shutdown artifacts ---
 {

@@ -210,6 +210,72 @@ def test_hook_emits_empty_tasks_array_when_no_refs_in_commits(
     assert event["tasks_completed"] == []
 
 
+def test_hook_resolves_per_project_credentials(
+    stub_worktree: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """T-382 regression: when the project's API key only lives under
+    ~/.cloglog/credentials.d/<slug>, the hook MUST resolve it and run the
+    unregister POST. Before T-382 the hook only consulted env and the legacy
+    global file, so on multi-project hosts the SessionEnd unregister was
+    silently skipped (logged "no API_KEY") and the worktree stayed
+    registered until the heartbeat timeout.
+
+    The unregister POST itself fails (no backend in tests), but the
+    debug-log line distinguishes the two branches: the per-project resolver
+    must take "calling unregister-by-path", not "no API_KEY — skipping".
+    """
+    main, wt = stub_worktree
+    # Stamp `project: t382test` into a config visible from the worktree.
+    # In production, .cloglog/config.yaml is a tracked file so the
+    # checkout sees it; the test fixture's worktree is a sibling of
+    # main rather than nested under it, so we write the config inside
+    # the worktree where find_config() walks up from $CWD will see it.
+    (wt / ".cloglog").mkdir(exist_ok=True)
+    (wt / ".cloglog" / "config.yaml").write_text(
+        "project: t382test\nbackend_url: http://127.0.0.1:1\n"
+    )
+    # Also stamp it into main so the MAIN_INBOX path (and any other
+    # main-repo lookups) resolve identically.
+    (main / ".cloglog" / "config.yaml").write_text(
+        "project: t382test\nbackend_url: http://127.0.0.1:1\n"
+    )
+    fake_home = tmp_path / "home"
+    cred_dir = fake_home / ".cloglog" / "credentials.d"
+    cred_dir.mkdir(parents=True)
+    cred_path = cred_dir / "t382test"
+    cred_path.write_text("CLOGLOG_API_KEY=per-project-resolved\n")
+    os.chmod(cred_path, 0o600)
+
+    debug_log = tmp_path / "agent-shutdown-debug.log"
+    env = {
+        "HOME": str(fake_home),
+        "PATH": os.environ["PATH"],
+        # Redirect the hook's debug log to a per-test file by overriding
+        # /tmp via a TMPDIR-style trick is not viable — the hook hard-codes
+        # /tmp/agent-shutdown-debug.log. Instead, snapshot the file
+        # before/after and assert the new lines.
+    }
+    before = (
+        Path("/tmp/agent-shutdown-debug.log").read_text()
+        if Path("/tmp/agent-shutdown-debug.log").exists()
+        else ""
+    )
+    _run_hook(wt, env)
+    after = Path("/tmp/agent-shutdown-debug.log").read_text()
+    new_lines = after[len(before) :]
+    # Quietly absorb the after-snapshot suppressing the unused-variable warning.
+    _ = debug_log
+
+    assert "calling unregister-by-path" in new_lines, (
+        "Hook must take the API_KEY-present branch when only "
+        "~/.cloglog/credentials.d/<slug> exists. Debug log delta:\n" + new_lines
+    )
+    assert "no API_KEY" not in new_lines, (
+        "Per-project resolver regressed — hook fell through to 'no API_KEY' "
+        "branch. Debug log delta:\n" + new_lines
+    )
+
+
 def test_hook_is_idempotent_across_multiple_firings(
     stub_worktree: tuple[Path, Path], tmp_path: Path
 ) -> None:

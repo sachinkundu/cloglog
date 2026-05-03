@@ -245,3 +245,78 @@ def test_step4a_documents_t316_config_keys() -> None:
             f"init Step 4a must include the {key!r} key in its example config — "
             "T-316 consumers fail closed without it."
         )
+
+
+# ---------------------------------------------------------------------------
+# T-382 — per-project credential resolution must propagate to init
+# ---------------------------------------------------------------------------
+
+
+def test_step2_writes_credentials_d_for_multi_project() -> None:
+    """T-382: on a multi-project host, Step 2 must write the new key to
+    ~/.cloglog/credentials.d/<slug>, not ask the operator to export an env var.
+
+    Pre-T-382 the multi-project branch printed the key and told the operator
+    to `export CLOGLOG_API_KEY=...`. That left the global file untouched
+    (correct) but required every shell that launched Claude Code to inherit
+    the env — easy to miss, easy to clobber when switching projects. Since
+    T-382 the resolver picks ~/.cloglog/credentials.d/<slug> automatically,
+    so init must write the file directly.
+    """
+    step2 = _step2_body(_read())
+    assert "credentials.d" in step2, (
+        "Step 2 must write to ~/.cloglog/credentials.d/<slug> on multi-project "
+        "hosts (T-382). Pre-T-382 export-only behaviour is no longer correct."
+    )
+    assert "MULTI_PROJECT" in step2, (
+        "Step 2 must still distinguish single-project from multi-project hosts "
+        "via $MULTI_PROJECT so single-project hosts keep writing to the legacy "
+        "global file (backward compatibility)."
+    )
+
+
+def test_step2_seeds_project_slug_into_config() -> None:
+    """T-382: Step 2 must persist `project:` to .cloglog/config.yaml at
+    bootstrap time. Without it, the SessionEnd unregister hook and the
+    MCP server resolver fall back to basename($PROJECT_ROOT) for the slug
+    — which matches the credentials.d/<slug> file only by accident if the
+    checkout dir happens to share the project's chosen name.
+    """
+    step2 = _step2_body(_read())
+    # Step 2 derives PROJECT_SLUG and writes it as the `project:` field.
+    assert "PROJECT_SLUG" in step2, (
+        "Step 2 must derive PROJECT_SLUG so the same slug is used for both "
+        "the credentials.d/<slug> filename and the config `project:` field."
+    )
+    # The skill's seeding block must include `project:` (not only `project_id:`).
+    assert (
+        "^project:" in step2 or "'project: %s\\n'" in step2 or "project: ${PROJECT_SLUG}" in step2
+    ), (
+        "Step 2 must persist `project:` to .cloglog/config.yaml so the "
+        "T-382 resolver finds the slug source on first restart."
+    )
+
+
+def test_step4a_uses_project_field_not_project_name() -> None:
+    """T-382: Step 4a's example config MUST use `project:` (the slug field
+    the resolver reads) and MUST NOT use `project_name:` (the legacy field
+    that nothing reads). A downstream project generated from `project_name:`
+    has no slug source — the resolver falls back to basename which usually
+    misses, breaking per-project credential lookup.
+    """
+    step4a = _step4a_body(_read())
+    assert "\nproject:" in step4a or "project: <slug>" in step4a, (
+        "Step 4a must emit the `project:` field — it's the slug source for "
+        "~/.cloglog/credentials.d/<slug> (T-382)."
+    )
+    # The legacy `project_name:` field is not read by anything; if init
+    # generates it, the per-project resolver silently fails over to basename.
+    # Allow `project_name` only inside fenced comments / explanatory prose.
+    for line in step4a.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("project_name:"):
+            raise AssertionError(
+                "Step 4a still emits the legacy `project_name:` field. "
+                "Use `project:` — that's what mcp-server/src/credentials.ts "
+                "and the SessionEnd unregister hook read."
+            )

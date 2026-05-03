@@ -353,23 +353,58 @@ _gh_app_installation_id() {
   _read_scalar_yaml "$PROJECT_ROOT/.cloglog/config.yaml" "gh_app_installation_id"
 }
 
+_project_slug() {
+  # T-382: derive the per-project credential slug. Reads `project:` from
+  # .cloglog/config.yaml, falls back to basename($PROJECT_ROOT). Mirrors
+  # resolveProjectSlug() in mcp-server/src/credentials.ts. Validates against
+  # [A-Za-z0-9._-] to refuse path-traversal — anything else returns empty
+  # and the caller falls through to the legacy global credentials file.
+  local re='^[A-Za-z0-9._-]+$'
+  local slug
+  slug=$(_read_scalar_yaml "$PROJECT_ROOT/.cloglog/config.yaml" "project")
+  if [[ -n "$slug" && "$slug" =~ $re ]]; then
+    echo "$slug"; return
+  fi
+  slug=$(basename "$PROJECT_ROOT")
+  if [[ -n "$slug" && "$slug" =~ $re ]]; then
+    echo "$slug"
+  fi
+}
+
+_read_credentials_file() {
+  # Stripped-down version of credentials.ts parseCredentialsFile: pull the
+  # CLOGLOG_API_KEY value out of a KEY=VALUE file, stripping surrounding
+  # single/double quotes. Empty result on miss so the caller can fall through.
+  local cred="$1"
+  [[ -r "$cred" ]] || return 0
+  local v
+  v=$(grep '^CLOGLOG_API_KEY=' "$cred" 2>/dev/null | head -n 1 | cut -d= -f2-)
+  v=${v%\"}; v=${v#\"}; v=${v%\'}; v=${v#\'}
+  [[ -n "$v" ]] && echo "$v"
+}
+
 _api_key() {
-  # Authoritative lookup order matches mcp-server/src/credentials.ts and the
-  # T-214 contract in ${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md: env first, then
-  # ~/.cloglog/credentials (mode 0600). The worktree's .env and the repo's
+  # T-382 — per-project credential resolution. Lookup order matches
+  # mcp-server/src/credentials.ts loadApiKey:
+  #   1. CLOGLOG_API_KEY env (operator override)
+  #   2. ~/.cloglog/credentials.d/<project_slug>  (per-project)
+  #   3. ~/.cloglog/credentials                   (legacy global)
+  # The per-project file solves the multi-project-host bug where the global
+  # file held the wrong project's key and agent calls earned silent 401s on
+  # /api/v1/agents/unregister-by-path. Single-project hosts keep working
+  # unchanged via the legacy fallback. The worktree's .env and the repo's
   # .mcp.json MUST NOT carry the key — tests/test_mcp_json_no_secret.py
   # pins that invariant and .cloglog/on-worktree-create.sh never writes
   # the key to .env.
   [[ -n "${CLOGLOG_API_KEY:-}" ]] && { echo "$CLOGLOG_API_KEY"; return; }
-  local cred="${HOME}/.cloglog/credentials"
-  if [[ -r "$cred" ]]; then
-    local v
-    v=$(grep '^CLOGLOG_API_KEY=' "$cred" 2>/dev/null | head -n 1 | cut -d= -f2-)
-    # Strip optional surrounding single/double quotes to match
-    # credentials.ts loadApiKey behaviour.
-    v=${v%\"}; v=${v#\"}; v=${v%\'}; v=${v#\'}
+  local slug v
+  slug=$(_project_slug)
+  if [[ -n "$slug" ]]; then
+    v=$(_read_credentials_file "${HOME}/.cloglog/credentials.d/${slug}")
     [[ -n "$v" ]] && { echo "$v"; return; }
   fi
+  v=$(_read_credentials_file "${HOME}/.cloglog/credentials")
+  [[ -n "$v" ]] && { echo "$v"; return; }
   return 0
 }
 

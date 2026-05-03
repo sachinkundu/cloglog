@@ -12,21 +12,44 @@ warning emitted when the credentials cannot be located.
 
 ## Resolution order
 
-The MCP server (`mcp-server/dist/index.js`) resolves the key at startup, in
-this order:
+The MCP server (`mcp-server/dist/index.js`) and the worktree-launch
+`_api_key` helper (`plugins/cloglog/skills/launch/SKILL.md`) resolve the key
+at startup, in this order (T-382 — per-project resolution so multi-project
+hosts don't send the wrong project's key):
 
 1. **`CLOGLOG_API_KEY` in the launching process's environment.**
    Convenient for local dev: export it in your shell rc (`~/.bashrc`,
    `~/.zshrc`) or in the systemd / launchd unit that starts Claude Code.
 
-2. **`~/.cloglog/credentials`.** A `KEY=VALUE` file containing at least
-   `CLOGLOG_API_KEY=<key>`. Mode **must** be `0600`; anything looser earns a
-   warning on stderr (the file is still read).
+2. **`~/.cloglog/credentials.d/<project_slug>`** — a per-project `KEY=VALUE`
+   file. The slug comes from `<project_root>/.cloglog/config.yaml: project`
+   with a `basename($PROJECT_ROOT)` fallback. The MCP server walks up from
+   `process.cwd()` until it finds `.cloglog/config.yaml`, so the lookup
+   works the same whether the server is started from the project root or
+   from a worktree subdir. Slugs must match `[A-Za-z0-9._-]+` — anything
+   else is rejected (no path traversal).
 
-If neither source yields a non-empty key, the MCP server prints a multi-line
-diagnostic to stderr and exits with status `78` (`EX_CONFIG`). Claude Code's
-MCP loader will then mark the server as failed; agents inside the worktree
-will see no `mcp__cloglog__*` tools at startup.
+3. **`~/.cloglog/credentials`** — a single `KEY=VALUE` file. This is the
+   legacy single-project location and is still consulted as the final
+   fallback. Hosts with one project keep working unchanged.
+
+Files in either location must be mode `0600`; anything looser earns a
+warning on stderr (the file is still read).
+
+If none of the three sources yield a non-empty key, the MCP server prints a
+multi-line diagnostic to stderr (naming every path it tried, including the
+per-project path with its derived slug) and exits with status `78`
+(`EX_CONFIG`). Claude Code's MCP loader will then mark the server as
+failed; agents inside the worktree will see no `mcp__cloglog__*` tools at
+startup.
+
+> **Multi-project hosts.** When you run cloglog and other cloglog-managed
+> projects on the same machine, prefer the per-project files. Each project
+> gets its own `~/.cloglog/credentials.d/<slug>` and the wrong key never
+> reaches the wrong backend. Before T-382 the legacy global file held one
+> key, so calls from the other projects' worktrees produced silent 401/403
+> on `/api/v1/agents/unregister-by-path` and similar agent-side endpoints
+> — the failure that motivated this change.
 
 ## First-time setup — new project via `/cloglog init`
 
@@ -60,14 +83,21 @@ and runs a two-phase bootstrap:
 export DASHBOARD_SECRET=<value from your backend's DASHBOARD_SECRET setting>
 ```
 
-> **Single-slot credentials note.** The MCP loader reads exactly one
-> `CLOGLOG_API_KEY` from env or `~/.cloglog/credentials`. If you use the same
-> machine for multiple cloglog projects, the `/cloglog init` bootstrap detects
-> an existing key in `~/.cloglog/credentials` and handles it automatically:
-> it still creates the project but prints the new API key rather than overwriting
-> the file, then asks you to `export CLOGLOG_API_KEY=<new-key>` before restarting.
-> Add that export to your shell RC or a project `.envrc` so the MCP server picks
-> it up at startup without touching the other project's credentials file.
+> **Multi-project hosts.** Since T-382 the loader checks
+> `~/.cloglog/credentials.d/<project_slug>` before the legacy global file. On
+> a multi-project machine, after `/cloglog init` creates the new project,
+> save its key under that per-project path:
+>
+> ```bash
+> mkdir -p ~/.cloglog/credentials.d
+> printf 'CLOGLOG_API_KEY=%s\n' "$NEW_KEY" > ~/.cloglog/credentials.d/<project-slug>
+> chmod 600 ~/.cloglog/credentials.d/<project-slug>
+> ```
+>
+> The slug is the value of `project:` in the new project's
+> `.cloglog/config.yaml`. The legacy global file is left untouched so the
+> other projects keep working. `export CLOGLOG_API_KEY=<key>` still works as
+> a one-shot override and beats both file sources.
 
 ## First-time setup — manual
 

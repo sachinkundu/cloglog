@@ -42,6 +42,7 @@ invariants: ## Run silent-failure pin tests (see docs/invariants.md)
 	uv run pytest --tb=short -q \
 	  tests/test_on_worktree_create_backend_url.py::test_hook_does_not_invoke_python_yaml \
 	  tests/test_mcp_json_no_secret.py \
+	  tests/plugins/test_launch_skill_per_project_credentials.py \
 	  tests/test_no_destructive_migrations.py \
 	  tests/test_check_demo_allowlist.py \
 	  tests/test_check_demo_exemption_hash.py \

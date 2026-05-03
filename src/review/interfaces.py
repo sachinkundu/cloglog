@@ -8,6 +8,7 @@ This is the Open Host Service boundary in ``docs/ddd-context-map.md``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -30,6 +31,12 @@ class ReviewTurnSnapshot:
     finding_count: int | None
     consensus_reached: bool
     elapsed_seconds: float | None
+    # T-375: cross-session counter recorded at ``claim_turn`` time and the
+    # timestamp set by ``mark_posted`` after a successful GitHub review POST.
+    # Together they let ReviewLoop short-circuit a duplicate post inside the
+    # same logical session without re-querying GitHub.
+    session_index: int | None = None
+    posted_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -82,6 +89,7 @@ class IReviewTurnRegistry(Protocol):
         head_sha: str,
         stage: str,
         turn_number: int,
+        session_index: int | None = None,
     ) -> bool:
         """Atomically insert a ``running`` turn row.
 
@@ -91,6 +99,14 @@ class IReviewTurnRegistry(Protocol):
 
         Implementation uses ``INSERT ... ON CONFLICT DO NOTHING`` on the
         unique index ``uq_pr_review_turns_key``.
+
+        ``session_index`` (T-375) is the cross-session counter computed by
+        ``ReviewEngineConsumer._review_pr`` (``count_bot_reviews + 1``) and
+        stamped on the row so the partial unique index
+        ``uq_pr_review_turns_one_post_per_session`` can enforce at-most-one
+        posted row per ``(pr_url, stage, session_index)``. Optional with
+        default ``None`` for back-compat; new ReviewLoop callers always
+        pass it.
         """
         ...
 
@@ -128,6 +144,26 @@ class IReviewTurnRegistry(Protocol):
 
         Used by the consensus checker to compute predicate (b) — zero-new-findings
         across the union of all prior turns.
+        """
+        ...
+
+    async def mark_posted(
+        self,
+        *,
+        pr_url: str,
+        head_sha: str,
+        stage: str,
+        turn_number: int,
+    ) -> bool:
+        """Stamp ``posted_at = now()`` on a turn row after a successful POST.
+
+        Returns ``True`` iff the row existed and the update applied. The
+        partial unique index ``uq_pr_review_turns_one_post_per_session``
+        will reject a second update that would create a duplicate
+        ``posted_at IS NOT NULL`` row for the same
+        ``(pr_url, stage, session_index)`` — implementations must surface
+        that as ``False`` so the loop logs and skips, rather than
+        propagating the IntegrityError. T-375.
         """
         ...
 

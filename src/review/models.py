@@ -70,6 +70,18 @@ class PrReviewTurn(Base):
     # never carry learnings (the learnings field is codex-only).
     findings_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
     learnings_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+    # T-375 webhook-re-fire dedupe: ``session_index`` records the
+    # cross-session counter for the run that claimed this turn, and
+    # ``posted_at`` is set when ``post_review`` returned True. ReviewLoop
+    # reads these on a webhook redelivery to short-circuit before
+    # re-POSTing under the same ``session N/5`` counter. No DB-level
+    # uniqueness — the intra-run per-turn POST contract still applies (a
+    # session legitimately produces multiple posted rows when
+    # ``codex_max_turns > 1`` surfaces new findings on later turns; see
+    # migration 894b1085a4d0 for rationale). Both columns nullable so
+    # pre-T-375 historical rows remain valid.
+    session_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),

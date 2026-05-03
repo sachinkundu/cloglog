@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -56,6 +57,7 @@ class FakeRegistry:
         head_sha: str,
         stage: str,
         turn_number: int,
+        session_index: int | None = None,
     ) -> bool:
         key = (pr_url, head_sha, stage, turn_number)
         if key in self._turns:
@@ -71,6 +73,8 @@ class FakeRegistry:
             finding_count=None,
             consensus_reached=False,
             elapsed_seconds=None,
+            session_index=session_index,
+            posted_at=None,
         )
         return True
 
@@ -101,7 +105,37 @@ class FakeRegistry:
             finding_count=finding_count,
             consensus_reached=consensus_reached,
             elapsed_seconds=elapsed_seconds,
+            session_index=old.session_index,
+            posted_at=old.posted_at,
         )
+
+    async def mark_posted(
+        self,
+        *,
+        pr_url: str,
+        head_sha: str,
+        stage: str,
+        turn_number: int,
+    ) -> bool:
+        key = (pr_url, head_sha, stage, turn_number)
+        snap = self._turns.get(key)
+        if snap is None or snap.posted_at is not None:
+            return False
+        self._turns[key] = ReviewTurnSnapshot(
+            project_id=snap.project_id,
+            pr_url=snap.pr_url,
+            pr_number=snap.pr_number,
+            head_sha=snap.head_sha,
+            stage=snap.stage,
+            turn_number=snap.turn_number,
+            status=snap.status,
+            finding_count=snap.finding_count,
+            consensus_reached=snap.consensus_reached,
+            elapsed_seconds=snap.elapsed_seconds,
+            session_index=snap.session_index,
+            posted_at=datetime.now(UTC),
+        )
+        return True
 
     async def latest_for(self, pr_url: str, head_sha: str) -> ReviewTurnSnapshot | None:
         candidates = [
@@ -138,6 +172,8 @@ class FakeRegistry:
             finding_count=None,
             consensus_reached=False,
             elapsed_seconds=None,
+            session_index=snap.session_index,
+            posted_at=snap.posted_at,
         )
         return True
 
@@ -572,12 +608,21 @@ class TestReviewLoopRun:
         assert turn_1.status == "timed_out"
 
     @pytest.mark.asyncio
-    async def test_resumes_from_next_turn_on_webhook_refire(self) -> None:
-        """On webhook re-fire, pre-existing turns are detected and loop starts from turn N+1."""
+    async def test_webhook_refire_short_circuits_after_prior_post(self) -> None:
+        """T-375: webhook re-fire on a SHA whose session already posted is a noop.
+
+        The prior contract was "advance to turn N+1 and post again", which
+        produced two GitHub reviews under the same ``session N/5`` counter
+        (two turn rows, both posted, one logical session). The new contract
+        is at-most-once per (pr_url, stage, session_index): re-fires must
+        short-circuit before claiming any further turns.
+        """
         sha = "refire" + "0" * 34
         registry = FakeRegistry()
 
-        # Simulate turn 1 already completed (a prior webhook delivery ran it)
+        # Simulate turn 1 already completed AND posted in a prior delivery.
+        # ``posted_at`` set + matching ``session_index`` is the
+        # authoritative T-375 "this session has posted" signal.
         registry._turns[(_PR_URL, sha, "codex", 1)] = ReviewTurnSnapshot(
             project_id=_PROJECT_ID,
             pr_url=_PR_URL,
@@ -589,6 +634,8 @@ class TestReviewLoopRun:
             finding_count=1,
             consensus_reached=False,
             elapsed_seconds=1.0,
+            session_index=1,
+            posted_at=datetime.now(UTC),
         )
 
         stub = StubReviewer(
@@ -598,15 +645,95 @@ class TestReviewLoopRun:
         )
         loop = _make_loop(stub, max_turns=3, registry=registry, head_sha=sha)
 
-        with patch(_PATCH_POST_REVIEW, new=AsyncMock(return_value=True)):
+        mock_post = AsyncMock(return_value=True)
+        with patch(_PATCH_POST_REVIEW, new=mock_post):
             outcome = await loop.run(diff="diff")
 
-        # Loop should have run turn 2 (not turn 1 again), and reached consensus
+        # No new POSTs — the session already posted on the prior delivery.
+        assert mock_post.await_count == 0
+        # No new turn rows — the loop short-circuited before claim_turn.
         turns = await registry.turns_for_stage(pr_url=_PR_URL, head_sha=sha, stage="codex")
-        turn_numbers = [t.turn_number for t in turns]
-        assert 1 in turn_numbers
-        assert 2 in turn_numbers
-        assert outcome.consensus_reached is True
+        assert {t.turn_number for t in turns} == {1}
+        # The reviewer was never invoked.
+        assert stub._call_count == 0
+        # outcome reports the already-posted turn so the consumer's
+        # downstream emit-on-terminal logic still has a turns_used signal.
+        assert outcome.turns_used == 1
+
+    @pytest.mark.asyncio
+    async def test_webhook_refire_short_circuits_on_legacy_completed_row(self) -> None:
+        """Pre-T-375 rows (NULL session_index, NULL posted_at) still short-circuit.
+
+        Closes the upgrade window: a row written by the prior code path
+        looks like a successful POST (status=completed, finding_count not
+        null). After T-375 deploys, a webhook re-fire on its SHA must not
+        re-post under the same session counter just because the row is
+        missing the new T-375 columns.
+        """
+        sha = "legacy" + "0" * 34
+        registry = FakeRegistry()
+        registry._turns[(_PR_URL, sha, "codex", 1)] = ReviewTurnSnapshot(
+            project_id=_PROJECT_ID,
+            pr_url=_PR_URL,
+            pr_number=_PR_NUMBER,
+            head_sha=sha,
+            stage="codex",
+            turn_number=1,
+            status="completed",
+            finding_count=2,
+            consensus_reached=False,
+            elapsed_seconds=1.0,
+            session_index=None,
+            posted_at=None,
+        )
+
+        stub = StubReviewer(responses=[(_ok_result(status="no_further_concerns"), 1.0, False)])
+        loop = _make_loop(stub, max_turns=3, registry=registry, head_sha=sha)
+        mock_post = AsyncMock(return_value=True)
+        with patch(_PATCH_POST_REVIEW, new=mock_post):
+            await loop.run(diff="diff")
+
+        assert mock_post.await_count == 0
+        assert stub._call_count == 0
+
+
+class TestT375PostedAtRecordedAfterPost:
+    """T-375 webhook-re-fire dedupe: every successful POST stamps
+    ``posted_at`` so a redelivery on the same SHA short-circuits before
+    re-claiming a turn. The earlier draft of this fix also suppressed
+    later turn POSTs in the same run, but codex review (PR #297) flagged
+    that the per-turn POST contract is intentional — multiple posts per
+    session are allowed when later turns surface new findings — so the
+    pin here is on the marker, not on cardinality.
+    """
+
+    @pytest.mark.asyncio
+    async def test_posted_at_set_on_each_successful_post(self) -> None:
+        """Every turn that POSTs gets ``posted_at`` stamped. With
+        ``max_turns=2`` and new findings each turn, both turn rows record
+        ``posted_at`` and the same ``session_index`` — what the
+        webhook-re-fire short-circuit reads on a redelivery."""
+
+        def _unique_finding(n: int) -> ReviewFinding:
+            return _finding(file="x.py", line=n, title=f"finding-{n}")
+
+        stub = StubReviewer(
+            responses=[
+                (_ok_result(findings=[_unique_finding(1)]), 1.0, False),
+                (_ok_result(findings=[_unique_finding(2)]), 1.0, False),
+            ]
+        )
+        registry = FakeRegistry()
+        loop = _make_loop(stub, max_turns=2, registry=registry, session_index=3)
+
+        with patch(_PATCH_POST_REVIEW, new=AsyncMock(return_value=True)):
+            await loop.run(diff="diff")
+
+        turns = await registry.turns_for_stage(pr_url=_PR_URL, head_sha=_SHA, stage="codex")
+        # Per-turn POST contract preserved: each successful POST is
+        # recorded in its own row with posted_at + session_index.
+        assert all(t.posted_at is not None for t in turns)
+        assert {t.session_index for t in turns} == {3}
 
     @pytest.mark.asyncio
     async def test_claim_returns_false_stops_loop_at_concurrent_turn(self) -> None:

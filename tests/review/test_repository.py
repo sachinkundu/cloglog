@@ -599,6 +599,130 @@ class TestRecordAndReplayFindings:
 
 
 # ---------------------------------------------------------------------------
+# T-375: session_index + posted_at columns (webhook-re-fire dedupe)
+# ---------------------------------------------------------------------------
+
+
+class TestT375SessionAuditColumns:
+    """T-375: ``session_index`` recorded at claim_turn and ``posted_at``
+    stamped by ``mark_posted`` are read by ReviewLoop on a webhook
+    redelivery to short-circuit the run. There is intentionally NO
+    database-level uniqueness across these columns — the per-turn POST
+    contract (`docs/design/two-stage-pr-review.md` §3.3) allows multiple
+    POSTs in one session when later turns surface new findings; codex's
+    review of an earlier T-375 draft flagged that suppressing those POSTs
+    would hide findings from contributors.
+    """
+
+    async def test_session_index_round_trips(self, db_session: AsyncSession) -> None:
+        project = await _make_project(db_session)
+        repo = ReviewTurnRepository(db_session)
+        pr_url, head_sha = _unique_pr("idx")
+
+        await repo.claim_turn(
+            project_id=project.id,
+            pr_url=pr_url,
+            pr_number=1,
+            head_sha=head_sha,
+            stage="codex",
+            turn_number=1,
+            session_index=3,
+        )
+        snap = await repo.latest_for(pr_url, head_sha)
+        assert snap is not None
+        assert snap.session_index == 3
+        assert snap.posted_at is None
+
+    async def test_mark_posted_stamps_posted_at(self, db_session: AsyncSession) -> None:
+        project = await _make_project(db_session)
+        repo = ReviewTurnRepository(db_session)
+        pr_url, head_sha = _unique_pr("posted")
+
+        await repo.claim_turn(
+            project_id=project.id,
+            pr_url=pr_url,
+            pr_number=1,
+            head_sha=head_sha,
+            stage="codex",
+            turn_number=1,
+            session_index=2,
+        )
+        ok = await repo.mark_posted(pr_url=pr_url, head_sha=head_sha, stage="codex", turn_number=1)
+        assert ok is True
+
+        snap = await repo.latest_for(pr_url, head_sha)
+        assert snap is not None
+        assert snap.posted_at is not None
+
+    async def test_mark_posted_idempotent_on_already_stamped_row(
+        self, db_session: AsyncSession
+    ) -> None:
+        """A second ``mark_posted`` on a row that already carries
+        ``posted_at`` returns False (no-op) — webhook re-fire idempotency.
+        """
+        project = await _make_project(db_session)
+        repo = ReviewTurnRepository(db_session)
+        pr_url, head_sha = _unique_pr("idem")
+
+        await repo.claim_turn(
+            project_id=project.id,
+            pr_url=pr_url,
+            pr_number=1,
+            head_sha=head_sha,
+            stage="codex",
+            turn_number=1,
+            session_index=1,
+        )
+        first = await repo.mark_posted(
+            pr_url=pr_url, head_sha=head_sha, stage="codex", turn_number=1
+        )
+        second = await repo.mark_posted(
+            pr_url=pr_url, head_sha=head_sha, stage="codex", turn_number=1
+        )
+        assert first is True
+        assert second is False
+
+    async def test_multiple_turns_same_session_can_each_post(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Two turn rows for the same (pr_url, stage, session_index) —
+        BOTH may carry ``posted_at``. The per-turn POST contract permits
+        this when ``codex_max_turns > 1`` produces new findings on a
+        later turn.
+        """
+        project = await _make_project(db_session)
+        repo = ReviewTurnRepository(db_session)
+        pr_url, head_sha = _unique_pr("multi")
+
+        await repo.claim_turn(
+            project_id=project.id,
+            pr_url=pr_url,
+            pr_number=1,
+            head_sha=head_sha,
+            stage="codex",
+            turn_number=1,
+            session_index=5,
+        )
+        await repo.claim_turn(
+            project_id=project.id,
+            pr_url=pr_url,
+            pr_number=1,
+            head_sha=head_sha,
+            stage="codex",
+            turn_number=2,
+            session_index=5,
+        )
+        ok_a = await repo.mark_posted(
+            pr_url=pr_url, head_sha=head_sha, stage="codex", turn_number=1
+        )
+        ok_b = await repo.mark_posted(
+            pr_url=pr_url, head_sha=head_sha, stage="codex", turn_number=2
+        )
+        assert ok_a is True
+        assert ok_b is True
+
+
+# ---------------------------------------------------------------------------
 # FK cascade on project delete
 # ---------------------------------------------------------------------------
 

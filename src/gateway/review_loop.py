@@ -460,6 +460,58 @@ class ReviewLoop:
             outcome.total_elapsed_seconds = time.monotonic() - start_all
             return outcome
 
+        # T-375 at-most-once-per-session short-circuit. A session may have
+        # already posted on a prior webhook delivery for this same SHA (the
+        # loop wrote ``posted_at`` in the prior run). The partial unique
+        # index ``uq_pr_review_turns_one_post_per_session`` would reject a
+        # second ``mark_posted`` for this (pr_url, stage, session_index)
+        # anyway, but exiting in-process here saves a GitHub round-trip and
+        # avoids confusing the contributor with a near-duplicate review body.
+        #
+        # Detection is generous on purpose:
+        # 1. ``posted_at`` is stamped and ``session_index`` matches —
+        #    authoritative T-375 signal.
+        # 2. Pre-T-375 fallback: a row with ``session_index IS NULL`` that
+        #    nonetheless reached ``status='completed'`` with a non-null
+        #    ``finding_count`` was, under the prior code path, a successful
+        #    POST. Same head_sha implies same session by construction
+        #    (session_index = ``count_bot_reviews + 1``, which is constant
+        #    for a given head_sha because ``count_bot_reviews`` collapses by
+        #    ``commit_id``). Treating these as posted closes the upgrade
+        #    window where a webhook re-fire after T-375 deploys could
+        #    otherwise re-post under the same session counter on a
+        #    historical row.
+        if any(
+            (row.posted_at is not None and row.session_index == self._session_index)
+            or (
+                row.session_index is None
+                and row.status == _TURN_STATUS_COMPLETED
+                and row.finding_count is not None
+            )
+            for row in existing
+        ):
+            posted_turn = max(
+                (
+                    row.turn_number
+                    for row in existing
+                    if row.posted_at is not None or row.status == _TURN_STATUS_COMPLETED
+                ),
+                default=0,
+            )
+            logger.info(
+                "review_session_already_posted stage=%s pr=%d sha=%s session=%d/%d "
+                "posted_turn=%d — short-circuit",
+                self._stage,
+                self._pr_number,
+                self._head_sha[:7],
+                self._session_index,
+                self._max_sessions,
+                posted_turn,
+            )
+            outcome.turns_used = posted_turn
+            outcome.total_elapsed_seconds = time.monotonic() - start_all
+            return outcome
+
         async with httpx.AsyncClient() as http:
             for turn in range(start_turn, self._max_turns + 1):
                 claimed = await self._registry.claim_turn(
@@ -469,6 +521,7 @@ class ReviewLoop:
                     head_sha=self._head_sha,
                     stage=self._stage,
                     turn_number=turn,
+                    session_index=self._session_index,
                 )
                 if not claimed:
                     # A prior POST-failed turn leaves a ``failed`` row that
@@ -646,6 +699,21 @@ class ReviewLoop:
                     finding_count=len(result.findings),
                     consensus_reached=consensus,
                     elapsed_seconds=elapsed,
+                )
+                # T-375: stamp ``posted_at`` so a subsequent webhook re-fire
+                # for the same SHA detects this session has already posted
+                # and short-circuits in the early-return at the top of
+                # ``run``. ``mark_posted`` is intentionally non-unique
+                # across turns within the same session — multiple turns
+                # may legitimately POST in one run when ``codex_max_turns
+                # > 1`` surfaces new findings on later turns. ``False``
+                # here means the row was missing or already stamped
+                # (idempotency); the GitHub POST happened either way.
+                await self._registry.mark_posted(
+                    pr_url=self._pr_url,
+                    head_sha=self._head_sha,
+                    stage=self._stage,
+                    turn_number=turn,
                 )
                 # T-367 cross-push memory: persist the findings + learnings on
                 # the same row complete_turn just updated, so the next turn's

@@ -980,6 +980,95 @@ class TestRateLimitRetry:
                 task.cancel()
 
     @pytest.mark.asyncio
+    async def test_capacity_full_no_second_pr_retry_scheduled(self) -> None:
+        """Reservations honor ``max_per_hour`` — different PRs can't double-book.
+
+        Pin for codex review round 3 HIGH (PR #309): without a
+        ``can_reserve()`` cap, every rate-limited PR scheduled a retry.
+        With ``max_per_hour=1``, PR-A and PR-B both hitting the limit
+        would each reserve and each fire — two reviews in the same hour,
+        breaking the at-most-N-per-hour contract.
+        """
+        consumer = ReviewEngineConsumer(max_per_hour=1)
+        self._saturate(consumer)
+        with (
+            patch.object(consumer, "_notify_skip", new=AsyncMock()),
+            patch.object(consumer, "_review_pr", new=AsyncMock()),
+        ):
+            await consumer.handle(_event(pr_number=11))  # PR-A reserves
+            await consumer.handle(_event(pr_number=22))  # PR-B refused
+        try:
+            assert ("sachinkundu/cloglog", 11) in consumer._pending_retries
+            assert ("sachinkundu/cloglog", 22) not in consumer._pending_retries, (
+                "max_per_hour=1 with PR-A reservation in flight must refuse "
+                "PR-B's retry — otherwise the per-hour cap is busted"
+            )
+        finally:
+            for task in list(consumer._pending_retries.values()):
+                task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_permanent_block_skip_comment_is_truthful(self) -> None:
+        """``max_per_hour=0`` must not promise a retry in the skip comment.
+
+        Pin for codex review round 3 MEDIUM (PR #309): the comment body
+        was unconditional — even when no retry was scheduled, the bot
+        posted "Will retry after ~0 minutes," recreating the lie T-381
+        was supposed to eliminate.
+        """
+        consumer = ReviewEngineConsumer(max_per_hour=0)
+        captured: list[str] = []
+
+        async def capture_skip(event: Any, reason: Any, body: str) -> None:
+            captured.append(body)
+
+        with (
+            patch.object(consumer, "_notify_skip", side_effect=capture_skip),
+            patch.object(consumer, "_review_pr", new=AsyncMock()),
+        ):
+            await consumer.handle(_event())
+
+        assert captured, "skip comment must be posted"
+        assert "Will retry" not in captured[0], (
+            "permanent block must not promise a retry — that's the original lie"
+        )
+        assert "permanently blocks" in captured[0]
+
+    @pytest.mark.asyncio
+    async def test_capacity_exhausted_skip_comment_is_truthful(self) -> None:
+        """Capacity-exhausted skip must not promise a retry either.
+
+        Pin for codex review round 3 HIGH (PR #309): when
+        ``can_reserve()`` refuses a *different* PR's retry, the skip
+        comment must say so — promising a retry that won't fire is the
+        same lie under a different cause.
+        """
+        consumer = ReviewEngineConsumer(max_per_hour=1)
+        self._saturate(consumer)
+        captured: list[str] = []
+
+        async def capture_skip(event: Any, reason: Any, body: str) -> None:
+            captured.append(body)
+
+        with (
+            patch.object(consumer, "_notify_skip", side_effect=capture_skip),
+            patch.object(consumer, "_review_pr", new=AsyncMock()),
+        ):
+            await consumer.handle(_event(pr_number=11))  # reserves
+            await consumer.handle(_event(pr_number=22))  # refused
+
+        try:
+            assert len(captured) == 2
+            assert "Will retry" in captured[0]
+            assert "Will retry" not in captured[1], (
+                "capacity-exhausted skip must not promise a retry"
+            )
+            assert "already reserved" in captured[1]
+        finally:
+            for task in list(consumer._pending_retries.values()):
+                task.cancel()
+
+    @pytest.mark.asyncio
     async def test_concurrent_rate_limited_pushes_arrival_order_wins(self) -> None:
         """Concurrent pushes register retries in webhook arrival order.
 

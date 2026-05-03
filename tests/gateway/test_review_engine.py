@@ -802,9 +802,22 @@ class TestHandleOrchestration:
 
 
 class TestRateLimitRetry:
+    @staticmethod
+    def _saturate(consumer: ReviewEngineConsumer) -> None:
+        """Fill all slots so the next ``handle()`` hits the rate-limit branch.
+
+        Tests use ``max_per_hour=1`` rather than ``max_per_hour=0`` because
+        the latter is the documented "permanently rate-limited" mode and no
+        longer schedules a retry (see ``test_max_per_hour_zero_does_not_schedule_retry``).
+        Pre-filling the single slot is what real production traffic looks
+        like when the rate limit fires.
+        """
+        consumer._rate_limiter.allow()
+
     @pytest.mark.asyncio
     async def test_handle_schedules_real_retry_task(self) -> None:
-        consumer = ReviewEngineConsumer(max_per_hour=0)
+        consumer = ReviewEngineConsumer(max_per_hour=1)
+        self._saturate(consumer)
         with (
             patch.object(consumer, "_notify_skip", new=AsyncMock()) as notify,
             patch.object(consumer, "_review_pr", new=AsyncMock()),
@@ -827,7 +840,8 @@ class TestRateLimitRetry:
 
     @pytest.mark.asyncio
     async def test_retry_task_invokes_review_pr_after_wait(self) -> None:
-        consumer = ReviewEngineConsumer(max_per_hour=0)
+        consumer = ReviewEngineConsumer(max_per_hour=1)
+        self._saturate(consumer)
         original_sleep = asyncio.sleep
         slept: list[float] = []
 
@@ -857,7 +871,8 @@ class TestRateLimitRetry:
 
     @pytest.mark.asyncio
     async def test_second_push_during_window_replaces_pending_retry(self) -> None:
-        consumer = ReviewEngineConsumer(max_per_hour=0)
+        consumer = ReviewEngineConsumer(max_per_hour=1)
+        self._saturate(consumer)
         with (
             patch.object(consumer, "_notify_skip", new=AsyncMock()),
             patch.object(consumer, "_review_pr", new=AsyncMock()),
@@ -875,6 +890,76 @@ class TestRateLimitRetry:
         finally:
             for task in list(consumer._pending_retries.values()):
                 task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_max_per_hour_zero_does_not_schedule_retry(self) -> None:
+        """Permanent rate-limit (``max_per_hour=0``) must not schedule a retry.
+
+        Pin for codex review HIGH/MEDIUM-2 (PR #309): T-381 originally
+        scheduled a retry on every rate-limit hit, including the
+        permanent-block configuration documented at ``docs/review-engine-e2e.md``
+        and ``RateLimiter.seconds_until_next_slot``. That contradicted the
+        operator's "always rate-limited" intent — a retry would fire ~1s
+        after the skip comment. ``wait_seconds == 0.0`` from a False
+        ``allow()`` is the unambiguous signal of a permanent block.
+        """
+        consumer = ReviewEngineConsumer(max_per_hour=0)
+        with (
+            patch.object(consumer, "_notify_skip", new=AsyncMock()),
+            patch.object(consumer, "_review_pr", new=AsyncMock()) as review,
+        ):
+            await consumer.handle(_event())
+            await asyncio.sleep(0)  # let any erroneously-scheduled task tick
+
+        assert consumer._pending_retries == {}, (
+            "max_per_hour=0 is the documented permanent-block mode — no retry must be scheduled"
+        )
+        review.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_cancels_stale_buffered_retry(self) -> None:
+        """A new event accepted by ``allow()`` must cancel any pending retry.
+
+        Pin for codex review HIGH (PR #309): without this guard, a
+        rate-limited event scheduled a retry inside the 1s clock-skew
+        buffer; if the rolling window then aged out and a fresh push for
+        the same PR was reviewed immediately, the buffered retry would
+        wake up and post a duplicate review on the stale head SHA.
+        """
+        consumer = ReviewEngineConsumer(max_per_hour=1)
+        self._saturate(consumer)
+
+        original_sleep = asyncio.sleep
+        sleep_started = asyncio.Event()
+
+        async def slow_sleep(delay: float) -> None:
+            sleep_started.set()
+            # Sleep long enough to outlive the test's second handle() call.
+            await original_sleep(60)
+
+        with (
+            patch.object(consumer, "_notify_skip", new=AsyncMock()),
+            patch.object(consumer, "_review_pr", new=AsyncMock()) as review,
+            patch("src.gateway.review_engine.asyncio.sleep", new=slow_sleep),
+        ):
+            await consumer.handle(_event())
+            await sleep_started.wait()
+            stale_task = consumer._pending_retries[("sachinkundu/cloglog", 42)]
+            assert not stale_task.done()
+
+            # Free the slot and replay the same PR — production: rolling
+            # window aged out + new push lands.
+            consumer._rate_limiter._timestamps.clear()
+            await consumer.handle(_event())
+            await asyncio.sleep(0)  # let cancellation propagate
+
+        assert stale_task.cancelled() or stale_task.done(), (
+            "Stale buffered retry must be cancelled when the same PR is "
+            "reviewed via the non-rate-limited path (T-381 race fix)"
+        )
+        # Exactly one review fired — the new event's. The buffered retry
+        # would have produced a second call if the cancellation regressed.
+        assert review.call_count == 1
 
 
 # ---------------------------------------------------------------------------

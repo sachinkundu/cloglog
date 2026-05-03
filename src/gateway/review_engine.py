@@ -1367,8 +1367,30 @@ class ReviewEngineConsumer:
             # T-381: the comment above promises a retry — schedule a real one.
             # Without this, the comment is a lie; the user waits for a review
             # that never arrives unless they push another commit.
-            self._schedule_rate_limit_retry(event, wait_seconds)
+            #
+            # ``wait_seconds == 0.0`` here means a permanent block: ``allow()``
+            # returned False but no timestamp will age out (``max_per_hour=0``,
+            # documented as a permanent rate-limit in ``RateLimiter`` and used
+            # by ``docs/review-engine-e2e.md`` to force the skip path). Don't
+            # schedule a retry — it would post the skip comment AND a review
+            # ~1s later, contradicting the operator's "always rate-limited"
+            # configuration. The comment is still truthful in the operational
+            # sense: when the limit is permanent, no retry is the honest
+            # outcome (the operator manually re-enables reviews).
+            if wait_seconds > 0.0:
+                self._schedule_rate_limit_retry(event, wait_seconds)
             return
+
+        # T-381 race fix: a buffered retry from an earlier rate-limited event
+        # for this PR may still be sleeping. Now that the rolling window has
+        # let the current event through, that buffered retry would post a
+        # duplicate review on a stale head SHA the moment its sleep elapses.
+        # Cancel it — this event supersedes whatever the older task was going
+        # to do.
+        retry_key = (event.repo_full_name, event.pr_number)
+        pending = self._pending_retries.pop(retry_key, None)
+        if pending is not None and not pending.done():
+            pending.cancel()
 
         async with self._lock:
             try:

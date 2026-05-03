@@ -917,49 +917,122 @@ class TestRateLimitRetry:
         review.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_handle_cancels_stale_buffered_retry(self) -> None:
-        """A new event accepted by ``allow()`` must cancel any pending retry.
+    async def test_pending_retry_reserves_slot_against_other_prs(self) -> None:
+        """A pending retry's slot is reserved — unrelated PRs can't claim it.
 
-        Pin for codex review HIGH (PR #309): without this guard, a
-        rate-limited event scheduled a retry inside the 1s clock-skew
-        buffer; if the rolling window then aged out and a fresh push for
-        the same PR was reviewed immediately, the buffered retry would
-        wake up and post a duplicate review on the stale head SHA.
+        Pin for codex review round 2 HIGH (PR #309): without reservations,
+        the retry path called ``allow()`` only at wake-time; a different
+        PR could steal the reopened slot in the meantime, so two reviews
+        ran inside the same hour even though ``max_per_hour=1``.
+        """
+        consumer = ReviewEngineConsumer(max_per_hour=1)
+        self._saturate(consumer)
+        with (
+            patch.object(consumer, "_notify_skip", new=AsyncMock()),
+            patch.object(consumer, "_review_pr", new=AsyncMock()),
+        ):
+            await consumer.handle(_event(pr_number=42))
+        try:
+            # PR 42 has reservation. Now age out the original timestamp —
+            # the slot would be free if not for the reservation.
+            consumer._rate_limiter._timestamps.clear()
+            assert consumer._rate_limiter.allow() is False, (
+                "A scheduled retry's reservation must hold the slot "
+                "against unrelated PRs (codex round 2 HIGH)"
+            )
+        finally:
+            for task in list(consumer._pending_retries.values()):
+                task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_zero_wait_at_boundary_still_schedules_retry(self) -> None:
+        """``wait_seconds == 0.0`` from a boundary slot-just-opened must schedule.
+
+        Pin for codex review round 2 HIGH (PR #309): the previous round's
+        guard treated ``wait_seconds == 0.0`` as the permanent-block
+        sentinel, but ``seconds_until_next_slot()`` also returns 0.0
+        when the oldest timestamp ages out between the ``allow()`` check
+        and the wait-seconds read (millisecond-scale clock skew). The
+        sentinel must be ``is_permanently_blocked()``, never a numeric
+        comparison.
+        """
+        consumer = ReviewEngineConsumer(max_per_hour=1)
+        self._saturate(consumer)
+        with (
+            patch.object(consumer, "_notify_skip", new=AsyncMock()),
+            patch.object(consumer, "_review_pr", new=AsyncMock()),
+            # Make seconds_until_next_slot return 0.0 (slot just opened) —
+            # but is_permanently_blocked() is still False because max != 0.
+            patch.object(
+                consumer._rate_limiter,
+                "seconds_until_next_slot",
+                return_value=0.0,
+            ),
+        ):
+            await consumer.handle(_event(pr_number=77))
+        try:
+            assert ("sachinkundu/cloglog", 77) in consumer._pending_retries, (
+                "wait_seconds=0.0 with max_per_hour>0 means the slot just "
+                "opened — must still schedule a retry, not silently drop it"
+            )
+        finally:
+            for task in list(consumer._pending_retries.values()):
+                task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_rate_limited_pushes_arrival_order_wins(self) -> None:
+        """Concurrent pushes register retries in webhook arrival order.
+
+        Pin for codex review round 2 MEDIUM (PR #309): registration ran
+        AFTER the awaited ``_notify_skip()`` POST, so a slow first POST
+        could overwrite a newer event's registration. Now scheduling
+        runs synchronously before the await; arrival order wins
+        regardless of POST latency.
         """
         consumer = ReviewEngineConsumer(max_per_hour=1)
         self._saturate(consumer)
 
-        original_sleep = asyncio.sleep
-        sleep_started = asyncio.Event()
+        first_skip_release = asyncio.Event()
+        skip_calls = 0
 
-        async def slow_sleep(delay: float) -> None:
-            sleep_started.set()
-            # Sleep long enough to outlive the test's second handle() call.
-            await original_sleep(60)
+        async def gated_notify_skip(*args: Any, **kwargs: Any) -> None:
+            nonlocal skip_calls
+            skip_calls += 1
+            # Gate ONLY the first call so the second handle() can run
+            # synchronously past its own (ungated) notify_skip and
+            # complete before the first releases.
+            if skip_calls == 1:
+                await first_skip_release.wait()
 
         with (
-            patch.object(consumer, "_notify_skip", new=AsyncMock()),
-            patch.object(consumer, "_review_pr", new=AsyncMock()) as review,
-            patch("src.gateway.review_engine.asyncio.sleep", new=slow_sleep),
+            patch.object(consumer, "_notify_skip", side_effect=gated_notify_skip),
+            patch.object(consumer, "_review_pr", new=AsyncMock()),
         ):
-            await consumer.handle(_event())
-            await sleep_started.wait()
-            stale_task = consumer._pending_retries[("sachinkundu/cloglog", 42)]
-            assert not stale_task.done()
+            first = asyncio.create_task(consumer.handle(_event(pr_number=11)))
+            # Yield so handle() runs synchronously up to the first await
+            # (which is _notify_skip — by which point scheduling is done).
+            await asyncio.sleep(0)
+            first_event_task = consumer._pending_retries[("sachinkundu/cloglog", 11)]
 
-            # Free the slot and replay the same PR — production: rolling
-            # window aged out + new push lands.
-            consumer._rate_limiter._timestamps.clear()
-            await consumer.handle(_event())
-            await asyncio.sleep(0)  # let cancellation propagate
+            await consumer.handle(_event(pr_number=11))
+            second_event_task = consumer._pending_retries[("sachinkundu/cloglog", 11)]
+            assert first_event_task is not second_event_task, (
+                "Second push must replace the first's pending retry (arrival order wins)"
+            )
 
-        assert stale_task.cancelled() or stale_task.done(), (
-            "Stale buffered retry must be cancelled when the same PR is "
-            "reviewed via the non-rate-limited path (T-381 race fix)"
-        )
-        # Exactly one review fired — the new event's. The buffered retry
-        # would have produced a second call if the cancellation regressed.
-        assert review.call_count == 1
+            first_skip_release.set()
+            await first
+            # First handle() finishes its POST after the second already
+            # registered — the pending entry must still be the second's,
+            # never overwritten by the slow first.
+            assert consumer._pending_retries[("sachinkundu/cloglog", 11)] is second_event_task, (
+                "Slow POST on the first event must not retroactively "
+                "overwrite the second event's registration "
+                "(codex round 2 MEDIUM)"
+            )
+
+        for task in list(consumer._pending_retries.values()):
+            task.cancel()
 
 
 # ---------------------------------------------------------------------------

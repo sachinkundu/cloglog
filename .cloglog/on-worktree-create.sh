@@ -51,11 +51,29 @@ if [[ -f "mcp-server/package.json" ]]; then
   cd mcp-server && npm install && cd ..
 fi
 
-# T-214: warn if the project API key cannot be located.
-# The MCP server reads CLOGLOG_API_KEY from env or ~/.cloglog/credentials only.
-# Per-worktree files (.env, .mcp.json) must NOT carry the key.
-if [[ -z "${CLOGLOG_API_KEY:-}" ]] && [[ ! -r "${HOME}/.cloglog/credentials" ]]; then
-  echo "WARN: CLOGLOG_API_KEY not set and ${HOME}/.cloglog/credentials is missing." >&2
+# T-214 / T-382: warn if the project API key cannot be located.
+# The MCP server reads CLOGLOG_API_KEY from env, then per-project
+# ~/.cloglog/credentials.d/<project-slug>, then the legacy global file
+# ~/.cloglog/credentials. Per-worktree files (.env, .mcp.json) must NOT
+# carry the key. The actual resolver (sourced just below) honors that
+# order; this preflight only emits a fast user-facing warning when none
+# of the candidates appears present.
+_RAK_LIB="${REPO_ROOT}/plugins/cloglog/hooks/lib/resolve-api-key.sh"
+if [[ -r "$_RAK_LIB" ]]; then
+  # shellcheck source=plugins/cloglog/hooks/lib/resolve-api-key.sh
+  source "$_RAK_LIB"
+fi
+_PROJ_SLUG=""
+if declare -F resolve_api_key_slug >/dev/null 2>&1; then
+  _PROJ_SLUG=$(resolve_api_key_slug "${REPO_ROOT}/.cloglog/config.yaml" || true)
+fi
+if [[ -z "${CLOGLOG_API_KEY:-}" ]] \
+   && { [[ -z "$_PROJ_SLUG" ]] || [[ ! -e "${HOME}/.cloglog/credentials.d/${_PROJ_SLUG}" ]]; } \
+   && [[ ! -r "${HOME}/.cloglog/credentials" ]]; then
+  echo "WARN: CLOGLOG_API_KEY not set and no credentials file found." >&2
+  echo "      Looked at:" >&2
+  [[ -n "$_PROJ_SLUG" ]] && echo "        - ${HOME}/.cloglog/credentials.d/${_PROJ_SLUG} (per-project, T-382)" >&2
+  echo "        - ${HOME}/.cloglog/credentials (legacy global)" >&2
   echo "      The MCP server in this worktree will fail to authenticate." >&2
   echo "      See docs/setup-credentials.md for setup instructions." >&2
 fi
@@ -75,6 +93,18 @@ fi
 # tests/plugins/test_launch_skill_register_before_on_worktree_create.py) AND
 # this script aborts on any non-201 from the close-off-task POST.
 _resolve_api_key() {
+  # T-382 / T-378: delegate to the canonical per-project resolver sourced
+  # at the preflight block above. Order: env → ~/.cloglog/credentials.d/
+  # <project_slug> → ~/.cloglog/credentials. Without the per-project tier
+  # this script aborted bootstrap on multi-project hosts that follow the
+  # documented credentials.d layout (codex review of T-378 PR #310).
+  if declare -F resolve_api_key >/dev/null 2>&1; then
+    resolve_api_key "${REPO_ROOT}/.cloglog/config.yaml"
+    return
+  fi
+  # Fallback for environments where the plugin lib is missing (e.g. a
+  # fresh clone before `claude plugins install`): preserve the original
+  # env-or-legacy lookup so behaviour is no worse than pre-T-382.
   if [[ -n "${CLOGLOG_API_KEY:-}" ]]; then
     echo "$CLOGLOG_API_KEY"
     return
@@ -136,7 +166,8 @@ if [[ -n "${WORKTREE_PATH:-}" ]] && [[ -n "${WORKTREE_NAME:-}" ]]; then
   #      and we'd rather surface that crisply than ship a worktree with no
   #      board-side close-off shadow.
   if [[ -z "$_api_key" ]]; then
-    echo "[on-worktree-create] FATAL no CLOGLOG_API_KEY; cannot file close-off task." >&2
+    echo "[on-worktree-create] FATAL no CLOGLOG_API_KEY resolved; cannot file close-off task." >&2
+    echo "      Resolution order: env → ~/.cloglog/credentials.d/<project_slug> → ~/.cloglog/credentials." >&2
     echo "      See docs/setup-credentials.md. Aborting bootstrap." >&2
     exit 1
   fi

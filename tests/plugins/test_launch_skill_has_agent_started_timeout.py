@@ -3,9 +3,13 @@
 The main agent must detect failed worktree-agent launches by waiting for an
 ``agent_started`` event on ``<project_root>/.cloglog/inbox`` with a deadline
 (``launch_confirm_timeout_seconds``, default ``90``). On timeout the launch
-SKILL emits a diagnostic checklist (``query-tab-names``, ``bash -n``,
+SKILL emits a diagnostic checklist (``list-tabs --json``, ``bash -n``,
 ``agent-shutdown-debug.log``, ``.env``) and hands off to the operator —
 **no silent retry**. The same deadline applies to supervisor relaunches.
+
+T-384: the diagnostic-checklist tab probe migrated from
+``query-tab-names | grep`` to ``list-tabs --json | jq`` so every zellij
+call site in the plugin uses the same JSON contract.
 
 Pin shape:
   1. Step 5 (Verification) mentions ``agent_started``, the literal config
@@ -29,7 +33,7 @@ LAUNCH_SKILL = REPO_ROOT / "plugins/cloglog/skills/launch/SKILL.md"
 SETUP_SKILL = REPO_ROOT / "plugins/cloglog/skills/setup/SKILL.md"
 
 DIAGNOSTIC_TOKENS = (
-    "query-tab-names",
+    "list-tabs --json",
     "bash -n",
     "agent-shutdown-debug.log",
     ".env",

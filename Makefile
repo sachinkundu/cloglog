@@ -138,11 +138,10 @@ quality: ## Run full quality gate (invariants fail-fast → lint → typecheck �
 # ── Run ───────────────────────────────────────
 
 dev: ## Start everything (db + migrate + backend + frontend)
-	@# T-388: preflight runs FIRST so missing host deps (uv, docker, jq...)
-	@# surface as their own actionable error before dev-env touches Postgres.
-	@# Recursive $(MAKE) call (not a make prerequisite) keeps the ordering
-	@# explicit; prerequisites would race ahead of the recipe.
-	@scripts/preflight.sh
+	@# T-388: dev-env runs preflight at the top of its recipe, so calling it
+	@# here covers both `make dev` and direct `make dev-env`. Recursive
+	@# $(MAKE) (not a prerequisite) keeps ordering explicit; prerequisites
+	@# would race ahead of subsequent recipe lines.
 	@$(MAKE) --no-print-directory dev-env
 	@echo "Starting cloglog dev environment..."
 	@docker compose up -d 2>/dev/null || true
@@ -193,10 +192,17 @@ prod-env-guard: ## Verify ../cloglog-prod/.env carries an explicit DATABASE_URL 
 	@# previously allowed to omit it; this guard fails fast with the exact
 	@# line to add so gunicorn / alembic don't get to a half-booted
 	@# ValidationError state in the middle of `make promote`.
-	@if [ ! -f ../cloglog-prod/.env ] || ! grep -q '^DATABASE_URL=' ../cloglog-prod/.env; then \
-		echo "ERROR: ../cloglog-prod/.env is missing or has no DATABASE_URL line." >&2; \
+	@# Require a non-empty value: `DATABASE_URL=` (blank) satisfies a bare
+	@# presence check but Settings happily constructs with an empty string,
+	@# and the SQLAlchemy engine dies later inside gunicorn — the exact
+	@# late-failure shape the guard exists to prevent. The regex matches a
+	@# `postgresql`-prefixed DSN to also reject typos like
+	@# `DATABASE_URL=cloglog`.
+	@if [ ! -f ../cloglog-prod/.env ] || ! grep -Eq '^DATABASE_URL=postgresql' ../cloglog-prod/.env; then \
+		echo "ERROR: ../cloglog-prod/.env is missing or its DATABASE_URL is empty / not a postgresql DSN." >&2; \
 		echo "       T-388 made DATABASE_URL required (no silent fallback to the shared 'cloglog' DB)." >&2; \
-		echo "       Add this line to ../cloglog-prod/.env, then re-run:" >&2; \
+		echo "       Blank values are invalid too — Settings would construct, but the engine dies mid-deploy." >&2; \
+		echo "       Add (or fix) this line in ../cloglog-prod/.env, then re-run:" >&2; \
 		echo "         DATABASE_URL=postgresql+asyncpg://cloglog:cloglog_dev@127.0.0.1:5432/cloglog" >&2; \
 		exit 1; \
 	fi
@@ -396,6 +402,10 @@ dev-env: ## Bootstrap dev .env (DATABASE_URL=cloglog_dev) — fail-loud if Postg
 	@# uv/docker/node/npm/jq/cloudflared). The container always ships with
 	@# psql; assuming a host install would silently mis-diagnose missing-psql
 	@# as Postgres-unreachable.
+	@# Run preflight at the top of the recipe — `make dev` calls preflight
+	@# before this target, but a developer invoking `make dev-env` directly
+	@# still deserves the same actionable Docker / host-binary diagnosis.
+	@scripts/preflight.sh
 	@docker compose up -d 2>/dev/null || true
 	@for i in 1 2 3 4 5 6 7 8 9 10; do \
 		docker compose exec -T postgres pg_isready -U cloglog -q 2>/dev/null && break; \

@@ -29,12 +29,17 @@ HOOK = REPO_ROOT / ".cloglog" / "on-worktree-create.sh"
 
 
 @pytest.fixture
-def stub_repo(tmp_path: Path) -> tuple[Path, Path]:
-    """Scratch repo layout with a stub `scripts/worktree-infra.sh`.
+def stub_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Scratch repo layout with stub `scripts/worktree-infra.sh` and a PATH
+    shim dir carrying a stub `curl`.
 
-    Returns (repo_root, worktree_path). The hook's `REPO_ROOT` is derived
-    from its own path (`"$(dirname "$0")/.."`), so it finds
+    Returns (repo_root, worktree_path, shim_dir). The hook's `REPO_ROOT` is
+    derived from its own path (`"$(dirname "$0")/.."`), so it finds
     `${repo_root}/.cloglog/config.yaml` and `${repo_root}/scripts/worktree-infra.sh`.
+
+    T-378: the close-off-task POST is now fail-loud, so the test fixture
+    must shim `curl` to return 201 instead of relying on the old
+    warn-and-continue silent-skip path.
     """
     repo = tmp_path / "repo"
     (repo / ".cloglog").mkdir(parents=True)
@@ -50,21 +55,39 @@ def stub_repo(tmp_path: Path) -> tuple[Path, Path]:
 
     wt = tmp_path / "wt"
     wt.mkdir()
-    return repo, wt
+
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    # T-378 stub curl: hand back HTTP 201 so the close-off-task POST
+    # succeeds and the hook reaches its happy-path exit.
+    (shim / "curl").write_text(
+        "#!/bin/bash\n"
+        "while [[ $# -gt 0 ]]; do\n"
+        '  case "$1" in\n'
+        '    -o) : > "$2"; shift 2 ;;\n'
+        "    *) shift ;;\n"
+        "  esac\n"
+        "done\n"
+        'echo -n "201"\n'
+    )
+    (shim / "curl").chmod(0o755)
+    return repo, wt, shim
 
 
-def _run_hook(repo: Path, wt: Path, home: Path) -> subprocess.CompletedProcess[str]:
+def _run_hook(repo: Path, wt: Path, shim: Path, home: Path) -> subprocess.CompletedProcess[str]:
     """Invoke the hook with a controlled env.
 
-    `CLOGLOG_API_KEY` is unset and `HOME` points at an empty dir so
-    `_resolve_api_key` returns empty and the close-off-task curl block is
-    skipped — keeps the test hermetic (no network).
+    A sentinel `CLOGLOG_API_KEY` is supplied so the close-off-task block
+    runs against the shimmed `curl` (T-378 fail-loud) — the script aborts
+    on missing-key, but the assertions below need it to reach the URL log
+    line that immediately follows the resolution.
     """
     env = {
-        "PATH": os.environ["PATH"],
+        "PATH": f"{shim}:{os.environ['PATH']}",
         "HOME": str(home),
         "WORKTREE_PATH": str(wt),
         "WORKTREE_NAME": "wt-test",
+        "CLOGLOG_API_KEY": "stub-key-for-tests",
     }
     return subprocess.run(
         ["bash", str(repo / ".cloglog" / "on-worktree-create.sh")],
@@ -76,18 +99,18 @@ def _run_hook(repo: Path, wt: Path, home: Path) -> subprocess.CompletedProcess[s
 
 
 def test_resolve_backend_url_reads_non_default_port_from_config(
-    stub_repo: tuple[Path, Path], tmp_path: Path
+    stub_repo: tuple[Path, Path, Path], tmp_path: Path
 ) -> None:
     """When `backend_url` in config.yaml is `http://127.0.0.1:8001`,
     the hook MUST resolve that exact URL — not fall back to
     `http://localhost:8000`. This is the T-259 core bug: prior code
     silently returned the default on any host missing pyyaml."""
-    repo, wt = stub_repo
+    repo, wt, shim = stub_repo
     (repo / ".cloglog" / "config.yaml").write_text(
         "project: test\nbackend_url: http://127.0.0.1:8001\n"
     )
 
-    result = _run_hook(repo, wt, tmp_path / "empty-home")
+    result = _run_hook(repo, wt, shim, tmp_path / "empty-home")
     assert result.returncode == 0, f"hook exited non-zero:\n{result.stderr}"
 
     assert "backend_url=http://127.0.0.1:8001" in result.stderr, (
@@ -100,44 +123,46 @@ def test_resolve_backend_url_reads_non_default_port_from_config(
 
 
 def test_resolve_backend_url_falls_back_to_default_when_key_absent(
-    stub_repo: tuple[Path, Path], tmp_path: Path
+    stub_repo: tuple[Path, Path, Path], tmp_path: Path
 ) -> None:
     """If `backend_url` is missing from config.yaml, the hook falls back to
     `http://localhost:8000` — the documented default. Keeps behaviour
     identical to the pre-T-259 code on the no-override path."""
-    repo, wt = stub_repo
+    repo, wt, shim = stub_repo
     (repo / ".cloglog" / "config.yaml").write_text("project: test\n")
 
-    result = _run_hook(repo, wt, tmp_path / "empty-home")
+    result = _run_hook(repo, wt, shim, tmp_path / "empty-home")
     assert result.returncode == 0, f"hook exited non-zero:\n{result.stderr}"
 
     assert "backend_url=http://localhost:8000" in result.stderr, result.stderr
 
 
 def test_resolve_backend_url_strips_trailing_comment_and_quotes(
-    stub_repo: tuple[Path, Path], tmp_path: Path
+    stub_repo: tuple[Path, Path, Path], tmp_path: Path
 ) -> None:
     """The grep+sed pattern from `agent-shutdown.sh:62-74` strips a
     trailing `# …` comment and surrounding quotes. Pin that behaviour
     here so a future edit that deletes either sed stage breaks the test,
     not the runtime."""
-    repo, wt = stub_repo
+    repo, wt, shim = stub_repo
     (repo / ".cloglog" / "config.yaml").write_text(
         'project: test\nbackend_url: "http://127.0.0.1:9999"  # dev override\n'
     )
 
-    result = _run_hook(repo, wt, tmp_path / "empty-home")
+    result = _run_hook(repo, wt, shim, tmp_path / "empty-home")
     assert result.returncode == 0, f"hook exited non-zero:\n{result.stderr}"
 
     assert "backend_url=http://127.0.0.1:9999" in result.stderr, result.stderr
 
 
-def test_hook_does_not_invoke_python_yaml(stub_repo: tuple[Path, Path], tmp_path: Path) -> None:
+def test_hook_does_not_invoke_python_yaml(
+    stub_repo: tuple[Path, Path, Path], tmp_path: Path
+) -> None:
     """Protect the CLAUDE.md rule at the source level. A future edit that
     re-introduces `import yaml` inside the hook is the bug — this test
     trips before the runtime does. Only non-comment lines are scanned so
     that prose mentioning the anti-pattern is allowed."""
-    repo, _wt = stub_repo
+    repo, _wt, _shim = stub_repo
     body = (repo / ".cloglog" / "on-worktree-create.sh").read_text()
     code_lines = [line for line in body.splitlines() if not line.lstrip().startswith("#")]
     offenders = [line for line in code_lines if "import yaml" in line or "yaml.safe_load" in line]

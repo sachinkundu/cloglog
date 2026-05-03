@@ -51,11 +51,29 @@ if [[ -f "mcp-server/package.json" ]]; then
   cd mcp-server && npm install && cd ..
 fi
 
-# T-214: warn if the project API key cannot be located.
-# The MCP server reads CLOGLOG_API_KEY from env or ~/.cloglog/credentials only.
-# Per-worktree files (.env, .mcp.json) must NOT carry the key.
-if [[ -z "${CLOGLOG_API_KEY:-}" ]] && [[ ! -r "${HOME}/.cloglog/credentials" ]]; then
-  echo "WARN: CLOGLOG_API_KEY not set and ${HOME}/.cloglog/credentials is missing." >&2
+# T-214 / T-382: warn if the project API key cannot be located.
+# The MCP server reads CLOGLOG_API_KEY from env, then per-project
+# ~/.cloglog/credentials.d/<project-slug>, then the legacy global file
+# ~/.cloglog/credentials. Per-worktree files (.env, .mcp.json) must NOT
+# carry the key. The actual resolver (sourced just below) honors that
+# order; this preflight only emits a fast user-facing warning when none
+# of the candidates appears present.
+_RAK_LIB="${REPO_ROOT}/plugins/cloglog/hooks/lib/resolve-api-key.sh"
+if [[ -r "$_RAK_LIB" ]]; then
+  # shellcheck source=plugins/cloglog/hooks/lib/resolve-api-key.sh
+  source "$_RAK_LIB"
+fi
+_PROJ_SLUG=""
+if declare -F resolve_api_key_slug >/dev/null 2>&1; then
+  _PROJ_SLUG=$(resolve_api_key_slug "${REPO_ROOT}/.cloglog/config.yaml" || true)
+fi
+if [[ -z "${CLOGLOG_API_KEY:-}" ]] \
+   && { [[ -z "$_PROJ_SLUG" ]] || [[ ! -e "${HOME}/.cloglog/credentials.d/${_PROJ_SLUG}" ]]; } \
+   && [[ ! -r "${HOME}/.cloglog/credentials" ]]; then
+  echo "WARN: CLOGLOG_API_KEY not set and no credentials file found." >&2
+  echo "      Looked at:" >&2
+  [[ -n "$_PROJ_SLUG" ]] && echo "        - ${HOME}/.cloglog/credentials.d/${_PROJ_SLUG} (per-project, T-382)" >&2
+  echo "        - ${HOME}/.cloglog/credentials (legacy global)" >&2
   echo "      The MCP server in this worktree will fail to authenticate." >&2
   echo "      See docs/setup-credentials.md for setup instructions." >&2
 fi
@@ -67,11 +85,26 @@ fi
 # source of truth for idempotency: re-running against the same worktree_path
 # returns the existing task (HTTP 201, body.created=false).
 #
-# Non-fatal by design: if the backend is unreachable, the auth key is
-# missing, or the worktree has not been registered yet, log and continue so
-# worktree bootstrap does not wedge. The main agent can re-file the task
-# after the fact via the MCP tool.
+# T-378: fail-loud. The previous warn-and-continue path masked the
+# 2026-04-24 silent-404 incident — the launch SKILL ran on-worktree-create.sh
+# before register_agent and every cleanly-completed worktree on the host
+# shipped without a close-off task, breaking reconcile's close-wave delegation
+# predicate. The fix is paired: SKILL Step 4b runs before 4c (pinned by
+# tests/plugins/test_launch_skill_register_before_on_worktree_create.py) AND
+# this script aborts on any non-201 from the close-off-task POST.
 _resolve_api_key() {
+  # T-382 / T-378: delegate to the canonical per-project resolver sourced
+  # at the preflight block above. Order: env → ~/.cloglog/credentials.d/
+  # <project_slug> → ~/.cloglog/credentials. Without the per-project tier
+  # this script aborted bootstrap on multi-project hosts that follow the
+  # documented credentials.d layout (codex review of T-378 PR #310).
+  if declare -F resolve_api_key >/dev/null 2>&1; then
+    resolve_api_key "${REPO_ROOT}/.cloglog/config.yaml"
+    return
+  fi
+  # Fallback for environments where the plugin lib is missing (e.g. a
+  # fresh clone before `claude plugins install`): preserve the original
+  # env-or-legacy lookup so behaviour is no worse than pre-T-382.
   if [[ -n "${CLOGLOG_API_KEY:-}" ]]; then
     echo "$CLOGLOG_API_KEY"
     return
@@ -91,9 +124,9 @@ _resolve_backend_url() {
   # previous python snippet silently swallowed ImportError and returned the
   # `http://localhost:8000` default, so the subsequent close-off-task POST
   # landed on port 8000 even on hosts where the backend actually binds to
-  # 127.0.0.1:8001 — the create succeeded from curl's view (HTTP 000 is
-  # non-fatal-by-design, logged as WARN) but no task ever reached the
-  # board. Authoritative precedent for this grep+sed pattern:
+  # 127.0.0.1:8001 — the create succeeded from curl's view (HTTP 000 was
+  # logged as WARN under the pre-T-378 warn-and-continue path) but no task
+  # ever reached the board. Authoritative precedent for this grep+sed pattern:
   # plugins/cloglog/hooks/agent-shutdown.sh:62-74. If you need another
   # config key here, extend this pattern; do NOT re-introduce `import yaml`.
   local cfg="${REPO_ROOT}/.cloglog/config.yaml"
@@ -119,24 +152,41 @@ if [[ -n "${WORKTREE_PATH:-}" ]] && [[ -n "${WORKTREE_NAME:-}" ]]; then
   # to localhost:8000 on a host with a non-default backend port is visible
   # in bootstrap output instead of hiding behind a WARN status code.
   echo "[on-worktree-create] backend_url=${_backend_url}" >&2
+  # T-378: fail loud on any close-off-task error. The previous warn-and-continue
+  # path masked two real failure modes:
+  #   1. Missing CLOGLOG_API_KEY → no close-off task ever created; reconcile's
+  #      close-wave delegation predicate (component 2) silently fails for every
+  #      cleanly-completed worktree on this host.
+  #   2. HTTP 404 "Worktree not registered" → on-worktree-create.sh ran before
+  #      register_agent (launch SKILL ordering bug). Memory 2026-04-24:
+  #      "always register agent first". The launch SKILL prose at Step 4b/4c is
+  #      already correct (register before on-worktree-create.sh); a 404 here
+  #      means a regression in the supervisor's launch order, not a transient
+  #      backend hiccup. Same logic for 5xx — the bootstrap is half-applied
+  #      and we'd rather surface that crisply than ship a worktree with no
+  #      board-side close-off shadow.
   if [[ -z "$_api_key" ]]; then
-    echo "[on-worktree-create] skipping close-off-task creation: no CLOGLOG_API_KEY available" >&2
+    echo "[on-worktree-create] FATAL no CLOGLOG_API_KEY resolved; cannot file close-off task." >&2
+    echo "      Resolution order: env → ~/.cloglog/credentials.d/<project_slug> → ~/.cloglog/credentials." >&2
+    echo "      See docs/setup-credentials.md. Aborting bootstrap." >&2
+    exit 1
+  fi
+  _body=$(printf '{"worktree_path":"%s","worktree_name":"%s"}' \
+    "${WORKTREE_PATH}" "${WORKTREE_NAME}")
+  _resp=$(curl -sS --max-time 5 -o /tmp/cloglog-close-off-$$.out -w '%{http_code}' \
+    -X POST "${_backend_url}/api/v1/agents/close-off-task" \
+    -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer ${_api_key}" \
+    -d "$_body" 2>/dev/null || echo "000")
+  if [[ "$_resp" == "201" ]]; then
+    echo "[on-worktree-create] close-off task filed for ${WORKTREE_NAME}"
+    rm -f /tmp/cloglog-close-off-$$.out
   else
-    _body=$(printf '{"worktree_path":"%s","worktree_name":"%s"}' \
-      "${WORKTREE_PATH}" "${WORKTREE_NAME}")
-    _resp=$(curl -sS --max-time 5 -o /tmp/cloglog-close-off-$$.out -w '%{http_code}' \
-      -X POST "${_backend_url}/api/v1/agents/close-off-task" \
-      -H 'Content-Type: application/json' \
-      -H "Authorization: Bearer ${_api_key}" \
-      -d "$_body" 2>/dev/null || echo "000")
-    if [[ "$_resp" == "201" ]]; then
-      echo "[on-worktree-create] close-off task filed for ${WORKTREE_NAME}"
-    else
-      echo "[on-worktree-create] WARN close-off task create returned HTTP ${_resp}; continuing" >&2
-      if [[ -s /tmp/cloglog-close-off-$$.out ]]; then
-        sed 's/^/[on-worktree-create]   /' /tmp/cloglog-close-off-$$.out >&2
-      fi
+    echo "[on-worktree-create] FATAL close-off task create returned HTTP ${_resp}" >&2
+    if [[ -s /tmp/cloglog-close-off-$$.out ]]; then
+      sed 's/^/[on-worktree-create]   /' /tmp/cloglog-close-off-$$.out >&2
     fi
     rm -f /tmp/cloglog-close-off-$$.out
+    exit 1
   fi
 fi

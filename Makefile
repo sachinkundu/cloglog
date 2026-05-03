@@ -137,12 +137,21 @@ quality: ## Run full quality gate (invariants fail-fast → lint → typecheck �
 
 # ── Run ───────────────────────────────────────
 
-dev: dev-env ## Start everything (db + migrate + backend + frontend)
+dev: ## Start everything (db + migrate + backend + frontend)
+	@# T-388: preflight runs FIRST so missing host deps (uv, docker, jq...)
+	@# surface as their own actionable error before dev-env touches Postgres.
+	@# Recursive $(MAKE) call (not a make prerequisite) keeps the ordering
+	@# explicit; prerequisites would race ahead of the recipe.
 	@scripts/preflight.sh
+	@$(MAKE) --no-print-directory dev-env
 	@echo "Starting cloglog dev environment..."
 	@docker compose up -d 2>/dev/null || true
 	@echo "  Postgres: up"
-	@uv run alembic upgrade head 2>&1 | tail -1
+	@# T-388: clear any inherited DATABASE_URL so the generated `.env` wins.
+	@# Pydantic-settings reads process env BEFORE .env, so a stale
+	@# `export DATABASE_URL=.../cloglog` in the operator's shell would silently
+	@# point `make dev` at the prod DB even with a correct .env on disk.
+	@env -u DATABASE_URL uv run alembic upgrade head 2>&1 | tail -1
 	@echo "  Migrations: applied"
 	@# Kill old processes on ports 8000 and 5173 if still running
 	@fuser -k 8000/tcp 2>/dev/null && echo "  Killed old backend on :8000" || true
@@ -152,7 +161,7 @@ dev: dev-env ## Start everything (db + migrate + backend + frontend)
 		[ -n "$$HOST_IP" ] && echo "  Frontend: http://$$HOST_IP:5173 (tailnet)" || true; \
 		echo "  Starting backend + frontend..."; \
 		trap 'kill 0; fuser -k 8000/tcp 2>/dev/null; fuser -k 5173/tcp 2>/dev/null' EXIT INT TERM; \
-		uv run uvicorn src.gateway.app:create_app --factory --host 0.0.0.0 --port 8000 --reload \
+		env -u DATABASE_URL uv run uvicorn src.gateway.app:create_app --factory --host 0.0.0.0 --port 8000 --reload \
 			--reload-exclude '.claude/worktrees' \
 			--reload-exclude '__pycache__' \
 			--reload-exclude '*.pyc' & \
@@ -166,7 +175,9 @@ dev: dev-env ## Start everything (db + migrate + backend + frontend)
 		wait
 
 run-backend: ## Start the FastAPI backend
-	uv run uvicorn src.gateway.app:create_app --factory --host 0.0.0.0 --port 8000 --reload \
+	@# T-388: clear inherited DATABASE_URL so the dev `.env` wins over a
+	@# stale shell export from another checkout.
+	env -u DATABASE_URL uv run uvicorn src.gateway.app:create_app --factory --host 0.0.0.0 --port 8000 --reload \
 		--reload-exclude '.claude/worktrees' \
 		--reload-exclude '__pycache__' \
 		--reload-exclude '*.pyc'
@@ -366,14 +377,19 @@ dev-env: ## Bootstrap dev .env (DATABASE_URL=cloglog_dev) — fail-loud if Postg
 	@# DB. Settings now refuses to start without an explicit DATABASE_URL, so
 	@# the dev .env is no longer optional. The dev DB is created here
 	@# explicitly — no silent CREATE-on-first-connect.
+	@# Postgres readiness + DB creation go through `docker compose exec` so
+	@# `make dev` does not require a host `psql` binary (preflight only checks
+	@# uv/docker/node/npm/jq/cloudflared). The container always ships with
+	@# psql; assuming a host install would silently mis-diagnose missing-psql
+	@# as Postgres-unreachable.
 	@docker compose up -d 2>/dev/null || true
 	@for i in 1 2 3 4 5 6 7 8 9 10; do \
-		PGPASSWORD=cloglog_dev psql -h 127.0.0.1 -U cloglog -d postgres -c '\q' 2>/dev/null && break; \
-		[ $$i -eq 10 ] && { echo "ERROR: postgres on 127.0.0.1:5432 unreachable after 10 attempts. Run 'make db-up' and check 'docker compose logs postgres'." >&2; exit 1; }; \
+		docker compose exec -T postgres pg_isready -U cloglog -q 2>/dev/null && break; \
+		[ $$i -eq 10 ] && { echo "ERROR: postgres unreachable after 10 attempts. Check 'docker compose logs postgres'." >&2; exit 1; }; \
 		sleep 1; \
 	done
-	@if ! PGPASSWORD=cloglog_dev psql -h 127.0.0.1 -U cloglog -tc "SELECT 1 FROM pg_database WHERE datname='cloglog_dev'" | grep -q 1; then \
-		PGPASSWORD=cloglog_dev psql -h 127.0.0.1 -U cloglog -d postgres -c "CREATE DATABASE cloglog_dev OWNER cloglog;" >/dev/null \
+	@if ! docker compose exec -T postgres psql -U cloglog -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='cloglog_dev'" | grep -q 1; then \
+		docker compose exec -T postgres psql -U cloglog -d postgres -c "CREATE DATABASE cloglog_dev OWNER cloglog;" >/dev/null \
 			|| { echo "ERROR: failed to create cloglog_dev database. Refusing to fall back to the prod 'cloglog' DB." >&2; exit 1; }; \
 		echo "  cloglog_dev: created"; \
 	fi

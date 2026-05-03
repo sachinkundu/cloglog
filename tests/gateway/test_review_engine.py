@@ -2659,6 +2659,41 @@ class TestPostSkipComment:
         assert route.call_count == 1
 
     @pytest.mark.asyncio
+    async def test_different_body_same_reason_both_post(self) -> None:
+        """T-381 / codex round 5 HIGH: a rescheduled rate-limit retry whose
+        ETA changed must not be silently suppressed by the earlier comment.
+
+        The dedupe key includes the body so a fresh "Will retry after ~M
+        minutes" (different M) is posted instead of letting the author
+        keep seeing the stale ETA after a replacement push.
+        """
+        with respx.mock() as mock:
+            route = mock.post(_ISSUES_COMMENTS_URL).mock(
+                return_value=httpx.Response(201, json={"id": 1})
+            )
+            ok1 = await post_skip_comment(
+                "sachinkundu/cloglog",
+                42,
+                SkipReason.RATE_LIMIT,
+                "Will retry after ~5 minutes.",
+                "tok",
+            )
+            ok2 = await post_skip_comment(
+                "sachinkundu/cloglog",
+                42,
+                SkipReason.RATE_LIMIT,
+                "Will retry after ~59 minutes.",
+                "tok",
+            )
+
+        assert ok1 is True
+        assert ok2 is True, (
+            "Updated ETA must be posted — body-aware suppression keeps "
+            "the visible PR comment in sync with the actual scheduled retry"
+        )
+        assert route.call_count == 2
+
+    @pytest.mark.asyncio
     async def test_different_reasons_both_post(self) -> None:
         """Two different reasons for the same (repo, pr) both fire a POST."""
         with respx.mock() as mock:

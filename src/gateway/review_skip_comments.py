@@ -58,17 +58,26 @@ class SkipReason(StrEnum):
 
 @dataclass
 class _SkipCommentCache:
-    """In-memory repeat-suppression cache keyed by (repo, pr, reason)."""
+    """In-memory repeat-suppression cache keyed by (repo, pr, reason, body).
 
-    _last_posted: dict[tuple[str, int, SkipReason], float] = field(default_factory=dict)
+    T-381: the body is part of the dedupe key so a rescheduled rate-limit
+    retry whose comment ETA changed (e.g. a replacement push that bumped
+    the retry to a later queue slot) is not silently suppressed by the
+    earlier "Will retry after ~N minutes" comment. Without body in the
+    key, the author keeps seeing the stale ETA on the PR.
+    """
 
-    def should_post(self, repo: str, pr: int, reason: SkipReason) -> bool:
-        """Return True iff this (repo, pr, reason) has not posted within the window.
+    _last_posted: dict[tuple[str, int, SkipReason, str], float] = field(default_factory=dict)
 
-        Records the new attempt on True so back-to-back callers see False
-        until the window rolls.
+    def should_post(self, repo: str, pr: int, reason: SkipReason, body: str) -> bool:
+        """Return True iff this (repo, pr, reason, body) has not posted in window.
+
+        Records the new attempt on True so back-to-back callers with the
+        same body see False until the window rolls. A different body for
+        the same reason is a distinct entry — the comment text changed,
+        so the author needs to see the update.
         """
-        key = (repo, pr, reason)
+        key = (repo, pr, reason, body)
         now = time.monotonic()
         ts = self._last_posted.get(key)
         if ts is not None and (now - ts) < _COMMENT_REPEAT_WINDOW_SECONDS:
@@ -98,7 +107,7 @@ async def post_skip_comment(
     within the window) or on HTTP failure. Callers treat ``False`` as
     informational — the short-circuit proceeds regardless.
     """
-    if not _cache.should_post(repo_full_name, pr_number, reason):
+    if not _cache.should_post(repo_full_name, pr_number, reason, body):
         logger.debug(
             "Skip comment suppressed (repeat within %.0fs): pr=%d reason=%s",
             _COMMENT_REPEAT_WINDOW_SECONDS,

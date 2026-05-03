@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -157,19 +158,33 @@ def load_project_config(project_root: Path) -> dict[str, Any]:
     return data
 
 
-def _resolve_dashboard_secret(override: str | None) -> str:
+def _resolve_dashboard_secret(override: str | None, project_root: Path) -> str:
     """Pick the dashboard secret the server would accept.
 
-    Order: explicit CLI override → ``DASHBOARD_SECRET`` env var (via
-    ``src.shared.config.settings``, which reads ``.env``) → pydantic
-    default (``cloglog-dashboard-dev``). Importing ``settings`` lazily keeps
-    the script importable in unit tests that patch out the filesystem.
+    Order: explicit CLI override → ``DASHBOARD_SECRET`` env var → the
+    ``DASHBOARD_SECRET=`` line in ``<project_root>/.env`` → the pydantic
+    default (``cloglog-dashboard-dev``).
+
+    T-388: this script does NOT import ``src.shared.config.settings``.
+    Settings now requires ``DATABASE_URL`` at import time, but
+    ``sync-mcp-dist`` only needs the dashboard secret to broadcast a
+    ``mcp_tools_updated`` event — coupling it to the DB env would block
+    post-merge tool broadcasts on any host without a configured ``.env``.
     """
     if override:
         return override
-    from src.shared.config import settings
-
-    return settings.dashboard_secret
+    env_value = os.environ.get("DASHBOARD_SECRET")
+    if env_value:
+        return env_value
+    env_file = project_root / ".env"
+    if env_file.is_file():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("DASHBOARD_SECRET="):
+                value = stripped.split("=", 1)[1].strip().strip('"').strip("'")
+                if value:
+                    return value
+    return "cloglog-dashboard-dev"
 
 
 def run(
@@ -220,7 +235,7 @@ def run(
         )
         return 2
 
-    secret = _resolve_dashboard_secret(dashboard_secret)
+    secret = _resolve_dashboard_secret(dashboard_secret, project_root)
     worktree_paths = fetch_online_worktree_paths(
         resolved_url, resolved_pid, dashboard_secret=secret
     )

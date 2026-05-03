@@ -1,5 +1,4 @@
 import asyncio
-import os
 from logging.config import fileConfig
 
 from sqlalchemy import pool
@@ -10,15 +9,18 @@ import src.board.models  # noqa: F401 — register models for autogenerate
 import src.document.models  # noqa: F401 — register models for autogenerate
 import src.review.models  # noqa: F401 — register models for autogenerate
 from alembic import context
+from src.shared.config import settings
 from src.shared.database import Base
 
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Allow DATABASE_URL env var to override alembic.ini for worktree isolation
-if db_url := os.environ.get("DATABASE_URL"):
-    config.set_main_option("sqlalchemy.url", db_url)
+# T-388: DATABASE_URL is required. alembic.ini no longer carries a default
+# URL. `Settings` loads `.env` and raises a clear ValidationError when
+# `DATABASE_URL` is unset, so alembic refuses to run rather than silently
+# migrating the prod `cloglog` DB. Pin: tests/test_database_url_required.py.
+config.set_main_option("sqlalchemy.url", settings.database_url)
 
 target_metadata = Base.metadata
 

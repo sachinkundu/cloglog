@@ -5,8 +5,21 @@ Multiple worktrees running tests simultaneously get separate databases.
 """
 
 import asyncio
+import os
 import uuid
 from collections.abc import AsyncGenerator
+
+# T-388: Settings now requires DATABASE_URL — no default. The per-session
+# test DB name (`cloglog_test_<hex>`) is generated at fixture time, but
+# Settings is constructed at import time when src.shared.config first loads.
+# Seed a placeholder URL pointing at the base `postgres` DB so the import
+# succeeds; tests build their own engines against `test_db_name` and
+# override `get_session`, so `settings.database_url` itself is never used
+# on the request path.
+os.environ.setdefault(
+    "DATABASE_URL",
+    "postgresql+asyncpg://cloglog:cloglog_dev@localhost:5432/postgres",
+)
 
 import asyncpg
 import pytest

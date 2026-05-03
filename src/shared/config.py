@@ -5,7 +5,22 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    database_url: str = "postgresql+asyncpg://cloglog:cloglog_dev@localhost:5432/cloglog"
+    # T-388: required, no default. A missing DATABASE_URL used to silently fall
+    # back to the prod DB (`cloglog`) regardless of whether the caller was the
+    # dev server, a worktree backend, or alembic — masking bootstrap failures
+    # and letting worktree migrations bleed into the dev/prod DB. Pydantic
+    # raises ValidationError if neither the `.env` file nor the process env
+    # supplies it. See docs/invariants.md → "DATABASE_URL is required, no
+    # silent shared-DB fallback".
+    database_url: str = Field(
+        ...,
+        description=(
+            "PostgreSQL connection URL. Required — no default. Provided per "
+            "environment via .env: prod (cloglog), dev (cloglog_dev), each "
+            "worktree (cloglog_wt_<name>). Set by scripts/worktree-infra.sh "
+            "for worktrees and by `make dev-env` for the dev checkout."
+        ),
+    )
     host: str = "0.0.0.0"
     port: int = 8000
     heartbeat_timeout_seconds: int = 180  # 3 minutes
@@ -82,4 +97,4 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
-settings = Settings()
+settings = Settings()  # type: ignore[call-arg]  # database_url loaded from env / .env (T-388)

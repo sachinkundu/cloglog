@@ -1,4 +1,4 @@
-.PHONY: help install test test-board test-agent test-document test-gateway test-e2e test-e2e-browser test-e2e-browser-ui test-e2e-browser-headed test-e2e-browser-report invariants lint typecheck coverage contract-check demo demo-check quality run-backend prod prod-bg promote verify-prod-protection prod-logs prod-stop db-up db-down db-migrate db-revision db-refresh-from-prod sync-mcp-dist
+.PHONY: help install test test-board test-agent test-document test-gateway test-e2e test-e2e-browser test-e2e-browser-ui test-e2e-browser-headed test-e2e-browser-report invariants lint typecheck coverage contract-check demo demo-check quality run-backend dev dev-env prod prod-env-guard prod-bg promote verify-prod-protection prod-logs prod-stop db-up db-down db-migrate db-revision db-refresh-from-prod sync-mcp-dist
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -40,6 +40,7 @@ test-e2e-browser-report: ## Run Playwright E2E tests and open HTML report
 
 invariants: ## Run silent-failure pin tests (see docs/invariants.md)
 	uv run pytest --tb=short -q \
+	  tests/test_database_url_required.py \
 	  tests/test_on_worktree_create_backend_url.py::test_hook_does_not_invoke_python_yaml \
 	  tests/test_mcp_json_no_secret.py \
 	  tests/test_no_destructive_migrations.py \
@@ -138,11 +139,20 @@ quality: ## Run full quality gate (invariants fail-fast → lint → typecheck �
 # ── Run ───────────────────────────────────────
 
 dev: ## Start everything (db + migrate + backend + frontend)
+	@# T-388: full preflight (uv/docker/node/npm/jq/cloudflared) runs first
+	@# for `make dev` because the dev recipe needs all of them. `dev-env`
+	@# only does DB-specific checks inline so direct `make dev-env` does
+	@# not get blocked on unrelated gates (cloudflared, frontend deps).
 	@scripts/preflight.sh
+	@$(MAKE) --no-print-directory dev-env
 	@echo "Starting cloglog dev environment..."
 	@docker compose up -d 2>/dev/null || true
 	@echo "  Postgres: up"
-	@uv run alembic upgrade head 2>&1 | tail -1
+	@# T-388: clear any inherited DATABASE_URL so the generated `.env` wins.
+	@# Pydantic-settings reads process env BEFORE .env, so a stale
+	@# `export DATABASE_URL=.../cloglog` in the operator's shell would silently
+	@# point `make dev` at the prod DB even with a correct .env on disk.
+	@env -u DATABASE_URL uv run alembic upgrade head 2>&1 | tail -1
 	@echo "  Migrations: applied"
 	@# Kill old processes on ports 8000 and 5173 if still running
 	@fuser -k 8000/tcp 2>/dev/null && echo "  Killed old backend on :8000" || true
@@ -152,7 +162,7 @@ dev: ## Start everything (db + migrate + backend + frontend)
 		[ -n "$$HOST_IP" ] && echo "  Frontend: http://$$HOST_IP:5173 (tailnet)" || true; \
 		echo "  Starting backend + frontend..."; \
 		trap 'kill 0; fuser -k 8000/tcp 2>/dev/null; fuser -k 5173/tcp 2>/dev/null' EXIT INT TERM; \
-		uv run uvicorn src.gateway.app:create_app --factory --host 0.0.0.0 --port 8000 --reload \
+		env -u DATABASE_URL uv run uvicorn src.gateway.app:create_app --factory --host 0.0.0.0 --port 8000 --reload \
 			--reload-exclude '.claude/worktrees' \
 			--reload-exclude '__pycache__' \
 			--reload-exclude '*.pyc' & \
@@ -166,7 +176,9 @@ dev: ## Start everything (db + migrate + backend + frontend)
 		wait
 
 run-backend: ## Start the FastAPI backend
-	uv run uvicorn src.gateway.app:create_app --factory --host 0.0.0.0 --port 8000 --reload \
+	@# T-388: clear inherited DATABASE_URL so the dev `.env` wins over a
+	@# stale shell export from another checkout.
+	env -u DATABASE_URL uv run uvicorn src.gateway.app:create_app --factory --host 0.0.0.0 --port 8000 --reload \
 		--reload-exclude '.claude/worktrees' \
 		--reload-exclude '__pycache__' \
 		--reload-exclude '*.pyc'
@@ -176,7 +188,28 @@ run-backend: ## Start the FastAPI backend
 # error-logfile. Without it, app stderr goes to the controlling terminal and is
 # lost in --daemon mode — we hit this on PR #260, where review_engine swallowed
 # an exception on a synchronize webhook and left no log to diagnose from.
-prod: ## Start prod server (gunicorn + vite preview, foreground — run in a zellij pane)
+prod-env-guard: ## Verify ../cloglog-prod/.env carries an explicit DATABASE_URL (T-388)
+	@# Settings now refuses to start without DATABASE_URL — no silent
+	@# fallback to the prod `cloglog` DB. The prod worktree's .env was
+	@# previously allowed to omit it; this guard fails fast with the exact
+	@# line to add so gunicorn / alembic don't get to a half-booted
+	@# ValidationError state in the middle of `make promote`.
+	@# Require a non-empty value: `DATABASE_URL=` (blank) satisfies a bare
+	@# presence check but Settings happily constructs with an empty string,
+	@# and the SQLAlchemy engine dies later inside gunicorn — the exact
+	@# late-failure shape the guard exists to prevent. The regex matches a
+	@# `postgresql`-prefixed DSN to also reject typos like
+	@# `DATABASE_URL=cloglog`.
+	@if [ ! -f ../cloglog-prod/.env ] || ! grep -Eq '^DATABASE_URL=postgresql' ../cloglog-prod/.env; then \
+		echo "ERROR: ../cloglog-prod/.env is missing or its DATABASE_URL is empty / not a postgresql DSN." >&2; \
+		echo "       T-388 made DATABASE_URL required (no silent fallback to the shared 'cloglog' DB)." >&2; \
+		echo "       Blank values are invalid too — Settings would construct, but the engine dies mid-deploy." >&2; \
+		echo "       Add (or fix) this line in ../cloglog-prod/.env, then re-run:" >&2; \
+		echo "         DATABASE_URL=postgresql+asyncpg://cloglog:cloglog_dev@127.0.0.1:5432/cloglog" >&2; \
+		exit 1; \
+	fi
+
+prod: prod-env-guard ## Start prod server (gunicorn + vite preview, foreground — run in a zellij pane)
 	@if [ -f /tmp/cloglog-prod.pid ] && kill -0 "$$(cat /tmp/cloglog-prod.pid)" 2>/dev/null; then \
 		echo "ERROR: prod gunicorn is already running (pid $$(cat /tmp/cloglog-prod.pid)) on :8001."; \
 		echo "       Use 'make promote' to rotate workers, or 'make prod-stop' first."; \
@@ -218,7 +251,7 @@ prod: ## Start prod server (gunicorn + vite preview, foreground — run in a zel
 		(cd ../cloglog-prod/frontend && npm run preview -- --port 4173 $$PREVIEW_HOST_FLAG 2>&1 | sed -u 's/^/[frontend] /' & echo $$! > /tmp/cloglog-prod-frontend.pid) & \
 		wait
 
-prod-bg: ## Start prod server in background
+prod-bg: prod-env-guard ## Start prod server in background
 	@if [ -f /tmp/cloglog-prod.pid ] && kill -0 "$$(cat /tmp/cloglog-prod.pid)" 2>/dev/null; then \
 		echo "ERROR: prod gunicorn is already running (pid $$(cat /tmp/cloglog-prod.pid)) on :8001."; \
 		echo "       Use 'make promote' to rotate workers, or 'make prod-stop' first."; \
@@ -257,7 +290,7 @@ prod-bg: ## Start prod server in background
 		(cd ../cloglog-prod/frontend && npm run preview -- --port 4173 $$PREVIEW_HOST_FLAG & echo $$! > /tmp/cloglog-prod-frontend.pid); \
 		echo "  Backend PID: $$(cat /tmp/cloglog-prod.pid)  Frontend PID: $$(cat /tmp/cloglog-prod-frontend.pid)"
 
-promote: ## Deploy latest origin/main to prod with zero-downtime worker rotation
+promote: prod-env-guard ## Deploy latest origin/main to prod with zero-downtime worker rotation
 	@echo "Promoting origin/main to prod..."
 	@if [ ! -f /tmp/cloglog-prod.pid ]; then echo "ERROR: gunicorn not running — service is down, cannot promote. Run \`make prod\` to bring the backend up first, then \`make promote\`. (Spec §4.2: make prod is restart-only with no git operations; make promote requires a live backend so the worker rotation actually deploys the new SHA before the worktree, DB, or origin/prod are mutated.)"; exit 1; fi
 	@PROD_PID=$$(cat /tmp/cloglog-prod.pid); \
@@ -360,6 +393,44 @@ prod-stop: ## Stop the prod server (backend + frontend only — tunnel is system
 	@fuser -k 4173/tcp 2>/dev/null && echo "  Frontend: killed by port." || true
 
 # ── Database ──────────────────────────────────
+
+dev-env: ## Bootstrap dev .env (DATABASE_URL=cloglog_dev) — fail-loud if Postgres not reachable
+	@# T-388: dev checkout must point at cloglog_dev, never the prod `cloglog`
+	@# DB. Settings now refuses to start without an explicit DATABASE_URL, so
+	@# the dev .env is no longer optional. The dev DB is created here
+	@# explicitly — no silent CREATE-on-first-connect.
+	@# Postgres readiness + DB creation go through `docker compose exec` so
+	@# `make dev` does not require a host `psql` binary (preflight only checks
+	@# uv/docker/node/npm/jq/cloudflared). The container always ships with
+	@# psql; assuming a host install would silently mis-diagnose missing-psql
+	@# as Postgres-unreachable.
+	@# DB-only preflight — `dev-env` is a focused helper (create
+	@# cloglog_dev + write .env), so it must NOT pull in unrelated
+	@# preflight gates like cloudflared or frontend node_modules.
+	@# `make dev` runs the full scripts/preflight.sh up-front; here we
+	@# only guard what dev-env actually touches.
+	@command -v uv >/dev/null 2>&1 || { echo "ERROR: uv not installed. Install with: curl -LsSf https://astral.sh/uv/install.sh | sh" >&2; exit 1; }
+	@command -v docker >/dev/null 2>&1 || { echo "ERROR: docker not installed. See https://docs.docker.com/get-docker/" >&2; exit 1; }
+	@docker compose version >/dev/null 2>&1 || { echo "ERROR: 'docker compose' plugin missing. Install Docker Compose v2." >&2; exit 1; }
+	@docker info >/dev/null 2>&1 || { echo "ERROR: Docker daemon is not running. Start it with 'sudo systemctl start docker' (Linux) or via Docker Desktop." >&2; exit 1; }
+	@docker compose up -d 2>/dev/null || true
+	@for i in 1 2 3 4 5 6 7 8 9 10; do \
+		docker compose exec -T postgres pg_isready -U cloglog -q 2>/dev/null && break; \
+		[ $$i -eq 10 ] && { echo "ERROR: postgres unreachable after 10 attempts. Check 'docker compose logs postgres'." >&2; exit 1; }; \
+		sleep 1; \
+	done
+	@if ! docker compose exec -T postgres psql -U cloglog -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='cloglog_dev'" | grep -q 1; then \
+		docker compose exec -T postgres psql -U cloglog -d postgres -c "CREATE DATABASE cloglog_dev OWNER cloglog;" >/dev/null \
+			|| { echo "ERROR: failed to create cloglog_dev database. Refusing to fall back to the prod 'cloglog' DB." >&2; exit 1; }; \
+		echo "  cloglog_dev: created"; \
+	fi
+	@if [ ! -f .env ]; then \
+		printf 'DATABASE_URL=postgresql+asyncpg://cloglog:cloglog_dev@127.0.0.1:5432/cloglog_dev\n' > .env; \
+		echo "  .env: written (DATABASE_URL → cloglog_dev)"; \
+	elif ! grep -q '^DATABASE_URL=' .env; then \
+		printf 'DATABASE_URL=postgresql+asyncpg://cloglog:cloglog_dev@127.0.0.1:5432/cloglog_dev\n' >> .env; \
+		echo "  .env: appended DATABASE_URL → cloglog_dev"; \
+	fi
 
 db-up: ## Start PostgreSQL
 	docker compose up -d

@@ -30,11 +30,19 @@ case "$CMD" in
     echo "  Frontend port: $FRONTEND_PORT"
     echo "  Database: $WORKTREE_DB_NAME"
 
-    # Create database if it doesn't exist
+    # Create database if it doesn't exist.
+    # T-388: do NOT swallow stderr on the CREATE — silent DB-creation failure
+    # used to mean the agent fell through to the prod `cloglog` DB on the
+    # very next migration. `set -euo pipefail` aborts on non-zero exit, and
+    # the error text now reaches the operator.
     if psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -tc "SELECT 1 FROM pg_database WHERE datname='$WORKTREE_DB_NAME'" 2>/dev/null | grep -q 1; then
       echo "  Database already exists"
     else
-      psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -c "CREATE DATABASE $WORKTREE_DB_NAME" 2>/dev/null
+      if ! psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -c "CREATE DATABASE $WORKTREE_DB_NAME"; then
+        echo "ERROR: failed to create database $WORKTREE_DB_NAME on $PG_HOST:$PG_PORT (user=$PG_USER)." >&2
+        echo "       Worktree bootstrap aborts — refusing to leave the worktree pointing at a shared DB." >&2
+        exit 1
+      fi
       echo "  Database created"
     fi
 

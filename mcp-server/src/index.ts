@@ -7,7 +7,11 @@
 
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CloglogClient } from './client.js'
-import { loadApiKey, MissingCredentialsError } from './credentials.js'
+import {
+  loadApiKey,
+  MissingCredentialsError,
+  UnusableProjectCredentialsError,
+} from './credentials.js'
 import { createServer } from './server.js'
 
 const CLOGLOG_URL = process.env.CLOGLOG_URL ?? 'http://127.0.0.1:8001'
@@ -17,7 +21,11 @@ let CLOGLOG_API_KEY: string
 try {
   CLOGLOG_API_KEY = loadApiKey()
 } catch (err) {
-  if (err instanceof MissingCredentialsError) {
+  // T-382: both error classes signal a credential-config problem the
+  // operator must fix; print the actionable message and exit EX_CONFIG
+  // so Claude Code's MCP loader marks the server as failed cleanly,
+  // never with a Node stack trace.
+  if (err instanceof MissingCredentialsError || err instanceof UnusableProjectCredentialsError) {
     console.error(err.message)
     process.exit(78) // EX_CONFIG: configuration error
   }

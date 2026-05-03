@@ -108,12 +108,34 @@ plugin, picked by the shape of the value being read:
 
 ### `CLOGLOG_API_KEY` never in `.mcp.json`
 
-Project API keys live in `~/.cloglog/credentials` (0600). The MCP server
-resolves them from env first, then the credentials file; missing →
-`process.exit(78)`. `.mcp.json` is checked into git and must not carry
-a secret.
+Project API keys live in `~/.cloglog/credentials` (0600) or, on
+multi-project hosts, `~/.cloglog/credentials.d/<project_slug>` (0600). The
+MCP server resolves them from env first, then the per-project file, then
+the legacy global file; missing → `process.exit(78)`. `.mcp.json` is
+checked into git and must not carry a secret.
 
 **Pin:** `tests/test_mcp_json_no_secret.py`
+
+### Wrong project's API key must never be sent — fail loud, not silent 401
+
+On multi-project hosts the legacy single-slot `~/.cloglog/credentials` file
+held one key. Agent-side calls (e.g.
+`POST /api/v1/agents/unregister-by-path`) issued under any other project's
+worktree got the wrong key and earned silent 401/403, leaving worktrees
+half-cleaned. The resolver in `mcp-server/src/credentials.ts` and the
+matching `_api_key` helper in `plugins/cloglog/skills/launch/SKILL.md` MUST
+prefer `~/.cloglog/credentials.d/<project_slug>` over the legacy global
+file, with the slug derived from `<project_root>/.cloglog/config.yaml:
+project` (basename fallback) and validated against `[A-Za-z0-9._-]+`. A
+new resolver that adds a fourth source, removes the per-project layer,
+trusts an unvalidated slug (path traversal), or stops at the first miss
+without trying the next source is silently broken on multi-project hosts —
+nothing in CI catches it because cloglog's own host happens to match the
+single-key layout.
+
+**Pin:** `mcp-server/tests/credentials.test.ts` (T-382 block —
+`per-project credential resolution`) and
+`tests/plugins/test_launch_skill_per_project_credentials.py`.
 
 ## Persistence
 

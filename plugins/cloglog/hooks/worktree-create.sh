@@ -40,13 +40,17 @@ BACKEND_URL=$(read_yaml_scalar "$CONFIG" "backend_url" "http://localhost:8000")
 PROJECT_NAME=$(read_yaml_scalar "$CONFIG" "project" "")
 
 # --- Resolve API key ---
-# T-214: read from env or ~/.cloglog/credentials only. Per-worktree files
+# T-214: read from env or ~/.cloglog/credentials* only. Per-worktree files
 # (.env, .mcp.json) MUST NOT carry the project key — anything inside the
 # worktree is reachable by tooling that bypasses MCP.
-API_KEY="${CLOGLOG_API_KEY:-}"
-if [[ -z "$API_KEY" ]] && [[ -r "${HOME}/.cloglog/credentials" ]]; then
-  API_KEY=$(grep -E '^CLOGLOG_API_KEY=' "${HOME}/.cloglog/credentials" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '"'"'" || true)
-fi
+# T-382: env → ~/.cloglog/credentials.d/<project_slug> → legacy global. On
+# multi-project hosts the legacy-only path picked up another project's key
+# and the registration POST was rejected, leaving the new worktree
+# half-registered (board row missing) until the agent's first MCP call
+# eventually wrote it.
+# shellcheck source=lib/resolve-api-key.sh
+source "${HOOK_DIR}/lib/resolve-api-key.sh"
+API_KEY=$(resolve_api_key "$CONFIG")
 
 # --- Register agent on the board ---
 if [[ -n "$API_KEY" ]]; then

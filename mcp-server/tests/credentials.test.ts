@@ -1,21 +1,40 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, chmodSync, mkdirSync } from 'node:fs'
+import {
+  mkdtempSync,
+  readFileSync as fsReadFileSync,
+  rmSync,
+  writeFileSync,
+  chmodSync,
+  mkdirSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve as pathResolve } from 'node:path'
 
 import {
   DEFAULT_CREDENTIALS_PATH,
+  DEFAULT_PROJECT_CREDENTIALS_DIR,
+  findProjectRoot,
   loadApiKey,
   MissingCredentialsError,
+  resolveProjectSlug,
+  UnusableProjectCredentialsError,
 } from '../src/credentials.js'
 
 describe('loadApiKey', () => {
   let workDir: string
   let credentialsPath: string
+  let projectCredentialsDir: string
+  let projectRoot: string
 
   beforeEach(() => {
     workDir = mkdtempSync(join(tmpdir(), 'cloglog-creds-'))
     credentialsPath = join(workDir, 'credentials')
+    projectCredentialsDir = join(workDir, 'credentials.d')
+    mkdirSync(projectCredentialsDir, { recursive: true })
+    // A project root with no .cloglog/config.yaml so slug derivation falls
+    // back to basename — keeps existing single-project behaviour exercised.
+    projectRoot = join(workDir, 'no-config-project')
+    mkdirSync(projectRoot, { recursive: true })
   })
 
   afterEach(() => {
@@ -26,6 +45,8 @@ describe('loadApiKey', () => {
     const key = loadApiKey({
       env: { CLOGLOG_API_KEY: 'env-supplied-key' },
       credentialsPath,
+      projectCredentialsDir,
+      projectRoot,
     })
     expect(key).toBe('env-supplied-key')
   })
@@ -35,13 +56,20 @@ describe('loadApiKey', () => {
     const key = loadApiKey({
       env: { CLOGLOG_API_KEY: 'from-env' },
       credentialsPath,
+      projectCredentialsDir,
+      projectRoot,
     })
     expect(key).toBe('from-env')
   })
 
   it('falls back to credentials file when env is empty', () => {
     writeFileSync(credentialsPath, 'CLOGLOG_API_KEY=file-key-abc\n')
-    const key = loadApiKey({ env: {}, credentialsPath })
+    const key = loadApiKey({
+      env: {},
+      credentialsPath,
+      projectCredentialsDir,
+      projectRoot,
+    })
     expect(key).toBe('file-key-abc')
   })
 
@@ -50,6 +78,8 @@ describe('loadApiKey', () => {
     const key = loadApiKey({
       env: { CLOGLOG_API_KEY: '' },
       credentialsPath,
+      projectCredentialsDir,
+      projectRoot,
     })
     expect(key).toBe('file-fallback')
   })
@@ -65,28 +95,43 @@ describe('loadApiKey', () => {
         'TRAILING=also-ignored',
       ].join('\n'),
     )
-    const key = loadApiKey({ env: {}, credentialsPath })
+    const key = loadApiKey({
+      env: {},
+      credentialsPath,
+      projectCredentialsDir,
+      projectRoot,
+    })
     expect(key).toBe('secret-99')
   })
 
   it('strips surrounding double quotes from credentials value', () => {
     writeFileSync(credentialsPath, 'CLOGLOG_API_KEY="quoted-value"\n')
-    const key = loadApiKey({ env: {}, credentialsPath })
+    const key = loadApiKey({
+      env: {},
+      credentialsPath,
+      projectCredentialsDir,
+      projectRoot,
+    })
     expect(key).toBe('quoted-value')
   })
 
   it('strips surrounding single quotes from credentials value', () => {
     writeFileSync(credentialsPath, "CLOGLOG_API_KEY='single-quoted'\n")
-    const key = loadApiKey({ env: {}, credentialsPath })
+    const key = loadApiKey({
+      env: {},
+      credentialsPath,
+      projectCredentialsDir,
+      projectRoot,
+    })
     expect(key).toBe('single-quoted')
   })
 
   it('throws MissingCredentialsError naming the credentials path when nothing is set', () => {
-    expect(() => loadApiKey({ env: {}, credentialsPath })).toThrow(
-      MissingCredentialsError,
-    )
+    expect(() =>
+      loadApiKey({ env: {}, credentialsPath, projectCredentialsDir, projectRoot }),
+    ).toThrow(MissingCredentialsError)
     try {
-      loadApiKey({ env: {}, credentialsPath })
+      loadApiKey({ env: {}, credentialsPath, projectCredentialsDir, projectRoot })
     } catch (err) {
       expect(err).toBeInstanceOf(MissingCredentialsError)
       const msg = (err as Error).message
@@ -98,34 +143,378 @@ describe('loadApiKey', () => {
 
   it('throws MissingCredentialsError when file exists but does not define the key', () => {
     writeFileSync(credentialsPath, '# only a comment\nOTHER=value\n')
-    expect(() => loadApiKey({ env: {}, credentialsPath })).toThrow(
-      MissingCredentialsError,
-    )
+    expect(() =>
+      loadApiKey({ env: {}, credentialsPath, projectCredentialsDir, projectRoot }),
+    ).toThrow(MissingCredentialsError)
   })
 
   it('throws MissingCredentialsError when file defines the key as empty', () => {
     writeFileSync(credentialsPath, 'CLOGLOG_API_KEY=\n')
-    expect(() => loadApiKey({ env: {}, credentialsPath })).toThrow(
-      MissingCredentialsError,
-    )
+    expect(() =>
+      loadApiKey({ env: {}, credentialsPath, projectCredentialsDir, projectRoot }),
+    ).toThrow(MissingCredentialsError)
   })
 
   it('treats unreadable credentials path as missing', () => {
     const dirAsPath = join(workDir, 'nope-dir')
     mkdirSync(dirAsPath)
     expect(() =>
-      loadApiKey({ env: {}, credentialsPath: dirAsPath }),
+      loadApiKey({
+        env: {},
+        credentialsPath: dirAsPath,
+        projectCredentialsDir,
+        projectRoot,
+      }),
     ).toThrow(MissingCredentialsError)
   })
 
   it('reads credentials file even when permissions are loose (warns to stderr)', () => {
     writeFileSync(credentialsPath, 'CLOGLOG_API_KEY=loose-perms\n')
     chmodSync(credentialsPath, 0o644)
-    const key = loadApiKey({ env: {}, credentialsPath })
+    const key = loadApiKey({
+      env: {},
+      credentialsPath,
+      projectCredentialsDir,
+      projectRoot,
+    })
     expect(key).toBe('loose-perms')
   })
 
   it('default credentials path is under the user home directory', () => {
     expect(DEFAULT_CREDENTIALS_PATH).toMatch(/\.cloglog[/\\]credentials$/)
+  })
+
+  it('default project credentials dir is under the user home directory', () => {
+    expect(DEFAULT_PROJECT_CREDENTIALS_DIR).toMatch(/\.cloglog[/\\]credentials\.d$/)
+  })
+})
+
+describe('per-project credential resolution (T-382)', () => {
+  let workDir: string
+  let projectCredentialsDir: string
+  let legacyCredentialsPath: string
+
+  beforeEach(() => {
+    workDir = mkdtempSync(join(tmpdir(), 'cloglog-projcreds-'))
+    projectCredentialsDir = join(workDir, 'credentials.d')
+    legacyCredentialsPath = join(workDir, 'credentials')
+    mkdirSync(projectCredentialsDir, { recursive: true })
+  })
+
+  afterEach(() => {
+    rmSync(workDir, { recursive: true, force: true })
+  })
+
+  function makeProject(name: string, projectField: string | null): string {
+    const root = join(workDir, name)
+    mkdirSync(join(root, '.cloglog'), { recursive: true })
+    if (projectField !== null) {
+      writeFileSync(
+        join(root, '.cloglog', 'config.yaml'),
+        `project: ${projectField}\nbackend_url: http://127.0.0.1:8001\n`,
+      )
+    }
+    return root
+  }
+
+  it('routes the right key to the right project root via per-project credentials.d', () => {
+    const projectA = makeProject('alpha-checkout', 'alpha')
+    const projectB = makeProject('beta-checkout', 'beta')
+    writeFileSync(join(projectCredentialsDir, 'alpha'), 'CLOGLOG_API_KEY=alpha-key\n')
+    writeFileSync(join(projectCredentialsDir, 'beta'), 'CLOGLOG_API_KEY=beta-key\n')
+    writeFileSync(legacyCredentialsPath, 'CLOGLOG_API_KEY=legacy-fallback\n')
+
+    expect(
+      loadApiKey({
+        env: {},
+        credentialsPath: legacyCredentialsPath,
+        projectCredentialsDir,
+        projectRoot: projectA,
+      }),
+    ).toBe('alpha-key')
+
+    expect(
+      loadApiKey({
+        env: {},
+        credentialsPath: legacyCredentialsPath,
+        projectCredentialsDir,
+        projectRoot: projectB,
+      }),
+    ).toBe('beta-key')
+  })
+
+  it('falls back to legacy credentials when no per-project file exists (single-project hosts unaffected)', () => {
+    const project = makeProject('only-project', 'only')
+    writeFileSync(legacyCredentialsPath, 'CLOGLOG_API_KEY=legacy-only\n')
+
+    expect(
+      loadApiKey({
+        env: {},
+        credentialsPath: legacyCredentialsPath,
+        projectCredentialsDir,
+        projectRoot: project,
+      }),
+    ).toBe('legacy-only')
+  })
+
+  it('env override beats both per-project and legacy files', () => {
+    const project = makeProject('env-wins', 'envwins')
+    writeFileSync(join(projectCredentialsDir, 'envwins'), 'CLOGLOG_API_KEY=project-key\n')
+    writeFileSync(legacyCredentialsPath, 'CLOGLOG_API_KEY=legacy-key\n')
+
+    expect(
+      loadApiKey({
+        env: { CLOGLOG_API_KEY: 'env-key' },
+        credentialsPath: legacyCredentialsPath,
+        projectCredentialsDir,
+        projectRoot: project,
+      }),
+    ).toBe('env-key')
+  })
+
+  it('walks up from a worktree subdir to find the project root', () => {
+    const project = makeProject('with-worktree', 'wtproj')
+    const worktree = join(project, '.claude', 'worktrees', 'wt-foo')
+    mkdirSync(worktree, { recursive: true })
+    writeFileSync(join(projectCredentialsDir, 'wtproj'), 'CLOGLOG_API_KEY=wtproj-key\n')
+
+    expect(
+      loadApiKey({
+        env: {},
+        credentialsPath: legacyCredentialsPath,
+        projectCredentialsDir,
+        projectRoot: worktree,
+      }),
+    ).toBe('wtproj-key')
+  })
+
+  it('falls back to basename slug when config.yaml has no project field', () => {
+    const project = makeProject('basename-only', null)
+    // Config exists (so findProjectRoot returns this dir) but has no project key.
+    writeFileSync(join(project, '.cloglog', 'config.yaml'), 'backend_url: http://x\n')
+    writeFileSync(join(projectCredentialsDir, 'basename-only'), 'CLOGLOG_API_KEY=base-key\n')
+
+    expect(
+      loadApiKey({
+        env: {},
+        credentialsPath: legacyCredentialsPath,
+        projectCredentialsDir,
+        projectRoot: project,
+      }),
+    ).toBe('base-key')
+  })
+
+  it('rejects path-traversal slugs and falls through to legacy', () => {
+    const project = makeProject('bad-slug', '../escape')
+    writeFileSync(legacyCredentialsPath, 'CLOGLOG_API_KEY=safe-legacy\n')
+    // Even if an attacker creates a file named matching the traversal, slug
+    // validation rejects the field outright and we fall back via basename.
+    writeFileSync(join(projectCredentialsDir, 'bad-slug'), 'CLOGLOG_API_KEY=basename-key\n')
+
+    // Basename `bad-slug` is valid, so we resolve via that — NOT via the
+    // rejected `../escape` field. Pin: traversal in project field never wins.
+    expect(
+      loadApiKey({
+        env: {},
+        credentialsPath: legacyCredentialsPath,
+        projectCredentialsDir,
+        projectRoot: project,
+      }),
+    ).toBe('basename-key')
+  })
+
+  it('refuses legacy fallback when per-project file is present but blank (T-382 codex round 3)', () => {
+    const project = makeProject('blank-perproject', 'blankperproject')
+    // Per-project file exists but contains no CLOGLOG_API_KEY entry.
+    writeFileSync(join(projectCredentialsDir, 'blankperproject'), '# blank\nOTHER=value\n')
+    // Legacy file would resolve, but the per-project file's presence
+    // must veto the fallback — silently sending the legacy key is the
+    // exact wrong-project bug T-382 was filed to remove.
+    writeFileSync(legacyCredentialsPath, 'CLOGLOG_API_KEY=legacy-WRONG-PROJECT\n')
+
+    expect(() =>
+      loadApiKey({
+        env: {},
+        credentialsPath: legacyCredentialsPath,
+        projectCredentialsDir,
+        projectRoot: project,
+      }),
+    ).toThrow(UnusableProjectCredentialsError)
+  })
+
+  it('refuses legacy fallback when per-project path is a directory (T-382 codex round 3)', () => {
+    const project = makeProject('dir-perproject', 'dirperproject')
+    // Per-project "file" is actually a directory — same trap.
+    mkdirSync(join(projectCredentialsDir, 'dirperproject'))
+    writeFileSync(legacyCredentialsPath, 'CLOGLOG_API_KEY=legacy-WRONG-PROJECT\n')
+
+    let caught: unknown
+    try {
+      loadApiKey({
+        env: {},
+        credentialsPath: legacyCredentialsPath,
+        projectCredentialsDir,
+        projectRoot: project,
+      })
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(UnusableProjectCredentialsError)
+    expect((caught as UnusableProjectCredentialsError).reason).toBe('is_directory')
+  })
+
+  it('refuses legacy fallback when per-project file is empty key (T-382 codex round 3)', () => {
+    const project = makeProject('empty-key', 'emptykey')
+    writeFileSync(join(projectCredentialsDir, 'emptykey'), 'CLOGLOG_API_KEY=\n')
+    writeFileSync(legacyCredentialsPath, 'CLOGLOG_API_KEY=legacy-WRONG-PROJECT\n')
+
+    let caught: unknown
+    try {
+      loadApiKey({
+        env: {},
+        credentialsPath: legacyCredentialsPath,
+        projectCredentialsDir,
+        projectRoot: project,
+      })
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(UnusableProjectCredentialsError)
+    expect((caught as UnusableProjectCredentialsError).reason).toBe('empty_or_no_key')
+  })
+
+  it('env override still wins even when per-project file is present-but-broken', () => {
+    // The fail-loud invariant on per-project is gated on env being absent.
+    // An explicit operator override (CLOGLOG_API_KEY env) is the very
+    // first source and must skip every file lookup.
+    const project = makeProject('env-bypass', 'envbypass')
+    writeFileSync(join(projectCredentialsDir, 'envbypass'), 'CLOGLOG_API_KEY=\n')
+    writeFileSync(legacyCredentialsPath, 'CLOGLOG_API_KEY=legacy\n')
+
+    expect(
+      loadApiKey({
+        env: { CLOGLOG_API_KEY: 'env-override' },
+        credentialsPath: legacyCredentialsPath,
+        projectCredentialsDir,
+        projectRoot: project,
+      }),
+    ).toBe('env-override')
+  })
+
+  it('error message lists all paths tried (env, per-project, legacy)', () => {
+    const project = makeProject('missing-everywhere', 'missingeverywhere')
+    try {
+      loadApiKey({
+        env: {},
+        credentialsPath: legacyCredentialsPath,
+        projectCredentialsDir,
+        projectRoot: project,
+      })
+      throw new Error('expected MissingCredentialsError')
+    } catch (err) {
+      expect(err).toBeInstanceOf(MissingCredentialsError)
+      const msg = (err as Error).message
+      expect(msg).toContain('CLOGLOG_API_KEY')
+      expect(msg).toContain(join(projectCredentialsDir, 'missingeverywhere'))
+      expect(msg).toContain(legacyCredentialsPath)
+      expect(msg).toContain('slug=missingeverywhere')
+    }
+  })
+})
+
+describe('resolveProjectSlug', () => {
+  let workDir: string
+
+  beforeEach(() => {
+    workDir = mkdtempSync(join(tmpdir(), 'cloglog-slug-'))
+  })
+
+  afterEach(() => {
+    rmSync(workDir, { recursive: true, force: true })
+  })
+
+  it('reads project: from .cloglog/config.yaml', () => {
+    const root = join(workDir, 'myproj')
+    mkdirSync(join(root, '.cloglog'), { recursive: true })
+    writeFileSync(join(root, '.cloglog', 'config.yaml'), 'project: myproj\n')
+    expect(resolveProjectSlug(root)).toBe('myproj')
+  })
+
+  it('handles trailing comments and quotes in the project field', () => {
+    const root = join(workDir, 'quoted')
+    mkdirSync(join(root, '.cloglog'), { recursive: true })
+    writeFileSync(
+      join(root, '.cloglog', 'config.yaml'),
+      'project: "fancy_proj"   # the slug\n',
+    )
+    expect(resolveProjectSlug(root)).toBe('fancy_proj')
+  })
+
+  it('falls back to basename when config.yaml absent', () => {
+    const root = join(workDir, 'just-a-dir')
+    mkdirSync(root)
+    expect(resolveProjectSlug(root)).toBe('just-a-dir')
+  })
+
+  it('returns null when both project field and basename are slug-invalid', () => {
+    // Empty path component — basename comes back as '', which fails the regex.
+    expect(resolveProjectSlug('')).toBeNull()
+  })
+})
+
+describe('findProjectRoot', () => {
+  let workDir: string
+
+  beforeEach(() => {
+    workDir = mkdtempSync(join(tmpdir(), 'cloglog-find-'))
+  })
+
+  afterEach(() => {
+    rmSync(workDir, { recursive: true, force: true })
+  })
+
+  it('returns the cwd when it has .cloglog/config.yaml', () => {
+    const root = join(workDir, 'proj')
+    mkdirSync(join(root, '.cloglog'), { recursive: true })
+    writeFileSync(join(root, '.cloglog', 'config.yaml'), 'project: x\n')
+    expect(findProjectRoot(root)).toBe(root)
+  })
+
+  it('walks up to find the project root from a nested subdir', () => {
+    const root = join(workDir, 'proj')
+    const nested = join(root, 'a', 'b', 'c')
+    mkdirSync(join(root, '.cloglog'), { recursive: true })
+    mkdirSync(nested, { recursive: true })
+    writeFileSync(join(root, '.cloglog', 'config.yaml'), 'project: x\n')
+    expect(findProjectRoot(nested)).toBe(root)
+  })
+
+  it('returns null when no ancestor has a config.yaml', () => {
+    const stray = join(workDir, 'stray')
+    mkdirSync(stray)
+    expect(findProjectRoot(stray)).toBeNull()
+  })
+})
+
+describe('MCP server startup error handling (T-382 codex round 4)', () => {
+  it('index.ts catches UnusableProjectCredentialsError alongside MissingCredentialsError', () => {
+    // Text-level pin: process.exit(78) on a credential-config error must
+    // cover BOTH error classes, otherwise a present-but-broken
+    // credentials.d/<slug> file produces a Node stack trace at startup
+    // instead of the EX_CONFIG diagnostic Claude Code's MCP loader
+    // expects. Failure mode caught locally before this pin: starting
+    // claude in a project with `~/.cloglog/credentials.d/<slug>` set to
+    // a directory crashed with "TypeError: ..." instead of exiting 78.
+    const indexPath = pathResolve(__dirname, '..', 'src', 'index.ts')
+    const src = fsReadFileSync(indexPath, 'utf8')
+
+    expect(src).toContain('UnusableProjectCredentialsError')
+    // The catch block must use instanceof for both error classes; a bare
+    // `if (err instanceof MissingCredentialsError)` without the second
+    // check means the new error type still escapes uncaught.
+    expect(src).toMatch(/instanceof\s+MissingCredentialsError\s*\|\|\s*err\s+instanceof\s+UnusableProjectCredentialsError/)
+    // Sanity: process.exit(78) is still wired in so the catch handler
+    // actually short-circuits startup, not just logs.
+    expect(src).toContain('process.exit(78)')
   })
 })

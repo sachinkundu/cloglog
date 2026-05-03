@@ -245,3 +245,175 @@ def test_step4a_documents_t316_config_keys() -> None:
             f"init Step 4a must include the {key!r} key in its example config — "
             "T-316 consumers fail closed without it."
         )
+
+
+# ---------------------------------------------------------------------------
+# T-382 — per-project credential resolution must propagate to init
+# ---------------------------------------------------------------------------
+
+
+def test_step2_writes_credentials_d_for_multi_project() -> None:
+    """T-382: on a multi-project host, Step 2 must write the new key to
+    ~/.cloglog/credentials.d/<slug>, not ask the operator to export an env var.
+
+    Pre-T-382 the multi-project branch printed the key and told the operator
+    to `export CLOGLOG_API_KEY=...`. That left the global file untouched
+    (correct) but required every shell that launched Claude Code to inherit
+    the env — easy to miss, easy to clobber when switching projects. Since
+    T-382 the resolver picks ~/.cloglog/credentials.d/<slug> automatically,
+    so init must write the file directly.
+    """
+    step2 = _step2_body(_read())
+    assert "credentials.d" in step2, (
+        "Step 2 must write to ~/.cloglog/credentials.d/<slug> on multi-project "
+        "hosts (T-382). Pre-T-382 export-only behaviour is no longer correct."
+    )
+    assert "MULTI_PROJECT" in step2, (
+        "Step 2 must still distinguish single-project from multi-project hosts "
+        "via $MULTI_PROJECT so single-project hosts keep writing to the legacy "
+        "global file (backward compatibility)."
+    )
+
+
+def test_step2_seeds_project_slug_into_config() -> None:
+    """T-382: Step 2 must persist `project:` to .cloglog/config.yaml at
+    bootstrap time. Without it, the SessionEnd unregister hook and the
+    MCP server resolver fall back to basename($PROJECT_ROOT) for the slug
+    — which matches the credentials.d/<slug> file only by accident if the
+    checkout dir happens to share the project's chosen name.
+    """
+    step2 = _step2_body(_read())
+    # Step 2 derives PROJECT_SLUG and writes it as the `project:` field.
+    assert "PROJECT_SLUG" in step2, (
+        "Step 2 must derive PROJECT_SLUG so the same slug is used for both "
+        "the credentials.d/<slug> filename and the config `project:` field."
+    )
+    # The skill's seeding block must include `project:` (not only `project_id:`).
+    assert (
+        "^project:" in step2 or "'project: %s\\n'" in step2 or "project: ${PROJECT_SLUG}" in step2
+    ), (
+        "Step 2 must persist `project:` to .cloglog/config.yaml so the "
+        "T-382 resolver finds the slug source on first restart."
+    )
+
+
+def test_step4a_uses_project_field_not_project_name() -> None:
+    """T-382: Step 4a's example config MUST use `project:` (the slug field
+    the resolver reads) and MUST NOT use `project_name:` (the legacy field
+    that nothing reads). A downstream project generated from `project_name:`
+    has no slug source — the resolver falls back to basename which usually
+    misses, breaking per-project credential lookup.
+    """
+    step4a = _step4a_body(_read())
+    assert "\nproject:" in step4a or "project: <slug>" in step4a, (
+        "Step 4a must emit the `project:` field — it's the slug source for "
+        "~/.cloglog/credentials.d/<slug> (T-382)."
+    )
+    # The legacy `project_name:` field is not read by anything; if init
+    # generates it, the per-project resolver silently fails over to basename.
+    # Allow `project_name` only inside fenced comments / explanatory prose.
+    for line in step4a.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("project_name:"):
+            raise AssertionError(
+                "Step 4a still emits the legacy `project_name:` field. "
+                "Use `project:` — that's what mcp-server/src/credentials.ts "
+                "and the SessionEnd unregister hook read."
+            )
+
+
+def test_step2_repair_branch_is_multi_project_aware() -> None:
+    """T-382 codex round 3: the Step 2 repair text (shown when project_id
+    is in the repo but no credentials are on the host) MUST NOT instruct
+    the operator to write the recovered key into ~/.cloglog/credentials
+    unconditionally — on a multi-project host that file holds another
+    project's key and would be silently overwritten. The repair text must
+    branch on `~/.cloglog/credentials` already containing a key.
+    """
+    body = _read()
+    # Locate the repair-text block (between "Credentials missing for an
+    # existing project." and the next "### " heading).
+    start = body.find("Credentials missing for an existing project.")
+    assert start != -1, "Repair text block not found"
+    end = body.find("### ", start)
+    assert end != -1, "Could not locate end of repair text block"
+    repair = body[start:end]
+
+    assert "credentials.d" in repair, (
+        "Step 2 repair text must reference ~/.cloglog/credentials.d/<slug> so "
+        "operators on multi-project hosts don't clobber another project's key."
+    )
+    # The block must include the conditional check on the legacy file.
+    assert (
+        "if [ -f ~/.cloglog/credentials ]" in repair
+        or "if [ -f ${HOME}/.cloglog/credentials ]" in repair
+    ), (
+        "Repair text must check for an existing legacy credentials file before "
+        "deciding where to write the recovered key (single-project vs multi-project branch)."
+    )
+
+
+def test_step2_guards_against_empty_project_slug() -> None:
+    """T-382 codex round 3: PROJECT_SLUG derivation can produce empty
+    string for a backend project name like '!!!' or '***'. Init must
+    detect the empty case and either fall back to a validated basename
+    or halt with a clear message — silently writing
+    `~/.cloglog/credentials.d/` (the directory itself) is the failure
+    mode this guards against.
+    """
+    step2 = _step2_body(_read())
+    # Look for an empty-slug guard near the PROJECT_SLUG derivation.
+    assert 'if [ -z "$PROJECT_SLUG" ]' in step2 or 'if [ -z "${PROJECT_SLUG}" ]' in step2, (
+        "Step 2 must guard against an empty PROJECT_SLUG after the tr/sed "
+        "derivation — backend names like '!!!' produce empty slugs that would "
+        "write CLOGLOG_API_KEY to a directory path."
+    )
+    # The guard must include a fallback or a fatal exit; either keyword is fine.
+    assert "exit 1" in step2 or "basename" in step2, (
+        "Step 2's empty-slug guard must either fall back to a validated "
+        "basename or exit 1 with a clear message — silent continuation writes "
+        "the key to ~/.cloglog/credentials.d/ (the directory itself)."
+    )
+
+
+def test_step2_validates_existing_slug_against_path_traversal() -> None:
+    """T-382 codex round 5: Step 2's Phase-1 EXISTING_SLUG derivation must
+    validate the `project:` value against [A-Za-z0-9._-]+ before splicing
+    it into ~/.cloglog/credentials.d/${EXISTING_SLUG}. Without the check,
+    a repo that carries `project: ../escape` would probe
+    ~/.cloglog/credentials.d/../escape and incorrectly report
+    EXISTING_CREDS=per-project against a file outside credentials.d/.
+
+    The runtime resolvers reject the same shape (mcp-server/src/credentials.ts
+    SLUG_RE + plugins/cloglog/hooks/lib/resolve-api-key.sh resolve_api_key_slug),
+    so init must follow suit or the bootstrap detection diverges from what
+    the live system can actually use.
+    """
+    step2 = _step2_body(_read())
+    # The validation regex must be present where EXISTING_SLUG is derived.
+    assert "[A-Za-z0-9._-]+" in step2, (
+        "Step 2 must validate the project: scalar against [A-Za-z0-9._-]+ "
+        "before reading or writing ~/.cloglog/credentials.d/<slug> — "
+        "unvalidated splicing allows `project: ../escape` traversal."
+    )
+
+
+def test_step2_repair_branch_validates_slug_against_path_traversal() -> None:
+    """The Step 2 repair text (multi-project branch) MUST also validate the
+    derived SLUG before writing the recovered key into
+    ~/.cloglog/credentials.d/${SLUG}. Same reasoning as the Phase-1 check
+    above — a hostile or accidentally invalid `project:` field would
+    otherwise let the operator write the recovered key outside
+    credentials.d/.
+    """
+    body = _read()
+    start = body.find("Credentials missing for an existing project.")
+    end = body.find("### ", start)
+    assert start != -1 and end != -1, "Repair text block not found"
+    repair = body[start:end]
+
+    assert "[A-Za-z0-9._-]+" in repair, (
+        "Step 2 repair text must validate SLUG against [A-Za-z0-9._-]+ "
+        "before writing ~/.cloglog/credentials.d/<slug> — unvalidated "
+        "splicing allows path traversal in the recovered-key write."
+    )

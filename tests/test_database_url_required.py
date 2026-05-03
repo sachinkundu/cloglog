@@ -80,6 +80,51 @@ def test_alembic_ini_has_no_default_database_url() -> None:
             )
 
 
+def test_check_contract_script_runs_without_database_url(tmp_path: Path) -> None:
+    """`scripts/check-contract.py` must self-seed DATABASE_URL.
+
+    The script imports `create_app()` which transitively constructs Settings
+    at import time. CI's `make contract-check` step starts from a fresh
+    checkout with no `.env`, so a regression that drops the seed would
+    crash with `ValidationError` before any contract comparison runs.
+    """
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "check-contract.py"), "--help"],
+        capture_output=True,
+        text=True,
+        env=_clean_env(),
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0, (
+        f"scripts/check-contract.py --help must succeed without DATABASE_URL "
+        f"in env. stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+
+
+def test_extract_openapi_script_runs_without_database_url(tmp_path: Path) -> None:
+    """`scripts/extract-openapi.py` must self-seed DATABASE_URL.
+
+    Documented as a direct command (`uv run python scripts/extract-openapi.py
+    > openapi.json`); a missing env seed would break the documented usage
+    on a fresh clone.
+    """
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "extract-openapi.py")],
+        capture_output=True,
+        text=True,
+        env=_clean_env(),
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0, (
+        f"scripts/extract-openapi.py must succeed without DATABASE_URL in "
+        f"env. stdout={result.stdout[:200]!r} stderr={result.stderr!r}"
+    )
+    # Sanity: stdout should look like JSON (starts with '{').
+    assert result.stdout.lstrip().startswith("{"), (
+        f"extract-openapi.py should emit JSON to stdout. Got: {result.stdout[:200]!r}"
+    )
+
+
 def test_alembic_env_uses_settings_database_url() -> None:
     """`src/alembic/env.py` must source the URL from `Settings`, not a default.
 

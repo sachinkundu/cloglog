@@ -128,10 +128,6 @@ jobs:
         run: cd mcp-server && npm test
 
       - name: Contract check
-        env:
-          # T-388: contract-check loads create_app() which constructs Settings
-          # at import — required DATABASE_URL applies the same way.
-          DATABASE_URL: postgresql+asyncpg://cloglog:cloglog_dev@localhost:5432/cloglog
         run: make contract-check
 
       - name: Upload test artifacts

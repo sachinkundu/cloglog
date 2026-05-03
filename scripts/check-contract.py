@@ -12,8 +12,21 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
+
+# T-388: this script imports `create_app()`, which transitively constructs
+# `Settings` at import time. Settings now requires `DATABASE_URL` (no
+# silent fallback to the prod `cloglog` DB). Seed a placeholder pointing
+# at the base `postgres` DB so a fresh clone — or any caller running this
+# script outside an environment with `.env` — still produces an OpenAPI
+# diff instead of a `ValidationError`. The contract check never opens a
+# DB connection; it only inspects the FastAPI route table.
+os.environ.setdefault(
+    "DATABASE_URL",
+    "postgresql+asyncpg://cloglog:cloglog_dev@localhost:5432/postgres",
+)
 
 import yaml
 

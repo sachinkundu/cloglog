@@ -1,4 +1,4 @@
-.PHONY: help install test test-board test-agent test-document test-gateway test-e2e test-e2e-browser test-e2e-browser-ui test-e2e-browser-headed test-e2e-browser-report invariants lint typecheck coverage contract-check demo demo-check quality run-backend dev dev-env prod prod-bg promote verify-prod-protection prod-logs prod-stop db-up db-down db-migrate db-revision db-refresh-from-prod sync-mcp-dist
+.PHONY: help install test test-board test-agent test-document test-gateway test-e2e test-e2e-browser test-e2e-browser-ui test-e2e-browser-headed test-e2e-browser-report invariants lint typecheck coverage contract-check demo demo-check quality run-backend dev dev-env prod prod-env-guard prod-bg promote verify-prod-protection prod-logs prod-stop db-up db-down db-migrate db-revision db-refresh-from-prod sync-mcp-dist
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -187,7 +187,21 @@ run-backend: ## Start the FastAPI backend
 # error-logfile. Without it, app stderr goes to the controlling terminal and is
 # lost in --daemon mode — we hit this on PR #260, where review_engine swallowed
 # an exception on a synchronize webhook and left no log to diagnose from.
-prod: ## Start prod server (gunicorn + vite preview, foreground — run in a zellij pane)
+prod-env-guard: ## Verify ../cloglog-prod/.env carries an explicit DATABASE_URL (T-388)
+	@# Settings now refuses to start without DATABASE_URL — no silent
+	@# fallback to the prod `cloglog` DB. The prod worktree's .env was
+	@# previously allowed to omit it; this guard fails fast with the exact
+	@# line to add so gunicorn / alembic don't get to a half-booted
+	@# ValidationError state in the middle of `make promote`.
+	@if [ ! -f ../cloglog-prod/.env ] || ! grep -q '^DATABASE_URL=' ../cloglog-prod/.env; then \
+		echo "ERROR: ../cloglog-prod/.env is missing or has no DATABASE_URL line." >&2; \
+		echo "       T-388 made DATABASE_URL required (no silent fallback to the shared 'cloglog' DB)." >&2; \
+		echo "       Add this line to ../cloglog-prod/.env, then re-run:" >&2; \
+		echo "         DATABASE_URL=postgresql+asyncpg://cloglog:cloglog_dev@127.0.0.1:5432/cloglog" >&2; \
+		exit 1; \
+	fi
+
+prod: prod-env-guard ## Start prod server (gunicorn + vite preview, foreground — run in a zellij pane)
 	@if [ -f /tmp/cloglog-prod.pid ] && kill -0 "$$(cat /tmp/cloglog-prod.pid)" 2>/dev/null; then \
 		echo "ERROR: prod gunicorn is already running (pid $$(cat /tmp/cloglog-prod.pid)) on :8001."; \
 		echo "       Use 'make promote' to rotate workers, or 'make prod-stop' first."; \
@@ -229,7 +243,7 @@ prod: ## Start prod server (gunicorn + vite preview, foreground — run in a zel
 		(cd ../cloglog-prod/frontend && npm run preview -- --port 4173 $$PREVIEW_HOST_FLAG 2>&1 | sed -u 's/^/[frontend] /' & echo $$! > /tmp/cloglog-prod-frontend.pid) & \
 		wait
 
-prod-bg: ## Start prod server in background
+prod-bg: prod-env-guard ## Start prod server in background
 	@if [ -f /tmp/cloglog-prod.pid ] && kill -0 "$$(cat /tmp/cloglog-prod.pid)" 2>/dev/null; then \
 		echo "ERROR: prod gunicorn is already running (pid $$(cat /tmp/cloglog-prod.pid)) on :8001."; \
 		echo "       Use 'make promote' to rotate workers, or 'make prod-stop' first."; \
@@ -268,7 +282,7 @@ prod-bg: ## Start prod server in background
 		(cd ../cloglog-prod/frontend && npm run preview -- --port 4173 $$PREVIEW_HOST_FLAG & echo $$! > /tmp/cloglog-prod-frontend.pid); \
 		echo "  Backend PID: $$(cat /tmp/cloglog-prod.pid)  Frontend PID: $$(cat /tmp/cloglog-prod-frontend.pid)"
 
-promote: ## Deploy latest origin/main to prod with zero-downtime worker rotation
+promote: prod-env-guard ## Deploy latest origin/main to prod with zero-downtime worker rotation
 	@echo "Promoting origin/main to prod..."
 	@if [ ! -f /tmp/cloglog-prod.pid ]; then echo "ERROR: gunicorn not running — service is down, cannot promote. Run \`make prod\` to bring the backend up first, then \`make promote\`. (Spec §4.2: make prod is restart-only with no git operations; make promote requires a live backend so the worker rotation actually deploys the new SHA before the worktree, DB, or origin/prod are mutated.)"; exit 1; fi
 	@PROD_PID=$$(cat /tmp/cloglog-prod.pid); \

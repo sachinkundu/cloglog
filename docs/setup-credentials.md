@@ -46,12 +46,16 @@ failed; agents inside the worktree will see no `mcp__cloglog__*` tools at
 startup.
 
 > **Multi-project hosts.** When you run cloglog and other cloglog-managed
-> projects on the same machine, prefer the per-project files. Each project
-> gets its own `~/.cloglog/credentials.d/<slug>` and the wrong key never
-> reaches the wrong backend. Before T-382 the legacy global file held one
-> key, so calls from the other projects' worktrees produced silent 401/403
-> on `/api/v1/agents/unregister-by-path` and similar agent-side endpoints
-> — the failure that motivated this change.
+> projects on the same machine, prefer the per-project files. The shared
+> backend mints one project-scoped API key per project via
+> `POST /api/v1/projects`; each project gets its own
+> `~/.cloglog/credentials.d/<slug>` so the right key is sent for the right
+> project, even though every project authenticates against the same backend
+> URL. Before T-382 the legacy global file held one key, so calls from the
+> other projects' worktrees produced silent 401/403 on
+> `/api/v1/agents/unregister-by-path` and similar agent-side endpoints
+> (the backend's project-scoped auth rejects a key that doesn't match the
+> project the worktree belongs to) — the failure that motivated this change.
 
 ## First-time setup — new project via `/cloglog init`
 

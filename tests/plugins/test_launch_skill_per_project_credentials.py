@@ -1,10 +1,13 @@
 """T-382 pin: launch SKILL `_api_key` resolves per-project credentials.
 
 The bug this guards against: on a host that runs cloglog and other
-cloglog-managed projects (each with its own backend instance + project API
-key), the global `~/.cloglog/credentials` file held only one key. The wrong
-key got sent on agent calls under the other projects' worktrees, producing
-silent 401/403 on `/api/v1/agents/unregister-by-path` and similar.
+cloglog-managed projects (one shared backend, but each project has its own
+project-scoped API key minted via `POST /api/v1/projects`), the global
+`~/.cloglog/credentials` file held only one key. The wrong key got sent on
+agent calls under the other projects' worktrees, producing silent 401/403
+on `/api/v1/agents/unregister-by-path` and similar — the backend's
+project-scoped auth rejects a key that doesn't match the project the
+worktree belongs to.
 
 The fix is per-project credential resolution: env → per-project file at
 `~/.cloglog/credentials.d/<project_slug>` → legacy global file. The slug

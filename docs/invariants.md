@@ -337,6 +337,12 @@ idle for 25 minutes through operator retries).
 
 **Pin:** `tests/plugins/test_agent_prompt_template_correct_inbox_paths.py`
 
+### Plugin source loads live in worktree agents — no install-time cache
+
+The launch SKILL renders `launch.sh` to spawn `claude --dangerously-skip-permissions`. That invocation MUST also pass `--plugin-dir <worktree>/plugins/cloglog` so claude resolves the cloglog plugin from the worktree's on-disk source on every launch. Without the flag, claude falls back to its install-time plugin cache (populated by `claude plugins install`), and edits to `plugins/cloglog/skills/**`, `hooks/**`, or `templates/**` made in the worktree are silently invisible to the spawned agent — the cache freezes the plugin contents at install time, so a SKILL fix only takes effect after the operator manually reinstalls. This is a silent failure: the agent runs against stale plugin code with no diagnostic, no error, and no test catches it because the renderer still passes `bash -n`. The path must be absolute and rooted at THIS worktree's plugin copy (each worktree carries its own), not a shared install — the per-worktree path is what makes plugin edits in branch X invisible to a parallel agent in branch Y, which is the desired isolation.
+
+**Pin:** `tests/plugins/test_launch_sh_loads_plugin_live.py`
+
 ### `launch.sh` heredoc renders cleanly
 
 The launch SKILL emits `.cloglog/launch.sh` via a heredoc. Use the

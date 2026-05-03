@@ -138,10 +138,11 @@ quality: ## Run full quality gate (invariants fail-fast → lint → typecheck �
 # ── Run ───────────────────────────────────────
 
 dev: ## Start everything (db + migrate + backend + frontend)
-	@# T-388: dev-env runs preflight at the top of its recipe, so calling it
-	@# here covers both `make dev` and direct `make dev-env`. Recursive
-	@# $(MAKE) (not a prerequisite) keeps ordering explicit; prerequisites
-	@# would race ahead of subsequent recipe lines.
+	@# T-388: full preflight (uv/docker/node/npm/jq/cloudflared) runs first
+	@# for `make dev` because the dev recipe needs all of them. `dev-env`
+	@# only does DB-specific checks inline so direct `make dev-env` does
+	@# not get blocked on unrelated gates (cloudflared, frontend deps).
+	@scripts/preflight.sh
 	@$(MAKE) --no-print-directory dev-env
 	@echo "Starting cloglog dev environment..."
 	@docker compose up -d 2>/dev/null || true
@@ -402,10 +403,15 @@ dev-env: ## Bootstrap dev .env (DATABASE_URL=cloglog_dev) — fail-loud if Postg
 	@# uv/docker/node/npm/jq/cloudflared). The container always ships with
 	@# psql; assuming a host install would silently mis-diagnose missing-psql
 	@# as Postgres-unreachable.
-	@# Run preflight at the top of the recipe — `make dev` calls preflight
-	@# before this target, but a developer invoking `make dev-env` directly
-	@# still deserves the same actionable Docker / host-binary diagnosis.
-	@scripts/preflight.sh
+	@# DB-only preflight — `dev-env` is a focused helper (create
+	@# cloglog_dev + write .env), so it must NOT pull in unrelated
+	@# preflight gates like cloudflared or frontend node_modules.
+	@# `make dev` runs the full scripts/preflight.sh up-front; here we
+	@# only guard what dev-env actually touches.
+	@command -v uv >/dev/null 2>&1 || { echo "ERROR: uv not installed. Install with: curl -LsSf https://astral.sh/uv/install.sh | sh" >&2; exit 1; }
+	@command -v docker >/dev/null 2>&1 || { echo "ERROR: docker not installed. See https://docs.docker.com/get-docker/" >&2; exit 1; }
+	@docker compose version >/dev/null 2>&1 || { echo "ERROR: 'docker compose' plugin missing. Install Docker Compose v2." >&2; exit 1; }
+	@docker info >/dev/null 2>&1 || { echo "ERROR: Docker daemon is not running. Start it with 'sudo systemctl start docker' (Linux) or via Docker Desktop." >&2; exit 1; }
 	@docker compose up -d 2>/dev/null || true
 	@for i in 1 2 3 4 5 6 7 8 9 10; do \
 		docker compose exec -T postgres pg_isready -U cloglog -q 2>/dev/null && break; \

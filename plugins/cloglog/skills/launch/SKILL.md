@@ -427,7 +427,22 @@ _TASK_MODEL=$(cat "$WORKTREE_PATH/.cloglog/task-model" 2>/dev/null || true)
 # Optional $1: continuation prompt string from supervisor relaunch.
 # When absent, fall back to reading AGENT_PROMPT.md (initial launch).
 _CLAUDE_PROMPT="${1:-Read @@WORKTREE_PATH@@/AGENT_PROMPT.md and begin.}"
-claude --dangerously-skip-permissions ${_MODEL_FLAG:+$_MODEL_FLAG} "$_CLAUDE_PROMPT" &
+# T-387: load the plugin live from the worktree's on-disk copy via
+# `--plugin-dir`. Without this flag claude resolves the cloglog plugin
+# from its install-time cache (`claude plugins install`), so edits made
+# to plugins/cloglog/skills/**, hooks/**, or templates/** in this
+# worktree are invisible to the agent until the operator manually
+# reinstalls. Live-load makes plugin edits visible on the next agent
+# launch — no `claude plugins install --force` dance required. The
+# path must be absolute and rooted at THIS worktree's plugin source
+# (each worktree carries its own copy of plugins/cloglog/), not a
+# shared install — that is the whole point. Pinned by
+# tests/plugins/test_launch_sh_loads_plugin_live.py.
+_PLUGIN_DIR_FLAG=""
+if [[ -d "$WORKTREE_PATH/plugins/cloglog" ]]; then
+  _PLUGIN_DIR_FLAG="--plugin-dir $WORKTREE_PATH/plugins/cloglog"
+fi
+claude --dangerously-skip-permissions ${_MODEL_FLAG:+$_MODEL_FLAG} ${_PLUGIN_DIR_FLAG:+$_PLUGIN_DIR_FLAG} "$_CLAUDE_PROMPT" &
 CLAUDE_PID=$!
 wait "$CLAUDE_PID"
 EOF

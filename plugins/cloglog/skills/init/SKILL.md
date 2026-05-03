@@ -20,13 +20,22 @@ Arguments: `$ARGUMENTS` — optional project name. If omitted, the skill will as
 
 Before running `/cloglog init`, ensure the following are satisfied.
 
-**1. Plugin installed.** The cloglog plugin must be installed in Claude Code:
+**1. Plugin installed.** The cloglog plugin must be available to Claude Code. Pick one mode:
 
 ```bash
+# Mode A — install (downstream projects). Cached at install time.
 claude plugins install /path/to/plugins/cloglog
 ```
 
-After install, restart Claude Code. Confirm with `/help` — the cloglog skills should appear.
+```bash
+# Mode B — live-load (plugin development / cloglog dogfood). Reads
+# plugin source on every claude launch, so edits to
+# plugins/cloglog/skills/**, hooks/**, or templates/** are visible
+# the next time you start claude. Required when developing the plugin.
+claude --plugin-dir /absolute/path/to/plugins/cloglog
+```
+
+After install (Mode A), restart Claude Code. Confirm with `/help` — the cloglog skills should appear. T-387: worktree agents launched via `cloglog:launch` always use Mode B against the worktree's own `plugins/cloglog/` copy so plugin edits land on the next agent launch with no install-time freeze.
 
 **2. Backend running.** The cloglog backend must be accessible (default: `http://127.0.0.1:8001`). Step 2 makes a direct HTTP call to bootstrap the project.
 

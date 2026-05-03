@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -1064,6 +1065,65 @@ class TestRateLimitRetry:
                 "capacity-exhausted skip must not promise a retry"
             )
             assert "already reserved" in captured[1]
+        finally:
+            for task in list(consumer._pending_retries.values()):
+                task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_max_2_two_retries_get_distinct_slots(self) -> None:
+        """With ``max_per_hour=2``, two same-batch retries must wake at distinct slots.
+
+        Pin for codex review round 4 MEDIUM (PR #309): the previous
+        round used a single shared ``seconds_until_next_slot()`` for
+        every reservation, so with max=2 + two saturated timestamps,
+        two rate-limited PRs both scheduled retries to wake at the
+        first reopening of the window. Both retries firing at ~T+0
+        (relative to slot reopen) ran 3 reviews in the same rolling
+        hour, busting the at-most-2-per-hour contract.
+
+        Now ``RateLimiter.reserve()`` queues each reservation against
+        a distinct future slot: the first wakes when the oldest active
+        timestamp ages out, the second wakes when the second-oldest
+        ages out — RATE_LIMIT_WINDOW_SECONDS apart in the worst case.
+        """
+        consumer = ReviewEngineConsumer(max_per_hour=2)
+        # Active timestamps spaced 1800s apart in monotonic time — both
+        # in-window. With queue-aware slot assignment the first retry
+        # wakes when the older timestamp ages out, the second wakes
+        # 1800s later when the second-oldest ages out. The buggy code
+        # used a single shared ``seconds_until_next_slot()`` for both,
+        # so they'd wake within milliseconds of each other.
+        now = time.monotonic()
+        rate_limiter = consumer._rate_limiter
+        rate_limiter._timestamps.extend([now - 1800.0, now])
+
+        with (
+            patch.object(consumer, "_notify_skip", new=AsyncMock()),
+            patch.object(consumer, "_review_pr", new=AsyncMock()),
+        ):
+            await consumer.handle(_event(pr_number=1))
+            await consumer.handle(_event(pr_number=2))
+
+        try:
+            t1 = consumer._pending_retries[("sachinkundu/cloglog", 1)]
+            t2 = consumer._pending_retries[("sachinkundu/cloglog", 2)]
+            wake1 = t1._t381_wake  # type: ignore[attr-defined]
+            wake2 = t2._t381_wake  # type: ignore[attr-defined]
+            # Codex round 4 failure: same wake time for both retries
+            # because a shared ``seconds_until_next_slot()`` was used
+            # everywhere. Queue-aware assignment must produce distinct,
+            # well-separated slots — the second wake is at least
+            # ~1800s after the first because the active timestamps were
+            # spaced that far apart.
+            assert wake2 > wake1, (
+                "Two retries scheduled in the same batch must take distinct "
+                "queue slots — codex round 4 caught both waking at the same "
+                "shared ``seconds_until_next_slot()`` value, busting max=2"
+            )
+            assert wake2 - wake1 >= 1500.0, (
+                f"Slots must reflect the active-timestamp spacing "
+                f"(expected ~1800s gap, got {wake2 - wake1:.1f}s)"
+            )
         finally:
             for task in list(consumer._pending_retries.values()):
                 task.cancel()

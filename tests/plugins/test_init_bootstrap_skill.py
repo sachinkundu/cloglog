@@ -374,3 +374,46 @@ def test_step2_guards_against_empty_project_slug() -> None:
         "basename or exit 1 with a clear message — silent continuation writes "
         "the key to ~/.cloglog/credentials.d/ (the directory itself)."
     )
+
+
+def test_step2_validates_existing_slug_against_path_traversal() -> None:
+    """T-382 codex round 5: Step 2's Phase-1 EXISTING_SLUG derivation must
+    validate the `project:` value against [A-Za-z0-9._-]+ before splicing
+    it into ~/.cloglog/credentials.d/${EXISTING_SLUG}. Without the check,
+    a repo that carries `project: ../escape` would probe
+    ~/.cloglog/credentials.d/../escape and incorrectly report
+    EXISTING_CREDS=per-project against a file outside credentials.d/.
+
+    The runtime resolvers reject the same shape (mcp-server/src/credentials.ts
+    SLUG_RE + plugins/cloglog/hooks/lib/resolve-api-key.sh resolve_api_key_slug),
+    so init must follow suit or the bootstrap detection diverges from what
+    the live system can actually use.
+    """
+    step2 = _step2_body(_read())
+    # The validation regex must be present where EXISTING_SLUG is derived.
+    assert "[A-Za-z0-9._-]+" in step2, (
+        "Step 2 must validate the project: scalar against [A-Za-z0-9._-]+ "
+        "before reading or writing ~/.cloglog/credentials.d/<slug> — "
+        "unvalidated splicing allows `project: ../escape` traversal."
+    )
+
+
+def test_step2_repair_branch_validates_slug_against_path_traversal() -> None:
+    """The Step 2 repair text (multi-project branch) MUST also validate the
+    derived SLUG before writing the recovered key into
+    ~/.cloglog/credentials.d/${SLUG}. Same reasoning as the Phase-1 check
+    above — a hostile or accidentally invalid `project:` field would
+    otherwise let the operator write the recovered key outside
+    credentials.d/.
+    """
+    body = _read()
+    start = body.find("Credentials missing for an existing project.")
+    end = body.find("### ", start)
+    assert start != -1 and end != -1, "Repair text block not found"
+    repair = body[start:end]
+
+    assert "[A-Za-z0-9._-]+" in repair, (
+        "Step 2 repair text must validate SLUG against [A-Za-z0-9._-]+ "
+        "before writing ~/.cloglog/credentials.d/<slug> — unvalidated "
+        "splicing allows path traversal in the recovered-key write."
+    )

@@ -121,22 +121,49 @@ RESPONSE=$(curl -sf -X POST \
 API_KEY=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['api_key'])")
 PROJECT_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['id'])")
 
-# 2. Store credentials (single-project machine: write to file;
-#    multi-project machine: preserve existing file and export the key instead).
+# 2. Derive a slug-safe identifier from the backend project name, validated
+#    the same way the resolver expects ([A-Za-z0-9._-]+). The slug is what
+#    the per-project file is named under and what `project:` carries in
+#    .cloglog/config.yaml — backend names are unconstrained free-form
+#    strings (e.g. "My Project") so they MUST be slugified before use.
+PROJECT_NAME="my-project"
+PROJECT_SLUG=$(printf '%s' "$PROJECT_NAME" | tr -c '[:alnum:]._-' '-' | sed 's/^-*//; s/-*$//')
+if [ -z "$PROJECT_SLUG" ]; then
+  PROJECT_SLUG=$(basename "$(pwd)" | tr -c '[:alnum:]._-' '-' | sed 's/^-*//; s/-*$//')
+fi
+[ -z "$PROJECT_SLUG" ] && { echo "ERROR: cannot derive a slug-safe identifier" >&2; exit 1; }
+
+# 3. Store credentials (T-382). Single-project hosts use the legacy global
+#    file; multi-project hosts write to ~/.cloglog/credentials.d/<slug> so
+#    the other project's key in ~/.cloglog/credentials stays untouched.
 if [ -z "${CLOGLOG_API_KEY:-}" ] && ! ([ -f ~/.cloglog/credentials ] && grep -q '^CLOGLOG_API_KEY=' ~/.cloglog/credentials); then
+  # Single-project host (no legacy global file from another project).
   mkdir -p ~/.cloglog
   printf 'CLOGLOG_API_KEY=%s\n' "$API_KEY" > ~/.cloglog/credentials
   chmod 600 ~/.cloglog/credentials
 else
-  echo "Multi-project machine: ~/.cloglog/credentials not modified."
-  echo "Run the following before restarting Claude Code:"
-  echo "  export CLOGLOG_API_KEY=${API_KEY}"
+  # Multi-project host: another project owns ~/.cloglog/credentials.
+  # Write to credentials.d/<slug> so the resolver routes the right key
+  # to the right project; the legacy file stays intact for the other
+  # project. No env-export workaround needed since T-382.
+  mkdir -p ~/.cloglog/credentials.d
+  printf 'CLOGLOG_API_KEY=%s\n' "$API_KEY" > ~/.cloglog/credentials.d/"$PROJECT_SLUG"
+  chmod 600 ~/.cloglog/credentials.d/"$PROJECT_SLUG"
 fi
 
-# 3. Store project_id and backend_url (update in place if already present; append if not).
-# Never use >> alone — the scalar parser reads the first matching key, so a
-# duplicate line silently shadows the new value on re-runs.
+# 4. Store project, project_id, and backend_url (T-382: persist `project:`
+#    so the per-project resolver finds the slug source on first restart;
+#    without it the resolver falls back to basename($PROJECT_ROOT) and
+#    misses the credentials.d/<slug> file we just wrote). Update in place
+#    if already present; append if not. Never use >> alone — the scalar
+#    parser reads the first matching key, so a duplicate line silently
+#    shadows the new value on re-runs.
 mkdir -p .cloglog
+if [ -f .cloglog/config.yaml ] && grep -q '^project:' .cloglog/config.yaml; then
+  sed -i "s/^project:.*/project: ${PROJECT_SLUG}/" .cloglog/config.yaml
+else
+  printf 'project: %s\n' "$PROJECT_SLUG" >> .cloglog/config.yaml
+fi
 if [ -f .cloglog/config.yaml ] && grep -q '^project_id:' .cloglog/config.yaml; then
   sed -i "s/^project_id:.*/project_id: ${PROJECT_ID}/" .cloglog/config.yaml
 else
@@ -161,15 +188,35 @@ the worktree-create hook. To migrate an existing checkout:
 
 ```bash
 # Pull the key out of the old .mcp.json once, then write it to the new home.
+# T-382: pick single-project (legacy global) vs multi-project
+# (credentials.d/<slug>) destination based on whether ~/.cloglog/credentials
+# is already in use by another project.
 old_key=$(python3 -c "
 import json, pathlib
 p = pathlib.Path('.mcp.json')
 print(json.loads(p.read_text()).get('mcpServers', {}).get('cloglog', {}).get('env', {}).get('CLOGLOG_API_KEY', ''))
 ")
 if [ -n "$old_key" ]; then
-  mkdir -p ~/.cloglog
-  printf 'CLOGLOG_API_KEY=%s\n' "$old_key" > ~/.cloglog/credentials
-  chmod 600 ~/.cloglog/credentials
+  if [ -f ~/.cloglog/credentials ] && grep -q '^CLOGLOG_API_KEY=' ~/.cloglog/credentials; then
+    # Multi-project host. Derive the slug from .cloglog/config.yaml's
+    # `project:` field with a basename fallback (same shape the runtime
+    # resolvers use).
+    SLUG=$(grep '^project:' .cloglog/config.yaml 2>/dev/null | head -n1 \
+            | sed 's/^project:[[:space:]]*//; s/[[:space:]]*#.*$//' \
+            | tr -d '"'"'")
+    if [ -z "$SLUG" ] || ! [[ "$SLUG" =~ ^[A-Za-z0-9._-]+$ ]]; then
+      SLUG=$(basename "$(pwd)" | tr -c '[:alnum:]._-' '-' | sed 's/^-*//; s/-*$//')
+    fi
+    [ -z "$SLUG" ] && { echo "ERROR: cannot derive slug for credentials.d/<slug>"; exit 1; }
+    mkdir -p ~/.cloglog/credentials.d
+    printf 'CLOGLOG_API_KEY=%s\n' "$old_key" > ~/.cloglog/credentials.d/"$SLUG"
+    chmod 600 ~/.cloglog/credentials.d/"$SLUG"
+  else
+    # Single-project host: use the legacy global file.
+    mkdir -p ~/.cloglog
+    printf 'CLOGLOG_API_KEY=%s\n' "$old_key" > ~/.cloglog/credentials
+    chmod 600 ~/.cloglog/credentials
+  fi
 fi
 ```
 

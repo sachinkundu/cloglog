@@ -116,15 +116,27 @@ if [ -n "${CLOGLOG_API_KEY:-}" ]; then
   EXISTING_CREDS="env"
 else
   # Derive the slug the resolver will look for. Same precedence as
-  # resolveProjectSlug(): config `project:` field first, basename fallback.
+  # resolveProjectSlug(): config `project:` field first, basename
+  # fallback, both validated against [A-Za-z0-9._-]+. The validation is
+  # load-bearing — `project: ../escape` would otherwise probe
+  # ~/.cloglog/credentials.d/../escape and incorrectly report
+  # EXISTING_CREDS="per-project" against a file outside credentials.d/.
   EXISTING_SLUG=""
   if [ -f .cloglog/config.yaml ] && grep -q '^project:' .cloglog/config.yaml; then
-    EXISTING_SLUG=$(grep '^project:' .cloglog/config.yaml | head -n1 \
-                    | sed 's/^project:[[:space:]]*//' \
-                    | sed 's/[[:space:]]*#.*$//' \
-                    | tr -d '"'"'")
+    _raw=$(grep '^project:' .cloglog/config.yaml | head -n1 \
+            | sed 's/^project:[[:space:]]*//' \
+            | sed 's/[[:space:]]*#.*$//' \
+            | tr -d '"'"'")
+    if [[ "$_raw" =~ ^[A-Za-z0-9._-]+$ ]]; then
+      EXISTING_SLUG="$_raw"
+    fi
   fi
-  [ -z "$EXISTING_SLUG" ] && EXISTING_SLUG=$(basename "$(pwd)")
+  if [ -z "$EXISTING_SLUG" ]; then
+    _base=$(basename "$(pwd)")
+    if [[ "$_base" =~ ^[A-Za-z0-9._-]+$ ]]; then
+      EXISTING_SLUG="$_base"
+    fi
+  fi
   if [ -n "$EXISTING_SLUG" ] \
       && [ -f "${HOME}/.cloglog/credentials.d/${EXISTING_SLUG}" ] \
       && grep -q '^CLOGLOG_API_KEY=' "${HOME}/.cloglog/credentials.d/${EXISTING_SLUG}"; then
@@ -158,7 +170,12 @@ cloned to a new machine), stop with a repair instruction:
 >    SLUG=$(grep '^project:' .cloglog/config.yaml 2>/dev/null | head -n1 \
 >            | sed 's/^project:[[:space:]]*//; s/[[:space:]]*#.*$//' \
 >            | tr -d '"'"'")
->    [ -z "$SLUG" ] && SLUG=$(basename "$(pwd)")
+>    # Validate against the resolver's [A-Za-z0-9._-]+ — `project: ../escape`
+>    # would otherwise let the next line write outside credentials.d/.
+>    if [ -z "$SLUG" ] || ! [[ "$SLUG" =~ ^[A-Za-z0-9._-]+$ ]]; then
+>      SLUG=$(basename "$(pwd)" | tr -c '[:alnum:]._-' '-' | sed 's/^-*//; s/-*$//')
+>    fi
+>    [ -z "$SLUG" ] && { echo "ERROR: cannot derive slug-safe identifier; refusing to write credentials" >&2; exit 1; }
 >
 >    if [ -f ~/.cloglog/credentials ] && grep -q '^CLOGLOG_API_KEY=' ~/.cloglog/credentials; then
 >      # Multi-project host: another project owns ~/.cloglog/credentials.

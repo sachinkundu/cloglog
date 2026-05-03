@@ -46,12 +46,6 @@ async def rotate(project_name: str | None) -> None:
         project.api_key_hash = hashlib.sha256(new_key.encode()).hexdigest()
         await session.commit()
 
-        # Slug used by the T-382 per-project resolver. Matches the same
-        # validator the resolver applies (`[A-Za-z0-9._-]+`); leave the
-        # actual slug derivation to the operator on their host since the
-        # config field they use is per-checkout.
-        slug = project.name
-
         print(f"Project: {project.name} ({project.id})")
         print(f"New API key: {new_key}")
         print()
@@ -65,12 +59,22 @@ async def rotate(project_name: str | None) -> None:
         print("    chmod 600 ~/.cloglog/credentials")
         print()
         print("  Multi-project host (this project shares the box with others):")
-        print(f"    printf 'CLOGLOG_API_KEY={new_key}\\n' > ~/.cloglog/credentials.d/{slug}")
-        print(f"    chmod 600 ~/.cloglog/credentials.d/{slug}")
+        print("    SLUG=$(grep '^project:' .cloglog/config.yaml | head -n1 \\")
+        print("           | sed 's/^project:[[:space:]]*//; s/[[:space:]]*#.*$//' \\")
+        print("           | tr -d '\"'\"'\"')")
+        print(
+            "    [[ \"$SLUG\" =~ ^[A-Za-z0-9._-]+$ ]] || "
+            '{ echo "ERROR: project: in .cloglog/config.yaml is not slug-safe"; exit 1; }'
+        )
+        print(f"    printf 'CLOGLOG_API_KEY={new_key}\\n' > ~/.cloglog/credentials.d/\"$SLUG\"")
+        print('    chmod 600 ~/.cloglog/credentials.d/"$SLUG"')
         print()
-        print(f"  (The slug above mirrors `project: {slug}` in this repo's")
-        print("   .cloglog/config.yaml. If your config uses a different slug, write")
-        print("   the file under THAT name, not this one.)")
+        print("  The slug MUST come from the host's own .cloglog/config.yaml — backend")
+        print("  project names are unconstrained free-form strings (e.g. 'My Project'),")
+        print("  but the resolver demands [A-Za-z0-9._-]+. Init slugifies the name when")
+        print("  it persists `project:`, so different checkouts of the same project may")
+        print("  carry slightly different slugs; reading config on each host is the only")
+        print("  way to be sure you write the file the resolver will actually read.")
         print()
         print("Or export in the launcher's environment (one-shot override):")
         print(f"  export CLOGLOG_API_KEY={new_key}")

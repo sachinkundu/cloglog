@@ -19,7 +19,7 @@ Two-task wave on a single worktree (`wt-launcher-zellij-cleanup`). T-352 shipped
 
 **Goal.** After agent emits `agent_unregistered` and calls `unregister_agent`, claude continues running interactively waiting for the next user input — keeping the launcher's `wait` blocked. Supervisor was forced to close the zellij tab to recover. Fix the agent-side exit so the launcher returns naturally.
 
-**What shipped.** PostToolUse hook on `mcp__cloglog__unregister_agent` (`plugins/cloglog/hooks/exit-on-unregister.sh`) that schedules SIGTERM to the parent claude PID after a successful unregister. Hook fires only on success (matches `Unregistered ` text prefix in the response, refuses if `isError`/`is_error` is true) so failed unregisters still flow through the existing `mcp_tool_error` escalation path in `agent-lifecycle.md` §4.1. Wired in `plugins/cloglog/settings.json`. Six pin tests in `tests/test_exit_on_unregister_hook.py`. Close-wave SKILL Step 6 prose downgraded from "rare, but possible" to a one-line note that this hook should make it not happen.
+**What shipped.** PostToolUse hook on `mcp__cloglog__unregister_agent` (`plugins/cloglog/hooks/exit-on-unregister.sh`) that schedules SIGTERM to the parent claude PID after a successful unregister. Hook fires only on success (matches `Unregistered ` text prefix in the response, refuses if `isError`/`is_error` is true) so failed unregisters still flow through the existing `mcp_tool_error` escalation path in `agent-lifecycle.md` §4.1. Wired in `plugins/cloglog/settings.json`. Five pin tests in `tests/test_exit_on_unregister_hook.py`. Close-wave SKILL Step 6 prose downgraded from "rare, but possible" to a one-line note that this hook should make it not happen.
 
 ### T-384 (PR #301) — from `shutdown-artifacts/work-log-T-384.md`
 
@@ -28,8 +28,8 @@ Two-task wave on a single worktree (`wt-launcher-zellij-cleanup`). T-352 shipped
 **What shipped.**
 - `plugins/cloglog/hooks/lib/close-zellij-tab.sh` rewritten to parse `zellij action list-tabs --json` via `jq`. Active-tab detection switched to JSON. Drops `query-tab-names | grep` and `current-tab-info | awk` entirely.
 - `plugins/cloglog/skills/launch/SKILL.md` Step 4e: replaces `awk '/^id:/'` with `list-tabs --json | jq`; chains `new-tab` and `go-to-tab-by-id` in one `&&`-joined shell command so focus-back fires before the eye sees the swap. Same change in Supervisor Relaunch Flow.
-- New pin `tests/plugins/test_zellij_list_tabs_json_contract.py` asserts the `list-tabs --json` shape (`tab_id` int, `name` str, `active` bool); skips when `zellij` not on PATH.
-- `tests/plugins/test_close_zellij_tab_helper.py` extended with JSON-output fixtures.
+- New pin `tests/plugins/test_zellij_list_tabs_json_contract.py` statically asserts the plugin source now uses `list-tabs --json`, `select(.active)`, and the chained `new-tab ... && go-to-tab-by-id` form (string-pattern check against the helper + SKILL files; does NOT invoke `zellij` or parse runtime JSON — runtime schema coverage is a follow-up if zellij ever changes the shape).
+- `tests/plugins/test_close_tab_safety.py` extended with JSON-output fixtures.
 
 ## Learnings & integration issues
 

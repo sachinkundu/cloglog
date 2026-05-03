@@ -10,6 +10,7 @@ import {
   loadApiKey,
   MissingCredentialsError,
   resolveProjectSlug,
+  UnusableProjectCredentialsError,
 } from '../src/credentials.js'
 
 describe('loadApiKey', () => {
@@ -313,6 +314,84 @@ describe('per-project credential resolution (T-382)', () => {
         projectRoot: project,
       }),
     ).toBe('basename-key')
+  })
+
+  it('refuses legacy fallback when per-project file is present but blank (T-382 codex round 3)', () => {
+    const project = makeProject('blank-perproject', 'blankperproject')
+    // Per-project file exists but contains no CLOGLOG_API_KEY entry.
+    writeFileSync(join(projectCredentialsDir, 'blankperproject'), '# blank\nOTHER=value\n')
+    // Legacy file would resolve, but the per-project file's presence
+    // must veto the fallback — silently sending the legacy key is the
+    // exact wrong-project bug T-382 was filed to remove.
+    writeFileSync(legacyCredentialsPath, 'CLOGLOG_API_KEY=legacy-WRONG-PROJECT\n')
+
+    expect(() =>
+      loadApiKey({
+        env: {},
+        credentialsPath: legacyCredentialsPath,
+        projectCredentialsDir,
+        projectRoot: project,
+      }),
+    ).toThrow(UnusableProjectCredentialsError)
+  })
+
+  it('refuses legacy fallback when per-project path is a directory (T-382 codex round 3)', () => {
+    const project = makeProject('dir-perproject', 'dirperproject')
+    // Per-project "file" is actually a directory — same trap.
+    mkdirSync(join(projectCredentialsDir, 'dirperproject'))
+    writeFileSync(legacyCredentialsPath, 'CLOGLOG_API_KEY=legacy-WRONG-PROJECT\n')
+
+    let caught: unknown
+    try {
+      loadApiKey({
+        env: {},
+        credentialsPath: legacyCredentialsPath,
+        projectCredentialsDir,
+        projectRoot: project,
+      })
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(UnusableProjectCredentialsError)
+    expect((caught as UnusableProjectCredentialsError).reason).toBe('is_directory')
+  })
+
+  it('refuses legacy fallback when per-project file is empty key (T-382 codex round 3)', () => {
+    const project = makeProject('empty-key', 'emptykey')
+    writeFileSync(join(projectCredentialsDir, 'emptykey'), 'CLOGLOG_API_KEY=\n')
+    writeFileSync(legacyCredentialsPath, 'CLOGLOG_API_KEY=legacy-WRONG-PROJECT\n')
+
+    let caught: unknown
+    try {
+      loadApiKey({
+        env: {},
+        credentialsPath: legacyCredentialsPath,
+        projectCredentialsDir,
+        projectRoot: project,
+      })
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(UnusableProjectCredentialsError)
+    expect((caught as UnusableProjectCredentialsError).reason).toBe('empty_or_no_key')
+  })
+
+  it('env override still wins even when per-project file is present-but-broken', () => {
+    // The fail-loud invariant on per-project is gated on env being absent.
+    // An explicit operator override (CLOGLOG_API_KEY env) is the very
+    // first source and must skip every file lookup.
+    const project = makeProject('env-bypass', 'envbypass')
+    writeFileSync(join(projectCredentialsDir, 'envbypass'), 'CLOGLOG_API_KEY=\n')
+    writeFileSync(legacyCredentialsPath, 'CLOGLOG_API_KEY=legacy\n')
+
+    expect(
+      loadApiKey({
+        env: { CLOGLOG_API_KEY: 'env-override' },
+        credentialsPath: legacyCredentialsPath,
+        projectCredentialsDir,
+        projectRoot: project,
+      }),
+    ).toBe('env-override')
   })
 
   it('error message lists all paths tried (env, per-project, legacy)', () => {

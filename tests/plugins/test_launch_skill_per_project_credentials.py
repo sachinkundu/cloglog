@@ -197,6 +197,63 @@ def test_path_traversal_slug_is_refused(tmp_path: Path) -> None:
     assert _resolve_key(helpers, project, fake_home) == "basename-key"
 
 
+def test_present_but_blank_per_project_file_blocks_legacy_fallback(tmp_path: Path) -> None:
+    """T-382 codex round 3: once ~/.cloglog/credentials.d/<slug> EXISTS,
+    the resolver MUST refuse to fall back to the legacy global file even
+    if the per-project file is unusable. The legacy file may hold a
+    different project's key, and silently sending it on signal-triggered
+    shutdown recreates the wrong-project bug T-382 was filed to remove.
+
+    This test seeds:
+      - ~/.cloglog/credentials.d/<slug>  (BLANK — no CLOGLOG_API_KEY)
+      - ~/.cloglog/credentials           (legacy with another project's key)
+
+    and asserts _api_key returns empty (so _unregister_fallback skips the
+    POST), NOT the legacy key.
+    """
+    helpers = _render_launch_sh(tmp_path)
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+
+    project = _make_project(tmp_path / "blank-perproject", "blankperproject")
+    cred_d = fake_home / ".cloglog" / "credentials.d"
+    cred_d.mkdir(parents=True)
+    blank_file = cred_d / "blankperproject"
+    blank_file.write_text("# blank\nOTHER=value\n")
+    os.chmod(blank_file, 0o600)
+    _write_credfile(fake_home / ".cloglog" / "credentials", "LEGACY-WRONG-PROJECT")
+
+    resolved = _resolve_key(helpers, project, fake_home)
+    assert resolved == "", (
+        f"Expected empty (refuse fallback), got {resolved!r}. The legacy file "
+        "must NOT shadow a present-but-broken per-project file."
+    )
+
+
+def test_present_but_unreadable_per_project_file_blocks_legacy_fallback(tmp_path: Path) -> None:
+    """Same invariant as above for the chmod-000 case."""
+    helpers = _render_launch_sh(tmp_path)
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+
+    project = _make_project(tmp_path / "unreadable-perproject", "unreadable")
+    cred_d = fake_home / ".cloglog" / "credentials.d"
+    cred_d.mkdir(parents=True)
+    bad_file = cred_d / "unreadable"
+    bad_file.write_text("CLOGLOG_API_KEY=this-is-actually-the-right-key\n")
+    os.chmod(bad_file, 0o000)
+    _write_credfile(fake_home / ".cloglog" / "credentials", "LEGACY-WRONG-PROJECT")
+
+    try:
+        resolved = _resolve_key(helpers, project, fake_home)
+        assert resolved == "", (
+            f"Expected empty (refuse fallback), got {resolved!r}. Unreadable "
+            "per-project file must veto the legacy fallback."
+        )
+    finally:
+        os.chmod(bad_file, 0o600)  # so cleanup can rm
+
+
 def test_skill_documents_per_project_resolution_order() -> None:
     """Text-level pin: SKILL.md `_api_key` block names the new resolution
     chain. Stops a future edit from silently reverting to the old global-only

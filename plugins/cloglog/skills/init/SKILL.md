@@ -149,7 +149,31 @@ cloned to a new machine), stop with a repair instruction:
 >
 > To repair:
 > 1. Obtain the project API key (rotate with `scripts/rotate-project-key.py` if lost).
-> 2. Write it: `printf 'CLOGLOG_API_KEY=<key>\n' > ~/.cloglog/credentials && chmod 600 ~/.cloglog/credentials`
+> 2. Write it. **Choose the right destination — writing the wrong file on a
+>    multi-project host clobbers another project's key (T-382):**
+>
+>    ```bash
+>    # Derive THIS project's slug exactly the way the resolver does
+>    # (config field first, basename fallback, [A-Za-z0-9._-]+ validator).
+>    SLUG=$(grep '^project:' .cloglog/config.yaml 2>/dev/null | head -n1 \
+>            | sed 's/^project:[[:space:]]*//; s/[[:space:]]*#.*$//' \
+>            | tr -d '"'"'")
+>    [ -z "$SLUG" ] && SLUG=$(basename "$(pwd)")
+>
+>    if [ -f ~/.cloglog/credentials ] && grep -q '^CLOGLOG_API_KEY=' ~/.cloglog/credentials; then
+>      # Multi-project host: another project owns ~/.cloglog/credentials.
+>      # Write to ~/.cloglog/credentials.d/<slug> so the legacy file stays
+>      # intact for that other project.
+>      mkdir -p ~/.cloglog/credentials.d
+>      printf 'CLOGLOG_API_KEY=%s\n' "<key>" > ~/.cloglog/credentials.d/"$SLUG"
+>      chmod 600 ~/.cloglog/credentials.d/"$SLUG"
+>    else
+>      # Single-project host: use the legacy global file.
+>      mkdir -p ~/.cloglog
+>      printf 'CLOGLOG_API_KEY=%s\n' "<key>" > ~/.cloglog/credentials
+>      chmod 600 ~/.cloglog/credentials
+>    fi
+>    ```
 > 3. Restart Claude Code, then run `/cloglog init` again.
 >
 > Do NOT re-run the bootstrap (Phase 2) — the project already exists; creating another
@@ -229,6 +253,24 @@ Proceed:
    # with `-`. The result is what the resolver uses to find the key
    # for THIS project, so it must be deterministic from PROJECT_NAME.
    PROJECT_SLUG=$(printf '%s' "$PROJECT_NAME" | tr -c '[:alnum:]._-' '-' | sed 's/^-*//; s/-*$//')
+
+   # Backend project names are unconstrained (src/board/schemas.py: any
+   # str), so a name like "!!!" or "***" produces an empty slug. Empty
+   # would write CLOGLOG_API_KEY to ~/.cloglog/credentials.d/ (the
+   # directory itself) and seed `project:` blank — both leave the new
+   # project unable to authenticate after restart. Fall back to the
+   # checkout basename, validated the same way; if THAT is also empty,
+   # halt with an explicit message rather than write garbage.
+   if [ -z "$PROJECT_SLUG" ]; then
+     PROJECT_SLUG=$(basename "$(pwd)" | tr -c '[:alnum:]._-' '-' | sed 's/^-*//; s/-*$//')
+   fi
+   if [ -z "$PROJECT_SLUG" ]; then
+     echo "ERROR: cannot derive a slug-safe identifier from PROJECT_NAME=${PROJECT_NAME}" >&2
+     echo "       or basename $(pwd). The per-project credential file path requires" >&2
+     echo "       a non-empty match against [A-Za-z0-9._-]+. Pick a project name with" >&2
+     echo "       at least one alphanumeric/dot/underscore/hyphen character and re-run." >&2
+     exit 1
+   fi
 
    if [ "$MULTI_PROJECT" = "false" ]; then
      # Single-project host: write the legacy global file. Backward

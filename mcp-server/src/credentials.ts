@@ -70,6 +70,40 @@ export class MissingCredentialsError extends Error {
   }
 }
 
+/**
+ * The per-project credentials file at `~/.cloglog/credentials.d/<slug>`
+ * exists, but cannot yield a usable `CLOGLOG_API_KEY` (unreadable, points
+ * at a directory, or contains an empty/missing key). Refuse to fall back
+ * to the legacy global file — the global file may belong to a different
+ * project, and silently sending its key recreates the silent-401 bug
+ * T-382 was filed to remove. Fail loud.
+ */
+export class UnusableProjectCredentialsError extends Error {
+  constructor(
+    public readonly projectCredentialsPath: string,
+    public readonly projectSlug: string,
+    public readonly reason: 'unreadable' | 'is_directory' | 'empty_or_no_key',
+  ) {
+    super(
+      [
+        `cloglog-mcp: per-project credentials file ${projectCredentialsPath} exists but is unusable (${reason}).`,
+        '',
+        `Refusing to fall back to ~/.cloglog/credentials — that file may hold a different project's key, and`,
+        `sending it would silently mis-auth every agent call from this project (the original T-382 bug).`,
+        '',
+        'Fix this by one of:',
+        `  1) chmod 600 ${projectCredentialsPath} (if perms wrong)`,
+        `  2) printf "CLOGLOG_API_KEY=<this project's key>\\n" > ${projectCredentialsPath} (if blank)`,
+        `  3) rm ${projectCredentialsPath} (if you intend to use the legacy global file for this project)`,
+        '',
+        `Slug derived from .cloglog/config.yaml: project: ${projectSlug}`,
+        'See docs/setup-credentials.md.',
+      ].join('\n'),
+    )
+    this.name = 'UnusableProjectCredentialsError'
+  }
+}
+
 export interface LoadApiKeyOptions {
   /** Legacy global credentials path. Defaults to `~/.cloglog/credentials`. */
   credentialsPath?: string
@@ -148,35 +182,60 @@ export function loadApiKey(opts: LoadApiKeyOptions = {}): string {
   const fromEnv = env.CLOGLOG_API_KEY
   if (typeof fromEnv === 'string' && fromEnv.length > 0) return fromEnv
 
-  // 2. Per-project file.
+  // 2. Per-project file. Once this file exists, it MUST yield a usable
+  //    key; refusing to fall back guards against silently sending the
+  //    legacy global file's key (which may belong to another project)
+  //    when the per-project file is present-but-broken.
   const projectRoot = findProjectRoot(startDir) ?? startDir
   const slug = resolveProjectSlug(projectRoot)
   let projectCredentialsPath: string | null = null
   if (slug) {
     projectCredentialsPath = join(projectCredentialsDir, slug)
-    const fromProject = tryReadKeyFile(projectCredentialsPath)
-    if (fromProject) return fromProject
+    const result = readKeyFile(projectCredentialsPath)
+    if (result.kind === 'present_ok') return result.key
+    if (result.kind === 'present_unusable') {
+      throw new UnusableProjectCredentialsError(projectCredentialsPath, slug, result.reason)
+    }
+    // result.kind === 'missing' — fall through to legacy.
   }
 
-  // 3. Legacy global.
-  const fromLegacy = tryReadKeyFile(credentialsPath)
-  if (fromLegacy) return fromLegacy
+  // 3. Legacy global. Same readKeyFile shape, but a present-but-broken
+  //    global file is "missing" for resolution purposes (no per-project
+  //    invariant to protect) — surface as MissingCredentialsError below.
+  const legacyResult = readKeyFile(credentialsPath)
+  if (legacyResult.kind === 'present_ok') return legacyResult.key
 
   throw new MissingCredentialsError(credentialsPath, projectCredentialsPath, slug)
 }
 
-function tryReadKeyFile(path: string): string | null {
+type KeyFileResult =
+  | { kind: 'missing' }
+  | { kind: 'present_ok'; key: string }
+  | { kind: 'present_unusable'; reason: 'unreadable' | 'is_directory' | 'empty_or_no_key' }
+
+/**
+ * Read a credentials file with present-but-broken detection. Distinguishes:
+ *   - missing (ENOENT) — caller may try the next source
+ *   - present but unusable (EACCES/EISDIR/empty) — caller must fail loud
+ *     for per-project lookup; the legacy lookup downgrades it to missing
+ *     since there is no further source to protect.
+ *   - present and OK — returns the key
+ */
+function readKeyFile(path: string): KeyFileResult {
   let contents: string
   try {
     contents = readFileSync(path, 'utf8')
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code
-    if (code === 'ENOENT' || code === 'EACCES' || code === 'EISDIR') return null
+    if (code === 'ENOENT') return { kind: 'missing' }
+    if (code === 'EACCES') return { kind: 'present_unusable', reason: 'unreadable' }
+    if (code === 'EISDIR') return { kind: 'present_unusable', reason: 'is_directory' }
     throw err
   }
   warnIfWorldReadable(path)
   const value = parseCredentialsFile(contents)
-  return value && value.length > 0 ? value : null
+  if (value && value.length > 0) return { kind: 'present_ok', key: value }
+  return { kind: 'present_unusable', reason: 'empty_or_no_key' }
 }
 
 function parseCredentialsFile(contents: string): string | null {

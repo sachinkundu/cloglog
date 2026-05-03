@@ -59,9 +59,18 @@ _resolve_api_key_read() {
 }
 
 # resolve_api_key <config-path>
-#   Echoes the resolved API key (or empty on miss). config-path is the
-#   project's .cloglog/config.yaml — used to derive the slug for the
+#   Echoes the resolved API key (or empty on miss/refuse). config-path is
+#   the project's .cloglog/config.yaml — used to derive the slug for the
 #   per-project lookup.
+#
+#   Fail-loud invariant: once ~/.cloglog/credentials.d/<slug> EXISTS, it
+#   must yield a usable key. If it exists but is unreadable, points at a
+#   directory, or contains no/empty CLOGLOG_API_KEY, the resolver returns
+#   empty AND logs to /tmp/agent-shutdown-debug.log — it does NOT fall
+#   through to the legacy global file, because that file may hold a
+#   different project's key and silently sending it recreates the bug
+#   T-382 was filed to remove. Empty return means the calling hook skips
+#   the POST instead of authenticating as the wrong project.
 resolve_api_key() {
   local cfg="$1"
   local key="${CLOGLOG_API_KEY:-}"
@@ -72,11 +81,29 @@ resolve_api_key() {
   local slug
   slug=$(resolve_api_key_slug "$cfg")
   if [[ -n "$slug" ]]; then
-    key=$(_resolve_api_key_read "${HOME}/.cloglog/credentials.d/${slug}")
-    if [[ -n "$key" ]]; then
-      printf '%s\n' "$key"
+    local proj_file="${HOME}/.cloglog/credentials.d/${slug}"
+    if [[ -e "$proj_file" ]]; then
+      # File exists — refuse to fall back even if it is unusable.
+      if [[ ! -r "$proj_file" ]]; then
+        echo "[$(date -Iseconds)] resolve_api_key: ${proj_file} exists but is unreadable; refusing legacy fallback (T-382)" \
+          >> /tmp/agent-shutdown-debug.log 2>&1 || true
+        return
+      fi
+      if [[ -d "$proj_file" ]]; then
+        echo "[$(date -Iseconds)] resolve_api_key: ${proj_file} is a directory; refusing legacy fallback (T-382)" \
+          >> /tmp/agent-shutdown-debug.log 2>&1 || true
+        return
+      fi
+      key=$(_resolve_api_key_read "$proj_file")
+      if [[ -n "$key" ]]; then
+        printf '%s\n' "$key"
+        return
+      fi
+      echo "[$(date -Iseconds)] resolve_api_key: ${proj_file} present but no CLOGLOG_API_KEY; refusing legacy fallback (T-382)" \
+        >> /tmp/agent-shutdown-debug.log 2>&1 || true
       return
     fi
   fi
+  # Per-project file is genuinely missing — legacy fallback is OK.
   _resolve_api_key_read "${HOME}/.cloglog/credentials"
 }

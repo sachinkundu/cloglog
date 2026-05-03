@@ -320,3 +320,57 @@ def test_step4a_uses_project_field_not_project_name() -> None:
                 "Use `project:` — that's what mcp-server/src/credentials.ts "
                 "and the SessionEnd unregister hook read."
             )
+
+
+def test_step2_repair_branch_is_multi_project_aware() -> None:
+    """T-382 codex round 3: the Step 2 repair text (shown when project_id
+    is in the repo but no credentials are on the host) MUST NOT instruct
+    the operator to write the recovered key into ~/.cloglog/credentials
+    unconditionally — on a multi-project host that file holds another
+    project's key and would be silently overwritten. The repair text must
+    branch on `~/.cloglog/credentials` already containing a key.
+    """
+    body = _read()
+    # Locate the repair-text block (between "Credentials missing for an
+    # existing project." and the next "### " heading).
+    start = body.find("Credentials missing for an existing project.")
+    assert start != -1, "Repair text block not found"
+    end = body.find("### ", start)
+    assert end != -1, "Could not locate end of repair text block"
+    repair = body[start:end]
+
+    assert "credentials.d" in repair, (
+        "Step 2 repair text must reference ~/.cloglog/credentials.d/<slug> so "
+        "operators on multi-project hosts don't clobber another project's key."
+    )
+    # The block must include the conditional check on the legacy file.
+    assert (
+        "if [ -f ~/.cloglog/credentials ]" in repair
+        or "if [ -f ${HOME}/.cloglog/credentials ]" in repair
+    ), (
+        "Repair text must check for an existing legacy credentials file before "
+        "deciding where to write the recovered key (single-project vs multi-project branch)."
+    )
+
+
+def test_step2_guards_against_empty_project_slug() -> None:
+    """T-382 codex round 3: PROJECT_SLUG derivation can produce empty
+    string for a backend project name like '!!!' or '***'. Init must
+    detect the empty case and either fall back to a validated basename
+    or halt with a clear message — silently writing
+    `~/.cloglog/credentials.d/` (the directory itself) is the failure
+    mode this guards against.
+    """
+    step2 = _step2_body(_read())
+    # Look for an empty-slug guard near the PROJECT_SLUG derivation.
+    assert 'if [ -z "$PROJECT_SLUG" ]' in step2 or 'if [ -z "${PROJECT_SLUG}" ]' in step2, (
+        "Step 2 must guard against an empty PROJECT_SLUG after the tr/sed "
+        "derivation — backend names like '!!!' produce empty slugs that would "
+        "write CLOGLOG_API_KEY to a directory path."
+    )
+    # The guard must include a fallback or a fatal exit; either keyword is fine.
+    assert "exit 1" in step2 or "basename" in step2, (
+        "Step 2's empty-slug guard must either fall back to a validated "
+        "basename or exit 1 with a clear message — silent continuation writes "
+        "the key to ~/.cloglog/credentials.d/ (the directory itself)."
+    )

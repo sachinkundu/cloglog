@@ -385,7 +385,8 @@ _read_credentials_file() {
 
 _api_key() {
   # T-382 — per-project credential resolution. Lookup order matches
-  # mcp-server/src/credentials.ts loadApiKey:
+  # mcp-server/src/credentials.ts loadApiKey and the shared hook helper at
+  # plugins/cloglog/hooks/lib/resolve-api-key.sh:
   #   1. CLOGLOG_API_KEY env (operator override)
   #   2. ~/.cloglog/credentials.d/<project_slug>  (per-project)
   #   3. ~/.cloglog/credentials                   (legacy global)
@@ -396,12 +397,37 @@ _api_key() {
   # .mcp.json MUST NOT carry the key — tests/test_mcp_json_no_secret.py
   # pins that invariant and .cloglog/on-worktree-create.sh never writes
   # the key to .env.
+  #
+  # Fail-loud invariant: once ~/.cloglog/credentials.d/<slug> EXISTS, it
+  # must yield a usable key. Present-but-unreadable / present-but-empty /
+  # present-as-directory MUST NOT fall through to the legacy global file —
+  # the global file may belong to a different project, and silently
+  # sending its key recreates the original silent-401 bug. On the
+  # present-but-unusable path we log to /tmp/agent-shutdown-debug.log
+  # and return empty so the trap-fired _unregister_fallback skips the POST
+  # instead of authenticating as the wrong project.
   [[ -n "${CLOGLOG_API_KEY:-}" ]] && { echo "$CLOGLOG_API_KEY"; return; }
   local slug v
   slug=$(_project_slug)
   if [[ -n "$slug" ]]; then
-    v=$(_read_credentials_file "${HOME}/.cloglog/credentials.d/${slug}")
-    [[ -n "$v" ]] && { echo "$v"; return; }
+    local proj_file="${HOME}/.cloglog/credentials.d/${slug}"
+    if [[ -e "$proj_file" ]]; then
+      if [[ ! -r "$proj_file" ]]; then
+        echo "[$(date -Iseconds)] launch.sh _api_key: ${proj_file} exists but unreadable; refusing legacy fallback (T-382)" \
+          >> /tmp/agent-shutdown-debug.log 2>&1 || true
+        return 0
+      fi
+      if [[ -d "$proj_file" ]]; then
+        echo "[$(date -Iseconds)] launch.sh _api_key: ${proj_file} is a directory; refusing legacy fallback (T-382)" \
+          >> /tmp/agent-shutdown-debug.log 2>&1 || true
+        return 0
+      fi
+      v=$(_read_credentials_file "$proj_file")
+      [[ -n "$v" ]] && { echo "$v"; return; }
+      echo "[$(date -Iseconds)] launch.sh _api_key: ${proj_file} present but no CLOGLOG_API_KEY; refusing legacy fallback (T-382)" \
+        >> /tmp/agent-shutdown-debug.log 2>&1 || true
+      return 0
+    fi
   fi
   v=$(_read_credentials_file "${HOME}/.cloglog/credentials")
   [[ -n "$v" ]] && { echo "$v"; return; }

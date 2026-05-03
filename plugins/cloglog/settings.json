@@ -103,6 +103,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "mcp__cloglog__unregister_agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/exit-on-unregister.sh",
+            "timeout": 5
+          }
+        ]
       }
     ]
   }

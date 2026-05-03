@@ -2,7 +2,7 @@
 
 The gate decides whether the agent should run
 ``gh pr merge <num> --squash --delete-branch`` on its own PR after a
-``review_submitted`` inbox event arrives. All five conditions must hold:
+``review_submitted`` inbox event arrives. All six conditions must hold:
 
 1. The reviewer's GitHub login appears in ``reviewer_bot_logins`` of the
    project's ``.cloglog/config.yaml``. Random commenters never trigger an
@@ -18,6 +18,15 @@ The gate decides whether the agent should run
 4. Every CI check on the PR has terminated with ``success`` (or is an
    intentional ``skipping``). Pending or failing checks block the merge.
 5. The PR does not carry the ``hold-merge`` label.
+6. The PR's ``mergeStateStatus`` is not ``DIRTY``. A DIRTY PR has merge
+   conflicts against base — most often because a sibling PR landed first
+   while this one was in review (T-362). GitHub does not webhook the
+   affected PR when conflicts emerge from someone else's merge, so the
+   only reliable signal is the agent's own ``gh pr view`` lookup at
+   gate-evaluation time. Returning ``pr_dirty`` lets the agent fall
+   into the conflict-resolve flow (back to ``in_progress``, fetch +
+   merge ``origin/main``, resolve, push) instead of attempting a merge
+   GitHub will reject.
 
 The CLI form reads a single JSON object on stdin with the fields:
 
@@ -26,7 +35,8 @@ The CLI form reads a single JSON object on stdin with the fields:
       "body": ":pass: codex — session 2/5 ...",
       "checks": [{"name": "quality", "bucket": "pass"}, ...],
       "labels": ["enhancement", "hold-merge"],
-      "has_human_changes_requested": false
+      "has_human_changes_requested": false,
+      "mergeable_state": "CLEAN"
     }
 
 Optional ``reviewer_bot_logins`` may be set in the payload to override the
@@ -55,6 +65,7 @@ from typing import Iterable, Sequence
 
 APPROVE_BODY_PREFIX = ":pass:"
 HOLD_LABEL = "hold-merge"
+DIRTY_MERGE_STATE = "DIRTY"
 
 # A check counts as "green" when its bucket is one of these. ``skipping`` is
 # included because skipped checks are intentional (e.g., a workflow excluded
@@ -152,6 +163,17 @@ class GateInputs:
     # the field (older payload shape) hit the cautious path that requires
     # the agent to surface human reviews explicitly.
     has_human_changes_requested: bool = False
+    # GitHub's ``mergeStateStatus`` for the PR (uppercase enum:
+    # ``CLEAN`` / ``DIRTY`` / ``BLOCKED`` / ``BEHIND`` / ``UNKNOWN`` / etc.).
+    # Sourced from ``gh pr view <PR_NUM> --json mergeStateStatus``. Only
+    # ``DIRTY`` is acted on: it means the PR has unresolved merge
+    # conflicts against base. ``UNKNOWN`` is treated as "not dirty" —
+    # GitHub leaves the field unset briefly while it recomputes
+    # mergeability after a sibling merge, and waiting for the recompute
+    # belongs in the calling skill, not here. Empty string (the default)
+    # is also benign — payloads from the older shape predate T-362 and
+    # must not regress to spurious ``pr_dirty`` holds.
+    mergeable_state: str = ""
     # When empty (default), the gate loads the list from the project's
     # ``.cloglog/config.yaml: reviewer_bot_logins``. Tests inject explicit
     # values so they don't depend on filesystem state.
@@ -185,6 +207,16 @@ def should_auto_merge(inputs: GateInputs) -> GateDecision:
 
     if HOLD_LABEL in inputs.labels:
         return GateDecision(False, "hold_label")
+
+    # T-362: detect merge conflicts before paying the CI watch cost. A
+    # DIRTY PR cannot be merged regardless of CI state, and the agent's
+    # response (resolve conflicts + push) is independent of CI status —
+    # the push restarts CI anyway. Returning ``pr_dirty`` here also
+    # avoids the deadlock where ``ci_not_green`` triggers
+    # ``gh pr checks --watch`` against a PR whose merge button GitHub
+    # has already disabled.
+    if inputs.mergeable_state == DIRTY_MERGE_STATE:
+        return GateDecision(False, "pr_dirty")
 
     if not _all_checks_green(inputs.checks):
         return GateDecision(False, "ci_not_green")
@@ -225,6 +257,7 @@ def _parse_inputs(payload: dict) -> GateInputs:
         checks=list(payload.get("checks") or []),
         labels=[str(name) for name in (payload.get("labels") or [])],
         has_human_changes_requested=bool(payload.get("has_human_changes_requested", False)),
+        mergeable_state=str(payload.get("mergeable_state") or ""),
         reviewer_bot_logins=tuple(
             str(login) for login in (payload.get("reviewer_bot_logins") or [])
         ),

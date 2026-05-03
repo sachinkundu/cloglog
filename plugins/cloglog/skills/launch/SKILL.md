@@ -211,7 +211,7 @@ When the supervisor inbox receives `agent_unregistered` from a worktree agent:
    zellij action write-chars "bash '${WORKTREE_PATH}/.cloglog/launch.sh' 'Read ${WORKTREE_PATH}/AGENT_PROMPT.md and all shutdown-artifacts/work-log-T-*.md files in ${WORKTREE_PATH}, then begin the next task.'"
    zellij action write "13"   # send Enter
    ```
-4. **Confirmation phase applies to relaunches too.** A continuation prompt can trip the same bootstrap failures as an initial launch — `claude` can fail to start, the new task's `--model` can be unavailable, MCP can be down, the heredoc-rendered `launch.sh` can have decayed (T-353-class issue introduced by an unrelated edit). After issuing the relaunch keystrokes, watch `<project_root>/.cloglog/inbox` for an `agent_started` event whose `worktree` field equals `${WORKTREE_NAME}`, with the same `launch_confirm_timeout_seconds` deadline (default `90`) as Step 5. On timeout, emit the same diagnostic checklist (`query-tab-names` / `bash -n` / `agent-shutdown-debug.log` / split `CLOGLOG_API_KEY` (env or `~/.cloglog/credentials`) and `DATABASE_URL` (`.env`) probes / `head -3 launch.sh`) and hand off to the operator. **Do NOT silently retry the relaunch; do NOT loop up to N times.** The supervisor must NOT mark the worktree as continuing on the next task until either `agent_started` arrives or the operator has acted.
+4. **Confirmation phase applies to relaunches too.** A continuation prompt can trip the same bootstrap failures as an initial launch — `claude` can fail to start, the new task's `--model` can be unavailable, MCP can be down, the heredoc-rendered `launch.sh` can have decayed (T-353-class issue introduced by an unrelated edit). After issuing the relaunch keystrokes, watch `<project_root>/.cloglog/inbox` for an `agent_started` event whose `worktree` field equals `${WORKTREE_NAME}`, with the same `launch_confirm_timeout_seconds` deadline (default `90`) as Step 5. On timeout, emit the same diagnostic checklist (`list-tabs --json | jq` / `bash -n` / `agent-shutdown-debug.log` / split `CLOGLOG_API_KEY` (env or `~/.cloglog/credentials`) and `DATABASE_URL` (`.env`) probes / `head -3 launch.sh`) and hand off to the operator. **Do NOT silently retry the relaunch; do NOT loop up to N times.** The supervisor must NOT mark the worktree as continuing on the next task until either `agent_started` arrives or the operator has acted.
 5. **If no backlog tasks remain** → invoke the `cloglog:close-wave` skill for this worktree.
 
 ## Pipeline behaviour (Features Only)
@@ -260,8 +260,12 @@ Step 3 already wrote both `${WORKTREE_PATH}/AGENT_PROMPT.md` (verbatim copy of t
 ### 4e. Create zellij tab and launch agent
 
 ```bash
-# Capture current tab's stable numeric ID before switching away
-CURRENT_TAB_ID=$(zellij action current-tab-info 2>&1 | awk '/^id:/ {print $2}')
+# Capture current tab's stable numeric ID before switching away.
+# T-384: read from `list-tabs --json` — single contract used everywhere
+# (close-zellij-tab.sh helper, supervisor relaunch flow, here). The
+# `.active` boolean on each tab payload identifies the focused tab.
+CURRENT_TAB_ID=$(zellij action list-tabs --json 2>/dev/null \
+  | jq -r '.[] | select(.active) | .tab_id')
 
 # Resolve the project root so the launcher can read backend_url and (as a
 # fallback) the MCP API key. Falls back to the current repo.
@@ -446,11 +450,14 @@ sed -i "s|@@WORKTREE_PATH@@|${_ESC_WORKTREE_PATH}|g" "${WORKTREE_PATH}/.cloglog/
 sed -i "s|@@PROJECT_ROOT@@|${_ESC_PROJECT_ROOT}|g" "${WORKTREE_PATH}/.cloglog/launch.sh"
 chmod +x "${WORKTREE_PATH}/.cloglog/launch.sh"
 
-# new-tab -- <command> starts the command in the tab's initial pane — no write-chars, no list-clients, no pane-id needed
-zellij action new-tab --name "${WORKTREE_NAME}" -- bash "${WORKTREE_PATH}/.cloglog/launch.sh"
-
-# Return focus immediately using stable numeric ID (not affected by tab renames or reordering)
-zellij action go-to-tab-by-id "${CURRENT_TAB_ID}"
+# new-tab -- <command> starts the command in the tab's initial pane — no write-chars, no list-clients, no pane-id needed.
+# T-384: chain new-tab + focus-back in one shell command. `new-tab` returns
+# immediately and steals focus to the new tab; the chained `go-to-tab-by-id`
+# fires before the visible swap so the supervisor sees no focus blink.
+# Issuing them as separate Bash calls leaves a brief window where the
+# supervisor's prompt is hidden.
+zellij action new-tab --name "${WORKTREE_NAME}" -- bash "${WORKTREE_PATH}/.cloglog/launch.sh" \
+  && zellij action go-to-tab-by-id "${CURRENT_TAB_ID}"
 ```
 
 > **`launch.sh` is operator-host-specific.** The post-heredoc `sed -i`
@@ -469,11 +476,11 @@ Wait briefly between each agent launch. Each needs its own zellij tab.
 
 ## Step 5: Verification
 
-After all agents are launched, the main agent does NOT trust tab creation as proof of life. A spawned zellij tab can hold a crashed `claude`, a `bash` syntax error in `launch.sh` (e.g. T-353's antisocial heredoc bug — `unexpected EOF while looking for matching '"'`), a half-applied `on-worktree-create.sh`, or an MCP-unavailable abort, and `query-tab-names` will still list the tab. The only authoritative liveness signal is an `agent_started` event on `<project_root>/.cloglog/inbox` carrying the worktree's `worktree` field. Step 5 enforces a deadline on that event per launched worktree.
+After all agents are launched, the main agent does NOT trust tab creation as proof of life. A spawned zellij tab can hold a crashed `claude`, a `bash` syntax error in `launch.sh` (e.g. T-353's antisocial heredoc bug — `unexpected EOF while looking for matching '"'`), a half-applied `on-worktree-create.sh`, or an MCP-unavailable abort, and `list-tabs --json` will still list the tab. The only authoritative liveness signal is an `agent_started` event on `<project_root>/.cloglog/inbox` carrying the worktree's `worktree` field. Step 5 enforces a deadline on that event per launched worktree.
 
 1. **List tabs** to confirm all were created:
    ```bash
-   zellij action query-tab-names
+   zellij action list-tabs --json | jq -r '.[].name'
    ```
 
 2. **Confirmation phase — `agent_started` deadline.** For each launched worktree, watch `<project_root>/.cloglog/inbox` for an `agent_started` event whose `worktree` field equals the worktree name (e.g. `wt-t356-launch-confirm-timeout`). The deadline is `launch_confirm_timeout_seconds` from `.cloglog/config.yaml` (default `90` if the key is missing or malformed — read via the `parse-yaml-scalar.sh` shape, do NOT introduce a YAML library). The main agent already runs a persistent inbox Monitor — reuse it; do not spawn a second tail. Read the existing event stream with a deadline (e.g. an `until`-loop over `tail -F` filtered to `agent_started` lines for this `worktree`, bounded by `date +%s` against `start + launch_confirm_timeout_seconds`).
@@ -483,7 +490,7 @@ After all agents are launched, the main agent does NOT trust tab creation as pro
 
 3. **Diagnostic checklist on timeout.** Print these commands verbatim for the operator (substitute `<worktree>` with the absolute worktree path and `<wt-name>` with the tab/branch name):
 
-   1. `zellij action query-tab-names | grep <wt-name>` — tab present? Absent ⇒ launcher never ran.
+   1. `zellij action list-tabs --json | jq -r --arg n "<wt-name>" '.[] | select(.name == $n) | .tab_id'` — tab present? Empty ⇒ launcher never ran.
    2. `bash -n <worktree>/.cloglog/launch.sh` — syntax valid? Non-zero ⇒ heredoc-rendering failure (T-353 class).
    3. `tail -20 /tmp/agent-shutdown-debug.log` — any trap fire mentioning this worktree? Process started then died on signal.
    4. **Credentials.** `CLOGLOG_API_KEY` and `DATABASE_URL` live in different homes — probe each at its real source:

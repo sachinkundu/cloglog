@@ -38,19 +38,26 @@ if ! command -v zellij &>/dev/null; then
   exit 3
 fi
 
-# Resolve the target tab id from the name. list-tabs columns:
-#   TAB_ID  POSITION  NAME
-TAB_ID=$(zellij action list-tabs 2>/dev/null \
-  | awk -v name="$WORKTREE_NAME" '$3 == name {print $1; exit}')
+if ! command -v jq &>/dev/null; then
+  echo "close-zellij-tab.sh: jq required for list-tabs --json parsing" >&2
+  exit 3
+fi
+
+# T-384: parse `list-tabs --json` (single contract) instead of column-grepping
+# the human-readable form and `current-tab-info`. The JSON payload exposes
+# `tab_id`, `name`, and an `active` boolean per tab — both lookups (target
+# by name, focused tab id) come from one call.
+TABS_JSON=$(zellij action list-tabs --json 2>/dev/null)
+
+TAB_ID=$(jq -r --arg n "$WORKTREE_NAME" \
+  '.[] | select(.name == $n) | .tab_id' <<<"$TABS_JSON" | head -n1)
 
 if [[ -z "$TAB_ID" ]]; then
   # No tab with this name — nothing to close. Idempotent success.
   exit 0
 fi
 
-# Read the focused tab id. current-tab-info prints `id: N` on its own line.
-CURRENT_TAB_ID=$(zellij action current-tab-info 2>/dev/null \
-  | awk -F': ' '$1 == "id" {print $2; exit}')
+CURRENT_TAB_ID=$(jq -r '.[] | select(.active) | .tab_id' <<<"$TABS_JSON" | head -n1)
 
 if [[ -n "$CURRENT_TAB_ID" ]] && [[ "$TAB_ID" == "$CURRENT_TAB_ID" ]]; then
   echo "close-zellij-tab.sh: refusing to close focused tab" \

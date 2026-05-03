@@ -8,6 +8,7 @@ from uuid import UUID
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.review.interfaces import PriorContext, PriorTurnSummary, ReviewTurnSnapshot
@@ -33,6 +34,8 @@ class ReviewTurnRepository:
             finding_count=row.finding_count,
             consensus_reached=row.consensus_reached,
             elapsed_seconds=float(row.elapsed_seconds) if row.elapsed_seconds is not None else None,
+            session_index=row.session_index,
+            posted_at=row.posted_at,
         )
 
     async def claim_turn(
@@ -44,6 +47,7 @@ class ReviewTurnRepository:
         head_sha: str,
         stage: str,
         turn_number: int,
+        session_index: int | None = None,
     ) -> bool:
         stmt = (
             pg_insert(PrReviewTurn)
@@ -56,6 +60,7 @@ class ReviewTurnRepository:
                 turn_number=turn_number,
                 status=PrReviewTurnStatus.RUNNING.value,
                 consensus_reached=False,
+                session_index=session_index,
             )
             .on_conflict_do_nothing(index_elements=["pr_url", "head_sha", "stage", "turn_number"])
         )
@@ -123,6 +128,43 @@ class ReviewTurnRepository:
         )
         rows = (await self._session.execute(stmt)).scalars().all()
         return [self._to_snapshot(row) for row in rows]
+
+    async def mark_posted(
+        self,
+        *,
+        pr_url: str,
+        head_sha: str,
+        stage: str,
+        turn_number: int,
+    ) -> bool:
+        """Set ``posted_at = now()`` on a turn row.
+
+        The partial unique index ``uq_pr_review_turns_one_post_per_session``
+        will reject the update if another row already posted for this
+        ``(pr_url, stage, session_index)``. We catch ``IntegrityError`` and
+        return ``False`` so ReviewLoop logs and skips rather than crashing
+        — the duplicate post race is a recoverable application-level event,
+        not a corruption signal.
+        """
+        stmt = (
+            update(PrReviewTurn)
+            .where(
+                PrReviewTurn.pr_url == pr_url,
+                PrReviewTurn.head_sha == head_sha,
+                PrReviewTurn.stage == stage,
+                PrReviewTurn.turn_number == turn_number,
+                PrReviewTurn.posted_at.is_(None),
+            )
+            .values(posted_at=datetime.now(UTC))
+        )
+        try:
+            result = await self._session.execute(stmt)
+            await self._session.commit()
+        except IntegrityError:
+            await self._session.rollback()
+            return False
+        rowcount = getattr(result, "rowcount", 0) or 0
+        return rowcount > 0
 
     async def reset_to_running(
         self,

@@ -599,6 +599,126 @@ class TestRecordAndReplayFindings:
 
 
 # ---------------------------------------------------------------------------
+# T-375: at-most-once posted row per (pr_url, stage, session_index)
+# ---------------------------------------------------------------------------
+
+
+class TestT375PartialUnique:
+    """The partial unique index ``uq_pr_review_turns_one_post_per_session``
+    is the database-level safety net under ReviewLoop's in-process T-375
+    guard. These tests pin the contract so a future schema migration can't
+    silently drop the constraint and let duplicate-post regressions ship.
+    """
+
+    async def test_session_index_round_trips(self, db_session: AsyncSession) -> None:
+        project = await _make_project(db_session)
+        repo = ReviewTurnRepository(db_session)
+        pr_url, head_sha = _unique_pr("idx")
+
+        await repo.claim_turn(
+            project_id=project.id,
+            pr_url=pr_url,
+            pr_number=1,
+            head_sha=head_sha,
+            stage="codex",
+            turn_number=1,
+            session_index=3,
+        )
+        snap = await repo.latest_for(pr_url, head_sha)
+        assert snap is not None
+        assert snap.session_index == 3
+        assert snap.posted_at is None
+
+    async def test_mark_posted_stamps_posted_at(self, db_session: AsyncSession) -> None:
+        project = await _make_project(db_session)
+        repo = ReviewTurnRepository(db_session)
+        pr_url, head_sha = _unique_pr("posted")
+
+        await repo.claim_turn(
+            project_id=project.id,
+            pr_url=pr_url,
+            pr_number=1,
+            head_sha=head_sha,
+            stage="codex",
+            turn_number=1,
+            session_index=2,
+        )
+        ok = await repo.mark_posted(pr_url=pr_url, head_sha=head_sha, stage="codex", turn_number=1)
+        assert ok is True
+
+        snap = await repo.latest_for(pr_url, head_sha)
+        assert snap is not None
+        assert snap.posted_at is not None
+
+    async def test_second_mark_posted_same_session_rejected(self, db_session: AsyncSession) -> None:
+        """Two turn rows for the same (pr_url, stage, session_index) — only
+        one can carry posted_at. The second ``mark_posted`` returns False
+        because the partial unique index rejects the update.
+        """
+        project = await _make_project(db_session)
+        repo = ReviewTurnRepository(db_session)
+        pr_url, head_sha = _unique_pr("dup-post")
+
+        await repo.claim_turn(
+            project_id=project.id,
+            pr_url=pr_url,
+            pr_number=1,
+            head_sha=head_sha,
+            stage="codex",
+            turn_number=1,
+            session_index=5,
+        )
+        await repo.claim_turn(
+            project_id=project.id,
+            pr_url=pr_url,
+            pr_number=1,
+            head_sha=head_sha,
+            stage="codex",
+            turn_number=2,
+            session_index=5,
+        )
+        first_ok = await repo.mark_posted(
+            pr_url=pr_url, head_sha=head_sha, stage="codex", turn_number=1
+        )
+        second_ok = await repo.mark_posted(
+            pr_url=pr_url, head_sha=head_sha, stage="codex", turn_number=2
+        )
+        assert first_ok is True
+        assert second_ok is False
+
+    async def test_different_session_index_can_both_post(self, db_session: AsyncSession) -> None:
+        """Different sessions on the same PR (e.g. a force-push lands a new
+        SHA → new session_index) must each be allowed to post once."""
+        project = await _make_project(db_session)
+        repo = ReviewTurnRepository(db_session)
+        pr_url, sha_a = _unique_pr("sessA")
+        _, sha_b = _unique_pr("sessB")
+
+        await repo.claim_turn(
+            project_id=project.id,
+            pr_url=pr_url,
+            pr_number=1,
+            head_sha=sha_a,
+            stage="codex",
+            turn_number=1,
+            session_index=1,
+        )
+        await repo.claim_turn(
+            project_id=project.id,
+            pr_url=pr_url,
+            pr_number=1,
+            head_sha=sha_b,
+            stage="codex",
+            turn_number=1,
+            session_index=2,
+        )
+        ok_a = await repo.mark_posted(pr_url=pr_url, head_sha=sha_a, stage="codex", turn_number=1)
+        ok_b = await repo.mark_posted(pr_url=pr_url, head_sha=sha_b, stage="codex", turn_number=1)
+        assert ok_a is True
+        assert ok_b is True
+
+
+# ---------------------------------------------------------------------------
 # FK cascade on project delete
 # ---------------------------------------------------------------------------
 

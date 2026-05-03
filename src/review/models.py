@@ -70,6 +70,16 @@ class PrReviewTurn(Base):
     # never carry learnings (the learnings field is codex-only).
     findings_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
     learnings_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+    # T-375 at-most-once-per-session: ``session_index`` records the
+    # cross-session counter for the run that claimed this turn, and
+    # ``posted_at`` is set when ``post_review`` returned True. The partial
+    # unique index ``uq_pr_review_turns_one_post_per_session`` guarantees
+    # at most one ``posted_at IS NOT NULL`` row per (pr_url, stage,
+    # session_index) — a real PR can never carry two reviews stamped
+    # ``session N/5``. Both columns nullable so pre-T-375 historical rows
+    # remain valid.
+    session_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
@@ -88,4 +98,15 @@ class PrReviewTurn(Base):
             name="ck_pr_review_turns_status",
         ),
         Index("ix_pr_review_turns_pr", "pr_url", "head_sha"),
+        # T-375: at-most-one posted row per (pr_url, stage, session_index).
+        # Partial unique — historical rows with NULL session_index/posted_at
+        # do not participate. Migration 894b1085a4d0.
+        Index(
+            "uq_pr_review_turns_one_post_per_session",
+            "pr_url",
+            "stage",
+            "session_index",
+            unique=True,
+            postgresql_where=text("posted_at IS NOT NULL"),
+        ),
     )

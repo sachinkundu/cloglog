@@ -460,6 +460,65 @@ class ReviewLoop:
             outcome.total_elapsed_seconds = time.monotonic() - start_all
             return outcome
 
+        # T-375 at-most-once-per-session short-circuit. A session may have
+        # already posted on a prior webhook delivery for this same SHA (the
+        # loop wrote ``posted_at`` in the prior run). The partial unique
+        # index ``uq_pr_review_turns_one_post_per_session`` would reject a
+        # second ``mark_posted`` for this (pr_url, stage, session_index)
+        # anyway, but exiting in-process here saves a GitHub round-trip and
+        # avoids confusing the contributor with a near-duplicate review body.
+        #
+        # Detection is generous on purpose:
+        # 1. ``posted_at`` is stamped and ``session_index`` matches —
+        #    authoritative T-375 signal.
+        # 2. Pre-T-375 fallback: a row with ``session_index IS NULL`` that
+        #    nonetheless reached ``status='completed'`` with a non-null
+        #    ``finding_count`` was, under the prior code path, a successful
+        #    POST. Same head_sha implies same session by construction
+        #    (session_index = ``count_bot_reviews + 1``, which is constant
+        #    for a given head_sha because ``count_bot_reviews`` collapses by
+        #    ``commit_id``). Treating these as posted closes the upgrade
+        #    window where a webhook re-fire after T-375 deploys could
+        #    otherwise re-post under the same session counter on a
+        #    historical row.
+        if any(
+            (row.posted_at is not None and row.session_index == self._session_index)
+            or (
+                row.session_index is None
+                and row.status == _TURN_STATUS_COMPLETED
+                and row.finding_count is not None
+            )
+            for row in existing
+        ):
+            posted_turn = max(
+                (
+                    row.turn_number
+                    for row in existing
+                    if row.posted_at is not None or row.status == _TURN_STATUS_COMPLETED
+                ),
+                default=0,
+            )
+            logger.info(
+                "review_session_already_posted stage=%s pr=%d sha=%s session=%d/%d "
+                "posted_turn=%d — short-circuit",
+                self._stage,
+                self._pr_number,
+                self._head_sha[:7],
+                self._session_index,
+                self._max_sessions,
+                posted_turn,
+            )
+            outcome.turns_used = posted_turn
+            outcome.total_elapsed_seconds = time.monotonic() - start_all
+            return outcome
+
+        # T-375: tracks whether this run has already posted to GitHub. Set
+        # to True after a successful ``post_review`` + ``mark_posted``;
+        # subsequent for-loop iterations within this same call (only
+        # possible when ``codex_max_turns > 1``) suppress the POST. The
+        # cross-fire case is handled by the early-return short-circuit
+        # above; this flag handles intra-run multi-turn refinement.
+        session_already_posted = False
         async with httpx.AsyncClient() as http:
             for turn in range(start_turn, self._max_turns + 1):
                 claimed = await self._registry.claim_turn(
@@ -469,6 +528,7 @@ class ReviewLoop:
                     head_sha=self._head_sha,
                     stage=self._stage,
                     turn_number=turn,
+                    session_index=self._session_index,
                 )
                 if not claimed:
                     # A prior POST-failed turn leaves a ``failed`` row that
@@ -587,6 +647,57 @@ class ReviewLoop:
                     # care of that.
                     continue
 
+                # T-375 at-most-once-per-session guard. If a prior turn in
+                # this same logical session (same session_index, regardless
+                # of turn_number) already posted, suppress this POST. The
+                # turn still records as ``completed`` with the reviewer's
+                # finding count so cross-push memory replays correctly; the
+                # ``posted_at`` column stays NULL on this row, and the next
+                # session (different session_index) is unaffected.
+                if session_already_posted:
+                    consensus = _reached_consensus(result=result, prior_finding_keys=prior_keys)
+                    logger.info(
+                        "review_post_suppressed_already_posted_this_session "
+                        "stage=%s turn=%d pr=%d sha=%s session=%d/%d "
+                        "consensus=%s — completing turn without re-posting",
+                        self._stage,
+                        turn,
+                        self._pr_number,
+                        self._head_sha[:7],
+                        self._session_index,
+                        self._max_sessions,
+                        consensus,
+                    )
+                    await self._registry.complete_turn(
+                        pr_url=self._pr_url,
+                        head_sha=self._head_sha,
+                        stage=self._stage,
+                        turn_number=turn,
+                        status=_TURN_STATUS_COMPLETED,
+                        finding_count=len(result.findings),
+                        consensus_reached=consensus,
+                        elapsed_seconds=elapsed,
+                    )
+                    await self._registry.record_findings_and_learnings(
+                        pr_url=self._pr_url,
+                        head_sha=self._head_sha,
+                        stage=self._stage,
+                        turn_number=turn,
+                        findings_json=[f.model_dump() for f in result.findings],
+                        learnings_json=list(result.learnings),
+                    )
+                    outcome.turns_used = turn
+                    prior_keys.update(_finding_key(f) for f in result.findings)
+                    if consensus:
+                        # Suppress further POSTs but signal terminal state
+                        # so the consumer's CI dispatch + finalizer fire.
+                        outcome.consensus_reached = True
+                        break
+                    # No consensus yet — let cross-push memory aggregate
+                    # but the for-loop bound caps us; no more POSTs will
+                    # happen this session.
+                    continue
+
                 # Prepend the per-session header to the review summary so the
                 # GitHub review body shows `**<bot> — session N/M**` at the top.
                 header = self._build_body_header(
@@ -647,6 +758,32 @@ class ReviewLoop:
                     consensus_reached=consensus,
                     elapsed_seconds=elapsed,
                 )
+                # T-375: stamp ``posted_at`` so a subsequent webhook re-fire
+                # for the same SHA detects this session has already posted
+                # and short-circuits via ``session_already_posted``. The
+                # partial unique index also rejects any future ``mark_posted``
+                # for the same (pr_url, stage, session_index) at the DB
+                # layer — a defense-in-depth safety net under the in-process
+                # guard. ``mark_posted`` returning False here means the
+                # registry refused (race / constraint hit); we log and
+                # continue — the GitHub POST already happened, no recovery.
+                marked = await self._registry.mark_posted(
+                    pr_url=self._pr_url,
+                    head_sha=self._head_sha,
+                    stage=self._stage,
+                    turn_number=turn,
+                )
+                if not marked:
+                    logger.warning(
+                        "review_mark_posted_rejected stage=%s turn=%d pr=%d "
+                        "session=%d/%d — partial unique index hit or row missing",
+                        self._stage,
+                        turn,
+                        self._pr_number,
+                        self._session_index,
+                        self._max_sessions,
+                    )
+                session_already_posted = True
                 # T-367 cross-push memory: persist the findings + learnings on
                 # the same row complete_turn just updated, so the next turn's
                 # prompt can replay them. Only meaningful for codex

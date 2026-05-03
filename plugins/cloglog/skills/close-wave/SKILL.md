@@ -255,10 +255,17 @@ original work log.
 
 For each worktree that unregistered via tier 1, verify the launcher process
 has actually exited (`pgrep -f "<worktree-path>"` should return nothing).
-If a Claude process is still attached — rare, but possible if the agent
-hung after `unregister_agent` — note it and close its zellij tab. Do NOT
-`kill -9` silently; a surviving process after tier-1 unregister is a bug
-worth surfacing in the work log's Learnings section.
+
+T-352 wired a PostToolUse hook
+(`plugins/cloglog/hooks/exit-on-unregister.sh`) on
+`mcp__cloglog__unregister_agent` that schedules a TERM to claude on
+successful unregister, so the launcher's `wait` returns naturally.
+**A surviving Claude process after a tier-1 unregister should never
+happen.** If `pgrep` returns a PID, treat it as a bug: capture the
+process tree (`ps -ef --forest`), the launcher's debug log
+(`/tmp/agent-shutdown-debug.log`), and the worktree's
+`shutdown-artifacts/` directory, file an issue, and only then close
+the zellij tab. Do NOT `kill -9` silently — that hides the regression.
 
 ## Step 7: Remove Worktrees and Local Branches
 

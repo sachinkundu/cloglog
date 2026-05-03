@@ -10,6 +10,7 @@ All consensus logic, turn-accounting, and status handling are verified here.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -876,3 +877,164 @@ class TestOpencodePromptPin:
         assert '"overall_correctness"' in text
         assert '"no_further_concerns"' in text
         assert '"review_in_progress"' in text
+
+
+# ---------------------------------------------------------------------------
+# T-374 codex round 1 — head_branch routing + timeout finalization plumbing
+# ---------------------------------------------------------------------------
+
+
+class TestCodexTimeoutOutcomeAndRouting:
+    """The codex stage must surface timeout diagnostics + route via head_branch."""
+
+    @pytest.mark.asyncio
+    async def test_codex_timeout_surfaces_diagnostics_on_outcome(self) -> None:
+        """``ReviewLoop`` must record codex timeout diagnostics on ``outcome``
+        for the caller's terminal-state finalizer, but MUST NOT emit the
+        supervisor event itself (codex round 5 HIGH — emission is gated on
+        terminal state and lives in ``ReviewEngineConsumer._review_pr``).
+        """
+        from src.gateway.review_loop import ReviewLoop
+
+        class _StubCodex:
+            bot_username = "cloglog-codex-reviewer[bot]"
+            display_label = "codex"
+            _last_diff_lines = 42
+            _last_timeout_seconds = 321.0
+            _last_stderr_excerpt = "stderr tail"
+
+            async def run(self, **_kwargs: Any) -> tuple[None, float, bool]:
+                return (None, 0.5, True)
+
+        reg = FakeRegistry()
+        loop = ReviewLoop(
+            _StubCodex(),
+            max_turns=1,
+            registry=reg,
+            project_id=_PROJECT_ID,
+            pr_url=_PR_URL,
+            pr_number=_PR_NUMBER,
+            repo_full_name=_REPO,
+            head_sha=_SHA,
+            stage="codex",
+            reviewer_token="fake",
+            session_index=1,
+            max_sessions=5,
+            head_branch="wt-feature-x",
+        )
+
+        outcome = await loop.run(diff="diff")
+
+        # Outcome carries the diagnostics for the caller's skip-comment +
+        # supervisor-event finalization (both live in ``_review_pr``).
+        assert outcome.last_timed_out is True
+        assert outcome.last_timeout_diff_lines == 42
+        assert outcome.last_timeout_seconds == 321.0
+        assert outcome.last_timeout_stderr_excerpt == "stderr tail"
+        assert outcome.last_timeout_elapsed_seconds == 0.5
+
+    @pytest.mark.asyncio
+    async def test_codex_codexreviewer_captures_stderr_on_timeout(self) -> None:
+        """``CodexReviewer._last_stderr_excerpt`` is populated after a real subprocess timeout."""
+        from unittest.mock import patch as _patch
+
+        from src.gateway.review_loop import CodexReviewer
+
+        class _HangingProc:
+            def __init__(self) -> None:
+                self.kill_calls = 0
+                self.returncode = -1
+                self._hung = True
+
+                class _Stream:
+                    async def read(self, _n: int = -1) -> bytes:
+                        return b"fatal: codex blew up\n"
+
+                self.stderr = _Stream()
+
+            def kill(self) -> None:
+                # Match _FakeProcess in test_review_engine.py: kill flips
+                # the hang flag so a subsequent ``wait()`` returns promptly.
+                self.kill_calls += 1
+                self._hung = False
+
+            async def communicate(self, **_kwargs: object) -> tuple[bytes, bytes]:
+                # ``communicate(input=...)`` is the call shape; accept it via
+                # **kwargs so we don't shadow the builtin.
+                if self._hung:
+                    await asyncio.sleep(3600)
+                return b"", b""
+
+            async def wait(self) -> int:
+                if self._hung:
+                    await asyncio.sleep(3600)
+                return self.returncode
+
+        async def _create(*_a: Any, **_kw: Any) -> _HangingProc:
+            return _HangingProc()
+
+        reviewer = CodexReviewer(Path("/tmp"))
+        # Tiny budget so the timeout fires quickly.
+        with (
+            _patch("src.gateway.review_loop._create_subprocess", side_effect=_create),
+            _patch("src.gateway.review_engine.REVIEW_TIMEOUT_BASE_SECONDS", 0.01),
+            _patch("src.gateway.review_engine.REVIEW_TIMEOUT_CAP_SECONDS", 0.01),
+        ):
+            _, _, timed_out = await reviewer.run(
+                diff="diff --git a/x b/x\n", pr_number=1, turn=1, max_turns=1
+            )
+        assert timed_out is True
+        assert "codex blew up" in reviewer._last_stderr_excerpt
+
+    @pytest.mark.asyncio
+    async def test_last_timed_out_clears_when_later_turn_succeeds(self) -> None:
+        """``LoopOutcome.last_timed_out`` must reflect the terminal turn, not "any prior timeout".
+
+        Pin for codex round 2 HIGH: when ``codex_max_turns > 1`` and turn 1
+        times out but turn 2 succeeds, the sticky flag would otherwise
+        cause ``_review_pr`` to post a false AGENT_TIMEOUT skip comment
+        after a successful review.
+        """
+        from src.gateway.review_loop import ReviewLoop
+
+        class _MixedCodex:
+            bot_username = "cloglog-codex-reviewer[bot]"
+            display_label = "codex"
+            _last_diff_lines = 10
+            _last_timeout_seconds = 5.0
+            _last_stderr_excerpt = ""
+
+            def __init__(self) -> None:
+                self._n = 0
+
+            async def run(self, **_kwargs: Any) -> tuple[Any, float, bool]:
+                self._n += 1
+                if self._n == 1:
+                    return (None, 0.5, True)  # turn 1 — timeout
+                return (_ok_result(), 0.5, False)  # turn 2 — success
+
+        loop = ReviewLoop(
+            _MixedCodex(),
+            max_turns=2,
+            registry=FakeRegistry(),
+            project_id=_PROJECT_ID,
+            pr_url=_PR_URL,
+            pr_number=_PR_NUMBER,
+            repo_full_name=_REPO,
+            head_sha=_SHA,
+            stage="codex",
+            reviewer_token="fake",
+            session_index=1,
+            max_sessions=5,
+            head_branch="wt-x",
+        )
+        with patch(_PATCH_POST_REVIEW, new=AsyncMock(return_value=True)):
+            outcome = await loop.run(diff="diff")
+
+        assert outcome.last_timed_out is False, (
+            "A successful turn must reset last_timed_out so _review_pr does not "
+            "falsely post AGENT_TIMEOUT after a converging review."
+        )
+        assert outcome.last_timeout_diff_lines == 0
+        assert outcome.last_timeout_seconds == 0.0
+        assert outcome.last_timeout_stderr_excerpt == ""

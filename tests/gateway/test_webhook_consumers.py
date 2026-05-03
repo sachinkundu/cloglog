@@ -1295,3 +1295,157 @@ class TestRegisterDerivesRole:
         wt = await repo.get_worktree_by_path(project.id, wt_path)
         assert wt is not None
         assert wt.role == "worktree"
+
+
+# ---------------------------------------------------------------------------
+# T-374 codex round 3 — codex_review_timed_out routes to main-agent inbox
+# ---------------------------------------------------------------------------
+
+
+class _SharedSessionCtx:
+    """Async-context manager that yields a pre-existing session.
+
+    Lets the emit_codex_review_timed_out call read rows the test
+    seeded inside ``db_session`` without crossing transaction
+    boundaries.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def __aenter__(self) -> AsyncSession:
+        return self._session
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+class _SessionFactoryStub:
+    """Callable that returns a fresh ``_SharedSessionCtx`` per call."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    def __call__(self) -> _SharedSessionCtx:
+        return _SharedSessionCtx(self._session)
+
+
+class TestEmitCodexReviewTimedOutMainInboxRouting:
+    """T-374 codex round 3 (HIGH + MEDIUM):
+
+    The codex timeout signal must land on the project's main-agent inbox
+    (the supervisor's inbox), not on the per-PR owning-worktree inbox.
+    Worktree-inbox routing left the supervisor blind and added a brand-new
+    event type with no documented handler in the worktree-agent contract.
+    The supervisor inbox is the same destination family as
+    ``pr_merged_notification`` and ``agent_unregistered``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_routes_to_main_agent_worktree_inbox(
+        self, db_session: AsyncSession, tmp_path: Path
+    ) -> None:
+        from src.gateway.webhook_consumers import emit_codex_review_timed_out
+
+        project, repo_full_name = await _seed_isolated_project(db_session)
+        main_path = tmp_path / "main-clone"
+        main_path.mkdir()
+        await _seed_main_agent_worktree(db_session, project.id, worktree_path=str(main_path))
+
+        await emit_codex_review_timed_out(
+            pr_url="https://github.com/x/y/pull/1",
+            pr_number=1,
+            repo_full_name=repo_full_name,
+            head_branch="wt-feature",
+            diff_size=42,
+            timeout_seconds=321.0,
+            session_factory=_SessionFactoryStub(db_session),
+        )
+
+        inbox_path = main_path / ".cloglog" / "inbox"
+        assert inbox_path.exists(), "main-agent inbox file should have been created"
+        lines = inbox_path.read_text().strip().splitlines()
+        assert len(lines) == 1
+        payload = json.loads(lines[0])
+        assert payload["type"] == "codex_review_timed_out"
+        assert payload["pr_number"] == 1
+        assert payload["pr_url"] == "https://github.com/x/y/pull/1"
+        assert payload["diff_size"] == 42
+        assert payload["timeout_seconds"] == 321.0
+        # T-374 round 2 MEDIUM — message must not overstate that a comment was posted.
+        assert "skip comment was posted" not in payload["message"]
+
+    @pytest.mark.asyncio
+    async def test_drops_with_warning_when_no_main_agent_inbox(
+        self,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """No role='main' worktree AND no env-var fallback → WARNING + drop.
+
+        Same shape as the existing ``_resolve_agent`` drop guard — the
+        supervisor signal cannot be silently lost.
+        """
+        from src.gateway.webhook_consumers import emit_codex_review_timed_out
+
+        monkeypatch.setattr(settings, "main_agent_inbox_path", None)
+        _project, repo_full_name = await _seed_isolated_project(db_session)
+
+        with caplog.at_level("WARNING", logger="src.gateway.webhook_consumers"):
+            await emit_codex_review_timed_out(
+                pr_url="https://github.com/x/y/pull/2",
+                pr_number=2,
+                repo_full_name=repo_full_name,
+                head_branch="wt-x",
+                diff_size=10,
+                timeout_seconds=100.0,
+                session_factory=_SessionFactoryStub(db_session),
+            )
+
+        assert any(
+            "no main-agent inbox" in r.message for r in caplog.records if r.levelname == "WARNING"
+        )
+
+    @pytest.mark.asyncio
+    async def test_drops_with_warning_on_unknown_repo_even_with_env_var_fallback(
+        self,
+        db_session: AsyncSession,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Codex round 5 HIGH cross-repo leak guard.
+
+        When ``find_project_by_repo`` returns None (the repo is not a
+        cloglog project), the env-var fallback ``main_agent_inbox_path``
+        must NOT be used. Otherwise a signed webhook from a foreign repo
+        sharing the endpoint/secret would leak ``codex_review_timed_out``
+        into THIS project's supervisor inbox.
+        """
+        from src.gateway.webhook_consumers import emit_codex_review_timed_out
+
+        env_inbox = tmp_path / "env-inbox"
+        env_inbox.parent.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(settings, "main_agent_inbox_path", env_inbox)
+
+        with caplog.at_level("WARNING", logger="src.gateway.webhook_consumers"):
+            await emit_codex_review_timed_out(
+                pr_url="https://github.com/foreign/repo/pull/9",
+                pr_number=9,
+                repo_full_name="foreign/unknown-repo-no-project",
+                head_branch="main",
+                diff_size=10,
+                timeout_seconds=100.0,
+                session_factory=_SessionFactoryStub(db_session),
+            )
+
+        assert not env_inbox.exists(), (
+            "Env-var fallback must not be used for repos that are not registered "
+            "cloglog projects — that path was the cross-repo leak vector."
+        )
+        assert any(
+            "no cloglog project matches" in r.message
+            for r in caplog.records
+            if r.levelname == "WARNING"
+        )

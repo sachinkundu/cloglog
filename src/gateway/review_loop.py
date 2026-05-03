@@ -29,7 +29,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final, Protocol
+from typing import Any, Final, Protocol
 from uuid import UUID
 
 import httpx
@@ -42,6 +42,7 @@ from src.gateway.review_engine import (
     _get_schema_path,
     _load_project_prompt,
     _tail_excerpt,
+    compute_review_timeout,
     parse_reviewer_output,
     post_review,
 )
@@ -178,6 +179,17 @@ class LoopOutcome:
     total_elapsed_seconds: float
     reviewer_unavailable: bool = False
     errors: list[str] = field(default_factory=list)
+    # T-374 — diagnostics from the most recent codex turn that returned
+    # ``timed_out=True``. ``ReviewEngineConsumer._review_pr`` reads these
+    # to post the AGENT_TIMEOUT skip comment, mirroring the legacy
+    # ``_run_review_agent`` finalization. ``last_timed_out`` is the
+    # gating flag — diagnostic fields are only meaningful when it is
+    # True. Opencode timeouts deliberately do not populate these fields.
+    last_timed_out: bool = False
+    last_timeout_diff_lines: int = 0
+    last_timeout_seconds: float = 0.0
+    last_timeout_stderr_excerpt: str = ""
+    last_timeout_elapsed_seconds: float = 0.0
 
 
 def _finding_key(finding: dict[str, object] | object) -> tuple[str, int, str]:
@@ -363,6 +375,8 @@ class ReviewLoop:
         reviewer_token: str,
         session_index: int,
         max_sessions: int,
+        session_factory: Any | None = None,
+        head_branch: str = "",
         ci_dispatcher: CIDispatcher | None = None,
     ) -> None:
         self._reviewer = reviewer
@@ -377,6 +391,14 @@ class ReviewLoop:
         self._token = reviewer_token
         self._session_index = session_index
         self._max_sessions = max_sessions
+        self._session_factory = session_factory
+        # T-374 (codex round 1 CRITICAL): the secondary recipient lookup in
+        # ``AgentNotifierConsumer._resolve_agent`` falls back to branch name
+        # when ``Task.pr_url`` has not been bound yet. Without ``head_branch``
+        # the synthesised webhook event in the timeout emitter skips that
+        # branch lookup and lands in the main-agent inbox or is dropped —
+        # contradicting the routing-parity contract documented on the event.
+        self._head_branch = head_branch
         # T-377: only the codex stage triggers CI; opencode (stage A) is
         # advisory and never gates merge. Callers wire this for codex only.
         self._ci_dispatcher = ci_dispatcher
@@ -509,6 +531,21 @@ class ReviewLoop:
                     pr_body=pr_body,
                 )
 
+                # T-374 codex round 2 HIGH: ``last_timed_out`` (and the
+                # related ``last_timeout_*`` diagnostics) must reflect the
+                # *terminal* state of the codex stage, not "some prior turn
+                # timed out". Reset on each iteration; the timeout branch
+                # below re-sets them only for this turn. A subsequent
+                # successful turn will not re-enter this block, and the
+                # per-iteration reset stops a stale ``True`` from leaking
+                # past the loop. Only diagnostics — ``errors`` is the
+                # cumulative log and stays as-is.
+                outcome.last_timed_out = False
+                outcome.last_timeout_diff_lines = 0
+                outcome.last_timeout_seconds = 0.0
+                outcome.last_timeout_stderr_excerpt = ""
+                outcome.last_timeout_elapsed_seconds = 0.0
+
                 if result is None:
                     status = _TURN_STATUS_TIMED_OUT if timed_out else _TURN_STATUS_FAILED
                     await self._registry.complete_turn(
@@ -521,6 +558,28 @@ class ReviewLoop:
                         consensus_reached=False,
                         elapsed_seconds=elapsed,
                     )
+                    if timed_out and self._stage == "codex":
+                        # T-374 (codex round 5 HIGH): record the timeout
+                        # diagnostics on the outcome only — do NOT emit the
+                        # supervisor event from inside the per-turn branch.
+                        # ``ReviewLoop.run`` is allowed to continue after a
+                        # timed-out turn (`docs/design/two-stage-pr-review.md`),
+                        # so a per-turn emit would falsely tell the
+                        # supervisor about a non-terminal timeout if a
+                        # subsequent turn succeeds. Terminal-state
+                        # emission lives in
+                        # ``ReviewEngineConsumer._review_pr`` after the
+                        # loop returns and ``last_timed_out`` is read.
+                        diff_lines = getattr(self._reviewer, "_last_diff_lines", 0)
+                        budget = getattr(
+                            self._reviewer, "_last_timeout_seconds", REVIEW_TIMEOUT_SECONDS
+                        )
+                        stderr_excerpt = getattr(self._reviewer, "_last_stderr_excerpt", "")
+                        outcome.last_timed_out = True
+                        outcome.last_timeout_diff_lines = diff_lines
+                        outcome.last_timeout_seconds = budget
+                        outcome.last_timeout_stderr_excerpt = stderr_excerpt
+                        outcome.last_timeout_elapsed_seconds = elapsed
                     outcome.turns_used = turn
                     outcome.errors.append(f"turn {turn}: {status}")
                     # A failed turn doesn't short-circuit — try the next turn.
@@ -708,6 +767,15 @@ class CodexReviewer:
 
     def __init__(self, project_root: Path) -> None:
         self._project_root = project_root
+        # Surfaced for the ReviewLoop's timeout-event emitter — the inbox
+        # event needs both the diff size that drove the budget and the
+        # budget itself. Reset on every ``run`` call so a sequence of turns
+        # reports the latest call's values.
+        self._last_diff_lines: int = 0
+        self._last_timeout_seconds: float = REVIEW_TIMEOUT_SECONDS
+        # Surfaced so the sequenced path can format the AGENT_TIMEOUT skip
+        # comment with the same stderr-tail UX the legacy path emits.
+        self._last_stderr_excerpt: str = ""
 
     async def run(
         self,
@@ -754,20 +822,30 @@ class CodexReviewer:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self._project_root),
             )
+            self._last_diff_lines, timeout_seconds = compute_review_timeout(diff)
+            self._last_timeout_seconds = timeout_seconds
+            self._last_stderr_excerpt = ""
             start = time.monotonic()
             try:
                 stdout, _stderr = await asyncio.wait_for(
                     proc.communicate(input=full_prompt.encode()),
-                    timeout=REVIEW_TIMEOUT_SECONDS,
+                    timeout=timeout_seconds,
                 )
                 elapsed = time.monotonic() - start
             except TimeoutError:
                 elapsed = time.monotonic() - start
-                await _drain_stderr_after_timeout(proc)
+                captured = await _drain_stderr_after_timeout(proc)
+                self._last_stderr_excerpt = _tail_excerpt(captured)
                 proc.kill()
                 with contextlib.suppress(ProcessLookupError):
                     await proc.wait()
-                logger.warning("codex turn timeout after %.1fs (pr=%d)", elapsed, pr_number)
+                logger.warning(
+                    "codex turn timeout after %.1fs (pr=%d, diff_lines=%d, budget=%.0fs)",
+                    elapsed,
+                    pr_number,
+                    self._last_diff_lines,
+                    timeout_seconds,
+                )
                 return (None, elapsed, True)
 
             if output_path.exists():

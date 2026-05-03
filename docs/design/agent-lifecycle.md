@@ -298,6 +298,14 @@ never received by it.
 | `mcp_tool_error` | **Runtime** MCP failure (Section 4.1): an MCP tool call returned a 5xx, a backend exception, a 409 state-machine guard, or — after one backoff retry — a transient network error. Agent emits and waits for main. |
 | `need_session_restart` | On `mcp_tools_updated` when the new tools are load-bearing for the active task. |
 
+### Backend-emitted supervisor events
+
+These land on the supervisor inbox the same way the events above do, but are produced by the **backend** (not by a worktree agent). The supervisor must handle them just like agent-emitted events.
+
+| Event `type` | Source | Required supervisor response |
+| --- | --- | --- |
+| `codex_review_timed_out` | `src/gateway/webhook_consumers.py: emit_codex_review_timed_out` (called from `ReviewEngineConsumer._review_pr` on a terminal-stage codex timeout, AFTER the backend ATTEMPTED to post the AGENT_TIMEOUT skip comment via the codex bot). Carries `pr_url`, `pr_number`, `repo_full_name`, `diff_size` (changed lines), `timeout_seconds` (the budget that was hit), `ts`, and a human-readable `message`. T-374. | Informational. The backend ATTEMPTED to post the AGENT_TIMEOUT skip comment to the PR — but `_post_agent_skip` is best-effort (`src/gateway/review_engine.py`) and `post_skip_comment` swallows GitHub HTTP failures, so the comment may not have landed. If the supervisor sees a clustered or repeated timeout signal with no corresponding GitHub comment, that's the diagnostic clue. The supervisor's job is to surface the timeout to the operator (so a recurring spike on a particular repo gets noticed) and to flag whether `REVIEW_TIMEOUT_*` budgets in `src/gateway/review_engine.py` need retuning. The supervisor MUST NOT auto-retry the review by force-unregistering or relaunching the worktree — codex re-runs naturally on the next `synchronize` webhook (i.e., the next push). |
+
 ### Events that will NEVER arrive
 
 These events live on the SSE event bus (consumed by the dashboard and the

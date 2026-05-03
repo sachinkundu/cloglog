@@ -590,7 +590,8 @@ class TestHandleOrchestration:
         with (
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
             patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
-            patch("src.gateway.review_engine.REVIEW_TIMEOUT_SECONDS", 0.01),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_BASE_SECONDS", 0.01),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_CAP_SECONDS", 0.01),
             patch(
                 "src.gateway.github_token.get_github_app_token",
                 new=AsyncMock(return_value="ghs_test"),
@@ -2383,7 +2384,8 @@ class TestTimeoutRetryAndProbes:
         with (
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
             patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
-            patch("src.gateway.review_engine.REVIEW_TIMEOUT_SECONDS", 0.01),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_BASE_SECONDS", 0.01),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_CAP_SECONDS", 0.01),
             patch(
                 "src.gateway.review_engine._probe_codex_alive",
                 new=AsyncMock(return_value=(True, "codex 0.1.0")),
@@ -2430,7 +2432,8 @@ class TestTimeoutRetryAndProbes:
         with (
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
             patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
-            patch("src.gateway.review_engine.REVIEW_TIMEOUT_SECONDS", 0.01),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_BASE_SECONDS", 0.01),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_CAP_SECONDS", 0.01),
             patch(
                 "src.gateway.review_engine._probe_codex_alive",
                 new=AsyncMock(return_value=(True, "codex 0.1.0")),
@@ -2471,7 +2474,8 @@ class TestTimeoutRetryAndProbes:
         with (
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
             patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
-            patch("src.gateway.review_engine.REVIEW_TIMEOUT_SECONDS", 0.01),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_BASE_SECONDS", 0.01),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_CAP_SECONDS", 0.01),
             patch(
                 "src.gateway.review_engine._probe_codex_alive",
                 new=AsyncMock(return_value=(True, "ok")),
@@ -2509,7 +2513,8 @@ class TestTimeoutRetryAndProbes:
         with (
             patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
             patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
-            patch("src.gateway.review_engine.REVIEW_TIMEOUT_SECONDS", 0.01),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_BASE_SECONDS", 0.01),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_CAP_SECONDS", 0.01),
             patch(
                 "src.gateway.review_engine._probe_codex_alive",
                 new=AsyncMock(return_value=(True, "codex 0.1.0")),
@@ -4615,3 +4620,461 @@ class TestReviewPrUsesWorktreeProjectRoot:
             await consumer._review_pr(event)
 
         remove_mock.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# T-374: timeout scales with diff size + emits codex_review_timed_out event
+# ---------------------------------------------------------------------------
+
+
+class TestComputeReviewTimeout:
+    """``compute_review_timeout`` scales the codex subprocess budget by diff size."""
+
+    def test_empty_diff_returns_base_timeout(self) -> None:
+        from src.gateway.review_engine import (
+            REVIEW_TIMEOUT_BASE_SECONDS,
+            compute_review_timeout,
+        )
+
+        lines, timeout = compute_review_timeout("")
+        assert lines == 0
+        assert timeout == REVIEW_TIMEOUT_BASE_SECONDS
+
+    def test_small_diff_stays_at_base(self) -> None:
+        """A 4-line diff should not exceed the base by much."""
+        from src.gateway.review_engine import (
+            REVIEW_TIMEOUT_BASE_SECONDS,
+            REVIEW_TIMEOUT_PER_LINE_SECONDS,
+            compute_review_timeout,
+        )
+
+        diff = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-old1\n-old2\n+new1\n+new2\n"
+        lines, timeout = compute_review_timeout(diff)
+        assert lines == 4
+        expected = REVIEW_TIMEOUT_BASE_SECONDS + 4 * REVIEW_TIMEOUT_PER_LINE_SECONDS
+        assert timeout == expected
+
+    def test_large_diff_scales(self) -> None:
+        """A 1 000-line diff should produce a timeout above base + per_line*1000."""
+        from src.gateway.review_engine import (
+            REVIEW_TIMEOUT_BASE_SECONDS,
+            REVIEW_TIMEOUT_CAP_SECONDS,
+            REVIEW_TIMEOUT_PER_LINE_SECONDS,
+            compute_review_timeout,
+        )
+
+        diff_lines = ["diff --git a/x b/x", "--- a/x", "+++ b/x", "@@ -1,1000 +1,1000 @@"]
+        diff_lines += [f"+line {i}" for i in range(1000)]
+        diff = "\n".join(diff_lines)
+
+        lines, timeout = compute_review_timeout(diff)
+        assert lines == 1000
+        expected = min(
+            REVIEW_TIMEOUT_CAP_SECONDS,
+            REVIEW_TIMEOUT_BASE_SECONDS + 1000 * REVIEW_TIMEOUT_PER_LINE_SECONDS,
+        )
+        assert timeout == expected
+        assert timeout > REVIEW_TIMEOUT_BASE_SECONDS
+
+    def test_timeout_caps_at_max(self) -> None:
+        """A diff whose linear timeout would exceed the cap clamps to the cap."""
+        from src.gateway.review_engine import (
+            REVIEW_TIMEOUT_CAP_SECONDS,
+            compute_review_timeout,
+        )
+
+        diff_lines = ["diff --git a/x b/x", "--- a/x", "+++ b/x", "@@ -1,5000 +1,5000 @@"]
+        diff_lines += [f"+line {i}" for i in range(5000)]
+        diff = "\n".join(diff_lines)
+
+        lines, timeout = compute_review_timeout(diff)
+        assert lines == 5000
+        assert timeout == REVIEW_TIMEOUT_CAP_SECONDS
+
+    def test_file_headers_excluded_from_count(self) -> None:
+        """``+++`` and ``---`` file headers must not inflate the changed-line count."""
+        from src.gateway.review_engine import compute_review_timeout
+
+        diff = (
+            "diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new\n"
+            "diff --git a/b b/b\n--- a/b\n+++ b/b\n@@ -1 +1 @@\n-old\n+new\n"
+        )
+        lines, _ = compute_review_timeout(diff)
+        assert lines == 4  # two -/+ pairs only — file headers excluded
+
+
+class TestCodexReviewTimedOutEmission:
+    """The post-retry timeout path emits a ``codex_review_timed_out`` inbox event."""
+
+    @pytest.fixture(autouse=True)
+    def _stubs(self) -> Any:
+        with (
+            patch(
+                "src.gateway.review_engine.count_bot_reviews",
+                new=AsyncMock(return_value=0),
+            ),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+        ):
+            yield
+
+    @pytest.mark.asyncio
+    async def test_emits_inbox_event_on_second_timeout(self, sample_diff: str) -> None:
+        consumer = ReviewEngineConsumer(max_per_hour=10)
+
+        async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
+            if argv[0] == "gh":
+                return _FakeProcess(stdout=sample_diff.encode())
+            pytest.fail("_spawn should only be called for gh")
+
+        async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
+            return _FakeProcess(hang=True)
+
+        emit_mock = AsyncMock()
+        with (
+            patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
+            # Force a tiny timeout so the test does not actually wait minutes.
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_BASE_SECONDS", 0.01),
+            patch("src.gateway.review_engine.REVIEW_TIMEOUT_CAP_SECONDS", 0.01),
+            patch("src.gateway.review_engine.emit_codex_review_timed_out", emit_mock),
+            patch(
+                "src.gateway.review_engine._probe_codex_alive",
+                new=AsyncMock(return_value=(True, "ok")),
+            ),
+            patch(
+                "src.gateway.review_engine._probe_github_reachable",
+                new=AsyncMock(return_value=(True, "ok")),
+            ),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            respx.mock() as mock,
+        ):
+            mock.post(_ISSUES_COMMENTS_URL).mock(return_value=httpx.Response(201, json={"id": 1}))
+            await consumer.handle(_event())
+
+        assert emit_mock.await_count == 1
+        kwargs = emit_mock.await_args.kwargs
+        assert kwargs["pr_url"] == "https://github.com/sachinkundu/cloglog/pull/42"
+        assert kwargs["pr_number"] == 42
+        assert kwargs["repo_full_name"] == "sachinkundu/cloglog"
+        assert kwargs["diff_size"] >= 0
+        assert kwargs["timeout_seconds"] > 0
+
+    @pytest.mark.asyncio
+    async def test_no_emission_when_first_attempt_succeeds(
+        self, sample_diff: str, sample_review_json: str
+    ) -> None:
+        """A successful review must NOT emit a timeout event."""
+        from src.gateway import review_engine as engine_mod
+
+        consumer = ReviewEngineConsumer(max_per_hour=10)
+
+        async def _fake_spawn(*argv: str, **kwargs: Any) -> _FakeProcess:
+            if argv[0] == "gh":
+                return _FakeProcess(stdout=sample_diff.encode())
+            pytest.fail("_spawn should only be called for gh")
+
+        async def _fake_create(*args: Any, **kwargs: Any) -> _FakeProcess:
+            # Write parseable review.json into the -o output path
+            # (mirrors the existing happy-path tests).
+            for i, a in enumerate(args):
+                if a == "-o" and i + 1 < len(args):
+                    Path(args[i + 1]).write_text(sample_review_json)
+                    break
+            return _FakeProcess(stdout=b"")
+
+        emit_mock = AsyncMock()
+        with (
+            patch("src.gateway.review_engine._spawn", side_effect=_fake_spawn),
+            patch("src.gateway.review_engine._create_subprocess", side_effect=_fake_create),
+            patch.object(engine_mod, "emit_codex_review_timed_out", emit_mock),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="ghs_test"),
+            ),
+            respx.mock() as mock,
+        ):
+            mock.post(re.compile(r".*/pulls/\d+/reviews$")).mock(
+                return_value=httpx.Response(201, json={"id": 1})
+            )
+            await consumer.handle(_event())
+
+        assert emit_mock.await_count == 0
+
+
+# ---------------------------------------------------------------------------
+# T-374 codex round 1 HIGH — sequenced codex timeout posts AGENT_TIMEOUT skip
+# ---------------------------------------------------------------------------
+
+
+class TestSequencedCodexTimeoutSkipComment:
+    """When the codex ReviewLoop ends with ``last_timed_out``, ``_review_pr``
+    must post the same AGENT_TIMEOUT skip comment the legacy
+    ``_run_review_agent`` path posts. Without this finalization, a sequenced
+    codex timeout produces no PR-visible signal at all (only the inbox
+    event), recreating the silent-timeout regression.
+    """
+
+    @pytest.mark.asyncio
+    async def test_codex_loop_timeout_posts_agent_timeout_skip(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from src.agent.interfaces import WorktreeRow
+        from src.gateway.review_engine import ReviewEngineConsumer
+        from src.gateway.review_loop import LoopOutcome
+        from src.gateway.review_skip_comments import SkipReason
+
+        project_id = uuid.uuid4()
+        worktree_dir = tmp_path / "wt-timeout"
+        worktree_sha = _init_git_repo_at(worktree_dir)
+
+        row = WorktreeRow(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            worktree_path=str(worktree_dir),
+            branch_name="wt-timeout",
+            status="online",
+        )
+
+        class _MatchingQueryCtx:
+            async def __aenter__(self) -> object:
+                stub = MagicMock()
+                stub.find_by_branch = AsyncMock(return_value=row)
+                stub.find_by_pr_url = AsyncMock(return_value=None)
+                return stub
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        captured_loop_kwargs: dict[str, object] = {}
+
+        class _TimingOutLoop:
+            def __init__(self, _reviewer: object, **kwargs: object) -> None:
+                # Snapshot ctor args so the test can verify head_branch
+                # plumbing alongside the timeout-skip behaviour.
+                captured_loop_kwargs.update(kwargs)
+                self._stage = str(kwargs.get("stage", "?"))
+
+            async def run(self, **_kwargs: object) -> LoopOutcome:
+                outcome = LoopOutcome(
+                    turns_used=2,
+                    consensus_reached=False,
+                    total_elapsed_seconds=1.0,
+                )
+                # Codex stage ended in timeout — populate the diagnostics
+                # _review_pr's finalizer reads.
+                if self._stage == "codex":
+                    outcome.last_timed_out = True
+                    outcome.last_timeout_diff_lines = 123
+                    outcome.last_timeout_seconds = 555.0
+                    outcome.last_timeout_stderr_excerpt = "fatal: codex hung"
+                    outcome.last_timeout_elapsed_seconds = 555.5
+                return outcome
+
+        event = WebhookEvent(
+            type=WebhookEventType.PR_OPENED,
+            delivery_id="d-timeout",
+            repo_full_name="sachinkundu/cloglog",
+            pr_number=999,
+            pr_url="https://github.com/sachinkundu/cloglog/pull/999",
+            head_branch="wt-timeout",
+            base_branch="main",
+            sender="sachinkundu",
+            raw={"pull_request": {"head": {"sha": worktree_sha}}},
+        )
+
+        consumer = ReviewEngineConsumer(
+            codex_available=True,
+            opencode_available=False,
+            session_factory=MagicMock(),
+        )
+
+        post_skip_mock = AsyncMock()
+        emit_mock = AsyncMock()
+        with (
+            patch(
+                "src.gateway.review_engine.settings.opencode_enabled",
+                False,
+            ),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="claude-tok"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="codex-tok"),
+            ),
+            patch(
+                "src.gateway.review_engine.count_bot_reviews",
+                new=AsyncMock(return_value=0),
+            ),
+            patch(
+                "src.gateway.review_engine._probe_codex_alive",
+                new=AsyncMock(return_value=(True, "codex 0.1.0")),
+            ),
+            patch(
+                "src.gateway.review_engine._probe_github_reachable",
+                new=AsyncMock(return_value=(True, "200 ok")),
+            ),
+            patch("src.gateway.review_loop.CodexReviewer", new=MagicMock()),
+            patch("src.gateway.review_loop.ReviewLoop", new=_TimingOutLoop),
+            patch("src.gateway.review_engine.emit_codex_review_timed_out", emit_mock),
+            patch.object(consumer, "_fetch_pr_diff", new=AsyncMock(return_value="diff")),
+            patch.object(
+                consumer,
+                "_resolve_project_id",
+                new=AsyncMock(return_value=project_id),
+            ),
+            patch.object(
+                consumer,
+                "_registry",
+                new=lambda: TestReviewPrUsesWorktreeProjectRoot._RecordingRegistryCtx(),
+            ),
+            patch.object(consumer, "_worktree_query", new=lambda: _MatchingQueryCtx()),
+            patch.object(consumer, "_post_agent_skip", new=post_skip_mock),
+        ):
+            await consumer._review_pr(event)
+
+        # Skip comment posted with AGENT_TIMEOUT and the budget that was hit.
+        assert post_skip_mock.await_count == 1
+        call_args = post_skip_mock.await_args.args
+        assert call_args[1] == SkipReason.AGENT_TIMEOUT
+        body = call_args[2]
+        assert "555s" in body
+        assert "fatal: codex hung" in body
+
+        # codex round 5 HIGH: supervisor event fires from the terminal
+        # finalizer, not from inside ReviewLoop's per-turn branch.
+        assert emit_mock.await_count == 1
+        emit_kwargs = emit_mock.await_args.kwargs
+        assert emit_kwargs["pr_number"] == 999
+        assert emit_kwargs["diff_size"] == 123
+        assert emit_kwargs["timeout_seconds"] == 555.0
+        assert emit_kwargs["head_branch"] == "wt-timeout"
+
+        # head_branch plumbing pin (codex round 1 CRITICAL fix): the
+        # ReviewLoop still receives event.head_branch (kept on the
+        # signature so a future fan-out variant can use it).
+        assert captured_loop_kwargs.get("head_branch") == "wt-timeout"
+
+
+class TestSequencedCodexNonTerminalTimeoutNoEmit:
+    """Codex round 5 HIGH regression test: when ``codex_max_turns > 1``
+    and turn 1 times out but turn 2 succeeds, ``_review_pr`` must NOT
+    post AGENT_TIMEOUT and must NOT emit ``codex_review_timed_out``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_emit_when_turn1_timeout_turn2_succeeds(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from src.agent.interfaces import WorktreeRow
+        from src.gateway.review_engine import ReviewEngineConsumer
+        from src.gateway.review_loop import LoopOutcome
+
+        project_id = uuid.uuid4()
+        worktree_dir = tmp_path / "wt-nonterminal"
+        worktree_sha = _init_git_repo_at(worktree_dir)
+        row = WorktreeRow(
+            id=uuid.uuid4(),
+            project_id=project_id,
+            worktree_path=str(worktree_dir),
+            branch_name="wt-nonterminal",
+            status="online",
+        )
+
+        class _MatchingQueryCtx:
+            async def __aenter__(self) -> object:
+                stub = MagicMock()
+                stub.find_by_branch = AsyncMock(return_value=row)
+                stub.find_by_pr_url = AsyncMock(return_value=None)
+                return stub
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        class _ConvergedLoop:
+            def __init__(self, _reviewer: object, **_kwargs: object) -> None:
+                pass
+
+            async def run(self, **_kwargs: object) -> LoopOutcome:
+                # Stage ended in success; per-iteration reset cleared
+                # the timeout flag from turn 1.
+                return LoopOutcome(
+                    turns_used=2,
+                    consensus_reached=True,
+                    total_elapsed_seconds=1.0,
+                )
+
+        event = WebhookEvent(
+            type=WebhookEventType.PR_OPENED,
+            delivery_id="d-nonterm",
+            repo_full_name="sachinkundu/cloglog",
+            pr_number=1000,
+            pr_url="https://github.com/sachinkundu/cloglog/pull/1000",
+            head_branch="wt-nonterminal",
+            base_branch="main",
+            sender="sachinkundu",
+            raw={"pull_request": {"head": {"sha": worktree_sha}}},
+        )
+        consumer = ReviewEngineConsumer(
+            codex_available=True,
+            opencode_available=False,
+            session_factory=MagicMock(),
+        )
+        post_skip_mock = AsyncMock()
+        emit_mock = AsyncMock()
+        with (
+            patch("src.gateway.review_engine.settings.opencode_enabled", False),
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="claude-tok"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="codex-tok"),
+            ),
+            patch(
+                "src.gateway.review_engine.count_bot_reviews",
+                new=AsyncMock(return_value=0),
+            ),
+            patch("src.gateway.review_loop.CodexReviewer", new=MagicMock()),
+            patch("src.gateway.review_loop.ReviewLoop", new=_ConvergedLoop),
+            patch("src.gateway.review_engine.emit_codex_review_timed_out", emit_mock),
+            patch.object(consumer, "_fetch_pr_diff", new=AsyncMock(return_value="diff")),
+            patch.object(consumer, "_resolve_project_id", new=AsyncMock(return_value=project_id)),
+            patch.object(
+                consumer,
+                "_registry",
+                new=lambda: TestReviewPrUsesWorktreeProjectRoot._RecordingRegistryCtx(),
+            ),
+            patch.object(consumer, "_worktree_query", new=lambda: _MatchingQueryCtx()),
+            patch.object(consumer, "_post_agent_skip", new=post_skip_mock),
+        ):
+            await consumer._review_pr(event)
+
+        assert post_skip_mock.await_count == 0, (
+            "A converging review (turn 1 timeout, turn 2 success) must NOT trigger "
+            "the AGENT_TIMEOUT skip comment."
+        )
+        assert emit_mock.await_count == 0, (
+            "A converging review must NOT emit codex_review_timed_out — emission "
+            "is gated on the codex stage's terminal state."
+        )

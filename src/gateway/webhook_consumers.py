@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -325,3 +326,130 @@ class AgentNotifierConsumer:
                 ),
             }
         return None
+
+
+async def emit_codex_review_timed_out(
+    *,
+    pr_url: str,
+    pr_number: int,
+    repo_full_name: str,
+    head_branch: str,
+    diff_size: int,
+    timeout_seconds: float,
+    session_factory: Any | None = None,
+) -> None:
+    """Append a ``codex_review_timed_out`` event to the project's main-agent inbox.
+
+    T-374 (codex round 3 HIGH + MEDIUM): the supervisor watches
+    ``<PROJECT_ROOT>/.cloglog/inbox`` (see ``docs/invariants.md`` §
+    supervisor inbox), and the inbound contract for *worktree* inboxes
+    (`docs/design/agent-lifecycle.md`, `plugins/cloglog/skills/github-bot/SKILL.md`,
+    `plugins/cloglog/agents/worktree-agent.md`) enumerates a closed
+    set of event types: ``review_submitted``, ``review_comment``,
+    ``issue_comment``, ``ci_failed``, ``pr_merged``, ``pr_closed``.
+    Adding a new event type to a worktree inbox without expanding
+    that contract leaves no documented handler, so the signal sits
+    unread.
+
+    The supervisor inbox is the right destination — it is the same
+    destination family as ``pr_merged_notification`` and
+    ``agent_unregistered``, both of which are cross-worktree signals
+    the supervisor already reacts to. The main-agent inbox path is
+    resolved exactly the way ``AgentNotifierConsumer._resolve_agent``
+    resolves it for unmatched PR events: project's role='main'
+    worktree first, then ``settings.main_agent_inbox_path`` as the
+    documented compat fallback.
+
+    ``head_branch`` is currently unused — main-inbox routing keys on
+    project, not on the PR's branch. The parameter is kept so a
+    future variant that fans out to both the worktree inbox AND the
+    main inbox can use it without a signature break.
+    """
+    from src.agent.repository import AgentRepository
+    from src.board.repository import BoardRepository
+    from src.shared.database import async_session_factory
+
+    del head_branch  # see docstring — main-inbox routing is project-scoped.
+
+    factory = session_factory or async_session_factory
+    inbox_path: Path | None = None
+    try:
+        async with factory() as session:
+            board_repo = BoardRepository(session)
+            project = await board_repo.find_project_by_repo(repo_full_name)
+            # T-374 codex round 5 HIGH: gate ALL main-inbox routing on
+            # the repo being a known cloglog project. The legacy env-var
+            # fallback (``settings.main_agent_inbox_path``) is a
+            # compat path for **known projects** that have not yet
+            # registered a role='main' worktree — it must NOT be used
+            # for unknown repos. Without this guard, a signed webhook
+            # from a foreign repo sharing the endpoint/secret could
+            # leak ``codex_review_timed_out`` into THIS project's
+            # supervisor inbox, the exact cross-repo leak
+            # ``_resolve_agent`` was written to block.
+            if project is None:
+                logger.warning(
+                    "codex_review_timed_out: no cloglog project matches repo=%s "
+                    "(pr=%s) — dropping (env-var fallback is gated on a known repo)",
+                    repo_full_name,
+                    pr_url,
+                )
+                return
+            agent_repo = AgentRepository(session)
+            main_worktree = await agent_repo.get_main_agent_worktree(project.id)
+            if main_worktree is not None:
+                inbox_path = Path(main_worktree.worktree_path) / ".cloglog" / "inbox"
+        if inbox_path is None and settings.main_agent_inbox_path is not None:
+            # T-253 compat — operators that set the env var but have not
+            # yet run ``/cloglog setup`` (which registers the role='main'
+            # worktree) still get the signal. Only reachable when the
+            # project lookup above succeeded.
+            inbox_path = settings.main_agent_inbox_path
+    except Exception as err:  # noqa: BLE001 - best-effort signal, never raise into the loop
+        logger.warning(
+            "codex_review_timed_out: main-inbox resolution failed for pr=%s (%s) — dropping",
+            pr_url,
+            err,
+        )
+        return
+    if inbox_path is None:
+        logger.warning(
+            "codex_review_timed_out: no main-agent inbox for repo=%s pr=%s — dropping. "
+            "Register a role='main' worktree (run /cloglog setup) or set "
+            "MAIN_AGENT_INBOX_PATH to capture supervisor signals.",
+            repo_full_name,
+            pr_url,
+        )
+        return
+    payload = {
+        "type": "codex_review_timed_out",
+        "pr_url": pr_url,
+        "pr_number": pr_number,
+        "repo_full_name": repo_full_name,
+        "diff_size": diff_size,
+        "timeout_seconds": timeout_seconds,
+        "ts": datetime.now(UTC).isoformat(),
+        "message": (
+            f"Codex review on PR #{pr_number} timed out after "
+            f"{int(timeout_seconds)}s ({diff_size} changed lines). "
+            "Push a new commit to retry."
+        ),
+    }
+    try:
+        inbox_path.parent.mkdir(parents=True, exist_ok=True)
+        with inbox_path.open("a") as f:
+            f.write(json.dumps(payload) + "\n")
+    except OSError as err:
+        logger.warning(
+            "codex_review_timed_out: could not append to %s (%s) — dropping",
+            inbox_path,
+            err,
+        )
+        return
+    logger.info(
+        "codex_review_timed_out: appended to main inbox %s for PR #%d (%d lines, %.0fs)",
+        inbox_path,
+        pr_number,
+        diff_size,
+        timeout_seconds,
+    )

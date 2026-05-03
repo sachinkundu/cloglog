@@ -8,7 +8,6 @@ from uuid import UUID
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.review.interfaces import PriorContext, PriorTurnSummary, ReviewTurnSnapshot
@@ -139,12 +138,13 @@ class ReviewTurnRepository:
     ) -> bool:
         """Set ``posted_at = now()`` on a turn row.
 
-        The partial unique index ``uq_pr_review_turns_one_post_per_session``
-        will reject the update if another row already posted for this
-        ``(pr_url, stage, session_index)``. We catch ``IntegrityError`` and
-        return ``False`` so ReviewLoop logs and skips rather than crashing
-        — the duplicate post race is a recoverable application-level event,
-        not a corruption signal.
+        Returns ``True`` iff the matched row had a NULL ``posted_at`` and
+        was updated. A second call on a row that already carries
+        ``posted_at`` returns ``False`` (no-op) — webhook re-fire
+        idempotency. There is no database-level uniqueness across rows;
+        multiple turns within a single run may each call this and each
+        will succeed (per-turn POST contract,
+        ``docs/design/two-stage-pr-review.md`` §3.3).
         """
         stmt = (
             update(PrReviewTurn)
@@ -157,12 +157,8 @@ class ReviewTurnRepository:
             )
             .values(posted_at=datetime.now(UTC))
         )
-        try:
-            result = await self._session.execute(stmt)
-            await self._session.commit()
-        except IntegrityError:
-            await self._session.rollback()
-            return False
+        result = await self._session.execute(stmt)
+        await self._session.commit()
         rowcount = getattr(result, "rowcount", 0) or 0
         return rowcount > 0
 

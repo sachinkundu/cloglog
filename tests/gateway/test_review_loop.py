@@ -121,20 +121,6 @@ class FakeRegistry:
         snap = self._turns.get(key)
         if snap is None or snap.posted_at is not None:
             return False
-        # Enforce the partial unique: only one row per
-        # (pr_url, stage, session_index) can have ``posted_at`` set. The
-        # production index is partial (WHERE posted_at IS NOT NULL); we
-        # mirror the contract here so unit tests verify the same invariant
-        # the database enforces.
-        if snap.session_index is not None:
-            for other in self._turns.values():
-                if (
-                    other.pr_url == pr_url
-                    and other.stage == stage
-                    and other.session_index == snap.session_index
-                    and other.posted_at is not None
-                ):
-                    return False
         self._turns[key] = ReviewTurnSnapshot(
             project_id=snap.project_id,
             pr_url=snap.pr_url,
@@ -711,27 +697,26 @@ class TestReviewLoopRun:
         assert stub._call_count == 0
 
 
-class TestT375AtMostOncePerSession:
-    """T-375: a single codex review session must produce at most one
-    GitHub review POST, no matter how many turns the loop iterates and no
-    matter how many webhook re-fires re-enter the loop on the same SHA.
-
-    Pre-fix, ``codex_max_turns > 1`` (or a webhook re-fire that re-entered
-    on a higher turn number) caused two reviews under the same
-    ``session N/5`` counter — confusing review history and inflating
-    review pressure on the contributor.
+class TestT375PostedAtRecordedAfterPost:
+    """T-375 webhook-re-fire dedupe: every successful POST stamps
+    ``posted_at`` so a redelivery on the same SHA short-circuits before
+    re-claiming a turn. The earlier draft of this fix also suppressed
+    later turn POSTs in the same run, but codex review (PR #297) flagged
+    that the per-turn POST contract is intentional — multiple posts per
+    session are allowed when later turns surface new findings — so the
+    pin here is on the marker, not on cardinality.
     """
 
     @pytest.mark.asyncio
-    async def test_intra_session_multi_turn_posts_once(self) -> None:
-        """``codex_max_turns=2`` with new findings each turn → ONE POST."""
+    async def test_posted_at_set_on_each_successful_post(self) -> None:
+        """Every turn that POSTs gets ``posted_at`` stamped. With
+        ``max_turns=2`` and new findings each turn, both turn rows record
+        ``posted_at`` and the same ``session_index`` — what the
+        webhook-re-fire short-circuit reads on a redelivery."""
 
         def _unique_finding(n: int) -> ReviewFinding:
             return _finding(file="x.py", line=n, title=f"finding-{n}")
 
-        # Reviewer adds new findings on every turn, so ``_reached_consensus``
-        # would say "no consensus" each time. Pre-fix the loop would post
-        # both turns under the same session counter.
         stub = StubReviewer(
             responses=[
                 (_ok_result(findings=[_unique_finding(1)]), 1.0, False),
@@ -741,85 +726,14 @@ class TestT375AtMostOncePerSession:
         registry = FakeRegistry()
         loop = _make_loop(stub, max_turns=2, registry=registry, session_index=3)
 
-        mock_post = AsyncMock(return_value=True)
-        with patch(_PATCH_POST_REVIEW, new=mock_post):
-            outcome = await loop.run(diff="diff")
-
-        # Exactly one POST despite two reviewer turns.
-        assert mock_post.await_count == 1
-        assert outcome.turns_used == 2
-        # Acceptance check: at most one row per (pr_url, stage,
-        # session_index) carries posted_at — what the partial unique index
-        # ``uq_pr_review_turns_one_post_per_session`` enforces in prod.
-        turns = await registry.turns_for_stage(pr_url=_PR_URL, head_sha=_SHA, stage="codex")
-        posted = [t for t in turns if t.posted_at is not None]
-        assert len(posted) == 1
-        assert {t.session_index for t in turns} == {3}
-
-    @pytest.mark.asyncio
-    async def test_post_review_called_with_session_header_once(self) -> None:
-        """Even when the reviewer asks for more turns, the body header for
-        the single POST is the session counter — never two bodies sharing
-        ``session N/M``."""
-        f1 = _finding(file="a.py", line=1, title="t1")
-        f2 = _finding(file="b.py", line=2, title="t2")
-        stub = StubReviewer(
-            display_label="codex",
-            responses=[
-                (_ok_result(findings=[f1]), 1.0, False),
-                (_ok_result(findings=[f2]), 1.0, False),
-            ],
-        )
-        registry = FakeRegistry()
-        loop = _make_loop(stub, max_turns=2, registry=registry, session_index=4)
-
-        mock_post = AsyncMock(return_value=True)
-        with patch(_PATCH_POST_REVIEW, new=mock_post):
+        with patch(_PATCH_POST_REVIEW, new=AsyncMock(return_value=True)):
             await loop.run(diff="diff")
 
-        assert mock_post.await_count == 1
-        posted_result = mock_post.await_args.args[2]
-        first_line = posted_result.summary.splitlines()[0]
-        assert first_line == "**codex — session 4/5**"
-
-    @pytest.mark.asyncio
-    async def test_mark_posted_partial_unique_rejects_duplicate(self) -> None:
-        """The fake registry mirrors the partial unique constraint: a second
-        ``mark_posted`` for a (pr_url, stage, session_index) already
-        carrying a posted row returns False. Pins the behaviour of the
-        production index ``uq_pr_review_turns_one_post_per_session``."""
-        registry = FakeRegistry()
-        # Seed two turn rows for the same session_index, one already posted.
-        registry._turns[(_PR_URL, _SHA, "codex", 1)] = ReviewTurnSnapshot(
-            project_id=_PROJECT_ID,
-            pr_url=_PR_URL,
-            pr_number=_PR_NUMBER,
-            head_sha=_SHA,
-            stage="codex",
-            turn_number=1,
-            status="completed",
-            finding_count=1,
-            consensus_reached=False,
-            elapsed_seconds=1.0,
-            session_index=2,
-            posted_at=datetime.now(UTC),
-        )
-        registry._turns[(_PR_URL, _SHA, "codex", 2)] = ReviewTurnSnapshot(
-            project_id=_PROJECT_ID,
-            pr_url=_PR_URL,
-            pr_number=_PR_NUMBER,
-            head_sha=_SHA,
-            stage="codex",
-            turn_number=2,
-            status="running",
-            finding_count=None,
-            consensus_reached=False,
-            elapsed_seconds=None,
-            session_index=2,
-            posted_at=None,
-        )
-        ok = await registry.mark_posted(pr_url=_PR_URL, head_sha=_SHA, stage="codex", turn_number=2)
-        assert ok is False
+        turns = await registry.turns_for_stage(pr_url=_PR_URL, head_sha=_SHA, stage="codex")
+        # Per-turn POST contract preserved: each successful POST is
+        # recorded in its own row with posted_at + session_index.
+        assert all(t.posted_at is not None for t in turns)
+        assert {t.session_index for t in turns} == {3}
 
     @pytest.mark.asyncio
     async def test_claim_returns_false_stops_loop_at_concurrent_turn(self) -> None:

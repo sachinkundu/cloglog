@@ -512,13 +512,6 @@ class ReviewLoop:
             outcome.total_elapsed_seconds = time.monotonic() - start_all
             return outcome
 
-        # T-375: tracks whether this run has already posted to GitHub. Set
-        # to True after a successful ``post_review`` + ``mark_posted``;
-        # subsequent for-loop iterations within this same call (only
-        # possible when ``codex_max_turns > 1``) suppress the POST. The
-        # cross-fire case is handled by the early-return short-circuit
-        # above; this flag handles intra-run multi-turn refinement.
-        session_already_posted = False
         async with httpx.AsyncClient() as http:
             for turn in range(start_turn, self._max_turns + 1):
                 claimed = await self._registry.claim_turn(
@@ -647,57 +640,6 @@ class ReviewLoop:
                     # care of that.
                     continue
 
-                # T-375 at-most-once-per-session guard. If a prior turn in
-                # this same logical session (same session_index, regardless
-                # of turn_number) already posted, suppress this POST. The
-                # turn still records as ``completed`` with the reviewer's
-                # finding count so cross-push memory replays correctly; the
-                # ``posted_at`` column stays NULL on this row, and the next
-                # session (different session_index) is unaffected.
-                if session_already_posted:
-                    consensus = _reached_consensus(result=result, prior_finding_keys=prior_keys)
-                    logger.info(
-                        "review_post_suppressed_already_posted_this_session "
-                        "stage=%s turn=%d pr=%d sha=%s session=%d/%d "
-                        "consensus=%s — completing turn without re-posting",
-                        self._stage,
-                        turn,
-                        self._pr_number,
-                        self._head_sha[:7],
-                        self._session_index,
-                        self._max_sessions,
-                        consensus,
-                    )
-                    await self._registry.complete_turn(
-                        pr_url=self._pr_url,
-                        head_sha=self._head_sha,
-                        stage=self._stage,
-                        turn_number=turn,
-                        status=_TURN_STATUS_COMPLETED,
-                        finding_count=len(result.findings),
-                        consensus_reached=consensus,
-                        elapsed_seconds=elapsed,
-                    )
-                    await self._registry.record_findings_and_learnings(
-                        pr_url=self._pr_url,
-                        head_sha=self._head_sha,
-                        stage=self._stage,
-                        turn_number=turn,
-                        findings_json=[f.model_dump() for f in result.findings],
-                        learnings_json=list(result.learnings),
-                    )
-                    outcome.turns_used = turn
-                    prior_keys.update(_finding_key(f) for f in result.findings)
-                    if consensus:
-                        # Suppress further POSTs but signal terminal state
-                        # so the consumer's CI dispatch + finalizer fire.
-                        outcome.consensus_reached = True
-                        break
-                    # No consensus yet — let cross-push memory aggregate
-                    # but the for-loop bound caps us; no more POSTs will
-                    # happen this session.
-                    continue
-
                 # Prepend the per-session header to the review summary so the
                 # GitHub review body shows `**<bot> — session N/M**` at the top.
                 header = self._build_body_header(
@@ -760,30 +702,19 @@ class ReviewLoop:
                 )
                 # T-375: stamp ``posted_at`` so a subsequent webhook re-fire
                 # for the same SHA detects this session has already posted
-                # and short-circuits via ``session_already_posted``. The
-                # partial unique index also rejects any future ``mark_posted``
-                # for the same (pr_url, stage, session_index) at the DB
-                # layer — a defense-in-depth safety net under the in-process
-                # guard. ``mark_posted`` returning False here means the
-                # registry refused (race / constraint hit); we log and
-                # continue — the GitHub POST already happened, no recovery.
-                marked = await self._registry.mark_posted(
+                # and short-circuits in the early-return at the top of
+                # ``run``. ``mark_posted`` is intentionally non-unique
+                # across turns within the same session — multiple turns
+                # may legitimately POST in one run when ``codex_max_turns
+                # > 1`` surfaces new findings on later turns. ``False``
+                # here means the row was missing or already stamped
+                # (idempotency); the GitHub POST happened either way.
+                await self._registry.mark_posted(
                     pr_url=self._pr_url,
                     head_sha=self._head_sha,
                     stage=self._stage,
                     turn_number=turn,
                 )
-                if not marked:
-                    logger.warning(
-                        "review_mark_posted_rejected stage=%s turn=%d pr=%d "
-                        "session=%d/%d — partial unique index hit or row missing",
-                        self._stage,
-                        turn,
-                        self._pr_number,
-                        self._session_index,
-                        self._max_sessions,
-                    )
-                session_already_posted = True
                 # T-367 cross-push memory: persist the findings + learnings on
                 # the same row complete_turn just updated, so the next turn's
                 # prompt can replay them. Only meaningful for codex

@@ -105,6 +105,11 @@ jobs:
         run: cd mcp-server && npm ci
 
       - name: Run database migrations
+        env:
+          # T-388: DATABASE_URL is required (no silent fallback). CI's
+          # postgres service container exposes the same default user/password
+          # as docker-compose.yml.
+          DATABASE_URL: postgresql+asyncpg://cloglog:cloglog_dev@localhost:5432/cloglog
         run: uv run alembic upgrade head
 
       - name: Lint
@@ -245,6 +250,9 @@ jobs:
 
       - name: Run database migrations
         if: steps.check.outputs.run == 'true'
+        env:
+          # T-388: DATABASE_URL is required (no silent fallback).
+          DATABASE_URL: postgresql+asyncpg://cloglog:cloglog_dev@localhost:5432/cloglog
         run: uv run alembic upgrade head
 
       - name: Run Playwright tests
@@ -252,6 +260,9 @@ jobs:
         run: cd tests/e2e/playwright && npx playwright test
         env:
           BACKEND_PORT: '8001'
+          # T-388: the Playwright tests boot a backend in-process; Settings
+          # now refuses to construct without DATABASE_URL.
+          DATABASE_URL: postgresql+asyncpg://cloglog:cloglog_dev@localhost:5432/cloglog
           FRONTEND_PORT: '5174'
 
       - name: Upload Playwright failure artifacts

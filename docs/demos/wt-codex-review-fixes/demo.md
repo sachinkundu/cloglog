@@ -1,7 +1,7 @@
 # PR-review cap counts POSTED codex reviews (not session attempts) so non-post terminals — rate-limit skip, codex_unavailable, post_failed — don't consume the 5-review budget.
 
-*2026-05-03T06:46:43Z by Showboat 0.6.1*
-<!-- showboat-id: 83eaad85-2f67-46b3-9d03-cafe69d761c4 -->
+*2026-05-03T06:50:32Z by Showboat 0.6.1*
+<!-- showboat-id: ab4f256f-cb9d-4ee1-bb7d-1176281ca241 -->
 
 Before T-376: the cap source was indirect (GitHub /reviews list). Cap-key wiring lived at src/gateway/review_engine.py: 'prior = await count_bot_reviews(...)'. A non-post terminal happened to leave no GitHub review, but the count source made the 'session N/5' counter incongruent with what readers actually saw on the PR.
 
@@ -97,8 +97,12 @@ registry method: 1 impl in repository.py
 ```
 
 ```bash
-uv run --quiet python - <<PY
-import asyncio, sys
+uv run --quiet python - 2>/dev/null <<PY
+import asyncio, logging, sys
+# Silence the resolver / loop log lines — they emit the current HEAD SHA
+# which breaks `showboat verify` byte-equality across commits. The cap
+# assertions inside the test methods are what matters here.
+logging.disable(logging.CRITICAL)
 sys.path.insert(0, "tests")
 from gateway.test_review_engine import TestT376PostedCountCap  # noqa: E402
 
@@ -113,7 +117,5 @@ PY
 ```
 
 ```output
-review_source=fallback reason=no_matching_worktree pr_branch=wt-codex-review-fixes pr=#376
-review_source_drift worktree_head=bc6b355 pr_head=fffffff pr_branch=wt-codex-review-fixes worktree_path=/home/sachin/code/cloglog/.claude/worktrees/wt-codex-review-fixes pr=#376 (temp-dir checkout unavailable; reviewing stale candidate)
 2 engine-level cap pins passed
 ```

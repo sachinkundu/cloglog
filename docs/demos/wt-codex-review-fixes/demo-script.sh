@@ -101,8 +101,12 @@ uvx showboat exec "$DEMO_FILE" bash \
 # session-autouse Postgres fixture in tests/conftest.py does NOT fire and
 # `showboat verify` works on a clean host). Using the FakeRegistry path
 # keeps it fully in-process.
-uvx showboat exec "$DEMO_FILE" bash 'uv run --quiet python - <<PY
-import asyncio, sys
+uvx showboat exec "$DEMO_FILE" bash 'uv run --quiet python - 2>/dev/null <<PY
+import asyncio, logging, sys
+# Silence the resolver / loop log lines — they emit the current HEAD SHA
+# which breaks `showboat verify` byte-equality across commits. The cap
+# assertions inside the test methods are what matters here.
+logging.disable(logging.CRITICAL)
 sys.path.insert(0, "tests")
 from gateway.test_review_engine import TestT376PostedCountCap  # noqa: E402
 

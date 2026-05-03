@@ -1754,6 +1754,196 @@ class TestVerdictBasedCap:
 
 
 # ---------------------------------------------------------------------------
+# TestT376PostedCountCap — cap counts POSTED reviews, not session attempts
+# ---------------------------------------------------------------------------
+
+
+class TestT376PostedCountCap:
+    """T-376 pin: ``MAX_REVIEWS_PER_PR`` keys off
+    ``count_posted_codex_sessions`` (registry rows with ``posted_at IS NOT
+    NULL``), not GitHub session count. A session that hits a non-post
+    terminal (rate-limit skip, codex_unavailable, post_failed) does NOT
+    consume the cap.
+
+    Pin test acceptance from the T-376 task spec:
+    - 5 sessions, 2 non-post terminals + 3 posts → cap allows 2 more
+      sessions until 5 posts land.
+    - 5 successful posts → next session refuses (backstop fires).
+
+    These tests exercise the registry-backed path
+    (``session_factory != None``). The legacy GitHub-count fallback used
+    by the degraded harness is covered by ``TestT227Cap`` above.
+    """
+
+    @staticmethod
+    def _event() -> WebhookEvent:
+        return WebhookEvent(
+            type=WebhookEventType.PR_OPENED,
+            delivery_id="d-376",
+            repo_full_name="sachinkundu/cloglog",
+            pr_number=376,
+            pr_url="https://github.com/sachinkundu/cloglog/pull/376",
+            head_branch="wt-codex-review-fixes",
+            base_branch="main",
+            sender="sachinkundu",
+            raw={"pull_request": {"head": {"sha": "f" * 40}}},
+        )
+
+    @staticmethod
+    def _registry_ctx_factory(posted_count: int) -> Any:
+        """Return a no-op registry ctx whose ``count_posted_codex_sessions``
+        reports ``posted_count``. Other registry calls return MagicMocks /
+        empty PriorContext so the rest of the loop can still wire."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from src.review.interfaces import PriorContext
+
+        class _Ctx:
+            async def __aenter__(self) -> object:
+                mock = MagicMock()
+                mock.count_posted_codex_sessions = AsyncMock(return_value=posted_count)
+                mock.prior_findings_and_learnings = AsyncMock(
+                    return_value=PriorContext(pr_url="", turns=[])
+                )
+                return mock
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        return _Ctx
+
+    @pytest.mark.asyncio
+    async def test_three_posts_five_attempts_cap_does_not_fire(self, sample_diff: str) -> None:
+        """5 sessions with 2 non-post terminals + 3 posts → registry says
+        3 posted → cap allows the 4th attempt to proceed.
+
+        Pre-T-376 the GitHub-side count would also have read 3 here (no
+        post = no GitHub review), so this case happened to behave
+        correctly — but pinning it ensures the new registry path keeps
+        the same semantics rather than regressing to "count attempts."
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        consumer = ReviewEngineConsumer(
+            codex_available=True,
+            opencode_available=False,
+            session_factory=MagicMock(),
+        )
+        registry_ctx_cls = self._registry_ctx_factory(posted_count=3)
+        codex_ran: list[bool] = []
+
+        class _StubLoop:
+            def __init__(self, _reviewer: object, **kwargs: object) -> None:
+                pass
+
+            async def run(self, **_kwargs: object) -> object:
+                codex_ran.append(True)
+                return type("Outcome", (), {"turns_used": 1, "errors": []})()
+
+        with (
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="claude-tok"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="codex-tok"),
+            ),
+            patch(
+                "src.gateway.review_engine.latest_codex_review_is_approval",
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
+                "src.gateway.review_engine._create_review_checkout",
+                new=AsyncMock(return_value=None),
+            ),
+            patch("src.gateway.review_loop.CodexReviewer", new=MagicMock()),
+            patch("src.gateway.review_loop.ReviewLoop", new=_StubLoop),
+            patch.object(consumer, "_fetch_pr_diff", new=AsyncMock(return_value=sample_diff)),
+            patch.object(
+                consumer,
+                "_resolve_project_id",
+                new=AsyncMock(return_value=uuid.uuid4()),
+            ),
+            patch.object(consumer, "_registry", new=lambda: registry_ctx_cls()),
+            patch.object(
+                consumer,
+                "_worktree_query",
+                new=lambda: TestOpencodeEnabledFlag._NoopWorktreeQueryCtx(),
+            ),
+        ):
+            await consumer._review_pr(self._event())
+
+        assert codex_ran == [True], (
+            "Cap incorrectly tripped at 3 posts (cap=5). T-376 regression: "
+            "registry's count_posted_codex_sessions returned 3 — should proceed."
+        )
+
+    @pytest.mark.asyncio
+    async def test_five_posts_blocks_sixth_session(self, sample_diff: str) -> None:
+        """5 successful posts → cap fires, no codex run, skip comment posted."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        consumer = ReviewEngineConsumer(
+            codex_available=True,
+            opencode_available=False,
+            session_factory=MagicMock(),
+        )
+        registry_ctx_cls = self._registry_ctx_factory(posted_count=5)
+        codex_ran: list[bool] = []
+
+        class _StubLoop:
+            def __init__(self, _reviewer: object, **kwargs: object) -> None:
+                pass
+
+            async def run(self, **_kwargs: object) -> object:
+                codex_ran.append(True)
+                return type("Outcome", (), {"turns_used": 1, "errors": []})()
+
+        notify_calls: list[Any] = []
+
+        async def _capture_notify(event: Any, reason: Any, body: str) -> None:
+            notify_calls.append((reason, body))
+
+        with (
+            patch(
+                "src.gateway.github_token.get_github_app_token",
+                new=AsyncMock(return_value="claude-tok"),
+            ),
+            patch(
+                "src.gateway.github_token.get_codex_reviewer_token",
+                new=AsyncMock(return_value="codex-tok"),
+            ),
+            patch(
+                "src.gateway.review_engine.latest_codex_review_is_approval",
+                new=AsyncMock(return_value=False),
+            ),
+            patch("src.gateway.review_loop.CodexReviewer", new=MagicMock()),
+            patch("src.gateway.review_loop.ReviewLoop", new=_StubLoop),
+            patch.object(consumer, "_fetch_pr_diff", new=AsyncMock(return_value=sample_diff)),
+            patch.object(
+                consumer,
+                "_resolve_project_id",
+                new=AsyncMock(return_value=uuid.uuid4()),
+            ),
+            patch.object(consumer, "_registry", new=lambda: registry_ctx_cls()),
+            patch.object(
+                consumer,
+                "_worktree_query",
+                new=lambda: TestOpencodeEnabledFlag._NoopWorktreeQueryCtx(),
+            ),
+            patch.object(consumer, "_notify_skip", new=_capture_notify),
+        ):
+            await consumer._review_pr(self._event())
+
+        assert codex_ran == [], "Codex must NOT run when registry reports 5 posted sessions"
+        assert len(notify_calls) == 1, "Cap-reached must post exactly one skip comment"
+        reason, body = notify_calls[0]
+        assert reason == SkipReason.MAX_REVIEWS
+        assert "5" in body and "maximum" in body.lower()
+
+
+# ---------------------------------------------------------------------------
 # TestReviewSourceRoot (T-255)
 # ---------------------------------------------------------------------------
 
@@ -2739,6 +2929,10 @@ class TestOpencodeEnabledFlag:
             mock.prior_findings_and_learnings = AsyncMock(
                 return_value=PriorContext(pr_url="", turns=[])
             )
+            # T-376: cap path now reads count_posted_codex_sessions from the
+            # registry instead of GitHub. Default to 0 — tests that exercise
+            # the cap-reaching path patch this directly.
+            mock.count_posted_codex_sessions = AsyncMock(return_value=0)
             return mock
 
         async def __aexit__(self, *exc: object) -> bool:
@@ -4301,6 +4495,10 @@ class TestReviewPrUsesWorktreeProjectRoot:
             mock.prior_findings_and_learnings = AsyncMock(
                 return_value=PriorContext(pr_url="", turns=[])
             )
+            # T-376: cap path now reads count_posted_codex_sessions from the
+            # registry instead of GitHub. Default to 0 — tests that exercise
+            # the cap-reaching path patch this directly.
+            mock.count_posted_codex_sessions = AsyncMock(return_value=0)
             return mock
 
         async def __aexit__(self, *exc: object) -> bool:

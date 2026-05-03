@@ -1,7 +1,21 @@
 name: CI
 
+# T-377: CI fires only on codex finalization (`codex-finalized` repository_dispatch
+# emitted by src/gateway/review_loop.py once stage B reaches consensus or
+# exhausts codex_max_turns) plus the initial PR-creation surface
+# (`opened` / `reopened` / `ready_for_review`). The default `synchronize`
+# trigger is intentionally absent — codex iteration pushes 1..5 patches per
+# PR and each push used to spawn a fresh CI run, burning runner minutes on
+# intermediate states the reviewer was about to obsolete. See
+# docs/design/ci-codex-trigger.md.
+#
+# `init-smoke.yml` keeps its default `pull_request` trigger (every push) —
+# it is the plugin-portability gate and must not be coupled to codex
+# state.
+
 on:
   pull_request:
+    types: [opened, reopened, ready_for_review]
     branches: [main]
     paths:
       - 'src/**'
@@ -23,9 +37,17 @@ on:
       - 'alembic.ini'
       - '.github/workflows/ci.yml'
       - '.github/workflows/init-smoke.yml'
+  repository_dispatch:
+    types: [codex-finalized]
 
 concurrency:
-  group: ci-${{ github.head_ref }}
+  # For pull_request events `github.head_ref` is the PR branch; for
+  # repository_dispatch it is empty, so fall back to the head_sha carried
+  # in the client_payload. Either way we collapse multiple in-flight runs
+  # for the same PR/SHA to one. (head_sha here is content the review server
+  # writes into the dispatch payload — not an attacker-controlled string —
+  # but it also flows only into the concurrency key, never a shell.)
+  group: ci-${{ github.head_ref || github.event.client_payload.head_sha }}
   cancel-in-progress: true
 
 jobs:
@@ -49,6 +71,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # For pull_request the default ref is the merge commit; for
+          # repository_dispatch (codex-finalized) we must explicitly pin to
+          # the head_sha the reviewer finalized against, otherwise the
+          # workflow would run on the default-branch tip and silently mask a
+          # broken PR head.
+          ref: ${{ github.event.client_payload.head_sha || github.ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -106,6 +135,37 @@ jobs:
             frontend/coverage/
           retention-days: 7
 
+      # T-377: when the workflow is triggered by repository_dispatch
+      # (codex-finalized), the workflow run's auto-attached check_runs land
+      # on the default-branch SHA — not the PR's head_sha. Auto-merge-gate
+      # consults `gh pr checks` (head_sha-scoped), so without an explicit
+      # check_run on head_sha it would see "no signal" and treat the PR as
+      # green even on a CI failure. Mirror the job's outcome onto head_sha
+      # so branch-protection / merge-gate semantics match the pull_request
+      # trigger path.
+      - name: Mirror CI status to head_sha (repository_dispatch only)
+        if: always() && github.event_name == 'repository_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.client_payload.head_sha }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            CONCLUSION=success
+          else
+            CONCLUSION=failure
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/check-runs" \
+            -X POST \
+            -f name='CI / ci' \
+            -f head_sha="$HEAD_SHA" \
+            -f status=completed \
+            -f conclusion="$CONCLUSION" \
+            -f details_url="$RUN_URL" \
+            -f output[title]="CI ${CONCLUSION}" \
+            -f output[summary]="Triggered by codex-finalized dispatch. Workflow run: $RUN_URL"
+
   e2e-browser:
     needs: ci
     runs-on: ubuntu-latest
@@ -127,6 +187,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.client_payload.head_sha || github.ref }}
 
       - name: Check if browser tests needed
         id: check
@@ -140,7 +202,11 @@ jobs:
           fi
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          # For pull_request: PR number from the event. For repository_dispatch:
+          # PR number from the codex-finalized client_payload (review server
+          # writes it; safe — it is just an integer surface flowing into a
+          # gh pr diff command).
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.client_payload.pr_number }}
 
       - uses: actions/setup-python@v5
         if: steps.check.outputs.run == 'true'
@@ -197,3 +263,30 @@ jobs:
             tests/e2e/playwright/test-results/
             tests/e2e/playwright/playwright-report/
           retention-days: 14
+
+      # T-377: mirror to head_sha when triggered by codex-finalized — see
+      # the matching block in the `ci` job for rationale. Skipped when the
+      # browser-tests path-gate said `run=false` (the auto-skipped check
+      # is not a blocker either way).
+      - name: Mirror e2e-browser status to head_sha (repository_dispatch only)
+        if: always() && github.event_name == 'repository_dispatch' && steps.check.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.client_payload.head_sha }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            CONCLUSION=success
+          else
+            CONCLUSION=failure
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/check-runs" \
+            -X POST \
+            -f name='CI / e2e-browser' \
+            -f head_sha="$HEAD_SHA" \
+            -f status=completed \
+            -f conclusion="$CONCLUSION" \
+            -f details_url="$RUN_URL" \
+            -f output[title]="e2e-browser ${CONCLUSION}" \
+            -f output[summary]="Triggered by codex-finalized dispatch. Workflow run: $RUN_URL"

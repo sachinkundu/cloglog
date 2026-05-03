@@ -41,8 +41,8 @@ If you are working in a worktree (`wt-*` branch), you MUST only touch files in y
 
 Two PR-blocking workflows live in `.github/workflows/`:
 
-- **`ci.yml`** — backend lint/typecheck/tests, frontend tests, MCP server tests, contract check, Playwright e2e (gateway/frontend changes only). Triggered by a `paths:` filter scoped to runtime code and tests.
-- **`init-smoke.yml`** — plugin portability gate. Runs `tests/plugins/test_init_on_fresh_repo.py` and `tests/plugins/test_plugin_no_cloglog_citations.py` on **every PR** (no paths filter) so a change anywhere — plugin SKILL.md, hooks, docs, settings — cannot ship a regression that breaks `init` on a fresh downstream repo. Pinned by `tests/plugins/test_init_smoke_ci_workflow.py`.
+- **`ci.yml`** — backend lint/typecheck/tests, frontend tests, MCP server tests, contract check, Playwright e2e (gateway/frontend changes only). Triggers on `pull_request: [opened, reopened, ready_for_review]` (not `synchronize`) plus `repository_dispatch: codex-finalized` emitted by `src/gateway/review_loop.py` when stage B reaches consensus or exhausts `codex_max_turns`. Codex iteration pushes are intentionally not gated by CI — the per-push runs were noise on intermediate states. Full design: `docs/design/ci-codex-trigger.md`.
+- **`init-smoke.yml`** — plugin portability gate. Runs `tests/plugins/test_init_on_fresh_repo.py` and `tests/plugins/test_plugin_no_cloglog_citations.py` on **every PR push** (default `pull_request` types, no paths filter) so a change anywhere — plugin SKILL.md, hooks, docs, settings — cannot ship a regression that breaks `init` on a fresh downstream repo. Deliberately decoupled from codex finalization — portability must not wait on review. Pinned by `tests/plugins/test_init_smoke_ci_workflow.py`.
 
 ## Git Identity & PRs
 

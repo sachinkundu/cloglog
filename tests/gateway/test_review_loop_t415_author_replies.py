@@ -61,13 +61,13 @@ class TestRenderAuthorResponses:
 
     def test_one_author_reply_appears_in_output(self) -> None:
         """AC4(a): one reply → its text is in the preamble."""
-        ctx = self._make_ctx({"src/foo.py:10": "Fixed in abc123, see commit."})
+        ctx = self._make_ctx({"0": "Fixed in abc123, see commit."})
         out = _render_prior_history_section(ctx)
         assert "Author response: Fixed in abc123, see commit." in out
 
     def test_zero_replies_renders_none(self) -> None:
         """AC4(c): no reply → ``(none)``."""
-        ctx = self._make_ctx({"src/foo.py:10": None})
+        ctx = self._make_ctx({"0": None})
         out = _render_prior_history_section(ctx)
         assert "Author response: (none)" in out
 
@@ -84,7 +84,7 @@ class TestRenderAuthorResponses:
         assert "(not fetched)" not in out
 
     def test_multiple_findings_each_get_their_response(self) -> None:
-        """AC4(b): each finding gets the right response."""
+        """AC4(b): each finding gets the right response keyed by index."""
         ctx = PriorContext(
             pr_url=_PR_URL,
             turns=[
@@ -109,8 +109,8 @@ class TestRenderAuthorResponses:
                     ],
                     learnings=[],
                     author_responses={
-                        "src/a.py:1": "won't fix — this is intentional",
-                        "src/b.py:2": None,
+                        "0": "won't fix — this is intentional",
+                        "1": None,
                     },
                 )
             ],
@@ -188,7 +188,7 @@ class TestBuildEnrichedTurns:
             _reply(2, 1, "Fixed in abc123."),
         ]
         [turn] = _build_enriched_turns(ctx, reviews, comments, _AUTHOR)
-        assert turn.author_responses["src/foo.py:10"] == "Fixed in abc123."
+        assert turn.author_responses["0"] == "Fixed in abc123."
 
     def test_multiple_replies_latest_wins(self) -> None:
         """AC4(b): latest author reply (highest comment ID) wins."""
@@ -200,7 +200,7 @@ class TestBuildEnrichedTurns:
             _reply(5, 1, "later reply"),
         ]
         [turn] = _build_enriched_turns(ctx, reviews, comments, _AUTHOR)
-        assert turn.author_responses["src/foo.py:10"] == "later reply"
+        assert turn.author_responses["0"] == "later reply"
 
     def test_zero_replies_gives_none(self) -> None:
         """AC4(c): no reply → None."""
@@ -208,7 +208,7 @@ class TestBuildEnrichedTurns:
         reviews = [_review(101, _SHA_1)]
         comments = [_root_comment(1, 101, "src/foo.py", 10)]
         [turn] = _build_enriched_turns(ctx, reviews, comments, _AUTHOR)
-        assert turn.author_responses["src/foo.py:10"] is None
+        assert turn.author_responses["0"] is None
 
     def test_non_author_reply_excluded(self) -> None:
         """Teammate/maintainer replies are not shown as author response."""
@@ -219,7 +219,7 @@ class TestBuildEnrichedTurns:
             _reply(2, 1, "teammate comment", login="other-dev"),
         ]
         [turn] = _build_enriched_turns(ctx, reviews, comments, _AUTHOR)
-        assert turn.author_responses["src/foo.py:10"] is None
+        assert turn.author_responses["0"] is None
 
     def test_opencode_thread_at_same_location_excluded(self) -> None:
         """Reply to opencode comment at same (file, line) must not leak in."""
@@ -234,7 +234,7 @@ class TestBuildEnrichedTurns:
             _reply(10, 9, "replied to opencode, not codex"),  # reply to opencode
         ]
         [turn] = _build_enriched_turns(ctx, reviews, comments, _AUTHOR)
-        assert turn.author_responses["src/foo.py:10"] is None
+        assert turn.author_responses["0"] is None
 
     def test_cross_commit_isolation(self) -> None:
         """Reply to commit-A finding must not appear under commit-B re-filing."""
@@ -263,8 +263,8 @@ class TestBuildEnrichedTurns:
             _root_comment(3, 102, "src/foo.py", 10),  # no reply here
         ]
         turn1, turn2 = _build_enriched_turns(ctx, reviews, comments, _AUTHOR)
-        assert turn1.author_responses["src/foo.py:10"] == "Fixed in sha1 commit"
-        assert turn2.author_responses["src/foo.py:10"] is None
+        assert turn1.author_responses["0"] == "Fixed in sha1 commit"
+        assert turn2.author_responses["0"] is None
 
     def test_two_codex_turns_same_sha(self) -> None:
         """Two codex turns on the same SHA map to their own reviews."""
@@ -294,8 +294,8 @@ class TestBuildEnrichedTurns:
             # no reply for turn2
         ]
         turn1, turn2 = _build_enriched_turns(ctx, reviews, comments, _AUTHOR)
-        assert turn1.author_responses["src/a.py:1"] == "turn1 reply"
-        assert turn2.author_responses["src/b.py:2"] is None
+        assert turn1.author_responses["0"] == "turn1 reply"
+        assert turn2.author_responses["0"] is None
 
     def test_no_codex_review_found_gives_empty_responses(self) -> None:
         """When no codex review matches a turn, responses dict is empty."""
@@ -317,7 +317,7 @@ class TestBuildEnrichedTurns:
         }
         rep = _reply(2, 1, "author reply using original_line")
         [turn] = _build_enriched_turns(ctx, [_review(101, _SHA_1)], [root, rep], _AUTHOR)
-        assert turn.author_responses["src/foo.py:10"] == "author reply using original_line"
+        assert turn.author_responses["0"] == "author reply using original_line"
 
     def test_reply_truncated_at_500_chars(self) -> None:
         long_body = "x" * 600
@@ -328,7 +328,7 @@ class TestBuildEnrichedTurns:
             _reply(2, 1, long_body),
         ]
         [turn] = _build_enriched_turns(ctx, reviews, comments, _AUTHOR)
-        val = turn.author_responses["src/foo.py:10"]
+        val = turn.author_responses["0"]
         assert val is not None
         assert len(val) <= 504  # 500 chars + " …"
         assert val.endswith(" …")

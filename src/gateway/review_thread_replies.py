@@ -7,18 +7,17 @@ standing rather than re-filing it blindly.
 
 Design guarantees:
 - Each ``PriorTurnSummary`` is matched to the specific GitHub review the codex bot
-  posted for that turn (by codex-bot login + ``commit_id == turn.head_sha`` +
-  position among reviews on the same SHA). This prevents cross-commit and
-  cross-stage reply leakage — opencode comments at the same ``(file, line)``
-  are ignored; an old reply to a finding on commit A is never shown under a
-  re-filed finding on commit B.
+  posted for that turn. The match key is ``(head_sha, turn_number)`` — composite
+  so cross-push turns that both happen to be turn 1 on their respective SHAs are
+  never confused.
+- Each finding is matched to its own root comment via the body format that
+  ``_partition_findings`` writes (``"**[SEVERITY]** body"``). This lets two
+  distinct findings at the same ``(path, line)`` within one turn carry separate
+  author responses.
 - Only replies from the PR author's login are accepted. Teammate or maintainer
   comments on the thread are not attributed to the author.
-
-Known limitation: two distinct findings at the exact same ``(file, line)`` within
-one turn both map to the same author reply (the latest reply to any root comment
-at that location in that review). Distinguishing them would require body-content
-matching against the review comment text, which is deferred.
+- Responses are keyed by finding index (``str(i)``), not by ``file:line``, so the
+  renderer can look up the reply for finding i without ambiguity.
 """
 
 from __future__ import annotations
@@ -113,23 +112,25 @@ def _build_enriched_turns(
         codex_reviews_by_sha[sha].sort(key=lambda r: r["id"])
 
     # Map each prior turn to the review ID it produced.
-    # Turns with the same head_sha are matched in turn_number order to the
-    # reviews on that SHA in review-ID order (both are chronological).
+    # Composite key (head_sha, turn_number) avoids collisions when two pushes
+    # both happen to produce turn 1 on their respective SHAs.
     turns_by_sha: dict[str, list[PriorTurnSummary]] = {}
     for turn in prior_context.turns:
         turns_by_sha.setdefault(turn.head_sha, []).append(turn)
 
-    turn_to_review_id: dict[int, int | None] = {}
+    turn_to_review_id: dict[tuple[str, int], int | None] = {}
     for sha, turns_on_sha in turns_by_sha.items():
         reviews_on_sha = codex_reviews_by_sha.get(sha, [])
         for i, turn in enumerate(turns_on_sha):
             rid = reviews_on_sha[i]["id"] if i < len(reviews_on_sha) else None
-            turn_to_review_id[turn.turn_number] = rid
+            turn_to_review_id[(sha, turn.turn_number)] = rid
 
     # Index all PR comments.
-    # Root comments: keyed by (review_id, path, line) → list of comment IDs.
+    # Root comments: keyed by (review_id, path, line) → list of (comment_id, body).
+    # The body is stored so same-location findings can be matched to their own
+    # root comment via the ``"**[SEVERITY]** body"`` format _partition_findings writes.
     # Reply comments: only from pr_author_login, keyed by root comment ID.
-    roots_by_loc: dict[tuple[int, str, int], list[int]] = {}
+    roots_by_loc: dict[tuple[int, str, int], list[tuple[int, str]]] = {}
     author_replies_by_root: dict[int, list[dict[str, Any]]] = {}
 
     for c in all_comments:
@@ -140,40 +141,53 @@ def _build_enriched_turns(
             line = c.get("line") or c.get("original_line")
             if review_id is not None and line is not None:
                 loc_key = (int(review_id), path, int(line))
-                roots_by_loc.setdefault(loc_key, []).append(c["id"])
+                roots_by_loc.setdefault(loc_key, []).append((c["id"], c.get("body", "")))
         else:
             login = (c.get("user") or {}).get("login", "")
             if login == pr_author_login:
                 author_replies_by_root.setdefault(root_id, []).append(c)
 
-    # Build responses per turn.
+    # Build responses per turn, keyed by finding index (str(idx)).
     enriched: list[PriorTurnSummary] = []
     for turn in prior_context.turns:
-        review_id = turn_to_review_id.get(turn.turn_number)
+        review_id = turn_to_review_id.get((turn.head_sha, turn.turn_number))
         if review_id is None or not turn.findings:
             enriched.append(_dc_replace(turn, author_responses={}))
             continue
 
         responses: dict[str, str | None] = {}
-        for finding in turn.findings:
+        for idx, finding in enumerate(turn.findings):
             file_ = finding.get("file", "")
             line_ = finding.get("line")
             if not file_ or line_ is None:
                 continue
-            fkey = f"{file_}:{line_}"
-            root_ids = roots_by_loc.get((review_id, file_, int(line_)), [])
+            severity = finding.get("severity", "info")
+            body_text = finding.get("body", "")
+            expected_body = f"**[{severity.upper()}]** {body_text}"
+            loc_key = (review_id, file_, int(line_))
+            root_candidates = roots_by_loc.get(loc_key, [])
+            # Match by body content to disambiguate same-location findings.
+            # Fall back to the sole root when body matching fails (e.g. finding
+            # has no severity/body fields in test fixtures).
+            matched_root_id: int | None = None
+            for root_cid, root_body in root_candidates:
+                if root_body == expected_body:
+                    matched_root_id = root_cid
+                    break
+            if matched_root_id is None and len(root_candidates) == 1:
+                matched_root_id = root_candidates[0][0]
             latest_reply: dict[str, Any] | None = None
-            for rid in root_ids:
-                for reply in author_replies_by_root.get(rid, []):
+            if matched_root_id is not None:
+                for reply in author_replies_by_root.get(matched_root_id, []):
                     if latest_reply is None or reply["id"] > latest_reply["id"]:
                         latest_reply = reply
             if latest_reply is not None:
                 body: str = latest_reply.get("body", "")
                 if len(body) > _REPLY_TRUNCATE:
                     body = body[:_REPLY_TRUNCATE] + " …"
-                responses[fkey] = body
+                responses[str(idx)] = body
             else:
-                responses[fkey] = None
+                responses[str(idx)] = None
         enriched.append(_dc_replace(turn, author_responses=responses))
 
     return enriched

@@ -53,11 +53,13 @@ class PriorTurnSummary:
     (empty list if codex didn't emit any). ``head_sha`` is included so the
     preamble can group findings by commit ("turn 1 on abc123 found …").
 
-    ``author_responses`` maps ``"file:line"`` to the latest non-bot reply on
-    the GitHub review-comment thread for that finding. ``None`` value means no
-    reply was found; absent key means the same. Populated by
-    ``src.gateway.review_thread_replies.enrich_prior_context`` after the
-    registry fetch; empty dict when running without a GitHub token (e.g. tests).
+    ``author_responses`` maps the string representation of a finding's index
+    (``str(i)`` where ``i`` is the 0-based position in ``findings``) to the
+    latest PR-author reply on that finding's GitHub review-comment thread.
+    ``None`` value means no reply was found; absent key means the same.
+    Populated by ``src.gateway.review_thread_replies.enrich_prior_context``
+    after the registry fetch; empty dict when running without a GitHub token
+    (e.g. tests).
     """
 
     head_sha: str

@@ -606,6 +606,7 @@ async def get_board(
     # ``src.review.repository`` — only ``src.review.services`` (factory)
     # and ``src.review.interfaces`` (Protocol + enums). See
     # docs/ddd-context-map.md and tests/board/test_board_review_boundary.py.
+    from src.review.interfaces import MAX_REVIEWS_PER_PR
     from src.review.services import make_review_turn_registry
     from src.shared.config import settings
 
@@ -650,10 +651,15 @@ async def get_board(
     review_registry = make_review_turn_registry(session)
 
     # Full discriminated status for tasks with a known head SHA.
+    # ``max_pr_sessions`` gates the EXHAUSTED badge (T-424): the per-session
+    # ``codex_max_turns`` is wrong because it defaults to 1 and resets each
+    # session, causing EXHAUSTED to surface after the first non-consensus
+    # turn even though up to ``MAX_REVIEWS_PER_PR`` sessions remain.
     codex_statuses = await review_registry.codex_status_by_pr(
         project_id=project_id,
         pr_url_to_head_sha=pr_url_to_head_sha,
         max_turns=settings.codex_max_turns,
+        max_pr_sessions=MAX_REVIEWS_PER_PR,
     )
 
     # Legacy boolean for tasks that predate the pr_head_sha column.

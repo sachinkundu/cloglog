@@ -22,7 +22,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # T-408: root stays WARNING (no sqlalchemy/asyncpg/uvicorn chatter); named
     # domain loggers go to INFO so structured events are visible in prod logs.
-    logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(message)s")
+    # Under gunicorn, handlers are already attached before lifespan runs so
+    # basicConfig() is a no-op for formatter installation. Apply the formatter
+    # explicitly to every root handler (and gunicorn.error) that exists,
+    # falling back to basicConfig() only on a fresh unconfigured root.
+    _fmt = logging.Formatter("%(asctime)s %(message)s")
+    _root = logging.getLogger()
+    _root.setLevel(logging.WARNING)
+    if _root.handlers:
+        for _h in _root.handlers:
+            _h.setFormatter(_fmt)
+    else:
+        logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(message)s")
+    for _h in logging.getLogger("gunicorn.error").handlers:
+        _h.setFormatter(_fmt)
     for _domain_logger in (
         "src.gateway.app",
         "src.gateway.review_engine",

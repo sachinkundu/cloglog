@@ -1816,8 +1816,29 @@ class ReviewEngineConsumer:
             # when codex is available — opencode-only hosts skip silently
             # (the degraded path predates the two-stage loop).
             if self._codex_available:
+                _deg_pr_key = f"{event.repo_full_name}#{event.pr_number}"
+                _deg_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
+                _deg_sha_short = _deg_sha[:7] or None
+                log_event(
+                    logger,
+                    "review.dispatch",
+                    pr=_deg_pr_key,
+                    sha=_deg_sha_short,
+                    event=event.type,
+                    action="enqueue",
+                )
+                log_event(
+                    logger,
+                    "review.codex",
+                    pr=_deg_pr_key,
+                    sha=_deg_sha_short,
+                    turn=1,
+                    phase="start",
+                )
+                _deg_t0 = time.monotonic()
                 review_token = await get_codex_reviewer_token()
                 result = await self._run_review_agent(filtered, event, review_token)
+                _deg_elapsed = time.monotonic() - _deg_t0
                 if result is not None:
                     await post_review(
                         event.repo_full_name,
@@ -1826,6 +1847,39 @@ class ReviewEngineConsumer:
                         filtered,
                         review_token,
                         head_sha=head_sha,
+                    )
+                    log_event(
+                        logger,
+                        "review.codex",
+                        pr=_deg_pr_key,
+                        sha=_deg_sha_short,
+                        turn=1,
+                        phase="finish",
+                        duration_s=f"{_deg_elapsed:.1f}",
+                    )
+                    log_event(
+                        logger,
+                        "review.finalize",
+                        pr=_deg_pr_key,
+                        sha=_deg_sha_short,
+                        outcome="consensus",
+                    )
+                else:
+                    log_event(
+                        logger,
+                        "review.codex",
+                        pr=_deg_pr_key,
+                        sha=_deg_sha_short,
+                        turn=1,
+                        phase="interrupted",
+                        duration_s=f"{_deg_elapsed:.1f}",
+                    )
+                    log_event(
+                        logger,
+                        "review.finalize",
+                        pr=_deg_pr_key,
+                        sha=_deg_sha_short,
+                        outcome="exhausted",
                     )
             return
 
@@ -2155,6 +2209,17 @@ class ReviewEngineConsumer:
                     "review_source_root (T-350)",
                     event.repo_full_name,
                 )
+                _deg_ref_key = f"{event.repo_full_name}#{event.pr_number}"
+                _deg_ref_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
+                log_event(
+                    logger,
+                    "review.dispatch",
+                    pr=_deg_ref_key,
+                    sha=_deg_ref_sha[:7] or None,
+                    event=event.type,
+                    action="skip",
+                    reason="unconfigured_repo",
+                )
                 await self._notify_skip(
                     event,
                     SkipReason.UNCONFIGURED_REPO,
@@ -2174,6 +2239,17 @@ class ReviewEngineConsumer:
                     "a usable git repo — refusing (T-350 round 5)",
                     event.repo_full_name,
                     registry_entry,
+                )
+                _deg_inv_key = f"{event.repo_full_name}#{event.pr_number}"
+                _deg_inv_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
+                log_event(
+                    logger,
+                    "review.dispatch",
+                    pr=_deg_inv_key,
+                    sha=_deg_inv_sha[:7] or None,
+                    event=event.type,
+                    action="skip",
+                    reason="unconfigured_repo",
                 )
                 await self._notify_skip(
                     event,

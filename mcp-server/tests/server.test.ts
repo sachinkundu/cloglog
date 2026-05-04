@@ -550,6 +550,11 @@ describe('Guard 2 — register_agent verifies project_id (T-398)', () => {
     // Verify the backend registration POST was never called.
     const calls = (client.request as ReturnType<typeof vi.fn>).mock.calls
     expect(calls.some((c) => c[1] === '/api/v1/agents/register')).toBe(false)
+    // Verify the mismatch refusal did NOT cache the wrong project_id.
+    // A subsequent project-scoped tool must see "Not registered", not
+    // silently operate on the wrong project's data.
+    const searchResult = await tools.search.handler({ query: 'T-1' })
+    expect(searchResult.content[0].text).toMatch(/Not registered/)
   })
 
   it('includes expected path in the mismatch diagnostic', async () => {

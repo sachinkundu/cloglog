@@ -124,7 +124,14 @@ export function createServer(client: CloglogClient): McpServer {
       const configRoot = findProjectRoot(worktree_path) ?? worktree_path
       const configProjectId = resolveProjectId(configRoot)
       if (configProjectId) {
-        const apiKeyProjectId = await ensureProject()
+        // Inline the /gateway/me lookup rather than calling ensureProject().
+        // ensureProject() caches into currentProjectId — if we used it here,
+        // a mismatch refusal would still leave the MCP server bound to the
+        // API key's project, letting tools like get_board and search operate
+        // on the wrong project's data after the refusal. By using a local
+        // variable we keep currentProjectId null until after a successful POST.
+        const meResult = await client.request('GET', '/api/v1/gateway/me') as Record<string, unknown>
+        const apiKeyProjectId = meResult.id as string
         if (configProjectId !== apiKeyProjectId) {
           const slug = resolveProjectSlug(configRoot)
           const credPath = slug

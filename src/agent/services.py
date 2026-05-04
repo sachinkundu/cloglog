@@ -559,6 +559,16 @@ class AgentService:
 
         await self._board_repo.update_task(task_id, **update_fields)
 
+        if status == "done":
+            # Recompute parent roll-ups so the board reflects the completed task.
+            from src.board.services import BoardService
+
+            await BoardService(self._board_repo).recompute_rollup(task.feature_id)
+            # Clear the worktree's current_task_id so the supervisor doesn't
+            # resume with a stale pointer to this already-done task.
+            if worktree.current_task_id == task_id:
+                await self._repo.set_worktree_current_task(worktree_id, None)
+
         await event_bus.publish(
             Event(
                 type=EventType.TASK_STATUS_CHANGED,

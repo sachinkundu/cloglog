@@ -727,6 +727,75 @@ class TestAgentService:
         assert updated is not None
         assert updated.status == "done"
 
+    async def test_close_off_done_clears_current_task_id(self, db_session: AsyncSession) -> None:
+        """T-395: marking a close-off task done must clear current_task_id on the worktree.
+
+        Step 9.7 calls start_task which sets current_task_id. If update_task_status("done")
+        does not clear it, the supervisor's next register() call sees the completed
+        close-off task still listed as the worktree's current task.
+        """
+        project = await _create_project(db_session)
+        task = await _create_task_chain(db_session, project)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        board_repo = BoardRepository(db_session)
+        agent_repo = AgentRepository(db_session)
+
+        reg = await service.register(project.id, "/repo/wt-coff-clr", "wt-coff-clr")
+        main_wt_id = reg["worktree_id"]
+        target_reg = await service.register(project.id, "/repo/wt-tgt-clr", "wt-tgt-clr")
+        target_wt_id = target_reg["worktree_id"]
+
+        await board_repo.update_task(task.id, close_off_worktree_id=target_wt_id)  # type: ignore[arg-type]
+        await board_repo.update_task(task.id, worktree_id=main_wt_id)  # type: ignore[arg-type]
+        await service.start_task(main_wt_id, task.id)  # type: ignore[arg-type]
+
+        # Confirm start_task set current_task_id
+        wt_before = await agent_repo.get_worktree(main_wt_id)  # type: ignore[arg-type]
+        assert wt_before is not None
+        assert wt_before.current_task_id == task.id
+
+        await service.update_task_status(main_wt_id, task.id, "done")  # type: ignore[arg-type]
+
+        # current_task_id must be cleared after done
+        wt_after = await agent_repo.get_worktree(main_wt_id)  # type: ignore[arg-type]
+        assert wt_after is not None
+        assert wt_after.current_task_id is None
+
+    async def test_close_off_done_triggers_rollup(self, db_session: AsyncSession) -> None:
+        """T-395: marking a close-off task done must recompute parent feature/epic status.
+
+        Without the recompute_rollup call the board shows the parent feature as
+        in_progress even after all its tasks are done.
+        """
+        project = await _create_project(db_session)
+        task = await _create_task_chain(db_session, project)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        board_repo = BoardRepository(db_session)
+
+        reg = await service.register(project.id, "/repo/wt-coff-rup", "wt-coff-rup")
+        main_wt_id = reg["worktree_id"]
+        target_reg = await service.register(project.id, "/repo/wt-tgt-rup", "wt-tgt-rup")
+        target_wt_id = target_reg["worktree_id"]
+
+        await board_repo.update_task(task.id, close_off_worktree_id=target_wt_id)  # type: ignore[arg-type]
+        await board_repo.update_task(task.id, worktree_id=main_wt_id)  # type: ignore[arg-type]
+        await service.start_task(main_wt_id, task.id)  # type: ignore[arg-type]
+        await service.update_task_status(main_wt_id, task.id, "done")  # type: ignore[arg-type]
+
+        # Fetch the task's feature and epic — both must reflect done
+        updated_task = await board_repo.get_task(task.id)
+        assert updated_task is not None
+        feature = await board_repo.get_feature(updated_task.feature_id)
+        assert feature is not None
+        assert feature.status == "done", (
+            f"Feature status should be 'done' after sole task is done, got '{feature.status}'"
+        )
+        epic = await board_repo.get_epic(feature.epic_id)
+        assert epic is not None
+        assert epic.status == "done", (
+            f"Epic status should be 'done' after sole feature is done, got '{epic.status}'"
+        )
+
     async def test_regular_task_still_blocked_from_done_by_agent(
         self, db_session: AsyncSession
     ) -> None:

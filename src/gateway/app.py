@@ -20,6 +20,32 @@ from starlette.responses import Response
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     import logging
 
+    # T-408: root stays WARNING (no sqlalchemy/asyncpg/uvicorn chatter); named
+    # domain loggers go to INFO so structured events are visible in prod logs.
+    # Under gunicorn, handlers are already attached before lifespan runs so
+    # basicConfig() is a no-op for formatter installation. Apply the formatter
+    # explicitly to every root handler (and gunicorn.error) that exists,
+    # falling back to basicConfig() only on a fresh unconfigured root.
+    _fmt = logging.Formatter("%(asctime)s %(message)s")
+    _root = logging.getLogger()
+    _root.setLevel(logging.WARNING)
+    if _root.handlers:
+        for _h in _root.handlers:
+            _h.setFormatter(_fmt)
+    else:
+        logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(message)s")
+    for _h in logging.getLogger("gunicorn.error").handlers:
+        _h.setFormatter(_fmt)
+    for _domain_logger in (
+        "src.gateway.app",
+        "src.gateway.review_engine",
+        "src.gateway.review_loop",
+        "src.gateway.webhook_dispatcher",
+        "src.gateway.notification_listener",
+        "src.agent.services",
+    ):
+        logging.getLogger(_domain_logger).setLevel(logging.INFO)
+
     from src.gateway.notification_listener import run_notification_listener
     from src.gateway.review_engine import (
         ReviewEngineConsumer,

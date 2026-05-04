@@ -55,6 +55,7 @@ from src.review.interfaces import (
 )
 from src.shared.config import settings
 from src.shared.events import Event, EventType, event_bus
+from src.shared.log_event import log_event
 from src.shared.text import strip_nul
 
 logger = logging.getLogger(__name__)
@@ -405,6 +406,14 @@ class ReviewLoop:
         # advisory and never gates merge. Callers wire this for codex only.
         self._ci_dispatcher = ci_dispatcher
 
+    @property
+    def _pr_key(self) -> str:
+        return f"{self._repo_full_name}#{self._pr_number}"
+
+    @property
+    def _sha_short(self) -> str:
+        return self._head_sha[:7] if self._head_sha else ""
+
     @staticmethod
     def _build_body_header(reviewer: Reviewer, session_index: int, max_sessions: int) -> str:
         """Per-session review-body header.
@@ -558,6 +567,15 @@ class ReviewLoop:
                     self._pr_number,
                     self._head_sha[:7],
                 )
+                if self._stage == "codex":
+                    log_event(
+                        logger,
+                        "review.codex",
+                        pr=self._pr_key,
+                        sha=self._sha_short,
+                        turn=turn,
+                        phase="start",
+                    )
 
                 # T-260: the dashboard's "codex reviewed" badge is driven by
                 # a boolean projection from ``pr_review_turns``. Publish an
@@ -605,16 +623,49 @@ class ReviewLoop:
 
                 if result is None:
                     status = _TURN_STATUS_TIMED_OUT if timed_out else _TURN_STATUS_FAILED
-                    await self._registry.complete_turn(
-                        pr_url=self._pr_url,
-                        head_sha=self._head_sha,
-                        stage=self._stage,
-                        turn_number=turn,
-                        status=status,
-                        finding_count=None,
-                        consensus_reached=False,
-                        elapsed_seconds=elapsed,
-                    )
+                    try:
+                        await self._registry.complete_turn(
+                            pr_url=self._pr_url,
+                            head_sha=self._head_sha,
+                            stage=self._stage,
+                            turn_number=turn,
+                            status=status,
+                            finding_count=None,
+                            consensus_reached=False,
+                            elapsed_seconds=elapsed,
+                        )
+                        if self._stage == "codex":
+                            log_event(
+                                logger,
+                                "review.persist",
+                                pr=self._pr_key,
+                                sha=self._sha_short,
+                                turn=turn,
+                                result="ok",
+                            )
+                    except Exception as _persist_err:
+                        if self._stage == "codex":
+                            log_event(
+                                logger,
+                                "review.persist",
+                                pr=self._pr_key,
+                                sha=self._sha_short,
+                                turn=turn,
+                                result="db_error",
+                                error_class=type(_persist_err).__name__,
+                            )
+                        raise
+                    if self._stage == "codex":
+                        _codex_phase = "timeout" if timed_out else "interrupted"
+                        log_event(
+                            logger,
+                            "review.codex",
+                            pr=self._pr_key,
+                            sha=self._sha_short,
+                            turn=turn,
+                            phase=_codex_phase,
+                            duration_s=f"{elapsed:.1f}",
+                        )
                     if timed_out and self._stage == "codex":
                         # T-374 (codex round 5 HIGH): record the timeout
                         # diagnostics on the outcome only — do NOT emit the
@@ -679,91 +730,146 @@ class ReviewLoop:
                         turn,
                         self._pr_number,
                     )
-                    await self._registry.complete_turn(
-                        pr_url=self._pr_url,
-                        head_sha=self._head_sha,
-                        stage=self._stage,
-                        turn_number=turn,
-                        status=_TURN_STATUS_FAILED,
-                        finding_count=len(result.findings),
-                        consensus_reached=False,
-                        elapsed_seconds=elapsed,
-                    )
+                    try:
+                        await self._registry.complete_turn(
+                            pr_url=self._pr_url,
+                            head_sha=self._head_sha,
+                            stage=self._stage,
+                            turn_number=turn,
+                            status=_TURN_STATUS_FAILED,
+                            finding_count=len(result.findings),
+                            consensus_reached=False,
+                            elapsed_seconds=elapsed,
+                        )
+                        if self._stage == "codex":
+                            log_event(
+                                logger,
+                                "review.persist",
+                                pr=self._pr_key,
+                                sha=self._sha_short,
+                                turn=turn,
+                                result="ok",
+                            )
+                    except Exception as _persist_err:
+                        if self._stage == "codex":
+                            log_event(
+                                logger,
+                                "review.persist",
+                                pr=self._pr_key,
+                                sha=self._sha_short,
+                                turn=turn,
+                                result="db_error",
+                                error_class=type(_persist_err).__name__,
+                            )
+                        raise
+                    if self._stage == "codex":
+                        log_event(
+                            logger,
+                            "review.codex",
+                            pr=self._pr_key,
+                            sha=self._sha_short,
+                            turn=turn,
+                            phase="interrupted",
+                            duration_s=f"{elapsed:.1f}",
+                        )
                     outcome.turns_used = turn
                     outcome.errors.append(f"turn {turn}: post_failed")
                     break
 
                 consensus = _reached_consensus(result=result, prior_finding_keys=prior_keys)
-                await self._registry.complete_turn(
-                    pr_url=self._pr_url,
-                    head_sha=self._head_sha,
-                    stage=self._stage,
-                    turn_number=turn,
-                    status=_TURN_STATUS_COMPLETED,
-                    finding_count=len(result.findings),
-                    consensus_reached=consensus,
-                    elapsed_seconds=elapsed,
-                )
-                # T-375: stamp ``posted_at`` so a subsequent webhook re-fire
-                # for the same SHA detects this session has already posted
-                # and short-circuits in the early-return at the top of
-                # ``run``. ``mark_posted`` is intentionally non-unique
-                # across turns within the same session — multiple turns
-                # may legitimately POST in one run when ``codex_max_turns
-                # > 1`` surfaces new findings on later turns. ``False``
-                # here means the row was missing or already stamped
-                # (idempotency); the GitHub POST happened either way.
-                await self._registry.mark_posted(
-                    pr_url=self._pr_url,
-                    head_sha=self._head_sha,
-                    stage=self._stage,
-                    turn_number=turn,
-                )
-                # T-367 cross-push memory: persist the findings + learnings on
-                # the same row complete_turn just updated, so the next turn's
-                # prompt can replay them. Only meaningful for codex
-                # (opencode emits no learnings and the codex stage's preamble
-                # is the only consumer); harmless to write on opencode rows
-                # too — learnings will be empty.
-                #
-                # T-407: sanitize NUL bytes before persisting — PostgreSQL TEXT
-                # and JSONB reject U+0000 and asyncpg raises
-                # UntranslatableCharacterError. Codex/opencode output may embed
-                # NUL via binary-encoded strings or exemption.md file reads.
-                _findings_sanitized: list[dict[str, Any]] = strip_nul(
-                    [f.model_dump() for f in result.findings]
-                )
-                _learnings_sanitized: list[dict[str, Any]] = strip_nul(list(result.learnings))
                 try:
-                    await self._registry.record_findings_and_learnings(
+                    await self._registry.complete_turn(
                         pr_url=self._pr_url,
                         head_sha=self._head_sha,
                         stage=self._stage,
                         turn_number=turn,
-                        findings_json=_findings_sanitized,
-                        learnings_json=_learnings_sanitized,
+                        status=_TURN_STATUS_COMPLETED,
+                        finding_count=len(result.findings),
+                        consensus_reached=consensus,
+                        elapsed_seconds=elapsed,
                     )
-                except DBAPIError as _db_exc:
-                    # T-407: persistence failure must NOT kill the consumer.
-                    # Log structured WARNING so ops can correlate the PR/SHA/stage.
-                    # Then best-effort stamp outcome='db_error' for T-409 badge.
-                    logger.warning(
-                        "event=review.persist result=db_error error_class=%s "
-                        "pr=%s sha=%s stage=%s msg=%.200s",
-                        type(_db_exc).__name__,
-                        self._pr_url,
-                        self._head_sha,
-                        self._stage,
-                        str(_db_exc),
+                    # T-375: stamp ``posted_at`` so a subsequent webhook re-fire
+                    # for the same SHA detects this session has already posted
+                    # and short-circuits in the early-return at the top of
+                    # ``run``. ``mark_posted`` is intentionally non-unique
+                    # across turns within the same session — multiple turns
+                    # may legitimately POST in one run when ``codex_max_turns
+                    # > 1`` surfaces new findings on later turns. ``False``
+                    # here means the row was missing or already stamped
+                    # (idempotency); the GitHub POST happened either way.
+                    await self._registry.mark_posted(
+                        pr_url=self._pr_url,
+                        head_sha=self._head_sha,
+                        stage=self._stage,
+                        turn_number=turn,
                     )
-                    with contextlib.suppress(Exception):
-                        await self._registry.set_outcome(
+                    # T-367 cross-push memory: persist the findings + learnings on
+                    # the same row complete_turn just updated, so the next turn's
+                    # prompt can replay them. Only meaningful for codex
+                    # (opencode emits no learnings and the codex stage's preamble
+                    # is the only consumer); harmless to write on opencode rows
+                    # too — learnings will be empty.
+                    #
+                    # T-407: sanitize NUL bytes before persisting — PostgreSQL TEXT
+                    # and JSONB reject U+0000 and asyncpg raises
+                    # UntranslatableCharacterError. Codex/opencode output may embed
+                    # NUL via binary-encoded strings or exemption.md file reads.
+                    _findings_sanitized: list[dict[str, Any]] = strip_nul(
+                        [f.model_dump() for f in result.findings]
+                    )
+                    _learnings_sanitized: list[dict[str, Any]] = strip_nul(list(result.learnings))
+                    try:
+                        await self._registry.record_findings_and_learnings(
                             pr_url=self._pr_url,
                             head_sha=self._head_sha,
                             stage=self._stage,
                             turn_number=turn,
-                            outcome="db_error",
+                            findings_json=_findings_sanitized,
+                            learnings_json=_learnings_sanitized,
                         )
+                    except DBAPIError as _db_exc:
+                        # T-407: persistence failure must NOT kill the consumer.
+                        # Log structured WARNING so ops can correlate the PR/SHA/stage.
+                        # Then best-effort stamp outcome='db_error' for T-409 badge.
+                        logger.warning(
+                            "event=review.persist result=db_error error_class=%s "
+                            "pr=%s sha=%s stage=%s msg=%.200s",
+                            type(_db_exc).__name__,
+                            self._pr_url,
+                            self._head_sha,
+                            self._stage,
+                            str(_db_exc),
+                        )
+                        with contextlib.suppress(Exception):
+                            await self._registry.set_outcome(
+                                pr_url=self._pr_url,
+                                head_sha=self._head_sha,
+                                stage=self._stage,
+                                turn_number=turn,
+                                outcome="db_error",
+                            )
+                    else:
+                        if self._stage == "codex":
+                            log_event(
+                                logger,
+                                "review.persist",
+                                pr=self._pr_key,
+                                sha=self._sha_short,
+                                turn=turn,
+                                result="ok",
+                            )
+                except Exception as _persist_err:
+                    if self._stage == "codex":
+                        log_event(
+                            logger,
+                            "review.persist",
+                            pr=self._pr_key,
+                            sha=self._sha_short,
+                            turn=turn,
+                            result="db_error",
+                            error_class=type(_persist_err).__name__,
+                        )
+                    raise
                 logger.info(
                     "review_turn_end stage=%s turn=%d/%d pr=%d findings=%d "
                     "consensus=%s elapsed=%.1fs",
@@ -775,6 +881,16 @@ class ReviewLoop:
                     consensus,
                     elapsed,
                 )
+                if self._stage == "codex":
+                    log_event(
+                        logger,
+                        "review.codex",
+                        pr=self._pr_key,
+                        sha=self._sha_short,
+                        turn=turn,
+                        phase="finish",
+                        duration_s=f"{elapsed:.1f}",
+                    )
                 outcome.turns_used = turn
                 # Merge this turn's keys into the running set for the NEXT
                 # turn's predicate (b) check.

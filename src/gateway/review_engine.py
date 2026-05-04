@@ -43,6 +43,7 @@ from src.gateway.review_skip_comments import SkipReason, post_skip_comment
 from src.gateway.webhook_consumers import emit_codex_review_timed_out
 from src.gateway.webhook_dispatcher import WebhookEvent, WebhookEventType
 from src.shared.config import settings
+from src.shared.log_event import log_event
 
 if TYPE_CHECKING:
     from src.agent.interfaces import IWorktreeQuery
@@ -1460,6 +1461,16 @@ class ReviewEngineConsumer:
                 event.pr_number,
                 event.repo_full_name,
             )
+            _rl_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
+            log_event(
+                logger,
+                "review.dispatch",
+                pr=f"{event.repo_full_name}#{event.pr_number}",
+                sha=_rl_sha[:7] or None,
+                event=event.type,
+                action="skip",
+                reason="rate_limit",
+            )
             await self._notify_skip(event, SkipReason.RATE_LIMIT, comment_body)
             return
 
@@ -1478,10 +1489,11 @@ class ReviewEngineConsumer:
             try:
                 await self._review_pr(event)
             except Exception:
+                _exc_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
                 logger.exception(
-                    "Review failed for PR #%d (%s)",
-                    event.pr_number,
-                    event.repo_full_name,
+                    "review.error pr=%s sha=%s",
+                    f"{event.repo_full_name}#{event.pr_number}",
+                    _exc_sha[:7] or "unknown",
                 )
 
     @staticmethod
@@ -1634,6 +1646,9 @@ class ReviewEngineConsumer:
             ReviewLoop,
         )
 
+        # Stable correlation key for all review.* log lines for this PR+SHA.
+        _pr_key = f"{event.repo_full_name}#{event.pr_number}"
+
         # Claude bot token for reading diffs (has contents:read).
         claude_token = await get_github_app_token()
 
@@ -1642,6 +1657,7 @@ class ReviewEngineConsumer:
         # not suppress review of a newly-pushed commit B). Falls through to
         # the degraded path further down if empty.
         head_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
+        _sha_short = head_sha[:7] if head_sha else None
 
         # Per-PR session cap (spec §6.3, T-227): verdict-based with a backstop.
         # Skip further review when the latest codex review OF THE CURRENT head_sha
@@ -1696,6 +1712,15 @@ class ReviewEngineConsumer:
                     "PR #%d: latest bot review is an approval (:pass:) — skipping further review",
                     event.pr_number,
                 )
+                log_event(
+                    logger,
+                    "review.dispatch",
+                    pr=_pr_key,
+                    sha=_sha_short,
+                    event=event.type,
+                    action="skip",
+                    reason="approval",
+                )
                 return
             if skip and is_backstop:
                 logger.info(
@@ -1704,6 +1729,15 @@ class ReviewEngineConsumer:
                     event.pr_number,
                     prior,
                     MAX_REVIEWS_PER_PR,
+                )
+                log_event(
+                    logger,
+                    "review.dispatch",
+                    pr=_pr_key,
+                    sha=_sha_short,
+                    event=event.type,
+                    action="skip",
+                    reason="backstop",
                 )
                 await self._notify_skip(
                     event,
@@ -1720,6 +1754,15 @@ class ReviewEngineConsumer:
         filtered = filter_diff(diff)
         if not filtered.strip():
             logger.info("PR #%d has no reviewable files after filtering", event.pr_number)
+            log_event(
+                logger,
+                "review.dispatch",
+                pr=_pr_key,
+                sha=_sha_short,
+                event=event.type,
+                action="skip",
+                reason="no_reviewable_files",
+            )
             await self._notify_skip(
                 event,
                 SkipReason.NO_REVIEWABLE_FILES,
@@ -1735,6 +1778,15 @@ class ReviewEngineConsumer:
                 event.pr_number,
                 len(filtered),
                 MAX_DIFF_CHARS,
+            )
+            log_event(
+                logger,
+                "review.dispatch",
+                pr=_pr_key,
+                sha=_sha_short,
+                event=event.type,
+                action="skip",
+                reason="diff_too_large",
             )
             await self._notify_skip(
                 event,
@@ -1764,16 +1816,111 @@ class ReviewEngineConsumer:
             # when codex is available — opencode-only hosts skip silently
             # (the degraded path predates the two-stage loop).
             if self._codex_available:
+                _deg_pr_key = f"{event.repo_full_name}#{event.pr_number}"
+                _deg_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
+                _deg_sha_short = _deg_sha[:7] or None
+                # Check unconfigured_repo BEFORE emitting enqueue so that a
+                # refused PR never shows action=enqueue alongside action=skip.
+                if settings.review_repo_roots:
+                    _deg_entry = settings.review_repo_roots.get(event.repo_full_name)
+                    if _deg_entry is None or _git_common_dir(Path(_deg_entry)) is None:
+                        log_event(
+                            logger,
+                            "review.dispatch",
+                            pr=_deg_pr_key,
+                            sha=_deg_sha_short,
+                            event=event.type,
+                            action="skip",
+                            reason="unconfigured_repo",
+                        )
+                        # _run_review_agent will also refuse and post the skip
+                        # comment; fall through so the user sees the comment.
+                        _skip_token = await get_codex_reviewer_token()
+                        await self._run_review_agent(filtered, event, _skip_token)
+                        return
+                log_event(
+                    logger,
+                    "review.dispatch",
+                    pr=_deg_pr_key,
+                    sha=_deg_sha_short,
+                    event=event.type,
+                    action="enqueue",
+                )
+                log_event(
+                    logger,
+                    "review.codex",
+                    pr=_deg_pr_key,
+                    sha=_deg_sha_short,
+                    turn=1,
+                    phase="start",
+                )
+                _deg_t0 = time.monotonic()
                 review_token = await get_codex_reviewer_token()
-                result = await self._run_review_agent(filtered, event, review_token)
+                result, timed_out = await self._run_review_agent(filtered, event, review_token)
+                _deg_elapsed = time.monotonic() - _deg_t0
                 if result is not None:
-                    await post_review(
+                    posted = await post_review(
                         event.repo_full_name,
                         event.pr_number,
                         result,
                         filtered,
                         review_token,
                         head_sha=head_sha,
+                    )
+                    if posted:
+                        from src.gateway.review_loop import _reached_consensus
+
+                        _deg_consensus = _reached_consensus(result=result, prior_finding_keys=set())
+                        log_event(
+                            logger,
+                            "review.codex",
+                            pr=_deg_pr_key,
+                            sha=_deg_sha_short,
+                            turn=1,
+                            phase="finish",
+                            duration_s=f"{_deg_elapsed:.1f}",
+                        )
+                        log_event(
+                            logger,
+                            "review.finalize",
+                            pr=_deg_pr_key,
+                            sha=_deg_sha_short,
+                            outcome="consensus" if _deg_consensus else "exhausted",
+                        )
+                    else:
+                        log_event(
+                            logger,
+                            "review.codex",
+                            pr=_deg_pr_key,
+                            sha=_deg_sha_short,
+                            turn=1,
+                            phase="interrupted",
+                            duration_s=f"{_deg_elapsed:.1f}",
+                        )
+                        log_event(
+                            logger,
+                            "review.finalize",
+                            pr=_deg_pr_key,
+                            sha=_deg_sha_short,
+                            outcome="exhausted",
+                        )
+                else:
+                    _deg_phase = "timeout" if timed_out else "interrupted"
+                    log_event(
+                        logger,
+                        "review.codex",
+                        pr=_deg_pr_key,
+                        sha=_deg_sha_short,
+                        turn=1,
+                        phase=_deg_phase,
+                        duration_s=f"{_deg_elapsed:.1f}",
+                    )
+                    log_event(
+                        logger,
+                        "review.finalize",
+                        pr=_deg_pr_key,
+                        sha=_deg_sha_short,
+                        outcome="exhausted",
                     )
             return
 
@@ -1783,6 +1930,15 @@ class ReviewEngineConsumer:
                 "No project found for repo %s — skipping review for PR #%d",
                 event.repo_full_name,
                 event.pr_number,
+            )
+            log_event(
+                logger,
+                "review.dispatch",
+                pr=_pr_key,
+                sha=_sha_short,
+                event=event.type,
+                action="skip",
+                reason="no_project",
             )
             return
 
@@ -1804,6 +1960,15 @@ class ReviewEngineConsumer:
         # as a one-shot skip comment so the operator can see the
         # configuration gap on GitHub.
         if review_root is None:
+            log_event(
+                logger,
+                "review.dispatch",
+                pr=_pr_key,
+                sha=_sha_short,
+                event=event.type,
+                action="skip",
+                reason="unconfigured_repo",
+            )
             await self._notify_skip(
                 event,
                 SkipReason.UNCONFIGURED_REPO,
@@ -1823,6 +1988,18 @@ class ReviewEngineConsumer:
         # session ``prior + 1``. Both stages use the same counter so Stage A
         # and Stage B reviews are labelled consistently within a session.
         session_index = prior + 1
+
+        log_event(
+            logger,
+            "review.dispatch",
+            pr=_pr_key,
+            sha=_sha_short,
+            event=event.type,
+            action="enqueue",
+        )
+
+        _codex_consensus = False
+        _opencode_consensus = False
 
         try:
             # ----- Stage A: opencode (gemma4:e4b) — up to opencode_max_turns -----
@@ -1862,6 +2039,7 @@ class ReviewEngineConsumer:
                         max_sessions=MAX_REVIEWS_PER_PR,
                     )
                     outcome_a = await loop_a.run(diff=filtered)
+                    _opencode_consensus = getattr(outcome_a, "consensus_reached", False)
                 if outcome_a.turns_used == 0 and outcome_a.errors:
                     # A completely failed stage A posts a single skip comment so
                     # the author knows why opencode produced nothing.
@@ -1919,6 +2097,7 @@ class ReviewEngineConsumer:
                         prior_context=prior_context,
                         pr_body=pr_body,
                     )
+                    _codex_consensus = getattr(outcome_b, "consensus_reached", False)
                     # T-374 (codex round 1 HIGH): finalize a codex timeout
                     # the same way the legacy ``_run_review_agent`` path
                     # does — probe codex/github liveness, format the
@@ -1969,6 +2148,15 @@ class ReviewEngineConsumer:
                 "review_session_end pr=%d repo=%s",
                 event.pr_number,
                 event.repo_full_name,
+            )
+            log_event(
+                logger,
+                "review.finalize",
+                pr=_pr_key,
+                sha=_sha_short,
+                outcome="consensus"
+                if (_codex_consensus or (not self._codex_available and _opencode_consensus))
+                else "exhausted",
             )
         finally:
             if review_root.is_temp and review_root.main_clone is not None:
@@ -2028,8 +2216,11 @@ class ReviewEngineConsumer:
         diff: str,
         event: WebhookEvent,
         codex_token: str,
-    ) -> ReviewResult | None:
+    ) -> tuple[ReviewResult | None, bool]:
         """Launch ``codex exec`` with the project prompt and diff via stdin.
+
+        Returns ``(result, timed_out)``. ``result`` is ``None`` on skip/error;
+        ``timed_out`` is ``True`` only on a double-timeout AGENT_TIMEOUT path.
 
         On timeout: capture buffered stderr, run parallel health probes
         (``codex --version`` + ``GET api.github.com/zen``), emit a
@@ -2077,7 +2268,7 @@ class ReviewEngineConsumer:
                         f"the cloglog backend to enable reviews for this repo."
                     ),
                 )
-                return None
+                return None, False
             registry_path = Path(registry_entry)
             if _git_common_dir(registry_path) is None:
                 logger.warning(
@@ -2096,7 +2287,7 @@ class ReviewEngineConsumer:
                         f"Fix the configuration on the cloglog backend."
                     ),
                 )
-                return None
+                return None, False
             project_root = registry_path
         else:
             # Legacy single-repo path — `settings.review_source_root` must
@@ -2119,7 +2310,7 @@ class ReviewEngineConsumer:
             )
             last_outcome = outcome
             if outcome.result is not None:
-                return outcome.result
+                return outcome.result, False
             if outcome.timed_out:
                 if attempt == 1:
                     logger.info(
@@ -2161,17 +2352,17 @@ class ReviewEngineConsumer:
                     timeout_seconds,
                 )
                 await self._post_agent_skip(event, SkipReason.AGENT_TIMEOUT, body, codex_token)
-                return None
+                return None, True
             # Non-timeout failure: unparseable output.
             logger.warning("Review agent produced no parseable output for PR #%d", event.pr_number)
             body = _format_unparseable_body(outcome)
             await self._post_agent_skip(event, SkipReason.AGENT_UNPARSEABLE, body, codex_token)
-            return None
+            return None, False
 
         # Unreachable — retained as a defensive return.
         if last_outcome is not None and last_outcome.result is not None:
-            return last_outcome.result
-        return None
+            return last_outcome.result, False
+        return None, False
 
     async def _run_agent_once(
         self,

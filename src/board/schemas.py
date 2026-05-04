@@ -183,7 +183,7 @@ class TaskResponse(BaseModel):
 # --- Close-off tasks ---
 
 
-class CloseOffTaskCreate(BaseModel):
+class CloseOffTaskCreate(_NulSanitized):
     worktree_path: str
     worktree_name: str
 
@@ -294,19 +294,19 @@ class SearchResponse(BaseModel):
 # --- Import ---
 
 
-class ImportTask(BaseModel):
+class ImportTask(_NulSanitized):
     title: str
     description: str = ""
     priority: str = "normal"
 
 
-class ImportFeature(BaseModel):
+class ImportFeature(_NulSanitized):
     title: str
     description: str = ""
     tasks: list[ImportTask] = []
 
 
-class ImportEpic(BaseModel):
+class ImportEpic(_NulSanitized):
     title: str
     description: str = ""
     bounded_context: str = ""

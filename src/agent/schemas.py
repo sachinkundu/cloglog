@@ -49,7 +49,7 @@ class StartTaskResponse(BaseModel):
     model: str | None = None
 
 
-class CompleteTaskRequest(BaseModel):
+class CompleteTaskRequest(NulSanitizedModel):
     task_id: UUID
     pr_url: str | None = None
 
@@ -59,7 +59,7 @@ class CompleteTaskResponse(BaseModel):
     next_task: TaskInfo | None = None
 
 
-class UpdateTaskStatusRequest(BaseModel):
+class UpdateTaskStatusRequest(NulSanitizedModel):
     task_id: UUID
     status: str  # review, blocked, etc.
     pr_url: str | None = None

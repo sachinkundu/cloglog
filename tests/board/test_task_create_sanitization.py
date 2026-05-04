@@ -7,12 +7,23 @@ for tasks, epics, features, and the agent-facing note/artifact schemas.
 
 from __future__ import annotations
 
-from src.agent.schemas import AddTaskNoteRequest, ReportArtifactRequest
+import uuid
+
+from src.agent.schemas import (
+    AddTaskNoteRequest,
+    CompleteTaskRequest,
+    ReportArtifactRequest,
+    UpdateTaskStatusRequest,
+)
 from src.board.schemas import (
+    CloseOffTaskCreate,
     EpicCreate,
     EpicUpdate,
     FeatureCreate,
     FeatureUpdate,
+    ImportEpic,
+    ImportFeature,
+    ImportTask,
     TaskCreate,
     TaskUpdate,
 )
@@ -81,14 +92,10 @@ class TestFeatureSanitization:
 
 class TestAgentSchemaSanitization:
     def test_add_task_note_nul_stripped(self) -> None:
-        import uuid
-
         n = AddTaskNoteRequest(task_id=uuid.uuid4(), note=f"note{NUL}text")
         assert n.note == "notetext"
 
     def test_report_artifact_nul_stripped(self) -> None:
-        import uuid
-
         r = ReportArtifactRequest(task_id=uuid.uuid4(), artifact_path=f"path{NUL}/to/file")
         assert r.artifact_path == "path/to/file"
 
@@ -98,3 +105,43 @@ class TestDocumentCreateSanitization:
         d = DocumentCreate(title=f"doc{NUL}", content=f"body{NUL}text")
         assert d.title == "doc"
         assert d.content == "bodytext"
+
+
+class TestImportSchemaSanitization:
+    def test_import_task_nul_stripped(self) -> None:
+        t = ImportTask(title=f"im{NUL}port", description=f"de{NUL}sc")
+        assert t.title == "import"
+        assert t.description == "desc"
+
+    def test_import_feature_nul_stripped(self) -> None:
+        f = ImportFeature(title=f"fe{NUL}at", description=f"de{NUL}sc")
+        assert f.title == "feat"
+        assert f.description == "desc"
+
+    def test_import_epic_nul_stripped(self) -> None:
+        e = ImportEpic(title=f"ep{NUL}ic", description=f"de{NUL}sc", bounded_context=f"bc{NUL}x")
+        assert e.title == "epic"
+        assert e.description == "desc"
+        assert e.bounded_context == "bcx"
+
+
+class TestCloseOffTaskSanitization:
+    def test_close_off_task_nul_stripped(self) -> None:
+        c = CloseOffTaskCreate(worktree_path=f"/wt{NUL}/path", worktree_name=f"wt{NUL}name")
+        assert c.worktree_path == "/wt/path"
+        assert c.worktree_name == "wtname"
+
+
+class TestAgentStatusSchemaSanitization:
+    def test_complete_task_request_nul_stripped(self) -> None:
+        r = CompleteTaskRequest(task_id=uuid.uuid4(), pr_url=f"https://github.com/x/y/pull/{NUL}1")
+        assert r.pr_url == "https://github.com/x/y/pull/1"
+
+    def test_update_task_status_nul_stripped(self) -> None:
+        r = UpdateTaskStatusRequest(
+            task_id=uuid.uuid4(),
+            status=f"re{NUL}view",
+            pr_url=f"https://github.com/x/y/pull/{NUL}2",
+        )
+        assert r.status == "review"
+        assert r.pr_url == "https://github.com/x/y/pull/2"

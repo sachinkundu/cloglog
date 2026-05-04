@@ -379,7 +379,15 @@ class IReviewTurnRegistry(Protocol):
                             ``status IN ('timed_out', 'failed')``.
         - ``PROGRESS``    — some completed turns, no consensus, count < max_turns.
         - ``STALE``       — no turns for ``head_sha`` but earlier SHAs did
-                            have turns (push landed, no pickup).
+                            have turns (push landed, no pickup) AND the
+                            PR-wide posted-session count is still below
+                            ``max_pr_sessions``. T-424 round 2: when the
+                            cap is consumed on an earlier SHA and the
+                            author then pushes a new SHA, the projection
+                            returns EXHAUSTED instead of STALE — the
+                            review loop refuses further codex sessions
+                            for that PR, so a retriable-looking STALE
+                            badge would mislead operators.
 
         ``project_id`` is required for cross-project isolation (same
         reasoning as ``codex_touched_pr_urls``).

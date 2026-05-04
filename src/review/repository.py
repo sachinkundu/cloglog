@@ -359,9 +359,31 @@ class ReviewTurnRepository:
 
         current = [t for t in all_turns if t.head_sha == head_sha]
 
+        # Compute the PR-wide posted-session count once. Used by the
+        # post-cap STALE → EXHAUSTED override below and by the
+        # all-completed-no-consensus branch further down. Mirrors
+        # ``count_posted_codex_sessions``: pre-T-375 NULL rows do not count.
+        posted_sessions = len(
+            {
+                t.session_index
+                for t in all_turns
+                if t.session_index is not None and t.posted_at is not None
+            }
+        )
+
         if not current:
             has_prior = bool(all_turns)
             if has_prior:
+                # Codex review pipeline guard (T-424 round 2): once the PR-wide
+                # cap is consumed on an earlier SHA, the next push updates
+                # ``tasks.pr_head_sha`` (webhook_consumers PR_OPENED /
+                # PR_SYNCHRONIZE) but the review loop refuses further codex
+                # sessions for that PR (``_should_skip_for_cap``). Returning
+                # STALE here would surface a retriable-looking badge even
+                # though no further codex review can happen — operators need
+                # the EXHAUSTED signal.
+                if posted_sessions >= max_pr_sessions:
+                    return CodexStatusResult(status=CodexStatus.EXHAUSTED)
                 return CodexStatusResult(status=CodexStatus.STALE)
             return CodexStatusResult(status=CodexStatus.NOT_STARTED)
 
@@ -403,13 +425,6 @@ class ReviewTurnRepository:
         # ``_should_skip_for_cap``.
         completed = [t for t in current if t.status == PrReviewTurnStatus.COMPLETED]
         n = len(completed)
-        posted_sessions = len(
-            {
-                t.session_index
-                for t in all_turns
-                if t.session_index is not None and t.posted_at is not None
-            }
-        )
         if posted_sessions >= max_pr_sessions:
             return CodexStatusResult(status=CodexStatus.EXHAUSTED)
 

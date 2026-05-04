@@ -1,7 +1,7 @@
 # EXHAUSTED badge no longer fires after the first non-consensus codex turn — it now waits for the PR-wide MAX_REVIEWS_PER_PR=5 cap, matching the actual review-loop semantics.
 
-*2026-05-04T16:24:30Z by Showboat 0.6.1*
-<!-- showboat-id: 9aeb1453-1865-46b3-bab6-835073efa746 -->
+*2026-05-04T16:30:15Z by Showboat 0.6.1*
+<!-- showboat-id: 57193380-7077-4c76-909d-baac1687ce54 -->
 
 Before T-424: `_derive_codex_status` keyed EXHAUSTED on the per-session `codex_max_turns` (default 1). One completed non-consensus turn → EXHAUSTED, even though four more review sessions were still permitted on later pushes.
 
@@ -130,6 +130,48 @@ max_pr_sessions=5
 posted_sessions=0  # NULL session_index/posted_at do not count
 status=progress
 OK: PROGRESS (legacy rows ignored)
+```
+
+Scenario 4 — round-2 fix: cap consumed on an OLD SHA, then a push lands a NEW SHA with no turns. Pre-fix this returned STALE (a recoverable badge), but the review loop refuses further codex sessions for that PR — operators need EXHAUSTED.
+
+```bash
+cd "$(git rev-parse --show-toplevel)" && uv run --quiet python - <<PY
+from datetime import UTC, datetime
+from src.review.repository import ReviewTurnRepository
+from src.review.models import PrReviewTurn
+from src.review.interfaces import CodexStatus, MAX_REVIEWS_PER_PR
+
+old_sha = "d" * 40
+new_sha = "e" * 40
+posted = datetime.now(UTC)
+turns = [
+    PrReviewTurn(
+        pr_url="https://github.com/o/r/pull/424d",
+        pr_number=4244,
+        head_sha=old_sha,
+        stage="codex",
+        turn_number=i,
+        status="completed",
+        consensus_reached=False,
+        session_index=i,
+        posted_at=posted,
+    )
+    for i in range(1, 6)
+]
+result = ReviewTurnRepository._derive_codex_status(
+    turns, new_sha, max_turns=1, max_pr_sessions=MAX_REVIEWS_PER_PR
+)
+print(f"old_sha posted_sessions=5  new_sha turns=0  cap=5")
+print(f"status={result.status.value}")
+assert result.status == CodexStatus.EXHAUSTED, result.status
+print("OK: EXHAUSTED (round-2 STALE override)")
+PY
+```
+
+```output
+old_sha posted_sessions=5  new_sha turns=0  cap=5
+status=exhausted
+OK: EXHAUSTED (round-2 STALE override)
 ```
 
 Pin tests live in `tests/board/test_codex_status_projection.py` (`test_progress_when_pr_session_cap_not_yet_reached`, `test_exhausted_pr_wide_session_cap_no_consensus`, `test_progress_no_session_index_does_not_count_toward_exhausted`) and `tests/board/test_board_review_boundary.py` (registry signature now requires `max_pr_sessions`).

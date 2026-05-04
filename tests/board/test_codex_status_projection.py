@@ -229,6 +229,80 @@ async def test_progress_no_session_index_does_not_count_toward_exhausted(
     assert result.status == CodexStatus.PROGRESS
 
 
+async def test_exhausted_overrides_stale_when_pr_session_cap_reached_on_old_sha(
+    db_session: AsyncSession, project_id: UUID
+) -> None:
+    """T-424 round-2 pin: cap consumed on old SHA, then a new push updates
+    ``pr_head_sha`` so the new SHA has zero turns. Pre-fix this returned
+    STALE (the recoverable "push landed, no pickup" state); after the fix
+    it returns EXHAUSTED because the review engine refuses further codex
+    sessions PR-wide once the cap is hit.
+
+    Mirrors the live state when an author keeps pushing after consuming
+    ``MAX_REVIEWS_PER_PR=5`` non-consensus sessions on an earlier commit.
+    """
+    from datetime import UTC, datetime
+
+    pr_url = "https://github.com/o/r/pull/424s"
+    old_sha = "5a" * 20
+    new_sha = "5b" * 20
+    posted = datetime.now(UTC)
+    turns = [
+        PrReviewTurn(
+            project_id=project_id,
+            pr_url=pr_url,
+            pr_number=4242,
+            head_sha=old_sha,
+            stage="codex",
+            turn_number=i,
+            status="completed",
+            consensus_reached=False,
+            session_index=i,
+            posted_at=posted,
+        )
+        for i in range(1, 6)
+    ]
+    result = await _status(
+        db_session, project_id, pr_url, new_sha, turns, max_turns=1, max_pr_sessions=5
+    )
+    assert result.status == CodexStatus.EXHAUSTED
+    assert result.progress is None
+
+
+async def test_stale_preserved_when_pr_session_cap_not_reached(
+    db_session: AsyncSession, project_id: UUID
+) -> None:
+    """The STALE override only triggers at the cap. With four posted
+    sessions on the old SHA and a fresh push, STALE remains the right
+    badge — the next codex session is still permitted.
+    """
+    from datetime import UTC, datetime
+
+    pr_url = "https://github.com/o/r/pull/424sl"
+    old_sha = "6a" * 20
+    new_sha = "6b" * 20
+    posted = datetime.now(UTC)
+    turns = [
+        PrReviewTurn(
+            project_id=project_id,
+            pr_url=pr_url,
+            pr_number=4243,
+            head_sha=old_sha,
+            stage="codex",
+            turn_number=i,
+            status="completed",
+            consensus_reached=False,
+            session_index=i,
+            posted_at=posted,
+        )
+        for i in range(1, 5)  # 4 < 5
+    ]
+    result = await _status(
+        db_session, project_id, pr_url, new_sha, turns, max_turns=1, max_pr_sessions=5
+    )
+    assert result.status == CodexStatus.STALE
+
+
 async def test_failed_timed_out(db_session: AsyncSession, project_id: UUID) -> None:
     """A timed_out turn for the current sha → FAILED."""
     pr_url = "https://github.com/o/r/pull/6"

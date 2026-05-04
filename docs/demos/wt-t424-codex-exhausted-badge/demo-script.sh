@@ -120,6 +120,41 @@ print("OK: PROGRESS (legacy rows ignored)")
 PY'
 
 uvx showboat note "$DEMO_FILE" \
+  "Scenario 4 — round-2 fix: cap consumed on an OLD SHA, then a push lands a NEW SHA with no turns. Pre-fix this returned STALE (a recoverable badge), but the review loop refuses further codex sessions for that PR — operators need EXHAUSTED."
+
+uvx showboat exec "$DEMO_FILE" bash 'cd "$(git rev-parse --show-toplevel)" && uv run --quiet python - <<PY
+from datetime import UTC, datetime
+from src.review.repository import ReviewTurnRepository
+from src.review.models import PrReviewTurn
+from src.review.interfaces import CodexStatus, MAX_REVIEWS_PER_PR
+
+old_sha = "d" * 40
+new_sha = "e" * 40
+posted = datetime.now(UTC)
+turns = [
+    PrReviewTurn(
+        pr_url="https://github.com/o/r/pull/424d",
+        pr_number=4244,
+        head_sha=old_sha,
+        stage="codex",
+        turn_number=i,
+        status="completed",
+        consensus_reached=False,
+        session_index=i,
+        posted_at=posted,
+    )
+    for i in range(1, 6)
+]
+result = ReviewTurnRepository._derive_codex_status(
+    turns, new_sha, max_turns=1, max_pr_sessions=MAX_REVIEWS_PER_PR
+)
+print(f"old_sha posted_sessions=5  new_sha turns=0  cap=5")
+print(f"status={result.status.value}")
+assert result.status == CodexStatus.EXHAUSTED, result.status
+print("OK: EXHAUSTED (round-2 STALE override)")
+PY'
+
+uvx showboat note "$DEMO_FILE" \
   "Pin tests live in \`tests/board/test_codex_status_projection.py\` (\`test_progress_when_pr_session_cap_not_yet_reached\`, \`test_exhausted_pr_wide_session_cap_no_consensus\`, \`test_progress_no_session_index_does_not_count_toward_exhausted\`) and \`tests/board/test_board_review_boundary.py\` (registry signature now requires \`max_pr_sessions\`)."
 
 uvx showboat verify "$DEMO_FILE"

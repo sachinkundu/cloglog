@@ -76,6 +76,11 @@ REVIEW_TIMEOUT_CAP_SECONDS: Final = 1800.0
 # settings-driven budget). New codex paths must use ``compute_review_timeout``.
 REVIEW_TIMEOUT_SECONDS: Final = REVIEW_TIMEOUT_BASE_SECONDS
 RATE_LIMIT_WINDOW_SECONDS: Final = 3600.0
+# T-381: extra delay added to ``seconds_until_next_slot()`` when scheduling a
+# rate-limit retry. The slot ages out at ``oldest + RATE_LIMIT_WINDOW_SECONDS``;
+# add a small buffer so the retry's ``allow()`` call is past the boundary even
+# under monotonic-clock skew.
+RATE_LIMIT_RETRY_BUFFER_SECONDS: Final = 1.0
 REVIEW_POST_RETRY_DELAY_SECONDS: Final = 5.0
 REVIEW_REQUEST_TIMEOUT_SECONDS: Final = 30.0
 # Backstop cap on bot review sessions per PR (T-227). The primary stop
@@ -217,30 +222,110 @@ class ReviewResult(BaseModel):
 
 
 class RateLimiter:
-    """Rolling-window rate limiter — at most N events per hour."""
+    """Rolling-window rate limiter — at most N events per hour.
+
+    T-381 reservations: a slot promised to a deferred retry is reserved
+    against the window so unrelated events can't claim it before the retry
+    fires. Each reservation is assigned its own concrete future wake time
+    in queue order — ``reserve()`` returns that wake time, and the retry
+    sleeps until then. Without per-reservation slot assignment, multiple
+    same-batch retries would all compute the same ``seconds_until_next_slot``
+    and fire together, busting the at-most-N-per-hour contract for
+    ``max_per_hour > 1`` (codex round 4 finding).
+    """
 
     def __init__(self, max_per_hour: int) -> None:
         self._timestamps: list[float] = []
+        # T-381: wake times of scheduled retries, monotonic-clock absolute.
+        self._reservations: list[float] = []
         self._max = max_per_hour
 
     def allow(self) -> bool:
         now = time.monotonic()
         self._timestamps = [t for t in self._timestamps if now - t < RATE_LIMIT_WINDOW_SECONDS]
-        if len(self._timestamps) >= self._max:
+        if len(self._timestamps) + len(self._reservations) >= self._max:
             return False
         self._timestamps.append(now)
         return True
 
-    def seconds_until_next_slot(self) -> float:
-        """Seconds until the oldest timestamp ages out of the window.
+    def can_reserve(self) -> bool:
+        """Cap reservations at ``max_per_hour`` (T-381).
 
-        Returns ``0.0`` if a slot is currently free. Used to build the
-        "retry after ~N minutes" message in the rate-limit skip comment.
+        Independent of active-timestamp count: each reservation gets its
+        own slot in the queue (see ``reserve()``), so the cap only bounds
+        how far into the future we'll defer a retry. Without this cap,
+        every rate-limited PR added a reservation indefinitely.
+        """
+        return len(self._reservations) < self._max
+
+    def reserve(self) -> float:
+        """Reserve a future slot, return its monotonic wake time (T-381).
+
+        Each reservation is placed in the queue at the earliest wake time
+        that keeps the rolling-window cap intact. With ``max_per_hour=2``
+        and active timestamps at T=0, T=3599, the first reservation wakes
+        at T=3600 (when T=0 ages out); the second wakes at T=7199 (when
+        T=3599 ages out). A naive "every retry uses ``seconds_until_next_slot``"
+        scheme would wake both at ~T=3600 and run three reviews in the same
+        rolling hour.
+
+        Caller must check ``can_reserve()`` first — over-reserving silently
+        admits more reviews than ``max_per_hour`` allows once the queue
+        completes.
         """
         now = time.monotonic()
         active = [t for t in self._timestamps if now - t < RATE_LIMIT_WINDOW_SECONDS]
-        # When max_per_hour is 0 the window is always "full" but there are
-        # no timestamps to wait on — the limit is effectively permanent.
+        # Combined queue of all scheduled review starts (active + reservations).
+        scheduled = sorted(active + self._reservations)
+        new_index = len(scheduled)
+        if new_index < self._max:
+            wake = now
+        else:
+            # Wait for the (new_index - max)-th oldest review's window
+            # to roll, freeing the Nth slot.
+            wake = scheduled[new_index - self._max] + RATE_LIMIT_WINDOW_SECONDS
+        # Don't go backwards: clock skew or already-aged-out scheduled
+        # entries could produce wake < now.
+        wake = max(wake, now)
+        self._reservations.append(wake)
+        return wake
+
+    def release_reservation(self, wake: float) -> None:
+        """Cancel a reservation without consuming the slot (T-381)."""
+        # ValueError when already released or never recorded — defensive no-op.
+        with contextlib.suppress(ValueError):
+            self._reservations.remove(wake)
+
+    def consume_reservation(self, wake: float) -> None:
+        """Promote a reservation to a real timestamp (T-381 retry firing).
+
+        Atomic w.r.t. the asyncio event loop — no await between the two
+        mutations — so a concurrent ``allow()`` cannot observe a momentary
+        free slot.
+        """
+        self.release_reservation(wake)
+        self._timestamps.append(time.monotonic())
+
+    def is_permanently_blocked(self) -> bool:
+        """``max_per_hour=0`` is the documented permanent-block mode.
+
+        Distinct from ``seconds_until_next_slot() == 0.0``, which can also
+        mean "a slot just aged out a millisecond ago". Use this method to
+        decide whether to schedule a retry — never a numeric comparison.
+        """
+        return self._max == 0
+
+    def seconds_until_next_slot(self) -> float:
+        """Seconds until the oldest timestamp ages out of the window.
+
+        Returns ``0.0`` if a slot is currently free OR if the limiter is
+        permanently blocked. Callers must use ``is_permanently_blocked()``
+        to disambiguate — never treat ``0.0`` as a sentinel. Note that
+        T-381's retry scheduling uses ``reserve()``'s queue-aware wake
+        time, not this single shared value.
+        """
+        now = time.monotonic()
+        active = [t for t in self._timestamps if now - t < RATE_LIMIT_WINDOW_SECONDS]
         if not active or len(active) < self._max:
             return 0.0
         oldest = min(active)
@@ -1324,6 +1409,12 @@ class ReviewEngineConsumer:
         self._session_factory = session_factory
         # T-377: default to the real httpx dispatcher; tests inject a fake.
         self._ci_dispatcher = ci_dispatcher or dispatch_ci_after_codex
+        # T-381: in-flight rate-limit retries, keyed by (repo_full_name, pr_number).
+        # The skip comment promises a retry; this dict makes that promise truthful
+        # by holding the scheduled ``asyncio.Task``. A second push to the same PR
+        # cancels the pending retry and reschedules with the newer event so the
+        # eventual review runs on the latest head.
+        self._pending_retries: dict[tuple[str, int], asyncio.Task[None]] = {}
 
     def handles(self, event: WebhookEvent) -> bool:
         # Skip if ANY reviewer bot authored the PR (prevents review-of-review
@@ -1338,22 +1429,50 @@ class ReviewEngineConsumer:
 
     async def handle(self, event: WebhookEvent) -> None:
         if not self._rate_limiter.allow():
-            wait_seconds = self._rate_limiter.seconds_until_next_slot()
+            # T-381: do all bookkeeping (cancel/reserve/register) BEFORE
+            # awaiting the skip-comment POST. Webhook dispatch wraps each
+            # event in ``asyncio.create_task`` (`webhook_dispatcher.py`),
+            # so two pushes for the same PR can run concurrently. If we
+            # awaited ``_notify_skip`` first, registration order would be
+            # determined by GitHub POST latency rather than webhook
+            # arrival order — a slow first POST could overwrite a
+            # newer-event registration with the stale event. The
+            # synchronous-block-then-await shape keeps the dedupe
+            # deterministic.
+            permanent = self._rate_limiter.is_permanently_blocked()
+            scheduled = False
+            wait_seconds = 0.0
+            if not permanent:
+                # Use the queue-aware ``reserve()`` wake time per
+                # reservation — NOT the shared ``seconds_until_next_slot()``
+                # — so multiple same-batch retries don't all wake at the
+                # first reopened slot (codex round 4).
+                scheduled, wake = self._schedule_rate_limit_retry(event)
+                if scheduled:
+                    wait_seconds = max(0.0, wake - time.monotonic())
+            comment_body = self._rate_limit_skip_comment(
+                wait_seconds=wait_seconds,
+                permanent=permanent,
+                scheduled=scheduled,
+            )
             logger.warning(
                 "Review rate limit exceeded, skipping PR #%d (%s)",
                 event.pr_number,
                 event.repo_full_name,
             )
-            await self._notify_skip(
-                event,
-                SkipReason.RATE_LIMIT,
-                (
-                    f"Codex review skipped: rate limit exceeded "
-                    f"({settings.review_max_per_hour} reviews/hour). "
-                    f"Will retry after ~{int(wait_seconds // 60)} minutes."
-                ),
-            )
+            await self._notify_skip(event, SkipReason.RATE_LIMIT, comment_body)
             return
+
+        # T-381 race fix: a buffered retry for this PR may still be
+        # sleeping. Cancel it synchronously and release its reservation —
+        # the current event is now serving the slot the retry held.
+        # Synchronous w.r.t. the event loop so a concurrent ``handle()``
+        # for a different PR cannot observe the half-released state.
+        retry_key = (event.repo_full_name, event.pr_number)
+        pending = self._pending_retries.pop(retry_key, None)
+        if pending is not None and not pending.done():
+            pending.cancel()
+            self._rate_limiter.release_reservation(getattr(pending, "_t381_wake", time.monotonic()))
 
         async with self._lock:
             try:
@@ -1364,6 +1483,116 @@ class ReviewEngineConsumer:
                     event.pr_number,
                     event.repo_full_name,
                 )
+
+    @staticmethod
+    def _rate_limit_skip_comment(*, wait_seconds: float, permanent: bool, scheduled: bool) -> str:
+        """Build the user-visible skip-comment body (T-381).
+
+        Three operationally-distinct cases must produce three different
+        bodies — the original "Will retry after ~N minutes" was a lie in
+        two of them:
+
+        - ``permanent`` (``REVIEW_MAX_PER_HOUR=0``): no retry will ever
+          fire; say so explicitly.
+        - ``not permanent and not scheduled``: capacity is full this
+          hour, nothing was queued. Tell the author what to do.
+        - ``scheduled``: the truthful original promise.
+        """
+        prefix = (
+            f"Codex review skipped: rate limit exceeded "
+            f"({settings.review_max_per_hour} reviews/hour). "
+        )
+        if scheduled:
+            return prefix + f"Will retry after ~{int(wait_seconds // 60)} minutes."
+        if permanent:
+            return prefix + (
+                "Automatic retry is disabled because REVIEW_MAX_PER_HOUR=0 "
+                "permanently blocks reviews."
+            )
+        return prefix + (
+            "All retry slots in the current hour are already reserved — "
+            "push a new commit after the window resets to re-trigger."
+        )
+
+    def _schedule_rate_limit_retry(self, event: WebhookEvent) -> tuple[bool, float]:
+        """Schedule a delayed retry for a rate-limited webhook event (T-381).
+
+        Returns ``(scheduled, wake)``. ``scheduled`` is ``True`` if a
+        retry task was created; ``wake`` is its monotonic-clock wake
+        time (or ``0.0`` when not scheduled). Caller (``handle()``) uses
+        the return value to pick a truthful skip-comment body — promising
+        a retry is dishonest when no task was scheduled — and to compute
+        the user-visible "Will retry after ~N minutes" delay.
+
+        Dedupes by ``(repo, pr_number)``: a second push for a PR that
+        already has a pending retry cancels the older task (releasing
+        its reservation synchronously) before reserving a new one. The
+        net-zero swap always succeeds, even when ``can_reserve()`` would
+        reject a *new* PR, because the released slot is immediately
+        re-claimed.
+
+        Each reservation is assigned its own queue slot via
+        ``RateLimiter.reserve()`` so multiple same-batch retries fire at
+        distinct times — never bunching at the first reopened slot.
+        Synchronous w.r.t. the event loop so the caller can run it inside
+        an atomic no-await block.
+        """
+        key = (event.repo_full_name, event.pr_number)
+        existing = self._pending_retries.pop(key, None)
+        if existing is not None and not existing.done():
+            existing.cancel()
+            # Release synchronously — the cancelled task's CancelledError
+            # branch must not also release, or the reservation count would
+            # double-decrement on replacement.
+            self._rate_limiter.release_reservation(
+                getattr(existing, "_t381_wake", time.monotonic())
+            )
+        if not self._rate_limiter.can_reserve():
+            # All capacity for the current hour is already promised. No
+            # retry is queued — caller must reflect that in the comment.
+            return False, 0.0
+        wake = self._rate_limiter.reserve()
+        delay = max(0.0, wake - time.monotonic()) + RATE_LIMIT_RETRY_BUFFER_SECONDS
+        task = asyncio.create_task(self._run_rate_limit_retry(event, wake, delay))
+        # Stash the wake time on the task so cancellation paths (success
+        # path in ``handle()``, replacement above) can release the right
+        # reservation entry.
+        task._t381_wake = wake  # type: ignore[attr-defined]
+        self._pending_retries[key] = task
+        return True, wake
+
+    async def _run_rate_limit_retry(self, event: WebhookEvent, wake: float, delay: float) -> None:
+        """Sleep ``delay`` then run the review for a rate-limited PR (T-381).
+
+        On wake, converts the reservation (keyed by ``wake``) into a real
+        timestamp so the rolling window correctly accounts for the
+        executed review. Cancellation (replacement push or success-path
+        supersession) does NOT release the reservation here — the
+        canceller already released it synchronously, so a second release
+        would corrupt the queue.
+        """
+        key = (event.repo_full_name, event.pr_number)
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        # Reservation → timestamp. Atomic against the event loop.
+        self._rate_limiter.consume_reservation(wake)
+        try:
+            async with self._lock:
+                await self._review_pr(event)
+        except Exception:
+            logger.exception(
+                "Rate-limit retry failed for PR #%d (%s)",
+                event.pr_number,
+                event.repo_full_name,
+            )
+        finally:
+            # Only clear our own entry — a newer push may have replaced it
+            # while ``_review_pr`` was running, and that task should keep
+            # tracking under the same key.
+            if self._pending_retries.get(key) is asyncio.current_task():
+                self._pending_retries.pop(key, None)
 
     async def _notify_skip(self, event: WebhookEvent, reason: SkipReason, body: str) -> None:
         """Post a skip-notification comment on the PR as the Codex bot.

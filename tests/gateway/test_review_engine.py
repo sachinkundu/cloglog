@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -434,6 +435,9 @@ class TestHandleOrchestration:
 
         review.assert_not_called()
         assert any("rate limit exceeded" in r.message.lower() for r in caplog.records)
+        # Cancel the T-381 retry task so it does not drag the test suite.
+        for task in list(consumer._pending_retries.values()):
+            task.cancel()
 
     @pytest.mark.asyncio
     async def test_happy_path_produces_review_result(
@@ -788,6 +792,396 @@ class TestHandleOrchestration:
         assert "danger-full-access" not in argv, (
             "danger-full-access does NOT skip bwrap; it still fails on unshare-net."
         )
+
+
+# ---------------------------------------------------------------------------
+# T-381: rate-limit retry scheduling — the skip comment promises a retry; this
+# class pins that the promise is honored by an actual scheduled task that calls
+# ``_review_pr`` after the wait window. Removing the schedule call (or letting
+# it fail to fire) reproduces the original lie.
+# ---------------------------------------------------------------------------
+
+
+class TestRateLimitRetry:
+    @staticmethod
+    def _saturate(consumer: ReviewEngineConsumer) -> None:
+        """Fill all slots so the next ``handle()`` hits the rate-limit branch.
+
+        Tests use ``max_per_hour=1`` rather than ``max_per_hour=0`` because
+        the latter is the documented "permanently rate-limited" mode and no
+        longer schedules a retry (see ``test_max_per_hour_zero_does_not_schedule_retry``).
+        Pre-filling the single slot is what real production traffic looks
+        like when the rate limit fires.
+        """
+        consumer._rate_limiter.allow()
+
+    @pytest.mark.asyncio
+    async def test_handle_schedules_real_retry_task(self) -> None:
+        consumer = ReviewEngineConsumer(max_per_hour=1)
+        self._saturate(consumer)
+        with (
+            patch.object(consumer, "_notify_skip", new=AsyncMock()) as notify,
+            patch.object(consumer, "_review_pr", new=AsyncMock()),
+        ):
+            await consumer.handle(_event())
+
+        try:
+            notify.assert_called_once()
+            key = ("sachinkundu/cloglog", 42)
+            assert key in consumer._pending_retries, (
+                "rate-limit skip must schedule a retry task — the user-facing "
+                "comment promises one (T-381)"
+            )
+            task = consumer._pending_retries[key]
+            assert isinstance(task, asyncio.Task)
+            assert not task.done()
+        finally:
+            for task in list(consumer._pending_retries.values()):
+                task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_retry_task_invokes_review_pr_after_wait(self) -> None:
+        consumer = ReviewEngineConsumer(max_per_hour=1)
+        self._saturate(consumer)
+        original_sleep = asyncio.sleep
+        slept: list[float] = []
+
+        async def fast_sleep(delay: float) -> None:
+            slept.append(delay)
+            await original_sleep(0)
+
+        review_done = asyncio.Event()
+
+        async def fake_review(event: WebhookEvent) -> None:
+            review_done.set()
+
+        with (
+            patch.object(consumer, "_notify_skip", new=AsyncMock()),
+            patch.object(consumer, "_review_pr", new=AsyncMock(side_effect=fake_review)) as review,
+            patch("src.gateway.review_engine.asyncio.sleep", new=fast_sleep),
+        ):
+            await consumer.handle(_event())
+            # Allow the retry task to run.
+            await asyncio.wait_for(review_done.wait(), timeout=1.0)
+
+        review.assert_called_once()
+        # The scheduled delay must respect the rate-limiter window — a 0-second
+        # delay would reproduce the original lie by retrying instantly while
+        # the limiter is still saturated. Buffer adds 1s for clock skew.
+        assert slept and slept[0] >= 1.0
+
+    @pytest.mark.asyncio
+    async def test_second_push_during_window_replaces_pending_retry(self) -> None:
+        consumer = ReviewEngineConsumer(max_per_hour=1)
+        self._saturate(consumer)
+        with (
+            patch.object(consumer, "_notify_skip", new=AsyncMock()),
+            patch.object(consumer, "_review_pr", new=AsyncMock()),
+        ):
+            await consumer.handle(_event(pr_number=99))
+            first_task = consumer._pending_retries[("sachinkundu/cloglog", 99)]
+            await consumer.handle(_event(pr_number=99))
+            second_task = consumer._pending_retries[("sachinkundu/cloglog", 99)]
+            # Give the cancellation a tick to settle.
+            await asyncio.sleep(0)
+
+        try:
+            assert first_task is not second_task
+            assert first_task.cancelled() or first_task.done()
+        finally:
+            for task in list(consumer._pending_retries.values()):
+                task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_max_per_hour_zero_does_not_schedule_retry(self) -> None:
+        """Permanent rate-limit (``max_per_hour=0``) must not schedule a retry.
+
+        Pin for codex review HIGH/MEDIUM-2 (PR #309): T-381 originally
+        scheduled a retry on every rate-limit hit, including the
+        permanent-block configuration documented at ``docs/review-engine-e2e.md``
+        and ``RateLimiter.seconds_until_next_slot``. That contradicted the
+        operator's "always rate-limited" intent — a retry would fire ~1s
+        after the skip comment. ``wait_seconds == 0.0`` from a False
+        ``allow()`` is the unambiguous signal of a permanent block.
+        """
+        consumer = ReviewEngineConsumer(max_per_hour=0)
+        with (
+            patch.object(consumer, "_notify_skip", new=AsyncMock()),
+            patch.object(consumer, "_review_pr", new=AsyncMock()) as review,
+        ):
+            await consumer.handle(_event())
+            await asyncio.sleep(0)  # let any erroneously-scheduled task tick
+
+        assert consumer._pending_retries == {}, (
+            "max_per_hour=0 is the documented permanent-block mode — no retry must be scheduled"
+        )
+        review.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_pending_retry_reserves_slot_against_other_prs(self) -> None:
+        """A pending retry's slot is reserved — unrelated PRs can't claim it.
+
+        Pin for codex review round 2 HIGH (PR #309): without reservations,
+        the retry path called ``allow()`` only at wake-time; a different
+        PR could steal the reopened slot in the meantime, so two reviews
+        ran inside the same hour even though ``max_per_hour=1``.
+        """
+        consumer = ReviewEngineConsumer(max_per_hour=1)
+        self._saturate(consumer)
+        with (
+            patch.object(consumer, "_notify_skip", new=AsyncMock()),
+            patch.object(consumer, "_review_pr", new=AsyncMock()),
+        ):
+            await consumer.handle(_event(pr_number=42))
+        try:
+            # PR 42 has reservation. Now age out the original timestamp —
+            # the slot would be free if not for the reservation.
+            consumer._rate_limiter._timestamps.clear()
+            assert consumer._rate_limiter.allow() is False, (
+                "A scheduled retry's reservation must hold the slot "
+                "against unrelated PRs (codex round 2 HIGH)"
+            )
+        finally:
+            for task in list(consumer._pending_retries.values()):
+                task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_zero_wait_at_boundary_still_schedules_retry(self) -> None:
+        """``wait_seconds == 0.0`` from a boundary slot-just-opened must schedule.
+
+        Pin for codex review round 2 HIGH (PR #309): the previous round's
+        guard treated ``wait_seconds == 0.0`` as the permanent-block
+        sentinel, but ``seconds_until_next_slot()`` also returns 0.0
+        when the oldest timestamp ages out between the ``allow()`` check
+        and the wait-seconds read (millisecond-scale clock skew). The
+        sentinel must be ``is_permanently_blocked()``, never a numeric
+        comparison.
+        """
+        consumer = ReviewEngineConsumer(max_per_hour=1)
+        self._saturate(consumer)
+        with (
+            patch.object(consumer, "_notify_skip", new=AsyncMock()),
+            patch.object(consumer, "_review_pr", new=AsyncMock()),
+            # Make seconds_until_next_slot return 0.0 (slot just opened) —
+            # but is_permanently_blocked() is still False because max != 0.
+            patch.object(
+                consumer._rate_limiter,
+                "seconds_until_next_slot",
+                return_value=0.0,
+            ),
+        ):
+            await consumer.handle(_event(pr_number=77))
+        try:
+            assert ("sachinkundu/cloglog", 77) in consumer._pending_retries, (
+                "wait_seconds=0.0 with max_per_hour>0 means the slot just "
+                "opened — must still schedule a retry, not silently drop it"
+            )
+        finally:
+            for task in list(consumer._pending_retries.values()):
+                task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_capacity_full_no_second_pr_retry_scheduled(self) -> None:
+        """Reservations honor ``max_per_hour`` — different PRs can't double-book.
+
+        Pin for codex review round 3 HIGH (PR #309): without a
+        ``can_reserve()`` cap, every rate-limited PR scheduled a retry.
+        With ``max_per_hour=1``, PR-A and PR-B both hitting the limit
+        would each reserve and each fire — two reviews in the same hour,
+        breaking the at-most-N-per-hour contract.
+        """
+        consumer = ReviewEngineConsumer(max_per_hour=1)
+        self._saturate(consumer)
+        with (
+            patch.object(consumer, "_notify_skip", new=AsyncMock()),
+            patch.object(consumer, "_review_pr", new=AsyncMock()),
+        ):
+            await consumer.handle(_event(pr_number=11))  # PR-A reserves
+            await consumer.handle(_event(pr_number=22))  # PR-B refused
+        try:
+            assert ("sachinkundu/cloglog", 11) in consumer._pending_retries
+            assert ("sachinkundu/cloglog", 22) not in consumer._pending_retries, (
+                "max_per_hour=1 with PR-A reservation in flight must refuse "
+                "PR-B's retry — otherwise the per-hour cap is busted"
+            )
+        finally:
+            for task in list(consumer._pending_retries.values()):
+                task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_permanent_block_skip_comment_is_truthful(self) -> None:
+        """``max_per_hour=0`` must not promise a retry in the skip comment.
+
+        Pin for codex review round 3 MEDIUM (PR #309): the comment body
+        was unconditional — even when no retry was scheduled, the bot
+        posted "Will retry after ~0 minutes," recreating the lie T-381
+        was supposed to eliminate.
+        """
+        consumer = ReviewEngineConsumer(max_per_hour=0)
+        captured: list[str] = []
+
+        async def capture_skip(event: Any, reason: Any, body: str) -> None:
+            captured.append(body)
+
+        with (
+            patch.object(consumer, "_notify_skip", side_effect=capture_skip),
+            patch.object(consumer, "_review_pr", new=AsyncMock()),
+        ):
+            await consumer.handle(_event())
+
+        assert captured, "skip comment must be posted"
+        assert "Will retry" not in captured[0], (
+            "permanent block must not promise a retry — that's the original lie"
+        )
+        assert "permanently blocks" in captured[0]
+
+    @pytest.mark.asyncio
+    async def test_capacity_exhausted_skip_comment_is_truthful(self) -> None:
+        """Capacity-exhausted skip must not promise a retry either.
+
+        Pin for codex review round 3 HIGH (PR #309): when
+        ``can_reserve()`` refuses a *different* PR's retry, the skip
+        comment must say so — promising a retry that won't fire is the
+        same lie under a different cause.
+        """
+        consumer = ReviewEngineConsumer(max_per_hour=1)
+        self._saturate(consumer)
+        captured: list[str] = []
+
+        async def capture_skip(event: Any, reason: Any, body: str) -> None:
+            captured.append(body)
+
+        with (
+            patch.object(consumer, "_notify_skip", side_effect=capture_skip),
+            patch.object(consumer, "_review_pr", new=AsyncMock()),
+        ):
+            await consumer.handle(_event(pr_number=11))  # reserves
+            await consumer.handle(_event(pr_number=22))  # refused
+
+        try:
+            assert len(captured) == 2
+            assert "Will retry" in captured[0]
+            assert "Will retry" not in captured[1], (
+                "capacity-exhausted skip must not promise a retry"
+            )
+            assert "already reserved" in captured[1]
+        finally:
+            for task in list(consumer._pending_retries.values()):
+                task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_max_2_two_retries_get_distinct_slots(self) -> None:
+        """With ``max_per_hour=2``, two same-batch retries must wake at distinct slots.
+
+        Pin for codex review round 4 MEDIUM (PR #309): the previous
+        round used a single shared ``seconds_until_next_slot()`` for
+        every reservation, so with max=2 + two saturated timestamps,
+        two rate-limited PRs both scheduled retries to wake at the
+        first reopening of the window. Both retries firing at ~T+0
+        (relative to slot reopen) ran 3 reviews in the same rolling
+        hour, busting the at-most-2-per-hour contract.
+
+        Now ``RateLimiter.reserve()`` queues each reservation against
+        a distinct future slot: the first wakes when the oldest active
+        timestamp ages out, the second wakes when the second-oldest
+        ages out — RATE_LIMIT_WINDOW_SECONDS apart in the worst case.
+        """
+        consumer = ReviewEngineConsumer(max_per_hour=2)
+        # Active timestamps spaced 1800s apart in monotonic time — both
+        # in-window. With queue-aware slot assignment the first retry
+        # wakes when the older timestamp ages out, the second wakes
+        # 1800s later when the second-oldest ages out. The buggy code
+        # used a single shared ``seconds_until_next_slot()`` for both,
+        # so they'd wake within milliseconds of each other.
+        now = time.monotonic()
+        rate_limiter = consumer._rate_limiter
+        rate_limiter._timestamps.extend([now - 1800.0, now])
+
+        with (
+            patch.object(consumer, "_notify_skip", new=AsyncMock()),
+            patch.object(consumer, "_review_pr", new=AsyncMock()),
+        ):
+            await consumer.handle(_event(pr_number=1))
+            await consumer.handle(_event(pr_number=2))
+
+        try:
+            t1 = consumer._pending_retries[("sachinkundu/cloglog", 1)]
+            t2 = consumer._pending_retries[("sachinkundu/cloglog", 2)]
+            wake1 = t1._t381_wake  # type: ignore[attr-defined]
+            wake2 = t2._t381_wake  # type: ignore[attr-defined]
+            # Codex round 4 failure: same wake time for both retries
+            # because a shared ``seconds_until_next_slot()`` was used
+            # everywhere. Queue-aware assignment must produce distinct,
+            # well-separated slots — the second wake is at least
+            # ~1800s after the first because the active timestamps were
+            # spaced that far apart.
+            assert wake2 > wake1, (
+                "Two retries scheduled in the same batch must take distinct "
+                "queue slots — codex round 4 caught both waking at the same "
+                "shared ``seconds_until_next_slot()`` value, busting max=2"
+            )
+            assert wake2 - wake1 >= 1500.0, (
+                f"Slots must reflect the active-timestamp spacing "
+                f"(expected ~1800s gap, got {wake2 - wake1:.1f}s)"
+            )
+        finally:
+            for task in list(consumer._pending_retries.values()):
+                task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_rate_limited_pushes_arrival_order_wins(self) -> None:
+        """Concurrent pushes register retries in webhook arrival order.
+
+        Pin for codex review round 2 MEDIUM (PR #309): registration ran
+        AFTER the awaited ``_notify_skip()`` POST, so a slow first POST
+        could overwrite a newer event's registration. Now scheduling
+        runs synchronously before the await; arrival order wins
+        regardless of POST latency.
+        """
+        consumer = ReviewEngineConsumer(max_per_hour=1)
+        self._saturate(consumer)
+
+        first_skip_release = asyncio.Event()
+        skip_calls = 0
+
+        async def gated_notify_skip(*args: Any, **kwargs: Any) -> None:
+            nonlocal skip_calls
+            skip_calls += 1
+            # Gate ONLY the first call so the second handle() can run
+            # synchronously past its own (ungated) notify_skip and
+            # complete before the first releases.
+            if skip_calls == 1:
+                await first_skip_release.wait()
+
+        with (
+            patch.object(consumer, "_notify_skip", side_effect=gated_notify_skip),
+            patch.object(consumer, "_review_pr", new=AsyncMock()),
+        ):
+            first = asyncio.create_task(consumer.handle(_event(pr_number=11)))
+            # Yield so handle() runs synchronously up to the first await
+            # (which is _notify_skip — by which point scheduling is done).
+            await asyncio.sleep(0)
+            first_event_task = consumer._pending_retries[("sachinkundu/cloglog", 11)]
+
+            await consumer.handle(_event(pr_number=11))
+            second_event_task = consumer._pending_retries[("sachinkundu/cloglog", 11)]
+            assert first_event_task is not second_event_task, (
+                "Second push must replace the first's pending retry (arrival order wins)"
+            )
+
+            first_skip_release.set()
+            await first
+            # First handle() finishes its POST after the second already
+            # registered — the pending entry must still be the second's,
+            # never overwritten by the slow first.
+            assert consumer._pending_retries[("sachinkundu/cloglog", 11)] is second_event_task, (
+                "Slow POST on the first event must not retroactively "
+                "overwrite the second event's registration "
+                "(codex round 2 MEDIUM)"
+            )
+
+        for task in list(consumer._pending_retries.values()):
+            task.cancel()
 
 
 # ---------------------------------------------------------------------------
@@ -2263,6 +2657,41 @@ class TestPostSkipComment:
         assert ok1 is True
         assert ok2 is False
         assert route.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_different_body_same_reason_both_post(self) -> None:
+        """T-381 / codex round 5 HIGH: a rescheduled rate-limit retry whose
+        ETA changed must not be silently suppressed by the earlier comment.
+
+        The dedupe key includes the body so a fresh "Will retry after ~M
+        minutes" (different M) is posted instead of letting the author
+        keep seeing the stale ETA after a replacement push.
+        """
+        with respx.mock() as mock:
+            route = mock.post(_ISSUES_COMMENTS_URL).mock(
+                return_value=httpx.Response(201, json={"id": 1})
+            )
+            ok1 = await post_skip_comment(
+                "sachinkundu/cloglog",
+                42,
+                SkipReason.RATE_LIMIT,
+                "Will retry after ~5 minutes.",
+                "tok",
+            )
+            ok2 = await post_skip_comment(
+                "sachinkundu/cloglog",
+                42,
+                SkipReason.RATE_LIMIT,
+                "Will retry after ~59 minutes.",
+                "tok",
+            )
+
+        assert ok1 is True
+        assert ok2 is True, (
+            "Updated ETA must be posted — body-aware suppression keeps "
+            "the visible PR comment in sync with the actual scheduled retry"
+        )
+        assert route.call_count == 2
 
     @pytest.mark.asyncio
     async def test_different_reasons_both_post(self) -> None:

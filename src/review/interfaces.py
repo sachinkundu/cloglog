@@ -38,6 +38,8 @@ class ReviewTurnSnapshot:
     # same logical session without re-querying GitHub.
     session_index: int | None = None
     posted_at: datetime | None = None
+    # T-407: set to 'db_error' when findings/learnings persistence failed.
+    outcome: str | None = None
 
 
 @dataclass(frozen=True)
@@ -280,6 +282,23 @@ class IReviewTurnRegistry(Protocol):
         and a row created by ``claim_turn`` but never written by
         ``record_findings_and_learnings`` would carry zero findings and zero
         learnings (a meaningless preamble entry).
+        """
+        ...
+
+    async def set_outcome(
+        self,
+        *,
+        pr_url: str,
+        head_sha: str,
+        stage: str,
+        turn_number: int,
+        outcome: str,
+    ) -> None:
+        """Stamp an outcome marker on a turn row after a persistence failure.
+
+        Called best-effort after catching a DBAPIError from
+        ``record_findings_and_learnings``. The caller must ensure the session
+        is clean (rolled back) before calling this. T-407/T-409.
         """
         ...
 

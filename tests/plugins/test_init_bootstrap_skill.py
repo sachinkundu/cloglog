@@ -252,26 +252,26 @@ def test_step4a_documents_t316_config_keys() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_step2_writes_credentials_d_for_multi_project() -> None:
-    """T-382: on a multi-project host, Step 2 must write the new key to
-    ~/.cloglog/credentials.d/<slug>, not ask the operator to export an env var.
+def test_step2_always_writes_credentials_d() -> None:
+    """T-398: Step 2 must always write to ~/.cloglog/credentials.d/<slug>.
 
-    Pre-T-382 the multi-project branch printed the key and told the operator
-    to `export CLOGLOG_API_KEY=...`. That left the global file untouched
-    (correct) but required every shell that launched Claude Code to inherit
-    the env — easy to miss, easy to clobber when switching projects. Since
-    T-382 the resolver picks ~/.cloglog/credentials.d/<slug> automatically,
-    so init must write the file directly.
+    T-382 introduced per-project credentials but kept a MULTI_PROJECT branch
+    that wrote to the legacy ~/.cloglog/credentials on single-project hosts.
+    T-398 removed that branch: /init now always writes the per-project file
+    because project_id is always set in config.yaml after bootstrap, and the
+    T-398 strict-fallback guard refuses the legacy file when project_id is
+    present — so writing there would break the next start.
     """
     step2 = _step2_body(_read())
     assert "credentials.d" in step2, (
-        "Step 2 must write to ~/.cloglog/credentials.d/<slug> on multi-project "
-        "hosts (T-382). Pre-T-382 export-only behaviour is no longer correct."
+        "Step 2 must write to ~/.cloglog/credentials.d/<slug> (T-382/T-398). "
+        "Per-project credential files are always used since T-398."
     )
-    assert "MULTI_PROJECT" in step2, (
-        "Step 2 must still distinguish single-project from multi-project hosts "
-        "via $MULTI_PROJECT so single-project hosts keep writing to the legacy "
-        "global file (backward compatibility)."
+    assert "MULTI_PROJECT" not in step2, (
+        "Step 2 must not contain a MULTI_PROJECT conditional (T-398). "
+        "The single-project shortcut that wrote to ~/.cloglog/credentials was "
+        "removed because project_id is always set after bootstrap and the "
+        "T-398 strict-fallback guard refuses the legacy file when project_id is set."
     )
 
 
@@ -322,13 +322,16 @@ def test_step4a_uses_project_field_not_project_name() -> None:
             )
 
 
-def test_step2_repair_branch_is_multi_project_aware() -> None:
-    """T-382 codex round 3: the Step 2 repair text (shown when project_id
-    is in the repo but no credentials are on the host) MUST NOT instruct
-    the operator to write the recovered key into ~/.cloglog/credentials
-    unconditionally — on a multi-project host that file holds another
-    project's key and would be silently overwritten. The repair text must
-    branch on `~/.cloglog/credentials` already containing a key.
+def test_step2_repair_always_writes_credentials_d() -> None:
+    """T-398: the Step 2 repair text (shown when project_id is in the repo
+    but no credentials are on the host) must instruct the operator to always
+    write to ~/.cloglog/credentials.d/<slug>.
+
+    The T-382 repair had a conditional that wrote to ~/.cloglog/credentials
+    on single-project hosts. T-398 removes that branch: since project_id is
+    set in config.yaml on any bootstrapped checkout, the T-398 strict-fallback
+    guard refuses the legacy file when project_id is present — so writing
+    there would produce credentials the MCP server can no longer load.
     """
     body = _read()
     # Locate the repair-text block (between "Credentials missing for an
@@ -341,15 +344,14 @@ def test_step2_repair_branch_is_multi_project_aware() -> None:
 
     assert "credentials.d" in repair, (
         "Step 2 repair text must reference ~/.cloglog/credentials.d/<slug> so "
-        "operators on multi-project hosts don't clobber another project's key."
+        "operators write the recovered key to the per-project file (T-382/T-398)."
     )
-    # The block must include the conditional check on the legacy file.
-    assert (
-        "if [ -f ~/.cloglog/credentials ]" in repair
-        or "if [ -f ${HOME}/.cloglog/credentials ]" in repair
-    ), (
-        "Repair text must check for an existing legacy credentials file before "
-        "deciding where to write the recovered key (single-project vs multi-project branch)."
+    # The multi-project conditional must be absent — always use credentials.d.
+    assert "if [ -f ~/.cloglog/credentials ]" not in repair, (
+        "Step 2 repair text must not check for ~/.cloglog/credentials and branch "
+        "on it (T-398). Since project_id is set on all bootstrapped checkouts, the "
+        "T-398 strict-fallback guard refuses the legacy file — writing there would "
+        "break the next start. Always write to credentials.d/<slug>."
     )
 
 
@@ -395,6 +397,31 @@ def test_step2_validates_existing_slug_against_path_traversal() -> None:
         "Step 2 must validate the project: scalar against [A-Za-z0-9._-]+ "
         "before reading or writing ~/.cloglog/credentials.d/<slug> — "
         "unvalidated splicing allows `project: ../escape` traversal."
+    )
+
+
+def test_phase1_legacy_file_not_counted_when_project_id_set() -> None:
+    """T-398: Phase 1 must NOT count ~/.cloglog/credentials as valid when
+    project_id is set in config.yaml.
+
+    When project_id IS set, loadApiKey's strict-fallback guard refuses the
+    legacy global file and fails at MCP startup. Phase 1 treating the legacy
+    file as "bootstrapped" would cause the operator to skip Phase 2 and end
+    up with a non-starting MCP server.
+
+    The fix: the elif that sets EXISTING_CREDS="file" must be guarded by
+    [ -z "$EXISTING_PROJECT_ID" ] so it only fires on legacy single-project
+    hosts where project_id is absent.
+    """
+    step2 = _step2_body(_read())
+    # Verify the legacy-file elif is guarded by EXISTING_PROJECT_ID being empty.
+    assert "EXISTING_PROJECT_ID" in step2 and (
+        '[ -z "$EXISTING_PROJECT_ID" ]' in step2 or '[ -z "$EXISTING_PROJECT_ID" ]' in step2
+    ), (
+        'Phase 1 must guard the EXISTING_CREDS="file" branch with '
+        '[ -z "$EXISTING_PROJECT_ID" ]. Without the guard, an existing checkout '
+        "with project_id set and only a legacy global file is incorrectly reported "
+        "as bootstrapped — the MCP server then fails at startup (T-398 Guard 3)."
     )
 
 

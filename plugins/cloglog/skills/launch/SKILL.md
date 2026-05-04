@@ -211,7 +211,7 @@ When the supervisor inbox receives `agent_unregistered` from a worktree agent:
    zellij action write-chars "bash '${WORKTREE_PATH}/.cloglog/launch.sh' 'Read ${WORKTREE_PATH}/AGENT_PROMPT.md and all shutdown-artifacts/work-log-T-*.md files in ${WORKTREE_PATH}, then begin the next task.'"
    zellij action write "13"   # send Enter
    ```
-4. **Confirmation phase applies to relaunches too.** A continuation prompt can trip the same bootstrap failures as an initial launch — `claude` can fail to start, the new task's `--model` can be unavailable, MCP can be down, the heredoc-rendered `launch.sh` can have decayed (T-353-class issue introduced by an unrelated edit). After issuing the relaunch keystrokes, watch `<project_root>/.cloglog/inbox` for an `agent_started` event whose `worktree` field equals `${WORKTREE_NAME}`, with the same `launch_confirm_timeout_seconds` deadline (default `90`) as Step 5. On timeout, emit the same diagnostic checklist (`list-tabs --json | jq` / `bash -n` / `agent-shutdown-debug.log` / split `CLOGLOG_API_KEY` (env or `~/.cloglog/credentials`) and `DATABASE_URL` (`.env`) probes / `head -3 launch.sh`) and hand off to the operator. **Do NOT silently retry the relaunch; do NOT loop up to N times.** The supervisor must NOT mark the worktree as continuing on the next task until either `agent_started` arrives or the operator has acted.
+4. **Confirmation phase applies to relaunches too.** A continuation prompt can trip the same bootstrap failures as an initial launch — `claude` can fail to start, the new task's `--model` can be unavailable, MCP can be down, the heredoc-rendered `launch.sh` can have decayed (T-353-class issue introduced by an unrelated edit). After issuing the relaunch keystrokes, watch `<project_root>/.cloglog/inbox` for an `agent_started` event whose `worktree` field equals `${WORKTREE_NAME}`, with the same `launch_confirm_timeout_seconds` deadline (default `90`) as Step 5. On timeout, emit the same diagnostic checklist (`list-tabs --json | jq` / `bash -n` / `agent-shutdown-debug.log` / split `CLOGLOG_API_KEY` (env first; for repos with `project_id` in `config.yaml` check `~/.cloglog/credentials.d/<project_slug>`; legacy fallback `~/.cloglog/credentials` when no `project_id` is set) and `DATABASE_URL` (`.env`) probes / `head -3 launch.sh`) and hand off to the operator. **Do NOT silently retry the relaunch; do NOT loop up to N times.** The supervisor must NOT mark the worktree as continuing on the next task until either `agent_started` arrives or the operator has acted.
 5. **If no backlog tasks remain** → invoke the `cloglog:close-wave` skill for this worktree.
 
 ## Pipeline behaviour (Features Only)
@@ -431,6 +431,20 @@ _api_key() {
       return 0
     fi
   fi
+  # T-398 Guard 3: if project_id is set in config.yaml but no per-project
+  # credentials file was found, refuse the legacy global fallback. The MCP
+  # server's loadApiKey and the shared hook helper resolve-api-key.sh enforce
+  # the same rule — launch.sh must be consistent or the signal-trap
+  # _unregister_fallback POST authenticates as the wrong project.
+  local project_id
+  project_id=$(_read_scalar_yaml "$PROJECT_ROOT/.cloglog/config.yaml" "project_id")
+  if [[ -n "$project_id" ]]; then
+    echo "[$(date -Iseconds)] launch.sh _api_key: project_id=${project_id} is set but credentials.d/${slug:-<no-slug>} is missing; refusing legacy fallback (T-398)" \
+      >> /tmp/agent-shutdown-debug.log 2>&1 || true
+    return 0
+  fi
+  # Legacy fallback — only safe on hosts where project_id is not set in
+  # config.yaml (pre-T-382 single-project installs).
   v=$(_read_credentials_file "${HOME}/.cloglog/credentials")
   [[ -n "$v" ]] && { echo "$v"; return; }
   return 0
@@ -572,7 +586,7 @@ After all agents are launched, the main agent does NOT trust tab creation as pro
    2. `bash -n <worktree>/.cloglog/launch.sh` — syntax valid? Non-zero ⇒ heredoc-rendering failure (T-353 class).
    3. `tail -20 /tmp/agent-shutdown-debug.log` — any trap fire mentioning this worktree? Process started then died on signal.
    4. **Credentials.** `CLOGLOG_API_KEY` and `DATABASE_URL` live in different homes — probe each at its real source:
-      - `printenv CLOGLOG_API_KEY` in the launcher shell, or `grep '^CLOGLOG_API_KEY=' ~/.cloglog/credentials` — the launcher's `_api_key` resolves env first, then `~/.cloglog/credentials` (mode 0600). The project API key MUST NOT live in `<worktree>/.env`; `tests/test_mcp_json_no_secret.py` and `.cloglog/on-worktree-create.sh` pin that invariant. If the operator following this checklist is tempted to add the key to `.env`, that is the regression — fix the env or the credentials file instead.
+      - `printenv CLOGLOG_API_KEY` in the launcher shell. If the repo has `project_id` in `.cloglog/config.yaml` (bootstrapped), the key should live in `~/.cloglog/credentials.d/<project_slug>`; legacy repos without `project_id` fall back to `~/.cloglog/credentials`. Run `grep '^project_id:' <worktree>/.cloglog/config.yaml` to determine which applies. The project API key MUST NOT live in `<worktree>/.env`; `tests/test_mcp_json_no_secret.py` and `.cloglog/on-worktree-create.sh` pin that invariant. If the operator following this checklist is tempted to add the key to `.env`, that is the regression — fix the env or the credentials file instead.
       - `grep '^DATABASE_URL=' <worktree>/.env` — the per-worktree DB URL is what `on-worktree-create.sh` writes; absent ⇒ half-applied bootstrap.
    5. `head -3 <worktree>/.cloglog/launch.sh` — first line is `#!/bin/bash`? Sanity check the file rendered at all.
 

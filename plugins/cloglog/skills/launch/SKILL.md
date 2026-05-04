@@ -431,6 +431,20 @@ _api_key() {
       return 0
     fi
   fi
+  # T-398 Guard 3: if project_id is set in config.yaml but no per-project
+  # credentials file was found, refuse the legacy global fallback. The MCP
+  # server's loadApiKey and the shared hook helper resolve-api-key.sh enforce
+  # the same rule — launch.sh must be consistent or the signal-trap
+  # _unregister_fallback POST authenticates as the wrong project.
+  local project_id
+  project_id=$(_read_scalar_yaml "$PROJECT_ROOT/.cloglog/config.yaml" "project_id")
+  if [[ -n "$project_id" ]]; then
+    echo "[$(date -Iseconds)] launch.sh _api_key: project_id=${project_id} is set but credentials.d/${slug:-<no-slug>} is missing; refusing legacy fallback (T-398)" \
+      >> /tmp/agent-shutdown-debug.log 2>&1 || true
+    return 0
+  fi
+  # Legacy fallback — only safe on hosts where project_id is not set in
+  # config.yaml (pre-T-382 single-project installs).
   v=$(_read_credentials_file "${HOME}/.cloglog/credentials")
   [[ -n "$v" ]] && { echo "$v"; return; }
   return 0

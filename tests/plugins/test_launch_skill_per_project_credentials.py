@@ -254,6 +254,47 @@ def test_present_but_unreadable_per_project_file_blocks_legacy_fallback(tmp_path
         os.chmod(bad_file, 0o600)  # so cleanup can rm
 
 
+def test_project_id_set_missing_per_project_file_blocks_legacy_fallback(tmp_path: Path) -> None:
+    """T-398 Guard 3: when project_id is in config.yaml but no per-project
+    credentials file exists, _api_key() must return empty — NOT the legacy
+    global file's key.
+
+    The T-398 strict-fallback guard in the MCP server (loadApiKey) and the
+    shared hook helper (resolve-api-key.sh) both refuse the legacy file when
+    project_id is set. launch.sh's _api_key must be consistent or the signal-
+    trap _unregister_fallback POST authenticates as the wrong project on the
+    shutdown path.
+
+    Seeds:
+      - .cloglog/config.yaml with both `project:` AND `project_id:`
+      - NO credentials.d/<slug> file
+      - ~/.cloglog/credentials with another project's key
+
+    Asserts _api_key returns empty.
+    """
+    helpers = _render_launch_sh(tmp_path)
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+
+    project_root = tmp_path / "myproject"
+    project_root.mkdir()
+    (project_root / ".cloglog").mkdir()
+    (project_root / ".cloglog" / "config.yaml").write_text(
+        "project: myproject\nproject_id: some-uuid-here\nbackend_url: http://127.0.0.1:8001\n"
+    )
+
+    # No credentials.d/myproject file — per-project file is absent.
+    # Legacy global file exists with ANOTHER project's key.
+    _write_credfile(fake_home / ".cloglog" / "credentials", "WRONG-PROJECT-KEY")
+
+    resolved = _resolve_key(helpers, project_root, fake_home)
+    assert resolved == "", (
+        f"Expected empty (T-398 Guard 3 — refuse legacy fallback when project_id set), "
+        f"got {resolved!r}. When project_id is in config.yaml, _api_key must not fall "
+        "through to ~/.cloglog/credentials — the key there may belong to another project."
+    )
+
+
 def test_skill_documents_per_project_resolution_order() -> None:
     """Text-level pin: SKILL.md `_api_key` block names the new resolution
     chain. Stops a future edit from silently reverting to the old global-only

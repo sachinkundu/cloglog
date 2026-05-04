@@ -396,3 +396,91 @@ async def test_board_endpoint_carries_codex_status(
     assert card["codex_status"] == "pass"
     assert card["codex_progress"] is None
     assert card["codex_review_picked_up"] is True  # deprecated boolean still correct
+
+
+async def test_board_falls_back_to_legacy_when_two_tasks_share_pr_url(
+    client: object, db_session: AsyncSession
+) -> None:
+    """When two tasks in one project share a pr_url, codex_status must be null
+    (legacy boolean path) so the last-written sha does not shadow the other task.
+
+    Same-project PR URL reuse is technically permitted today (project-wide guard
+    is xfailed). The board must not misprojected status in that scenario.
+    """
+    from httpx import AsyncClient
+    from sqlalchemy import select as sa_select
+
+    from src.board.models import Task
+
+    assert isinstance(client, AsyncClient)
+
+    pr_url = f"https://github.com/o/r/pull/dup{uuid4().hex[:4]}"
+    sha = "7a" * 20
+
+    project = (
+        await client.post("/api/v1/projects", json={"name": f"dup-{uuid4().hex[:6]}"})
+    ).json()
+    epic = (
+        await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "E"})
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "F"},
+        )
+    ).json()
+
+    # Two tasks sharing the same PR URL within one project
+    task_a = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "Task A"},
+        )
+    ).json()
+    task_b = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "Task B"},
+        )
+    ).json()
+
+    for tid in (task_a["id"], task_b["id"]):
+        await client.patch(
+            f"/api/v1/tasks/{tid}",
+            json={"pr_url": pr_url, "status": "review"},
+        )
+
+    # Give task_a a sha and a passing codex turn
+    row_a = (await db_session.execute(sa_select(Task).where(Task.id == task_a["id"]))).scalar_one()
+    row_a.pr_head_sha = sha
+    await db_session.commit()
+
+    db_session.add(
+        PrReviewTurn(
+            project_id=project["id"],
+            pr_url=pr_url,
+            pr_number=int(pr_url.split("/pull/dup")[1], 16),
+            head_sha=sha,
+            stage="codex",
+            turn_number=1,
+            status="completed",
+            consensus_reached=True,
+        )
+    )
+    await db_session.commit()
+
+    board = (await client.get(f"/api/v1/projects/{project['id']}/board")).json()
+    cards = {
+        c["id"]: c
+        for col in board["columns"]
+        for c in col["tasks"]
+        if c["id"] in (task_a["id"], task_b["id"])
+    }
+
+    # Both tasks must fall back to the legacy boolean path (codex_status=null)
+    # because the pr_url is shared — the discriminated path cannot safely project
+    # per-task status when two tasks map to the same pr_url key.
+    assert cards[task_a["id"]]["codex_status"] is None, "task_a should use legacy path"
+    assert cards[task_b["id"]]["codex_status"] is None, "task_b should use legacy path"
+    # codex_review_picked_up is still accurate via the legacy boolean path
+    assert cards[task_a["id"]]["codex_review_picked_up"] is True

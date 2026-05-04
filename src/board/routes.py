@@ -614,14 +614,26 @@ async def get_board(
     )
 
     # Split tasks by whether they have a stored head_sha:
-    # - With sha: full discriminated codex status projection (T-409).
-    # - Without sha: legacy boolean check (tasks created before the migration
-    #   or whose PR webhook hasn't fired yet). This keeps codex_review_picked_up
-    #   accurate for all tasks on the board regardless of migration state.
+    # - With sha (unique pr_url): full discriminated codex status projection (T-409).
+    # - Without sha OR duplicate pr_url within the board: legacy boolean check.
+    #
+    # Duplicate guard: the same pr_url can appear on multiple tasks in one project
+    # today (project-wide uniqueness is not yet enforced — xfailed test). When
+    # duplicates exist, collapsing them into a dict[pr_url → sha] would let the
+    # last-written entry shadow the others, producing wrong status for every task
+    # except the "winner". Duplicated pr_urls fall back to the legacy boolean path
+    # until project-wide uniqueness is guaranteed.
+    from collections import Counter
+
+    pr_url_counts: Counter[str] = Counter(t.pr_url for t in tasks if t.pr_url)
     pr_url_to_head_sha: dict[str, str] = {
-        t.pr_url: t.pr_head_sha for t in tasks if t.pr_url and t.pr_head_sha
+        t.pr_url: t.pr_head_sha
+        for t in tasks
+        if t.pr_url and t.pr_head_sha and pr_url_counts[t.pr_url] == 1
     }
-    legacy_pr_urls: list[str] = [t.pr_url for t in tasks if t.pr_url and not t.pr_head_sha]
+    legacy_pr_urls: list[str] = list(
+        {t.pr_url for t in tasks if t.pr_url and (not t.pr_head_sha or pr_url_counts[t.pr_url] > 1)}
+    )
 
     review_registry = make_review_turn_registry(session)
 

@@ -104,6 +104,44 @@ export class UnusableProjectCredentialsError extends Error {
   }
 }
 
+/**
+ * `.cloglog/config.yaml` has `project_id` set, which means this checkout
+ * has a specific project identity — but no per-project credentials file
+ * exists for it. Falling through to the legacy global file would silently
+ * authenticate as whatever project owns `~/.cloglog/credentials`, recreating
+ * the T-398 incident where an antisocial session bound to cloglog because
+ * `~/.cloglog/credentials.d/antisocial` was absent. Fail loud.
+ */
+export class ProjectIdSetMissingCredentialsError extends Error {
+  constructor(
+    public readonly projectId: string,
+    public readonly projectSlug: string | null,
+    public readonly expectedCredentialsPath: string,
+  ) {
+    const slugNote = projectSlug
+      ? `per-project, slug=${projectSlug}`
+      : 'per-project — slug could not be derived from project name or path'
+    super(
+      [
+        `cloglog-mcp: .cloglog/config.yaml sets project_id=${projectId} but no per-project credentials file was found.`,
+        '',
+        `Expected: ${expectedCredentialsPath} (${slugNote})`,
+        '',
+        `When project_id is set, the legacy ~/.cloglog/credentials fallback is disabled`,
+        `to prevent silently authenticating as the wrong project (T-398 hardening).`,
+        '',
+        `Fix: run /cloglog init to mint and write the per-project key, OR manually:`,
+        `  mkdir -p ~/.cloglog/credentials.d`,
+        `  printf "CLOGLOG_API_KEY=<this project's key>\\n" > ${expectedCredentialsPath}`,
+        `  chmod 600 ${expectedCredentialsPath}`,
+        '',
+        'See docs/setup-credentials.md.',
+      ].join('\n'),
+    )
+    this.name = 'ProjectIdSetMissingCredentialsError'
+  }
+}
+
 export interface LoadApiKeyOptions {
   /** Legacy global credentials path. Defaults to `~/.cloglog/credentials`. */
   credentialsPath?: string
@@ -168,6 +206,34 @@ export function resolveProjectSlug(projectRoot: string): string | null {
 }
 
 /**
+ * Read the `project_id` scalar from `<projectRoot>/.cloglog/config.yaml`.
+ * Returns null if the file is absent or has no `project_id` field.
+ * Used by Guard 3 (T-398): when project_id is set, the legacy global
+ * credentials fallback is disabled.
+ */
+export function resolveProjectId(projectRoot: string): string | null {
+  const cfgPath = join(projectRoot, '.cloglog', 'config.yaml')
+  try {
+    const content = readFileSync(cfgPath, 'utf8')
+    const m = content.match(/^project_id:[ \t]*(.+?)[ \t]*(?:#.*)?$/m)
+    if (m) {
+      let raw = m[1].trim()
+      if (
+        raw.length >= 2 &&
+        ((raw.startsWith('"') && raw.endsWith('"')) ||
+          (raw.startsWith("'") && raw.endsWith("'")))
+      ) {
+        raw = raw.substring(1, raw.length - 1)
+      }
+      return raw || null
+    }
+  } catch {
+    // Missing config.yaml — no project_id
+  }
+  return null
+}
+
+/**
  * Resolve the project API key from env, per-project file, or legacy global file.
  *
  * @throws {MissingCredentialsError} when none of the sources yields a non-empty key.
@@ -196,7 +262,26 @@ export function loadApiKey(opts: LoadApiKeyOptions = {}): string {
     if (result.kind === 'present_unusable') {
       throw new UnusableProjectCredentialsError(projectCredentialsPath, slug, result.reason)
     }
-    // result.kind === 'missing' — fall through to legacy.
+    // result.kind === 'missing' — Guard 3 (T-398): if project_id is set in
+    // config.yaml, refuse the legacy fallback. A missing per-project file
+    // on a project-id-scoped checkout means the credentials were never
+    // written, not that this is a legacy single-project host. Falling through
+    // to ~/.cloglog/credentials would silently authenticate as whatever
+    // project owns that file (the antisocial/cloglog incident this task fixes).
+    const projectId = resolveProjectId(projectRoot)
+    if (projectId) {
+      throw new ProjectIdSetMissingCredentialsError(projectId, slug, projectCredentialsPath)
+    }
+    // project_id not set — legacy single-project host, fallback is safe.
+  } else {
+    // Guard 3 (T-398) — slugless path: project_id is set but no slug-safe
+    // identifier can be derived (e.g. project root path contains chars outside
+    // [A-Za-z0-9._-]). Even without a derivable slug, the presence of project_id
+    // makes the legacy global file unsafe — it may belong to a different project.
+    const projectId = resolveProjectId(projectRoot)
+    if (projectId) {
+      throw new ProjectIdSetMissingCredentialsError(projectId, null, '~/.cloglog/credentials.d/<slug>')
+    }
   }
 
   // 3. Legacy global. Same readKeyFile shape, but a present-but-broken

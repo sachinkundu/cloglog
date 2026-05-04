@@ -1,6 +1,13 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { join } from 'node:path'
 import { z } from 'zod'
 import { CloglogClient } from './client.js'
+import {
+  findProjectRoot,
+  resolveProjectId,
+  resolveProjectSlug,
+  DEFAULT_PROJECT_CREDENTIALS_DIR,
+} from './credentials.js'
 import { CloglogApiError } from './errors.js'
 import { HeartbeatTimer } from './heartbeat.js'
 import { createToolHandlers } from './tools.js'
@@ -26,11 +33,17 @@ function formatBlocker(b: Record<string, unknown>): string {
   return `  • ${JSON.stringify(b)}`
 }
 
-export function createServer(client: CloglogClient): McpServer {
+export function createServer(client: CloglogClient, opts?: { configRoot?: string | null }): McpServer {
   const handlers = createToolHandlers(client)
   let currentWorktreeId: string | null = null
   let currentProjectId: string | null = null
   let currentWorktreePath: string | null = null
+  // Guard 2 (T-398): for ensureProject() pre-registration checks. When opts is
+  // absent we auto-detect from process.cwd(). Pass { configRoot: null } in tests
+  // that call update_project without a real config.yaml on disk.
+  const resolvedConfigRoot = opts?.configRoot === undefined
+    ? findProjectRoot(process.cwd())
+    : opts?.configRoot
   const heartbeat = new HeartbeatTimer(async () => {
     if (currentWorktreeId) {
       await client.request('POST', `/api/v1/agents/${currentWorktreeId}/heartbeat`)
@@ -70,9 +83,33 @@ export function createServer(client: CloglogClient): McpServer {
   async function ensureProject(): Promise<string> {
     if (currentProjectId) return currentProjectId
     const me = await client.request('GET', '/api/v1/gateway/me') as Record<string, unknown>
-    const pid = me.id as string
-    currentProjectId = pid
-    return pid
+    const apiKeyProjectId = me.id as string
+    // Guard 2 (T-398): before caching, verify the API key's project matches
+    // config.yaml. ensureProject() is called by update_project (run by
+    // /cloglog init before any register_agent) — if a misconfigured key
+    // is used, we must catch it here too, not only in register_agent.
+    if (resolvedConfigRoot) {
+      const configProjectId = resolveProjectId(resolvedConfigRoot)
+      if (configProjectId && configProjectId !== apiKeyProjectId) {
+        const slug = resolveProjectSlug(resolvedConfigRoot)
+        const credPath = slug
+          ? join(DEFAULT_PROJECT_CREDENTIALS_DIR, slug)
+          : '~/.cloglog/credentials.d/<slug>'
+        throw new Error([
+          '⛔ MCP server API key belongs to a different project than config.yaml specifies.',
+          `  expected (config.yaml): ${configProjectId}`,
+          `  actual   (backend):     ${apiKeyProjectId}`,
+          '',
+          'The API key the MCP server loaded belongs to a different project.',
+          `Check that ${credPath} contains THIS project's key.`,
+          'Remediation: run /cloglog init to mint and write the correct per-project key,',
+          'or manually write the right key to the per-project credentials file.',
+          'See docs/setup-credentials.md.',
+        ].join('\n'))
+      }
+    }
+    currentProjectId = apiKeyProjectId
+    return apiKeyProjectId
   }
 
   /** Wrap a tool handler to catch API errors and return them as isError responses */
@@ -108,9 +145,54 @@ export function createServer(client: CloglogClient): McpServer {
     'Register this worktree with cloglog. Called at session start. Returns current task if resuming.',
     { worktree_path: z.string().describe('Absolute path to the git worktree') },
     async ({ worktree_path }) => {
+      // Guard 2 (T-398): preflight — compare config.yaml project_id against
+      // the API key's project BEFORE calling the backend. Running this check
+      // post-registration means the backend side effects (upsert worktree row,
+      // rotate agent token, create session, emit WORKTREE_ONLINE) have already
+      // happened under the wrong project. currentWorktreeId would remain null
+      // so unregister_agent cannot clean the orphaned row up.
+      const configRoot = findProjectRoot(worktree_path) ?? worktree_path
+      const configProjectId = resolveProjectId(configRoot)
+      if (configProjectId) {
+        // Inline the /gateway/me lookup rather than calling ensureProject().
+        // ensureProject() caches into currentProjectId — if we used it here,
+        // a mismatch refusal would still leave the MCP server bound to the
+        // API key's project, letting tools like get_board and search operate
+        // on the wrong project's data after the refusal. By using a local
+        // variable we keep currentProjectId null until after a successful POST.
+        const meResult = await client.request('GET', '/api/v1/gateway/me') as Record<string, unknown>
+        const apiKeyProjectId = meResult.id as string
+        if (configProjectId !== apiKeyProjectId) {
+          const slug = resolveProjectSlug(configRoot)
+          const credPath = slug
+            ? join(DEFAULT_PROJECT_CREDENTIALS_DIR, slug)
+            : '~/.cloglog/credentials.d/<slug>'
+          return {
+            content: [{
+              type: 'text' as const,
+              text: [
+                '⛔ register_agent refused: project_id mismatch.',
+                `  expected (config.yaml): ${configProjectId}`,
+                `  actual   (backend):     ${apiKeyProjectId}`,
+                '',
+                'The API key the MCP server loaded belongs to a different project.',
+                `Check that ${credPath} contains THIS project's key.`,
+                'Remediation: run /cloglog init to mint and write the correct per-project key,',
+                'or manually write the right key to the per-project credentials file.',
+                'See docs/setup-credentials.md.',
+              ].join('\n'),
+            }],
+            isError: true,
+          }
+        }
+      }
+
+      // Identity confirmed — proceed with backend registration.
       const result = await handlers.register_agent({ worktree_path }) as Record<string, unknown>
+      const backendProjectId = result.project_id as string
+
       currentWorktreeId = result.worktree_id as string
-      currentProjectId = result.project_id as string
+      currentProjectId = backendProjectId
       currentWorktreePath = worktree_path
       // Store agent token for subsequent agent-scoped requests
       const agentToken = result.agent_token as string | undefined

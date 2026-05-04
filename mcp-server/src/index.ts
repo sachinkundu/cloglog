@@ -10,6 +10,7 @@ import { CloglogClient } from './client.js'
 import {
   loadApiKey,
   MissingCredentialsError,
+  ProjectIdSetMissingCredentialsError,
   UnusableProjectCredentialsError,
 } from './credentials.js'
 import { createServer } from './server.js'
@@ -25,7 +26,7 @@ try {
   // operator must fix; print the actionable message and exit EX_CONFIG
   // so Claude Code's MCP loader marks the server as failed cleanly,
   // never with a Node stack trace.
-  if (err instanceof MissingCredentialsError || err instanceof UnusableProjectCredentialsError) {
+  if (err instanceof MissingCredentialsError || err instanceof UnusableProjectCredentialsError || err instanceof ProjectIdSetMissingCredentialsError) {
     console.error(err.message)
     process.exit(78) // EX_CONFIG: configuration error
   }

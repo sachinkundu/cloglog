@@ -484,3 +484,147 @@ async def test_board_falls_back_to_legacy_when_two_tasks_share_pr_url(
     assert cards[task_b["id"]]["codex_status"] is None, "task_b should use legacy path"
     # codex_review_picked_up is still accurate via the legacy boolean path
     assert cards[task_a["id"]]["codex_review_picked_up"] is True
+
+
+async def test_board_duplicate_pr_url_fallback_survives_exclude_done(
+    client: object, db_session: AsyncSession
+) -> None:
+    """A done task hidden by exclude_done=true must still prevent discriminated
+    projection for the live task that shares its pr_url.
+
+    codex_status_by_pr queries pr_review_turns project-wide so historical turns
+    from the done task bleed through; the duplicate guard must be project-wide too.
+    """
+    from httpx import AsyncClient
+    from sqlalchemy import select as sa_select
+
+    from src.board.models import Task
+
+    assert isinstance(client, AsyncClient)
+
+    pr_url = f"https://github.com/o/r/pull/ex{uuid4().hex[:4]}"
+    sha = "8b" * 20
+
+    project = (await client.post("/api/v1/projects", json={"name": f"ex-{uuid4().hex[:6]}"})).json()
+    epic = (
+        await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "E"})
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "F"},
+        )
+    ).json()
+
+    # task_done: closed task on the same pr_url (simulates a prior cycle)
+    task_done = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "Done task"},
+        )
+    ).json()
+    # task_live: current task that reuses the same pr_url
+    task_live = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "Live task"},
+        )
+    ).json()
+
+    for tid in (task_done["id"], task_live["id"]):
+        await client.patch(
+            f"/api/v1/tasks/{tid}",
+            json={"pr_url": pr_url, "status": "review"},
+        )
+    # Move done task to done column
+    await client.patch(f"/api/v1/tasks/{task_done['id']}", json={"status": "done"})
+
+    # Give task_live a sha and a codex turn
+    row_live = (
+        await db_session.execute(sa_select(Task).where(Task.id == task_live["id"]))
+    ).scalar_one()
+    row_live.pr_head_sha = sha
+    await db_session.commit()
+
+    db_session.add(
+        PrReviewTurn(
+            project_id=project["id"],
+            pr_url=pr_url,
+            pr_number=int(pr_url.split("/pull/ex")[1], 16),
+            head_sha=sha,
+            stage="codex",
+            turn_number=1,
+            status="completed",
+            consensus_reached=True,
+        )
+    )
+    await db_session.commit()
+
+    # Board with exclude_done=true hides task_done but the duplicate guard
+    # must still scope the pr_url to legacy path for task_live.
+    board = (await client.get(f"/api/v1/projects/{project['id']}/board?exclude_done=true")).json()
+    live_cards = [c for col in board["columns"] for c in col["tasks"] if c["id"] == task_live["id"]]
+    assert live_cards, "task_live not found on board"
+    assert live_cards[0]["codex_status"] is None, (
+        "shared pr_url must use legacy path even when done task is hidden"
+    )
+    assert live_cards[0]["codex_review_picked_up"] is True
+
+
+async def test_patch_pr_url_clears_head_sha(client: object, db_session: AsyncSession) -> None:
+    """Changing a task's pr_url via PATCH must clear pr_head_sha so the board
+    does not project codex status against the old PR's SHA (T-409).
+    """
+    from httpx import AsyncClient
+    from sqlalchemy import select as sa_select
+
+    from src.board.models import Task
+
+    assert isinstance(client, AsyncClient)
+
+    pr_a = f"https://github.com/o/r/pull/a{uuid4().hex[:4]}"
+    pr_b = f"https://github.com/o/r/pull/b{uuid4().hex[:4]}"
+    sha_a = "9c" * 20
+
+    project = (
+        await client.post("/api/v1/projects", json={"name": f"sha-{uuid4().hex[:6]}"})
+    ).json()
+    epic = (
+        await client.post(f"/api/v1/projects/{project['id']}/epics", json={"title": "E"})
+    ).json()
+    feature = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/epics/{epic['id']}/features",
+            json={"title": "F"},
+        )
+    ).json()
+    task_resp = (
+        await client.post(
+            f"/api/v1/projects/{project['id']}/features/{feature['id']}/tasks",
+            json={"title": "T"},
+        )
+    ).json()
+
+    # Link to pr_a and set its sha
+    await client.patch(
+        f"/api/v1/tasks/{task_resp['id']}",
+        json={"pr_url": pr_a, "status": "review"},
+    )
+    row = (await db_session.execute(sa_select(Task).where(Task.id == task_resp["id"]))).scalar_one()
+    row.pr_head_sha = sha_a
+    await db_session.commit()
+
+    # Relink to pr_b — sha should be cleared
+    await client.patch(
+        f"/api/v1/tasks/{task_resp['id']}",
+        json={"pr_url": pr_b},
+    )
+
+    await db_session.refresh(row)
+    assert row.pr_head_sha is None, "pr_head_sha must be cleared when pr_url changes"
+
+    # Board must return codex_status=null (no sha → legacy path)
+    board = (await client.get(f"/api/v1/projects/{project['id']}/board")).json()
+    cards = [c for col in board["columns"] for c in col["tasks"] if c["id"] == task_resp["id"]]
+    assert cards, "task not found on board"
+    assert cards[0]["codex_status"] is None

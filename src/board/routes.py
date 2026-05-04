@@ -314,18 +314,25 @@ async def create_task(
 @router.patch("/tasks/{task_id}", response_model=TaskResponse)
 async def update_task(task_id: UUID, body: TaskUpdate, service: ServiceDep) -> TaskResponse:
     fields = body.model_dump(exclude_unset=True)
-    # Capture old status before update for event emission
+    # Capture old task state before update for event emission and SHA invalidation.
     old_status: str | None = None
-    if "status" in fields:
+    if "status" in fields or "pr_url" in fields:
         existing = await service._repo.get_task(task_id)
         if existing is not None:
             old_status = existing.status
             # Auto-assign position at end when moving to prioritized
-            if fields["status"] == "prioritized" and old_status != "prioritized":
+            new_status = fields.get("status")
+            moving_to_prioritized = new_status == "prioritized" and old_status != "prioritized"
+            if "status" in fields and moving_to_prioritized:
                 max_pos = await service._repo.get_max_task_position(
                     existing.feature_id, "prioritized"
                 )
                 fields["position"] = max_pos + 1
+            # When pr_url changes, the stored head SHA belongs to the old PR — clear it
+            # so the board does not query codex status against a mismatched SHA until
+            # the next PR_OPENED/PR_SYNCHRONIZE webhook populates the new SHA (T-409).
+            if "pr_url" in fields and fields["pr_url"] != existing.pr_url:
+                fields["pr_head_sha"] = None
     task = await service._repo.update_task(task_id, **fields)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -621,18 +628,23 @@ async def get_board(
     # today (project-wide uniqueness is not yet enforced — xfailed test). When
     # duplicates exist, collapsing them into a dict[pr_url → sha] would let the
     # last-written entry shadow the others, producing wrong status for every task
-    # except the "winner". Duplicated pr_urls fall back to the legacy boolean path
-    # until project-wide uniqueness is guaranteed.
-    from collections import Counter
-
-    pr_url_counts: Counter[str] = Counter(t.pr_url for t in tasks if t.pr_url)
+    # except the "winner". Duplicated pr_urls fall back to the legacy boolean path.
+    #
+    # The check is project-wide (not filtered by the current board view) because a
+    # done task hidden by exclude_done=true still creates ambiguity: codex_status_by_pr
+    # queries pr_review_turns by (project_id, pr_url) without status scoping, so
+    # historical turns from the done task bleed into the live task's projection.
+    candidate_pr_urls = [t.pr_url for t in tasks if t.pr_url]
+    shared_pr_urls: set[str] = await service._repo.shared_pr_urls_in_project(
+        project_id, candidate_pr_urls
+    )
     pr_url_to_head_sha: dict[str, str] = {
         t.pr_url: t.pr_head_sha
         for t in tasks
-        if t.pr_url and t.pr_head_sha and pr_url_counts[t.pr_url] == 1
+        if t.pr_url and t.pr_head_sha and t.pr_url not in shared_pr_urls
     }
     legacy_pr_urls: list[str] = list(
-        {t.pr_url for t in tasks if t.pr_url and (not t.pr_head_sha or pr_url_counts[t.pr_url] > 1)}
+        {t.pr_url for t in tasks if t.pr_url and (not t.pr_head_sha or t.pr_url in shared_pr_urls)}
     )
 
     review_registry = make_review_turn_registry(session)

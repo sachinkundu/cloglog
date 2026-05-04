@@ -400,6 +400,31 @@ def test_step2_validates_existing_slug_against_path_traversal() -> None:
     )
 
 
+def test_phase1_legacy_file_not_counted_when_project_id_set() -> None:
+    """T-398: Phase 1 must NOT count ~/.cloglog/credentials as valid when
+    project_id is set in config.yaml.
+
+    When project_id IS set, loadApiKey's strict-fallback guard refuses the
+    legacy global file and fails at MCP startup. Phase 1 treating the legacy
+    file as "bootstrapped" would cause the operator to skip Phase 2 and end
+    up with a non-starting MCP server.
+
+    The fix: the elif that sets EXISTING_CREDS="file" must be guarded by
+    [ -z "$EXISTING_PROJECT_ID" ] so it only fires on legacy single-project
+    hosts where project_id is absent.
+    """
+    step2 = _step2_body(_read())
+    # Verify the legacy-file elif is guarded by EXISTING_PROJECT_ID being empty.
+    assert "EXISTING_PROJECT_ID" in step2 and (
+        '[ -z "$EXISTING_PROJECT_ID" ]' in step2 or '[ -z "$EXISTING_PROJECT_ID" ]' in step2
+    ), (
+        'Phase 1 must guard the EXISTING_CREDS="file" branch with '
+        '[ -z "$EXISTING_PROJECT_ID" ]. Without the guard, an existing checkout '
+        "with project_id set and only a legacy global file is incorrectly reported "
+        "as bootstrapped — the MCP server then fails at startup (T-398 Guard 3)."
+    )
+
+
 def test_step2_repair_branch_validates_slug_against_path_traversal() -> None:
     """The Step 2 repair text (multi-project branch) MUST also validate the
     derived SLUG before writing the recovered key into

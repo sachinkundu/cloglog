@@ -510,13 +510,17 @@ describe('Guard 2 — register_agent verifies project_id (T-398)', () => {
   it('accepts registration when backend project_id matches config.yaml', async () => {
     const worktreePath = makeWorktree('myproj', 'matching-uuid')
     const client = mockClient()
-    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      worktree_id: 'wt-1',
-      project_id: 'matching-uuid',
-      current_task: null,
-      resumed: false,
-      agent_token: 'tok',
-    })
+    // Preflight GET /api/v1/gateway/me → API key belongs to matching-uuid.
+    // Then POST /api/v1/agents/register → successful registration.
+    ;(client.request as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ id: 'matching-uuid' })
+      .mockResolvedValueOnce({
+        worktree_id: 'wt-1',
+        project_id: 'matching-uuid',
+        current_task: null,
+        resumed: false,
+        agent_token: 'tok',
+      })
 
     const server = createServer(client)
     const tools = (server as any)._registeredTools
@@ -529,13 +533,10 @@ describe('Guard 2 — register_agent verifies project_id (T-398)', () => {
   it('refuses registration when backend project_id does not match config.yaml', async () => {
     const worktreePath = makeWorktree('myproj2', 'config-uuid')
     const client = mockClient()
-    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      worktree_id: 'wt-2',
-      project_id: 'wrong-backend-uuid',
-      current_task: null,
-      resumed: false,
-      agent_token: 'tok',
-    })
+    // Preflight GET /api/v1/gateway/me → API key belongs to a different project.
+    // The POST must NOT be called — backend side effects are avoided.
+    ;(client.request as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ id: 'wrong-backend-uuid' })
 
     const server = createServer(client)
     const tools = (server as any)._registeredTools
@@ -546,18 +547,17 @@ describe('Guard 2 — register_agent verifies project_id (T-398)', () => {
     expect(msg).toContain('project_id mismatch')
     expect(msg).toContain('config-uuid')
     expect(msg).toContain('wrong-backend-uuid')
+    // Verify the backend registration POST was never called.
+    const calls = (client.request as ReturnType<typeof vi.fn>).mock.calls
+    expect(calls.some((c) => c[1] === '/api/v1/agents/register')).toBe(false)
   })
 
   it('includes expected path in the mismatch diagnostic', async () => {
     const worktreePath = makeWorktree('diagproj', 'diag-config-uuid')
     const client = mockClient()
-    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      worktree_id: 'wt-3',
-      project_id: 'diag-backend-uuid',
-      current_task: null,
-      resumed: false,
-      agent_token: 'tok',
-    })
+    // Preflight GET /api/v1/gateway/me → API key belongs to a different project.
+    ;(client.request as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ id: 'diag-backend-uuid' })
 
     const server = createServer(client)
     const tools = (server as any)._registeredTools

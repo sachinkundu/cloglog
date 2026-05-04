@@ -150,15 +150,23 @@ else
       && [ -f "${HOME}/.cloglog/credentials.d/${EXISTING_SLUG}" ] \
       && grep -q '^CLOGLOG_API_KEY=' "${HOME}/.cloglog/credentials.d/${EXISTING_SLUG}"; then
     EXISTING_CREDS="per-project"
-  elif [ -f ~/.cloglog/credentials ] && grep -q '^CLOGLOG_API_KEY=' ~/.cloglog/credentials; then
+  elif [ -z "$EXISTING_PROJECT_ID" ] \
+      && [ -f ~/.cloglog/credentials ] \
+      && grep -q '^CLOGLOG_API_KEY=' ~/.cloglog/credentials; then
+    # T-398: only count the legacy global file as valid credentials when
+    # project_id is NOT set in config.yaml. When project_id IS set, the
+    # MCP server's strict-fallback guard refuses the legacy file and fails
+    # at startup — so it does not count as "bootstrapped".
     EXISTING_CREDS="file"
   fi
 fi
 ```
 
-**If both `EXISTING_PROJECT_ID` is non-empty AND `EXISTING_CREDS` is non-empty**, this
-project is fully bootstrapped. Skip to Step 3 — the MCP server picked up the key at startup
-and `mcp__cloglog__*` tools are available.
+**Fully bootstrapped** means the MCP server can start and authenticate:
+
+- **`EXISTING_PROJECT_ID` is non-empty AND `EXISTING_CREDS` is `per-project`**: fully bootstrapped — per-project credentials are always valid. Skip to Step 3.
+- **`EXISTING_PROJECT_ID` is empty AND `EXISTING_CREDS` is non-empty** (env or file): fully bootstrapped — this is a legacy single-project host without `project_id` in config, where the T-398 strict-fallback guard does not apply. Skip to Step 3.
+- Any other combination requires setup or repair (see below).
 
 **If `EXISTING_PROJECT_ID` is non-empty but `EXISTING_CREDS` is empty** (e.g. the repo was
 cloned to a new machine), stop with a repair instruction:
@@ -491,8 +499,10 @@ For reference, the resulting shapes are:
 ```
 
 > **T-214:** `CLOGLOG_API_KEY` MUST NOT be added to `.mcp.json` or any
-> per-project file. The MCP server reads it from the operator's environment
-> or from `~/.cloglog/credentials` only. See `${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md`.
+> per-project file. The MCP server reads it from the operator's environment,
+> from `~/.cloglog/credentials.d/<project_slug>` (T-382/T-398), or from the
+> legacy `~/.cloglog/credentials` only when `project_id` is NOT set in
+> `.cloglog/config.yaml`. See `${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md`.
 > The pin is `tests/test_mcp_json_no_secret.py` — the merge above never
 > writes `CLOGLOG_API_KEY` into `mcpServers.cloglog.env`.
 
@@ -1008,7 +1018,7 @@ Present what was configured:
 | GitHub bot | configured/needs setup |
 
 Remind the user to:
-1. Set up the project's API key. On a single-project host, write `CLOGLOG_API_KEY=<key>` to `~/.cloglog/credentials` (chmod 600). On a multi-project host, write it to `~/.cloglog/credentials.d/<project_slug>` (chmod 600) so the legacy global file stays untouched for the other project — the T-382 resolver picks the per-project file automatically based on the `project:` field in `.cloglog/config.yaml`. `export CLOGLOG_API_KEY=<key>` works as a one-shot override and beats both file sources. See `${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md`. The key MUST NOT live in `.mcp.json` (which now carries the `mcpServers.cloglog` entry) or `.claude/settings.json`.
+1. Set up the project's API key. Write `CLOGLOG_API_KEY=<key>` to `~/.cloglog/credentials.d/<project_slug>` (chmod 600) — T-398 requires per-project credentials whenever `project_id` is set in `.cloglog/config.yaml`, which init always seeds. The legacy `~/.cloglog/credentials` is only valid on hosts where `project_id` is absent from config (pre-T-382 installs). `export CLOGLOG_API_KEY=<key>` works as a one-shot env-var override. See `${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md`. The key MUST NOT live in `.mcp.json` (which now carries the `mcpServers.cloglog` entry) or `.claude/settings.json`.
 2. **Set up the GitHub bot** if not yet configured (see Step 6 output)
 3. Run `git commit` to save the configuration
 4. Start the cloglog backend if not running

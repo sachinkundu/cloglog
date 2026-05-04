@@ -1869,9 +1869,8 @@ class ReviewEngineConsumer:
                     )
                     if posted:
                         from src.gateway.review_loop import _reached_consensus
-                        _deg_consensus = _reached_consensus(
-                            result=result, prior_finding_keys=set()
-                        )
+
+                        _deg_consensus = _reached_consensus(result=result, prior_finding_keys=set())
                         log_event(
                             logger,
                             "review.codex",
@@ -2155,9 +2154,9 @@ class ReviewEngineConsumer:
                 "review.finalize",
                 pr=_pr_key,
                 sha=_sha_short,
-                outcome="consensus" if (
-                    _codex_consensus or (not self._codex_available and _opencode_consensus)
-                ) else "exhausted",
+                outcome="consensus"
+                if (_codex_consensus or (not self._codex_available and _opencode_consensus))
+                else "exhausted",
             )
         finally:
             if review_root.is_temp and review_root.main_clone is not None:

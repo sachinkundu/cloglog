@@ -10,8 +10,9 @@
 #   bash dedup-inbox-monitor.sh <inbox_absolute_path>
 #
 # Exit codes:
-#   0  — exactly one tail monitor remains; caller must NOT spawn a new Monitor.
-#   2  — no live monitor (any orphan was killed); caller must spawn a fresh Monitor.
+#   2  — always; all orphans/duplicates were killed; caller MUST spawn a fresh Monitor.
+#         (exit 0 was removed: keeping an orphan leaves no Monitor task bound to the
+#          current session, so webhook events never surface as notifications.)
 #
 # Two monitor forms are detected (mirrors enforce-inbox-monitor-after-pr.sh):
 #   Canonical: tail -n 0 -F <absolute_inbox_path>  — matched via $NF == inbox
@@ -117,30 +118,15 @@ elif [[ $n -eq 1 ]]; then
   exit 2
 
 else
-  # Multiple duplicates. Keep the oldest (highest elapsed seconds), kill the rest.
-  oldest_pid=""
-  max_elapsed=-1
-  elapsed=""
+  # Multiple duplicates. Kill ALL — the caller must always spawn a fresh Monitor()
+  # bound to the current session. Keeping an orphan (exit 0) leaves no Monitor task
+  # in the new conversation's task registry, so webhook events never surface as
+  # notifications (T-419 option a: kill and respawn is correct; option b is not).
+  killed=0
   cur_pid=""
   for cur_pid in "${pids[@]}"; do
-    elapsed=$(ps -p "$cur_pid" -o etimes= 2>/dev/null | tr -d '[:space:]') || continue
-    if [[ -n "$elapsed" && "$elapsed" -gt "$max_elapsed" ]]; then
-      max_elapsed="$elapsed"
-      oldest_pid="$cur_pid"
-    fi
+    kill "$cur_pid" 2>/dev/null && (( killed++ )) || true
   done
-
-  # Fallback: if ps elapsed-time lookup failed for all (race), keep the first.
-  if [[ -z "$oldest_pid" ]]; then
-    oldest_pid="${pids[0]}"
-  fi
-
-  killed=0
-  for cur_pid in "${pids[@]}"; do
-    if [[ "$cur_pid" != "$oldest_pid" ]]; then
-      kill "$cur_pid" 2>/dev/null && (( killed++ )) || true
-    fi
-  done
-  echo "Killed ${killed} duplicate tail(s); keeping PID ${oldest_pid} on ${INBOX}." >&2
-  exit 0
+  echo "Killed ${killed} duplicate tail(s) on ${INBOX}; spawning fresh monitor." >&2
+  exit 2
 fi

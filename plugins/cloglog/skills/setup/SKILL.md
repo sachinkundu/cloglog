@@ -41,10 +41,9 @@ INBOX="<current working directory>/.cloglog/inbox"
 bash "${CLAUDE_PLUGIN_ROOT}/skills/setup/dedup-inbox-monitor.sh" "$INBOX"
 ```
 
-Branch on exit code:
+The script always exits **2** — it kills every orphan/duplicate (including the `n ≥ 2` case where an older design would have kept one). Keeping a stale orphan tail leaves no Monitor task bound to the new session's task registry, so webhook events never arrive as notifications (T-419). Always spawn a fresh Monitor:
 
-- **Exit 0** → a live tail monitor is already running (the helper killed any duplicates and kept one). Tell the user: *"Reusing existing inbox monitor."* Do **NOT** spawn a new Monitor.
-- **Exit 2** → no live monitor (any orphan from a prior session was killed). Spawn a fresh persistent monitor. **The inbox file may not exist yet** (the backend creates it on first webhook write), and `tail -f` against a missing file exits immediately — leaving the agent monitor-less. Wrap the tail so the file is materialised first:
+**Spawn a fresh persistent monitor.** **The inbox file may not exist yet** (the backend creates it on first webhook write), and `tail -f` against a missing file exits immediately — leaving the agent monitor-less. Wrap the tail so the file is materialised first:
   ```
   Monitor(
     command: "mkdir -p <current working directory>/.cloglog && touch <current working directory>/.cloglog/inbox && tail -n 0 -F <current working directory>/.cloglog/inbox",

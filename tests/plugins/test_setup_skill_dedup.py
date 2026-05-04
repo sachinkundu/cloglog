@@ -207,8 +207,13 @@ def test_one_orphan_kill_message_on_stderr(tmp_path: Path) -> None:
 # ── multiple duplicate tails ───────────────────────────────────────────────
 
 
-def test_multiple_dupes_reduce_to_one(tmp_path: Path) -> None:
-    """Three duplicate tails → script kills two, exactly one remains, exits 0."""
+def test_multiple_dupes_all_killed_exits_2(tmp_path: Path) -> None:
+    """Three duplicate tails → script kills ALL and exits 2 (caller spawns fresh).
+
+    Keeping any orphan tail (the old exit-0 path) leaves the new session with no
+    Monitor task, so webhook events never surface as notifications.  The correct
+    behaviour is always kill all, always spawn fresh.
+    """
     inbox = _make_inbox(tmp_path)
     procs = [_spawn_tail(inbox) for _ in range(3)]
     try:
@@ -219,15 +224,16 @@ def test_multiple_dupes_reduce_to_one(tmp_path: Path) -> None:
 
         result = _run_dedup(inbox)
 
-        assert result.returncode == 0, (
-            f"Expected exit 0 (one monitor kept) but got {result.returncode}. "
+        assert result.returncode == 2, (
+            f"Expected exit 2 (all killed, spawn fresh) but got {result.returncode}. "
             f"stderr: {result.stderr!r}"
         )
         time.sleep(0.1)
         remaining = _count_tails(inbox)
-        assert remaining == 1, (
-            f"Expected exactly 1 tail process after dedup, got {remaining}. "
-            "The script must kill all-but-one when duplicates are found."
+        assert remaining == 0, (
+            f"Expected 0 tail processes after dedup (all killed), got {remaining}. "
+            "The script must kill ALL orphans when duplicates are found — keeping one "
+            "would leave no Monitor task bound to the current session."
         )
     finally:
         for p in procs:
@@ -295,7 +301,7 @@ def test_cross_project_dedup_does_not_kill_other_inbox(tmp_path: Path) -> None:
 
 def test_cross_project_dedup_kills_only_target_inbox(tmp_path: Path) -> None:
     """Multiple tails on inbox A plus one tail on inbox B: dedup on A kills
-    A-duplicates and leaves B untouched."""
+    ALL A-tails (exits 2) and leaves B untouched."""
     inbox_a = _make_inbox(tmp_path / "project_a")
     inbox_b = _make_inbox(tmp_path / "project_b")
 
@@ -307,14 +313,14 @@ def test_cross_project_dedup_kills_only_target_inbox(tmp_path: Path) -> None:
         result = _run_dedup(inbox_a)
 
         time.sleep(0.1)
-        assert _count_tails(inbox_a) == 1, (
-            f"Dedup on inbox_a must leave exactly 1 tail. Got {_count_tails(inbox_a)}."
+        assert _count_tails(inbox_a) == 0, (
+            f"Dedup on inbox_a must kill all tails (spawn-fresh). Got {_count_tails(inbox_a)}."
         )
         assert _count_tails(inbox_b) == 1, (
             f"Dedup on inbox_a must not touch inbox_b. Got {_count_tails(inbox_b)}."
         )
-        assert result.returncode == 0, (
-            f"Expected exit 0 (one tail kept on inbox_a). Got {result.returncode}."
+        assert result.returncode == 2, (
+            f"Expected exit 2 (all A-tails killed, spawn fresh). Got {result.returncode}."
         )
     finally:
         for p in procs_a + [proc_b]:
@@ -420,15 +426,14 @@ def test_legacy_and_canonical_mixed_deduplicates_to_one(tmp_path: Path) -> None:
         _run_dedup(inbox)
 
         time.sleep(0.1)
-        # Must end up with exactly one tail alive (either canonical or legacy),
-        # not two.
+        # All tails must be killed (script always exits 2, always spawns fresh).
         canonical_alive = _is_running(proc_canonical.pid)
         legacy_alive = _is_running(proc_legacy.pid)
         alive_count = sum([canonical_alive, legacy_alive])
-        assert alive_count <= 1, (
+        assert alive_count == 0, (
             f"Dedup of mixed canonical+legacy tails left {alive_count} processes alive "
             f"(canonical={canonical_alive}, legacy={legacy_alive}). "
-            "Expected exactly 0 or 1."
+            "Expected exactly 0 — keeping any orphan leaves no Monitor task in the new session."
         )
     finally:
         for p in (proc_canonical, proc_legacy):

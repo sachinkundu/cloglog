@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,6 +9,7 @@ from src.board.repository import BoardRepository
 from src.board.schemas import ImportPlan
 from src.board.services import BoardService
 from src.document.models import Document
+from src.shared.events import EventType, event_bus
 
 
 @pytest.fixture
@@ -278,3 +281,85 @@ async def test_import_plan(service: BoardService):
     assert result["epics_created"] == 1
     assert result["features_created"] == 1
     assert result["tasks_created"] == 2
+
+
+# --- Rollup on create (T-416 pin) ---
+
+
+async def test_rollup_reverts_on_task_create(service: BoardService, db_session: AsyncSession):
+    """Creating a task into a done feature/epic reverts their status to planned (T-416)."""
+    project, _ = await service.create_project("rollup-create-test", "", "")
+    epic = Epic(project_id=project.id, title="Epic", position=0)
+    db_session.add(epic)
+    await db_session.flush()
+    feature = Feature(epic_id=epic.id, title="Feature", position=0)
+    db_session.add(feature)
+    await db_session.flush()
+
+    # Complete all existing tasks → feature and epic roll to done
+    t1 = Task(feature_id=feature.id, title="T1", status="done", position=0)
+    t2 = Task(feature_id=feature.id, title="T2", status="done", position=1)
+    db_session.add_all([t1, t2])
+    await db_session.commit()
+    await service.recompute_rollup(feature.id)
+    await db_session.refresh(feature)
+    await db_session.refresh(epic)
+    assert feature.status == "done"
+    assert epic.status == "done"
+
+    # Subscribe before creating the new task so we can assert the SSE event
+    queue = event_bus.subscribe(project.id)
+    try:
+        new_task = await service.create_task(
+            feature_id=feature.id,
+            title="New backlog task",
+            description="",
+            priority="normal",
+            position=2,
+            number=3,
+        )
+
+        await db_session.refresh(feature)
+        await db_session.refresh(epic)
+        assert feature.status == "planned", "feature should revert from done → planned"
+        assert epic.status == "planned", "epic should revert from done → planned"
+
+        # An SSE event must have been published for the feature status change
+        event = queue.get_nowait()
+        assert event.type == EventType.TASK_STATUS_CHANGED
+        assert event.data["task_id"] == str(new_task.id)
+        assert event.data["old_status"] == "done"
+        assert event.data["new_status"] == "planned"
+    finally:
+        event_bus.unsubscribe(project.id, queue)
+
+
+async def test_rollup_no_event_when_status_unchanged(
+    service: BoardService, db_session: AsyncSession
+):
+    """No SSE event is emitted when creating a task into a non-done feature."""
+    project, _ = await service.create_project("rollup-noevent-test", "", "")
+    epic = Epic(project_id=project.id, title="Epic", position=0)
+    db_session.add(epic)
+    await db_session.flush()
+    feature = Feature(epic_id=epic.id, title="Feature", position=0)
+    db_session.add(feature)
+    await db_session.flush()
+    await db_session.commit()
+    # feature starts at "planned" (default)
+
+    queue = event_bus.subscribe(project.id)
+    try:
+        await service.create_task(
+            feature_id=feature.id,
+            title="Task on planned feature",
+            description="",
+            priority="normal",
+            position=0,
+            number=1,
+        )
+        # Queue must be empty — no status change event
+        with pytest.raises(asyncio.QueueEmpty):
+            queue.get_nowait()
+    finally:
+        event_bus.unsubscribe(project.id, queue)

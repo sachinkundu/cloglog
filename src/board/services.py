@@ -17,6 +17,7 @@ from src.board.templates import (
     close_worktree_template,
 )
 from src.document.models import Document
+from src.shared.events import Event, EventType, event_bus
 
 
 def _task_resolved(task: Task) -> bool:
@@ -133,6 +134,61 @@ class BoardService:
         await session.commit()
         await session.refresh(doc)
         return doc
+
+    # --- Task Creation ---
+
+    async def create_task(
+        self,
+        feature_id: UUID,
+        title: str,
+        description: str,
+        priority: str,
+        position: int,
+        number: int = 0,
+        task_type: str = "task",
+        model: str | None = None,
+    ) -> Task:
+        """Create a task and recompute the parent feature/epic rollup.
+
+        All callers that insert a task must go through here so that adding a
+        task to a done feature immediately rolls it back to planned/in_progress.
+        """
+        feature = await self._repo.get_feature(feature_id)
+        if feature is None:
+            raise ValueError("Feature not found")
+        old_feature_status = feature.status
+
+        task = await self._repo.create_task(
+            feature_id=feature_id,
+            title=title,
+            description=description,
+            priority=priority,
+            position=position,
+            number=number,
+            task_type=task_type,
+            model=model,
+        )
+
+        await self.recompute_rollup(feature_id)
+
+        # SSE fan-out when the feature's rollup status changed
+        updated_feature = await self._repo.get_feature(feature_id)
+        if updated_feature is not None and updated_feature.status != old_feature_status:
+            epic = await self._repo.get_epic(updated_feature.epic_id)
+            if epic is not None:
+                await event_bus.publish(
+                    Event(
+                        type=EventType.TASK_STATUS_CHANGED,
+                        project_id=epic.project_id,
+                        data={
+                            "task_id": str(task.id),
+                            "old_status": old_feature_status,
+                            "new_status": updated_feature.status,
+                        },
+                    )
+                )
+
+        return task
 
     # --- Status Roll-Up ---
 
@@ -412,7 +468,7 @@ class BoardService:
 
         title, description = close_worktree_template(worktree_name)
         task_number = await self._repo.next_task_number(project_id)
-        task = await self._repo.create_task(
+        task = await self.create_task(
             feature_id=feature.id,
             title=title,
             description=description,
@@ -492,7 +548,7 @@ class BoardService:
                 features_created += 1
 
                 for task_pos, task_data in enumerate(feat_data.tasks):
-                    await self._repo.create_task(
+                    await self.create_task(
                         feature_id=feature.id,
                         title=task_data.title,
                         description=task_data.description,

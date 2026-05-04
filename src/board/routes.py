@@ -289,12 +289,12 @@ async def create_task(
     if feature is None:
         raise HTTPException(status_code=404, detail="Feature not found")
     number = await service._repo.next_task_number(project_id)
-    task = await service._repo.create_task(
-        feature_id,
-        body.title,
-        body.description,
-        body.priority,
-        body.position,
+    task = await service.create_task(
+        feature_id=feature_id,
+        title=body.title,
+        description=body.description,
+        priority=body.priority,
+        position=body.position,
         number=number,
         task_type=body.task_type,
         model=body.model,

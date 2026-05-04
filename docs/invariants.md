@@ -242,6 +242,27 @@ the spec is explicit on this precedence and the test locks it in.
 
 ## SKILLs that touch GitHub
 
+### `ALLOW_MAIN_COMMIT=1` is only valid in close-wave Step 13 and emergency rollback
+
+The dev-clone pre-commit hook installed by `scripts/install-dev-hooks.sh` rejects
+commits on `main` without `ALLOW_MAIN_COMMIT=1`. The two approved override sites are:
+(1) **close-wave Step 13** — the direct-to-main wave-fold commit (T-395); and
+(2) **emergency-rollback cherry-picks** documented in CLAUDE.md.
+
+Any SKILL.md, hook script, or agent that sets `ALLOW_MAIN_COMMIT=1 git commit`
+outside these two contexts silently bypasses the pre-commit guard with no
+diagnostic — the commit lands on `main` without the PR flow every other agent
+uses, and no other test catches it because the hook is bash/env-checked, not
+enforced by lint or typecheck.
+
+**Pins:**
+- `tests/plugins/test_close_wave_skill_no_detached_push.py::test_close_wave_skill_commits_directly_to_main`
+  — presence of `ALLOW_MAIN_COMMIT=1 git commit` in close-wave SKILL.md Step 13.
+- `tests/plugins/test_allow_main_commit_override_scope.py` — absence of
+  `ALLOW_MAIN_COMMIT=1 git commit` in all other plugin SKILL.md files (reconcile,
+  launch, github-bot, demo). Any future SKILL that legitimately needs this override
+  must add an exemption to that pin test, which forces a conscious decision.
+
 ### No persistent bot-token origin URL in close-wave / reconcile / github-bot SKILLs
 
 The three SKILLs that push to GitHub (close-wave Step 13, reconcile

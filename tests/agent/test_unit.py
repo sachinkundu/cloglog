@@ -679,7 +679,7 @@ class TestAgentService:
         assert updated.status == "in_progress"
 
     async def test_agent_cannot_move_to_done(self, db_session: AsyncSession) -> None:
-        """Agent cannot move task to done via update_task_status."""
+        """Agent cannot move regular task to done via update_task_status."""
         project = await _create_project(db_session)
         task = await _create_task_chain(db_session, project)
         service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
@@ -688,6 +688,242 @@ class TestAgentService:
         wt_id = reg["worktree_id"]
         await service.start_task(wt_id, task.id)  # type: ignore[arg-type]
 
+        with pytest.raises(ValueError, match="Agents cannot mark tasks as done"):
+            await service.update_task_status(wt_id, task.id, "done")  # type: ignore[arg-type]
+
+    async def test_close_off_task_can_be_marked_done_by_agent(
+        self, db_session: AsyncSession
+    ) -> None:
+        """T-395: close-off tasks (close_off_worktree_id non-null) may be marked done
+        by the close-wave supervisor without user intervention.
+
+        Pin for the carve-out in src/agent/services.py::update_task_status:
+        is_close_off_task = task.close_off_worktree_id is not None.
+        """
+        project = await _create_project(db_session)
+        task = await _create_task_chain(db_session, project)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        board_repo = BoardRepository(db_session)
+
+        # Register the main agent (supervisor calling close-wave)
+        reg = await service.register(project.id, "/repo/wt-main", "wt-main")
+        main_wt_id = reg["worktree_id"]
+
+        # Register a target worktree (the one being closed)
+        target_reg = await service.register(project.id, "/repo/wt-target", "wt-target")
+        target_wt_id = target_reg["worktree_id"]
+
+        # Mark the task as a close-off task by setting close_off_worktree_id
+        await board_repo.update_task(task.id, close_off_worktree_id=target_wt_id)  # type: ignore[arg-type]
+        await board_repo.update_task(task.id, worktree_id=main_wt_id)  # type: ignore[arg-type]
+
+        # Start the close-off task (backlog → in_progress)
+        await service.start_task(main_wt_id, task.id)  # type: ignore[arg-type]
+
+        # Agent can mark close-off task done directly (T-395 carve-out)
+        await service.update_task_status(main_wt_id, task.id, "done")  # type: ignore[arg-type]
+
+        updated = await board_repo.get_task(task.id)
+        assert updated is not None
+        assert updated.status == "done"
+
+    async def test_close_off_done_clears_current_task_id(self, db_session: AsyncSession) -> None:
+        """T-395: marking a close-off task done must clear current_task_id on the worktree.
+
+        Step 9.7 calls start_task which sets current_task_id. If update_task_status("done")
+        does not clear it, the supervisor's next register() call sees the completed
+        close-off task still listed as the worktree's current task.
+        """
+        project = await _create_project(db_session)
+        task = await _create_task_chain(db_session, project)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        board_repo = BoardRepository(db_session)
+        agent_repo = AgentRepository(db_session)
+
+        reg = await service.register(project.id, "/repo/wt-coff-clr", "wt-coff-clr")
+        main_wt_id = reg["worktree_id"]
+        target_reg = await service.register(project.id, "/repo/wt-tgt-clr", "wt-tgt-clr")
+        target_wt_id = target_reg["worktree_id"]
+
+        await board_repo.update_task(task.id, close_off_worktree_id=target_wt_id)  # type: ignore[arg-type]
+        await board_repo.update_task(task.id, worktree_id=main_wt_id)  # type: ignore[arg-type]
+        await service.start_task(main_wt_id, task.id)  # type: ignore[arg-type]
+
+        # Confirm start_task set current_task_id
+        wt_before = await agent_repo.get_worktree(main_wt_id)  # type: ignore[arg-type]
+        assert wt_before is not None
+        assert wt_before.current_task_id == task.id
+
+        await service.update_task_status(main_wt_id, task.id, "done")  # type: ignore[arg-type]
+
+        # current_task_id must be cleared after done
+        wt_after = await agent_repo.get_worktree(main_wt_id)  # type: ignore[arg-type]
+        assert wt_after is not None
+        assert wt_after.current_task_id is None
+
+    async def test_close_off_done_triggers_rollup(self, db_session: AsyncSession) -> None:
+        """T-395: marking a close-off task done must recompute parent feature/epic status.
+
+        Without the recompute_rollup call the board shows the parent feature as
+        in_progress even after all its tasks are done.
+        """
+        project = await _create_project(db_session)
+        task = await _create_task_chain(db_session, project)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        board_repo = BoardRepository(db_session)
+
+        reg = await service.register(project.id, "/repo/wt-coff-rup", "wt-coff-rup")
+        main_wt_id = reg["worktree_id"]
+        target_reg = await service.register(project.id, "/repo/wt-tgt-rup", "wt-tgt-rup")
+        target_wt_id = target_reg["worktree_id"]
+
+        await board_repo.update_task(task.id, close_off_worktree_id=target_wt_id)  # type: ignore[arg-type]
+        await board_repo.update_task(task.id, worktree_id=main_wt_id)  # type: ignore[arg-type]
+        await service.start_task(main_wt_id, task.id)  # type: ignore[arg-type]
+        await service.update_task_status(main_wt_id, task.id, "done")  # type: ignore[arg-type]
+
+        # Fetch the task's feature and epic — both must reflect done
+        updated_task = await board_repo.get_task(task.id)
+        assert updated_task is not None
+        feature = await board_repo.get_feature(updated_task.feature_id)
+        assert feature is not None
+        assert feature.status == "done", (
+            f"Feature status should be 'done' after sole task is done, got '{feature.status}'"
+        )
+        epic = await board_repo.get_epic(feature.epic_id)
+        assert epic is not None
+        assert epic.status == "done", (
+            f"Epic status should be 'done' after sole feature is done, got '{epic.status}'"
+        )
+
+    async def test_legacy_stale_close_off_task_can_be_marked_done_by_agent(
+        self, db_session: AsyncSession
+    ) -> None:
+        """T-395 + reconcile: stale close-off rows with NULL FK are still close-off tasks.
+
+        When a worktree is deleted, ON DELETE SET NULL clears close_off_worktree_id.
+        Reconcile must still be able to call update_task_status("done") on those rows.
+        The carve-out uses title prefix 'Close worktree ' + canonical placement
+        (Operations epic / Worktree Close-off feature) to avoid false positives.
+        """
+        from src.board.services import BoardService
+
+        project = await _create_project(db_session)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        board_repo = BoardRepository(db_session)
+        board_service = BoardService(board_repo)
+
+        # Register a target worktree so create_close_off_task has a valid FK
+        reg_target = await service.register(project.id, "/repo/wt-old", "wt-old")
+        target_wt_id = reg_target["worktree_id"]
+
+        # Create a real close-off task (correct placement: Operations / Worktree Close-off)
+        task, _ = await board_service.create_close_off_task(
+            project.id,
+            close_off_worktree_id=target_wt_id,  # type: ignore[arg-type]
+            worktree_name="wt-old",
+        )
+
+        # Simulate ON DELETE SET NULL by clearing the FK (worktree deleted)
+        await board_repo.update_task(task.id, close_off_worktree_id=None)  # type: ignore[arg-type]
+
+        reg = await service.register(project.id, "/repo/wt-reconcile", "wt-reconcile")
+        wt_id = reg["worktree_id"]
+        await board_repo.update_task(task.id, worktree_id=wt_id)  # type: ignore[arg-type]
+        await service.start_task(wt_id, task.id)  # type: ignore[arg-type]
+
+        # Must succeed: title + placement both match, despite NULL close_off_worktree_id
+        await service.update_task_status(wt_id, task.id, "done")  # type: ignore[arg-type]
+
+        updated = await board_repo.get_task(task.id)
+        assert updated is not None
+        assert updated.status == "done"
+
+    async def test_task_with_close_worktree_title_outside_hierarchy_is_blocked(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Title prefix alone is not sufficient — placement must also match.
+
+        A user can create 'Close worktree docs cleanup' under any feature.
+        Without the placement check, such a task would bypass the user-only-done
+        invariant. The carve-out must require Operations epic / Worktree Close-off
+        feature in addition to the title prefix.
+        """
+        project = await _create_project(db_session)
+        # _create_task_chain puts the task under "Test Epic" / "Test Feature"
+        task = await _create_task_chain(db_session, project)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        board_repo = BoardRepository(db_session)
+
+        # Give it the close-off title prefix but leave it in the wrong hierarchy
+        await board_repo.update_task(task.id, title="Close worktree docs cleanup")  # type: ignore[arg-type]
+
+        reg = await service.register(project.id, "/repo/wt-fake-coff", "wt-fake-coff")
+        wt_id = reg["worktree_id"]
+        await board_repo.update_task(task.id, worktree_id=wt_id)  # type: ignore[arg-type]
+        await service.start_task(wt_id, task.id)  # type: ignore[arg-type]
+
+        # Must still be blocked — not in Operations / Worktree Close-off
+        with pytest.raises(ValueError, match="Agents cannot mark tasks as done"):
+            await service.update_task_status(wt_id, task.id, "done")  # type: ignore[arg-type]
+
+    async def test_non_owner_worktree_cannot_mark_close_off_task_done(
+        self, db_session: AsyncSession
+    ) -> None:
+        """T-395: only the main-agent that owns the close-off task may mark it done.
+
+        A secondary worktree agent in the same project must not be able to
+        prematurely close the supervisor's close-off card by reading its UUID
+        from the board and calling update_task_status("done") against its own
+        worktree_id. This would break the invariant that 'done' is the post-push
+        completion signal from the main agent after the direct-to-main commit.
+        """
+        project = await _create_project(db_session)
+        task = await _create_task_chain(db_session, project)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        board_repo = BoardRepository(db_session)
+
+        # Main agent registers and is assigned the close-off task
+        reg_main = await service.register(project.id, "/repo/main", "main")
+        main_wt_id = reg_main["worktree_id"]
+        reg_target = await service.register(project.id, "/repo/wt-target", "wt-target")
+        target_wt_id = reg_target["worktree_id"]
+
+        await board_repo.update_task(task.id, close_off_worktree_id=target_wt_id)  # type: ignore[arg-type]
+        await board_repo.update_task(task.id, worktree_id=main_wt_id)  # type: ignore[arg-type]
+        await service.start_task(main_wt_id, task.id)  # type: ignore[arg-type]
+
+        # A different worktree agent in the same project (role='worktree' because
+        # path contains /.claude/worktrees/) attempts to mark the task done
+        reg_other = await service.register(
+            project.id,
+            "/repo/.claude/worktrees/wt-other",
+            "wt-other",
+        )
+        other_wt_id = reg_other["worktree_id"]
+
+        with pytest.raises(ValueError, match="Only the main-agent that owns this close-off task"):
+            await service.update_task_status(other_wt_id, task.id, "done")  # type: ignore[arg-type]
+
+    async def test_regular_task_still_blocked_from_done_by_agent(
+        self, db_session: AsyncSession
+    ) -> None:
+        """T-395: the close-off carve-out must not apply to regular tasks.
+
+        close_off_worktree_id=None means the task is a regular agent task;
+        the user-only-done invariant (src/agent/services.py:502-508) must
+        still block agent-driven done transitions for those.
+        """
+        project = await _create_project(db_session)
+        task = await _create_task_chain(db_session, project)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+
+        reg = await service.register(project.id, "/repo/wt-regular", "wt-regular")
+        wt_id = reg["worktree_id"]
+        await service.start_task(wt_id, task.id)  # type: ignore[arg-type]
+
+        # Regular task — close_off_worktree_id is None — must still be blocked
+        assert task.close_off_worktree_id is None
         with pytest.raises(ValueError, match="Agents cannot mark tasks as done"):
             await service.update_task_status(wt_id, task.id, "done")  # type: ignore[arg-type]
 

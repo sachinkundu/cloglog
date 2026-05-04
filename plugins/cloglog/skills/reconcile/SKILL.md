@@ -236,7 +236,8 @@ overrides close-wave Step 4's `<wave-name>` substitution to
 Steps 2–14 unchanged. Reconcile performs no teardown steps itself for
 a delegated worktree — close-wave owns the full sequence (cooperative
 shutdown → shutdown-artifact consolidation → worktree/branch/tab
-removal → quality gate → learnings extraction).
+removal → quality gate on `main` → direct-to-main commit → learnings
+extraction → close-off tasks marked done, no PR).
 
 Record in the reconciliation report: `path: close-wave delegated
 (predicate: all three components held)`. Continue to the next worktree.
@@ -342,70 +343,22 @@ For each `Close worktree wt-<X>` row in `backlog`:
    If either check shows the worktree is alive, leave the row alone — it
    is a real pending close-off, not stale.
 
-2. Try to recover the wave's `pr_url` so the closed-out task carries
-   the same merge URL the live close-wave flow would have set in
-   Step 13.5. **Do not grep merged commits by `${wt_X}`** —
-   the canonical close-wave branch is `wt-close-<date>-<wave-name>`
-   (`plugins/cloglog/skills/close-wave/SKILL.md` Step 10), and the
-   `<wave-name>` is `wave-N` for ordinary runs and only carries the
-   worktree name on the reconcile-delegated variant
-   (`reconcile-<wt-name>`). Subject lines from the merging close-wave
-   PR therefore mention `wt-<X>` only by coincidence (e.g. when the
-   PR description happens to enumerate the worktrees being closed).
-   The reliable lookup is the merged close-wave PR by title, scoped
-   to recent history:
-
-   ```bash
-   # List recent close-wave PRs and look for one whose body mentions
-   # this stale row's worktree name. The bot identity is required
-   # here — see github-bot SKILL.md.
-   GH_TOKEN="$BOT_TOKEN" gh pr list \
-     --state merged \
-     --search "in:title chore(close-wave)" \
-     --json number,title,body,url,mergedAt --limit 50 \
-     | jq -r --arg wt "$wt_X" \
-         '.[] | select((.body // "") | contains($wt)) | .url' \
-     | head -1
-   ```
-
-   If no matching close-wave PR is findable (the row predates the
-   convention, or the wave was never PR'd — the original 7-row
-   cohort), leave `pr_url` unset and rely on `skip_pr=True` for the
-   review hop. The reconcile work log records the absence so the
-   operator has a paper trail.
-
-3. Move the row through to `review` and surface to the operator. Use
-   `start_task` for the `backlog` → `in_progress` hop, NOT
-   `update_task_status(..., "in_progress")` — `start_task`
-   (`src/agent/services.py:374-398`) is the only entry point that
-   enforces the one-active-task rule and writes
-   `worktrees.current_task_id`. Bypassing it via `update_task_status`
-   would let reconcile open a second active task on the main agent
-   while the supervisor still has its own task in flight, leaving
-   `current_task_id` stale and breaking every subsequent `start_task`
-   guard until force-unregister.
+2. Move the stale row directly to `done`. Close-off tasks have a non-null
+   `close_off_worktree_id` field, which is the carve-out that allows
+   agent-driven `done` transitions (T-395, `src/agent/services.py` —
+   `is_close_off_task = task.close_off_worktree_id is not None`). No
+   `start_task` or PR URL recovery needed; `update_task_status` handles
+   the direct backlog → done hop:
 
    ```
-   mcp__cloglog__start_task(task_id=<close_off_task_id>)
-   mcp__cloglog__update_task_status(task_id, "review", pr_url=<url>)
-   # OR, when no PR was findable in step 2:
-   mcp__cloglog__update_task_status(task_id, "review", skip_pr=True)
+   mcp__cloglog__update_task_status(task_id=<close_off_task_id>, status="done")
    ```
 
-   If `start_task` returns "agent already has active task(s)", **stop
-   the cleanup of this row** and surface the conflict to the operator
-   — the active task must clear (merge / drag / abandon) before
-   reconcile can revive the stale close-off. Do not work around the
-   guard.
-
-   Agents cannot move tasks to `done` (the user-only-done invariant —
-   `src/agent/services.py:502-508`); the row terminates at `review +
-   pr_merged=True` (or `review + skip_pr=True` for the legacy cohort)
-   and the operator drags the card on the board, the same single click
-   they make for every other reviewed task. Surface the row in the
-   reconcile work log with a one-line summary so they know where to
-   look. Once T-371's close-wave wiring is live, this rule only fires
-   for the existing stale cohort and never accumulates new rows.
+   Surface the row in the reconcile work log with a one-line summary so
+   the operator has a paper trail. Once T-395's close-wave wiring is live,
+   this rule only fires for the pre-T-395 stale cohort and never
+   accumulates new rows (new close-off tasks are marked done immediately by
+   close-wave Step 13.5).
 
 ### Other drift
 

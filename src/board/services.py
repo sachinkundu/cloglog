@@ -404,7 +404,7 @@ class BoardService:
                     "Each worktree gets a paired close-off task filed here "
                     "at creation time (T-246). The task tracks archiving "
                     "shutdown-artifacts, filing learnings, tearing down the "
-                    "worktree, and opening the close-wave PR."
+                    "worktree, and committing the wave-fold directly to main."
                 ),
                 position=0,
                 number=feature_number,

@@ -499,14 +499,6 @@ class AgentService:
         skip_pr: bool = False,
     ) -> None:
         """Update a task's status (e.g. to review, blocked)."""
-        # Guard: agents cannot move tasks to done — only user can via board UI
-        if status == "done":
-            raise ValueError(
-                "Agents cannot mark tasks as done. "
-                "Move the task to 'review' and wait for the user "
-                "to drag it to done on the board."
-            )
-
         worktree = await self._repo.get_worktree(worktree_id)
         if worktree is None:
             raise ValueError(f"Worktree {worktree_id} not found")
@@ -514,6 +506,46 @@ class AgentService:
         task = await self._board_repo.get_task(task_id)
         if task is None:
             raise ValueError(f"Task {task_id} not found")
+
+        # Guard: agents cannot move tasks to done — only user can via board UI.
+        # Exception A: close-off tasks with close_off_worktree_id set may be marked done
+        # by the close-wave supervisor after the direct-to-main commit (T-395).
+        # Exception B: legacy stale close-off rows whose close_off_worktree_id was
+        # cleared by ON DELETE SET NULL when the worktree was torn down. These rows
+        # are identifiable by canonical title prefix + placement (Operations epic /
+        # Worktree Close-off feature). Title alone is insufficient — any user can name
+        # a task "Close worktree ..." under any feature, so we require placement match.
+        # Pin: test_unit.py::TestAgentService::test_close_off_task_can_be_marked_done_by_agent
+        is_close_off_task = task.close_off_worktree_id is not None
+        if not is_close_off_task and task.title.startswith("Close worktree "):
+            from src.board.templates import CLOSE_OFF_EPIC_TITLE, CLOSE_OFF_FEATURE_TITLE
+
+            feature = await self._board_repo.get_feature(task.feature_id)
+            if feature is not None and feature.title == CLOSE_OFF_FEATURE_TITLE:
+                epic = await self._board_repo.get_epic(feature.epic_id)
+                if epic is not None and epic.title == CLOSE_OFF_EPIC_TITLE:
+                    is_close_off_task = True
+        if status == "done" and not is_close_off_task:
+            raise ValueError(
+                "Agents cannot mark tasks as done. "
+                "Move the task to 'review' and wait for the user "
+                "to drag it to done on the board."
+            )
+        # Guard: only the owning main-agent may mark a close-off task done.
+        # Close-off tasks are assigned to the main-agent worktree (task.worktree_id)
+        # and only the main-agent role may perform the direct-to-main commit.
+        # Without this check any same-project worktree agent can prematurely close
+        # the supervisor's close-off card by reading its UUID from the board.
+        if (
+            status == "done"
+            and is_close_off_task
+            and (task.worktree_id != worktree_id or worktree.role != "main")
+        ):
+            raise ValueError(
+                "Only the main-agent that owns this close-off task may mark it done. "
+                "The close-off task must be assigned to the calling worktree "
+                "and the caller must have role='main'."
+            )
 
         # Guard: transitioning into in_progress runs the same blocker pass
         # as start_task, so agents cannot bypass it by PATCH-ing status.
@@ -554,6 +586,16 @@ class AgentService:
             update_fields["pr_url"] = pr_url
 
         await self._board_repo.update_task(task_id, **update_fields)
+
+        if status == "done":
+            # Recompute parent roll-ups so the board reflects the completed task.
+            from src.board.services import BoardService
+
+            await BoardService(self._board_repo).recompute_rollup(task.feature_id)
+            # Clear the worktree's current_task_id so the supervisor doesn't
+            # resume with a stale pointer to this already-done task.
+            if worktree.current_task_id == task_id:
+                await self._repo.set_worktree_current_task(worktree_id, None)
 
         await event_bus.publish(
             Event(

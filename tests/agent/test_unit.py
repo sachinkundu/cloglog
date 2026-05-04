@@ -796,6 +796,36 @@ class TestAgentService:
             f"Epic status should be 'done' after sole feature is done, got '{epic.status}'"
         )
 
+    async def test_legacy_stale_close_off_task_can_be_marked_done_by_agent(
+        self, db_session: AsyncSession
+    ) -> None:
+        """T-395 + reconcile: stale close-off rows with NULL FK are still close-off tasks.
+
+        When a worktree is deleted, ON DELETE SET NULL clears close_off_worktree_id.
+        Reconcile must still be able to call update_task_status("done") on those rows.
+        The carve-out uses the title prefix 'Close worktree ' as the secondary signal.
+        """
+        project = await _create_project(db_session)
+        task = await _create_task_chain(db_session, project)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        board_repo = BoardRepository(db_session)
+
+        # Simulate legacy stale row: title matches pattern but FK is NULL
+        await board_repo.update_task(task.id, title="Close worktree wt-old")  # type: ignore[arg-type]
+        assert task.close_off_worktree_id is None  # FK never set — simulates SET NULL
+
+        reg = await service.register(project.id, "/repo/wt-reconcile", "wt-reconcile")
+        wt_id = reg["worktree_id"]
+        await board_repo.update_task(task.id, worktree_id=wt_id)  # type: ignore[arg-type]
+        await service.start_task(wt_id, task.id)  # type: ignore[arg-type]
+
+        # Must succeed despite NULL close_off_worktree_id
+        await service.update_task_status(wt_id, task.id, "done")  # type: ignore[arg-type]
+
+        updated = await board_repo.get_task(task.id)
+        assert updated is not None
+        assert updated.status == "done"
+
     async def test_regular_task_still_blocked_from_done_by_agent(
         self, db_session: AsyncSession
     ) -> None:

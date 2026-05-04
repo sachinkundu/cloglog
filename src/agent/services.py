@@ -508,10 +508,15 @@ class AgentService:
             raise ValueError(f"Task {task_id} not found")
 
         # Guard: agents cannot move tasks to done — only user can via board UI.
-        # Exception: close-off tasks (close_off_worktree_id non-null) may be marked
-        # done by the close-wave supervisor after the direct-to-main commit (T-395).
+        # Exception A: close-off tasks with close_off_worktree_id set may be marked done
+        # by the close-wave supervisor after the direct-to-main commit (T-395).
+        # Exception B: legacy stale close-off rows whose close_off_worktree_id was
+        # cleared by ON DELETE SET NULL when the worktree was torn down. These rows
+        # are identifiable by their canonical title prefix; reconcile auto-fixes them.
         # Pin: test_unit.py::TestAgentService::test_close_off_task_can_be_marked_done_by_agent
-        is_close_off_task = task.close_off_worktree_id is not None
+        is_close_off_task = task.close_off_worktree_id is not None or task.title.startswith(
+            "Close worktree "
+        )
         if status == "done" and not is_close_off_task:
             raise ValueError(
                 "Agents cannot mark tasks as done. "

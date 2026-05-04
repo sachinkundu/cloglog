@@ -1868,6 +1868,10 @@ class ReviewEngineConsumer:
                         head_sha=head_sha,
                     )
                     if posted:
+                        from src.gateway.review_loop import _reached_consensus
+                        _deg_consensus = _reached_consensus(
+                            result=result, prior_finding_keys=set()
+                        )
                         log_event(
                             logger,
                             "review.codex",
@@ -1882,7 +1886,7 @@ class ReviewEngineConsumer:
                             "review.finalize",
                             pr=_deg_pr_key,
                             sha=_deg_sha_short,
-                            outcome="consensus",
+                            outcome="consensus" if _deg_consensus else "exhausted",
                         )
                     else:
                         log_event(
@@ -1996,6 +2000,7 @@ class ReviewEngineConsumer:
         )
 
         _codex_consensus = False
+        _opencode_consensus = False
 
         try:
             # ----- Stage A: opencode (gemma4:e4b) — up to opencode_max_turns -----
@@ -2035,6 +2040,7 @@ class ReviewEngineConsumer:
                         max_sessions=MAX_REVIEWS_PER_PR,
                     )
                     outcome_a = await loop_a.run(diff=filtered)
+                    _opencode_consensus = getattr(outcome_a, "consensus_reached", False)
                 if outcome_a.turns_used == 0 and outcome_a.errors:
                     # A completely failed stage A posts a single skip comment so
                     # the author knows why opencode produced nothing.
@@ -2149,7 +2155,9 @@ class ReviewEngineConsumer:
                 "review.finalize",
                 pr=_pr_key,
                 sha=_sha_short,
-                outcome="consensus" if _codex_consensus else "exhausted",
+                outcome="consensus" if (
+                    _codex_consensus or (not self._codex_available and _opencode_consensus)
+                ) else "exhausted",
             )
         finally:
             if review_root.is_temp and review_root.main_clone is not None:

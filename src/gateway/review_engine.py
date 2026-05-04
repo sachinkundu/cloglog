@@ -2065,9 +2065,25 @@ class ReviewEngineConsumer:
                 # gets the human-equivalent context (pull_request_template
                 # sections an agent filled).
                 pr_body = (event.raw.get("pull_request") or {}).get("body") or ""
+                pr_author_login = ((event.raw.get("pull_request") or {}).get("user") or {}).get(
+                    "login", ""
+                )
                 async with self._registry() as registry:
                     prior_context = await registry.prior_findings_and_learnings(
                         pr_url=event.pr_url, stage="codex"
+                    )
+                    # T-415: enrich prior findings with GitHub thread replies so
+                    # the next turn can see "won't fix / already fixed" responses.
+                    # Scoped to the specific codex review per turn and to the PR
+                    # author's replies only — see review_thread_replies.py.
+                    from src.gateway.review_thread_replies import enrich_prior_context
+
+                    prior_context = await enrich_prior_context(
+                        event.repo_full_name,
+                        event.pr_number,
+                        prior_context,
+                        pr_author_login,
+                        review_token,
                     )
                     loop_b = ReviewLoop(
                         CodexReviewer(project_root),

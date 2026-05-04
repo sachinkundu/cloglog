@@ -266,9 +266,11 @@ def _render_prior_history_section(prior_context: PriorContext | None) -> str:
     finding from every prior turn (oldest first), grouped by turn header so
     codex can see which commit each finding was filed against.
 
-    Author responses to findings are not fetched here — the spec defers
-    that to a follow-up. The placeholder ``Author response: (not fetched)``
-    is rendered so the prompt shape is stable when the wiring lands.
+    Author responses come from ``PriorTurnSummary.author_responses`` (keyed
+    by ``file:line``). ``None`` value or absent key → ``Author response: (none)``.
+    Responses are pre-fetched from GitHub review-comment threads by
+    ``src.gateway.review_thread_replies.fetch_author_replies_for_findings``
+    and attached to ``PriorTurnSummary`` before this function is called.
     """
     if prior_context is None or not prior_context.turns:
         return ""
@@ -298,7 +300,7 @@ def _render_prior_history_section(prior_context: PriorContext | None) -> str:
             lines.append("(no findings filed this turn)")
             lines.append("")
             continue
-        for finding in turn.findings:
+        for idx, finding in enumerate(turn.findings):
             file_ = finding.get("file", "?")
             line = finding.get("line", "?")
             title = finding.get("title") or finding.get("body", "")
@@ -307,7 +309,9 @@ def _render_prior_history_section(prior_context: PriorContext | None) -> str:
             lines.append(f"- `{file_}:{line}` **[{str(severity).upper()}]** {title}")
             if body and body != title:
                 lines.append(f"  - Body: {body}")
-            lines.append("  - Author response: (not fetched)")
+            author_reply = turn.author_responses.get(str(idx))
+            reply_text = author_reply if author_reply is not None else "(none)"
+            lines.append(f"  - Author response: {reply_text}")
         lines.append("")
     return "\n".join(lines) + "\n"
 

@@ -1461,10 +1461,12 @@ class ReviewEngineConsumer:
                 event.pr_number,
                 event.repo_full_name,
             )
+            _rl_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
             log_event(
                 logger,
                 "review.dispatch",
                 pr=f"{event.repo_full_name}#{event.pr_number}",
+                sha=_rl_sha[:7] or None,
                 event=event.type,
                 action="skip",
                 reason="rate_limit",

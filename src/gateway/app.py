@@ -24,6 +24,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # domain loggers go to INFO so structured events are visible in prod logs.
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(message)s")
     for _domain_logger in (
+        "src.gateway.app",
         "src.gateway.review_engine",
         "src.gateway.review_loop",
         "src.gateway.webhook_dispatcher",

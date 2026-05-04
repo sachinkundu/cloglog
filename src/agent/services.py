@@ -824,6 +824,8 @@ class AgentService:
                 )
             )
 
+            wt_name = worktree.branch_name or worktree.worktree_path.rsplit("/", 1)[-1]
+            log_event(logger, "agent.offline", wt=wt_name, reason="force_unregistered")
             await self._repo.delete_worktree(worktree_id)
 
         # Audit log (structured, grep-able). Reserved keyword ``audit`` makes

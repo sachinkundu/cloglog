@@ -30,8 +30,10 @@ set -euo pipefail
 INBOX="${1:?usage: dedup-inbox-monitor.sh <inbox_absolute_path>}"
 
 # The owning directory for a legacy-form cwd check: parent of .cloglog/.
-# e.g. /home/user/cloglog/.cloglog/inbox  →  /home/user/cloglog
-EXPECTED_CWD="$(dirname "$(dirname "$INBOX")")"
+# Resolved to physical path (pwd -P) so it matches readlink -f /proc/<pid>/cwd
+# on symlinked checkouts — a literal symlink path would never equal the resolved
+# cwd returned by _get_proc_cwd and the legacy tail would be silently missed.
+EXPECTED_CWD="$(cd "$(dirname "$(dirname "$INBOX")")" && pwd -P)"
 
 # ── portable cwd lookup ───────────────────────────────────────────────────
 # Outputs the resolved cwd for a given PID, or nothing on failure.

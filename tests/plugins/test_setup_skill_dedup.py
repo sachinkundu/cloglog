@@ -440,3 +440,59 @@ def test_legacy_and_canonical_mixed_deduplicates_to_one(tmp_path: Path) -> None:
             if _is_running(p.pid):
                 p.terminate()
             p.wait()
+
+
+# ── symlink checkout regression ───────────────────────────────────────────
+
+
+def test_legacy_tail_from_symlinked_checkout_is_detected(tmp_path: Path) -> None:
+    """A legacy tail started from a symlinked project root must be detected.
+
+    Before the T-419 fix, EXPECTED_CWD was derived from the literal inbox
+    argument string.  If setup was invoked with a canonical path but the
+    legacy tail was started from a symlinked root (or vice-versa), the cwd
+    comparison would fail and the orphan would be silently missed.
+
+    The fix: EXPECTED_CWD is resolved with `pwd -P` (physical path), which
+    matches what `readlink -f /proc/<pid>/cwd` and lsof return — both resolve
+    symlinks before reporting the cwd.
+    """
+    real_root = tmp_path / "real_project"
+    link_root = tmp_path / "link_project"
+    real_root.mkdir()
+    link_root.symlink_to(real_root)
+
+    # Build the inbox under the real path
+    real_inbox = _make_inbox(real_root)
+
+    # Spawn a legacy tail from the SYMLINKED root — simulates a prior session
+    # that was started via the symlink while the current session uses the real path.
+    cwd = link_root  # symlink to real_root
+    proc = subprocess.Popen(
+        ["tail", "-n", "0", "-F", ".cloglog/inbox"],
+        cwd=str(cwd),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        time.sleep(0.1)
+
+        # Run dedup against the canonical (real) inbox path
+        result = _run_dedup(real_inbox)
+
+        time.sleep(0.1)
+        # The orphan must be detected and killed (exit 2 = spawn fresh)
+        assert result.returncode == 2, (
+            f"Dedup returned exit {result.returncode} but expected 2 (orphan killed). "
+            "Legacy tail from symlinked root was not detected — EXPECTED_CWD must be "
+            "resolved with pwd -P to match the physical cwd returned by /proc/<pid>/cwd."
+        )
+        assert not _is_running(proc.pid), (
+            f"Legacy tail PID {proc.pid} (started from symlinked root) survived dedup. "
+            "The symlink-aware EXPECTED_CWD fix (pwd -P) must resolve both paths to their "
+            "physical equivalents before comparing."
+        )
+    finally:
+        if _is_running(proc.pid):
+            proc.terminate()
+        proc.wait()

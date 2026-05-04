@@ -58,6 +58,8 @@ class AgentNotifierConsumer:
     """Route PR events to the owning worktree agent via inbox file."""
 
     _handled = {
+        WebhookEventType.PR_OPENED,
+        WebhookEventType.PR_SYNCHRONIZE,
         WebhookEventType.PR_MERGED,
         WebhookEventType.PR_CLOSED,
         WebhookEventType.REVIEW_SUBMITTED,
@@ -83,6 +85,17 @@ class AgentNotifierConsumer:
             # For PR_MERGED, update the task's pr_merged flag regardless of agent status
             if event.type == WebhookEventType.PR_MERGED:
                 await self._mark_pr_merged(event.pr_url, session)
+
+            # Update pr_head_sha on the task so the board can project codex
+            # status without fetching from GitHub (T-409). Scoped by project
+            # via repo_full_name so two projects sharing the same PR URL cannot
+            # overwrite each other's head SHA.
+            if event.type in (WebhookEventType.PR_OPENED, WebhookEventType.PR_SYNCHRONIZE):
+                head_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
+                if head_sha:
+                    await self._update_pr_head_sha(
+                        event.pr_url, head_sha, event.repo_full_name, session
+                    )
 
             if result is None:
                 # _resolve_agent already logged the specific drop reason
@@ -226,6 +239,35 @@ class AgentNotifierConsumer:
         if task is not None:
             await repo.update_task(task.id, pr_merged=True)
             logger.info("Marked task %s pr_merged=True for %s", task.id, pr_url)
+
+    async def _update_pr_head_sha(
+        self, pr_url: str, head_sha: str, repo_full_name: str, session: AsyncSession
+    ) -> None:
+        """Store the current head SHA on the task for codex status projection (T-409).
+
+        Multiple cloglog projects can track the same GitHub repo, so we look up
+        ALL matching projects and update each one's task independently. This
+        prevents a single-project .limit(1) lookup from silently skipping the
+        second project's task row.
+        """
+        from src.board.repository import BoardRepository
+
+        repo = BoardRepository(session)
+        projects = await repo.find_projects_by_repo(repo_full_name)
+        if not projects:
+            logger.debug("pr_head_sha update skipped: no project for repo %s", repo_full_name)
+            return
+        for project in projects:
+            task = await repo.find_task_by_pr_url_for_project(pr_url, project.id)
+            if task is not None:
+                await repo.update_task(task.id, pr_head_sha=head_sha)
+                logger.debug(
+                    "Updated pr_head_sha=%s for task %s (%s) in project %s",
+                    head_sha[:7],
+                    task.id,
+                    pr_url,
+                    project.id,
+                )
 
     def _build_message(self, event: WebhookEvent) -> dict[str, Any] | None:
         if event.type == WebhookEventType.PR_MERGED:

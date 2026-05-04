@@ -589,6 +589,29 @@ class BoardRepository:
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def shared_pr_urls_in_project(self, project_id: UUID, pr_urls: list[str]) -> set[str]:
+        """Return pr_urls that appear on more than one task anywhere in the project.
+
+        Intentionally unfiltered by status — a done task reusing the same pr_url
+        as a live task still causes ambiguity because codex_status_by_pr queries
+        pr_review_turns by (project_id, pr_url) without status scoping.
+        Used by the board projection to force duplicate pr_urls onto the legacy
+        boolean path regardless of which tasks are visible in the current view.
+        """
+        if not pr_urls:
+            return set()
+        stmt = (
+            select(Task.pr_url, func.count(Task.id).label("n"))
+            .join(Feature, Task.feature_id == Feature.id)
+            .join(Epic, Feature.epic_id == Epic.id)
+            .where(Epic.project_id == project_id)
+            .where(Task.pr_url.in_(pr_urls))
+            .group_by(Task.pr_url)
+            .having(func.count(Task.id) > 1)
+        )
+        result = await self._session.execute(stmt)
+        return {row.pr_url for row in result.all()}
+
     async def find_project_by_repo(self, repo_full_name: str) -> Project | None:
         """Find a project by GitHub repo full name.
 
@@ -598,6 +621,16 @@ class BoardRepository:
         stmt = select(Project).where(Project.repo_url.endswith(repo_full_name)).limit(1)
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def find_projects_by_repo(self, repo_full_name: str) -> list[Project]:
+        """Return all projects whose repo_url ends with repo_full_name.
+
+        Multiple cloglog projects can track the same GitHub repo, so unlike
+        find_project_by_repo this returns the full list.
+        """
+        stmt = select(Project).where(Project.repo_url.endswith(repo_full_name))
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
 
     # --- Search ---
 

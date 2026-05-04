@@ -55,4 +55,87 @@ describe('PrLink', () => {
     render(<PrLink url="https://github.com/sachinkundu/cloglog/pull/45" />)
     expect(screen.queryByText('Merged')).not.toBeInTheDocument()
   })
+
+  // --- codex status badge tests (T-409) ---
+
+  it('shows no codex badge when codexStatus is null', () => {
+    render(<PrLink url="https://github.com/o/r/pull/1" codexStatus={null} />)
+    expect(screen.queryByText(/codex/i)).not.toBeInTheDocument()
+  })
+
+  it('shows no codex badge when codexStatus is not_started', () => {
+    render(<PrLink url="https://github.com/o/r/pull/1" codexStatus="not_started" />)
+    expect(screen.queryByText(/codex/i)).not.toBeInTheDocument()
+  })
+
+  it('shows animated "codex working" badge with pulse class', () => {
+    render(<PrLink url="https://github.com/o/r/pull/1" codexStatus="working" />)
+    const badge = screen.getByText('codex working')
+    expect(badge).toBeInTheDocument()
+    expect(badge).toHaveClass('pr-codex-badge--working')
+  })
+
+  it('shows "codex N/M" progress badge', () => {
+    render(
+      <PrLink
+        url="https://github.com/o/r/pull/1"
+        codexStatus="progress"
+        codexProgress={{ turn: 2, max_turns: 3, sha: 'abc123' }}
+      />
+    )
+    const badge = screen.getByText('codex 2/3')
+    expect(badge).toBeInTheDocument()
+    expect(badge).toHaveClass('pr-codex-badge--progress')
+  })
+
+  it('shows "codex pass" badge in green class', () => {
+    render(<PrLink url="https://github.com/o/r/pull/1" codexStatus="pass" />)
+    const badge = screen.getByText('codex pass')
+    expect(badge).toBeInTheDocument()
+    expect(badge).toHaveClass('pr-codex-badge--pass')
+  })
+
+  it('shows "codex exhausted" badge in red class', () => {
+    render(<PrLink url="https://github.com/o/r/pull/1" codexStatus="exhausted" />)
+    const badge = screen.getByText('codex exhausted')
+    expect(badge).toBeInTheDocument()
+    expect(badge).toHaveClass('pr-codex-badge--exhausted')
+  })
+
+  it('shows "codex failed" badge in red class', () => {
+    render(<PrLink url="https://github.com/o/r/pull/1" codexStatus="failed" />)
+    const badge = screen.getByText('codex failed')
+    expect(badge).toBeInTheDocument()
+    expect(badge).toHaveClass('pr-codex-badge--failed')
+  })
+
+  it('shows "codex stale" badge in amber class', () => {
+    render(<PrLink url="https://github.com/o/r/pull/1" codexStatus="stale" />)
+    const badge = screen.getByText('codex stale')
+    expect(badge).toBeInTheDocument()
+    expect(badge).toHaveClass('pr-codex-badge--stale')
+  })
+
+  it('badge title includes sha for progress state', () => {
+    render(
+      <PrLink
+        url="https://github.com/o/r/pull/1"
+        codexStatus="progress"
+        codexProgress={{ turn: 1, max_turns: 2, sha: 'deadbeef1234567' }}
+      />
+    )
+    const badge = screen.getByText('codex 1/2')
+    expect(badge).toHaveAttribute('title', 'codex 1/2 (deadbee)')
+  })
+
+  it('falls back to "pass" appearance when deprecated codexReviewed=true with no codexStatus', () => {
+    render(<PrLink url="https://github.com/o/r/pull/1" codexReviewed={true} />)
+    const badge = screen.getByText('codex pass')
+    expect(badge).toBeInTheDocument()
+  })
+
+  it('shows no badge when deprecated codexReviewed=false with no codexStatus', () => {
+    render(<PrLink url="https://github.com/o/r/pull/1" codexReviewed={false} />)
+    expect(screen.queryByText(/codex/i)).not.toBeInTheDocument()
+  })
 })

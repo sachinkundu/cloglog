@@ -314,18 +314,25 @@ async def create_task(
 @router.patch("/tasks/{task_id}", response_model=TaskResponse)
 async def update_task(task_id: UUID, body: TaskUpdate, service: ServiceDep) -> TaskResponse:
     fields = body.model_dump(exclude_unset=True)
-    # Capture old status before update for event emission
+    # Capture old task state before update for event emission and SHA invalidation.
     old_status: str | None = None
-    if "status" in fields:
+    if "status" in fields or "pr_url" in fields:
         existing = await service._repo.get_task(task_id)
         if existing is not None:
             old_status = existing.status
             # Auto-assign position at end when moving to prioritized
-            if fields["status"] == "prioritized" and old_status != "prioritized":
+            new_status = fields.get("status")
+            moving_to_prioritized = new_status == "prioritized" and old_status != "prioritized"
+            if "status" in fields and moving_to_prioritized:
                 max_pos = await service._repo.get_max_task_position(
                     existing.feature_id, "prioritized"
                 )
                 fields["position"] = max_pos + 1
+            # When pr_url changes, the stored head SHA belongs to the old PR — clear it
+            # so the board does not query codex status against a mismatched SHA until
+            # the next PR_OPENED/PR_SYNCHRONIZE webhook populates the new SHA (T-409).
+            if "pr_url" in fields and fields["pr_url"] != existing.pr_url:
+                fields["pr_head_sha"] = None
     task = await service._repo.update_task(task_id, **fields)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -594,13 +601,13 @@ async def get_board(
     epic_id: UUID | None = None,
     exclude_done: bool = False,
 ) -> BoardResponse:
-    # DDD: Board projects a single boolean (``codex_review_picked_up``) from
-    # the Review context via its Open Host Service factory. Board never
-    # imports ``src.review.models`` or ``src.review.repository`` — only
-    # ``src.review.services.make_review_turn_registry``, whose return type
-    # is the ``IReviewTurnRegistry`` Protocol. See docs/ddd-context-map.md
-    # and the pin test in tests/board/test_board_review_boundary.py.
+    # DDD: Board projects codex state from the Review context via the Open
+    # Host Service factory. Board never imports ``src.review.models`` or
+    # ``src.review.repository`` — only ``src.review.services`` (factory)
+    # and ``src.review.interfaces`` (Protocol + enums). See
+    # docs/ddd-context-map.md and tests/board/test_board_review_boundary.py.
     from src.review.services import make_review_turn_registry
+    from src.shared.config import settings
 
     project = await service._repo.get_project(project_id)
     if project is None:
@@ -613,30 +620,71 @@ async def get_board(
         project_id, statuses=status, epic_id=epic_id, exclude_done=exclude_done
     )
 
-    # Single batched query across all pr_urls on the board (T-260). One
-    # round-trip per board load, not one per card. Empty input → empty set
-    # short-circuits in the repository. ``project_id`` is passed through
-    # so two cloglog projects tracking the same GitHub repo/PR URL never
-    # leak codex badges across each other's boards — pr_url uniqueness
-    # is feature-scoped today (see xfailed
-    # ``test_pr_url_reuse_blocked_cross_feature``), so cross-project
-    # collision is a real concern. PR #198 round 1 codex MEDIUM fix.
-    pr_urls = [t.pr_url for t in tasks if t.pr_url]
+    # Split tasks by whether they have a stored head_sha:
+    # - With sha (unique pr_url): full discriminated codex status projection (T-409).
+    # - Without sha OR duplicate pr_url within the board: legacy boolean check.
+    #
+    # Duplicate guard: the same pr_url can appear on multiple tasks in one project
+    # today (project-wide uniqueness is not yet enforced — xfailed test). When
+    # duplicates exist, collapsing them into a dict[pr_url → sha] would let the
+    # last-written entry shadow the others, producing wrong status for every task
+    # except the "winner". Duplicated pr_urls fall back to the legacy boolean path.
+    #
+    # The check is project-wide (not filtered by the current board view) because a
+    # done task hidden by exclude_done=true still creates ambiguity: codex_status_by_pr
+    # queries pr_review_turns by (project_id, pr_url) without status scoping, so
+    # historical turns from the done task bleed into the live task's projection.
+    candidate_pr_urls = [t.pr_url for t in tasks if t.pr_url]
+    shared_pr_urls: set[str] = await service._repo.shared_pr_urls_in_project(
+        project_id, candidate_pr_urls
+    )
+    pr_url_to_head_sha: dict[str, str] = {
+        t.pr_url: t.pr_head_sha
+        for t in tasks
+        if t.pr_url and t.pr_head_sha and t.pr_url not in shared_pr_urls
+    }
+    legacy_pr_urls: list[str] = list(
+        {t.pr_url for t in tasks if t.pr_url and (not t.pr_head_sha or t.pr_url in shared_pr_urls)}
+    )
+
     review_registry = make_review_turn_registry(session)
-    codex_touched = await review_registry.codex_touched_pr_urls(
-        project_id=project_id, pr_urls=pr_urls
+
+    # Full discriminated status for tasks with a known head SHA.
+    codex_statuses = await review_registry.codex_status_by_pr(
+        project_id=project_id,
+        pr_url_to_head_sha=pr_url_to_head_sha,
+        max_turns=settings.codex_max_turns,
+    )
+
+    # Legacy boolean for tasks that predate the pr_head_sha column.
+    legacy_codex_touched = await review_registry.codex_touched_pr_urls(
+        project_id=project_id, pr_urls=legacy_pr_urls
     )
 
     columns: dict[str, list[TaskCard]] = {col: [] for col in BOARD_COLUMNS}
     done_count = 0
 
     for task in tasks:
+        status_result = codex_statuses.get(task.pr_url) if task.pr_url else None
+        if status_result is not None:
+            # Full discriminated path — codex_review_picked_up mirrors "touched".
+            picked_up = status_result.status.value != "not_started"
+            codex_st = status_result.status
+            codex_prog = status_result.progress
+        else:
+            # Legacy path — no sha stored yet, fall back to boolean.
+            picked_up = bool(task.pr_url and task.pr_url in legacy_codex_touched)
+            codex_st = None
+            codex_prog = None
+
         card = TaskCard(
             **TaskResponse.model_validate(task).model_dump(),
             epic_title=task.feature.epic.title,
             feature_title=task.feature.title,
             epic_color=task.feature.epic.color,
-            codex_review_picked_up=bool(task.pr_url and task.pr_url in codex_touched),
+            codex_review_picked_up=bool(task.pr_url and picked_up),
+            codex_status=codex_st,
+            codex_progress=codex_prog,
         )
         if task.status in columns:
             columns[task.status].append(card)

@@ -1,9 +1,20 @@
 import './PrLink.css'
 
+type CodexStatus = 'not_started' | 'working' | 'progress' | 'pass' | 'exhausted' | 'failed' | 'stale'
+
+interface CodexProgress {
+  turn: number
+  max_turns: number
+  sha: string
+}
+
 interface PrLinkProps {
   url: string
   merged?: boolean
+  /** @deprecated Use codexStatus instead */
   codexReviewed?: boolean
+  codexStatus?: CodexStatus | null
+  codexProgress?: CodexProgress | null
 }
 
 function extractPrNumber(url: string): string | null {
@@ -11,9 +22,63 @@ function extractPrNumber(url: string): string | null {
   return match ? match[1] : null
 }
 
-export function PrLink({ url, merged, codexReviewed }: PrLinkProps) {
+function CodexBadge({
+  status,
+  progress,
+}: {
+  status: CodexStatus | null | undefined
+  progress: CodexProgress | null | undefined
+}) {
+  if (!status || status === 'not_started') return null
+
+  let label: string
+  let className: string
+
+  switch (status) {
+    case 'working':
+      label = 'codex working'
+      className = 'pr-codex-badge pr-codex-badge--working'
+      break
+    case 'progress':
+      label = progress ? `codex ${progress.turn}/${progress.max_turns}` : 'codex …'
+      className = 'pr-codex-badge pr-codex-badge--progress'
+      break
+    case 'pass':
+      label = 'codex pass'
+      className = 'pr-codex-badge pr-codex-badge--pass'
+      break
+    case 'exhausted':
+      label = 'codex exhausted'
+      className = 'pr-codex-badge pr-codex-badge--exhausted'
+      break
+    case 'failed':
+      label = 'codex failed'
+      className = 'pr-codex-badge pr-codex-badge--failed'
+      break
+    case 'stale':
+      label = 'codex stale'
+      className = 'pr-codex-badge pr-codex-badge--stale'
+      break
+    default:
+      return null
+  }
+
+  const titleSuffix = progress?.sha ? ` (${progress.sha.slice(0, 7)})` : ''
+
+  return (
+    <span className={className} title={`${label}${titleSuffix}`}>
+      {label}
+    </span>
+  )
+}
+
+export function PrLink({ url, merged, codexReviewed, codexStatus, codexProgress }: PrLinkProps) {
   const prNumber = extractPrNumber(url)
   const label = prNumber ? `PR #${prNumber}` : 'PR'
+
+  // Prefer new codexStatus; fall back to deprecated codexReviewed boolean.
+  const effectiveStatus: CodexStatus | null | undefined =
+    codexStatus !== undefined ? codexStatus : codexReviewed ? 'pass' : null
 
   return (
     <span className="pr-link-group">
@@ -30,14 +95,7 @@ export function PrLink({ url, merged, codexReviewed }: PrLinkProps) {
         </svg>
         {label}
       </a>
-      {codexReviewed && (
-        <span
-          className="pr-codex-badge"
-          title="codex has engaged with this PR"
-        >
-          codex reviewed
-        </span>
-      )}
+      <CodexBadge status={effectiveStatus} progress={codexProgress} />
       {merged && <span className="pr-merged-badge">Merged</span>}
     </span>
   )

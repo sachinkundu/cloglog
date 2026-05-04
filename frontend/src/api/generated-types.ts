@@ -1081,13 +1081,32 @@ export interface components {
             pr_merged: boolean;
             /**
              * Codex Review Picked Up
-             * @description True when at least one codex review turn has been persisted
-             *     for this task's pr_url. Drives the "codex reviewed" badge on
-             *     review-column task cards (T-260). Projected read-only from
-             *     ``pr_review_turns``; never a write target.
+             * @description Deprecated — use codex_status instead. True when at least one
+             *     codex review turn has been persisted for this task's pr_url.
+             *     Kept for one release for backward compatibility (T-409).
              * @default false
              */
             codex_review_picked_up: boolean;
+            /**
+             * Codex Status
+             * @description Discriminated codex review state for the current head SHA.
+             *     null when pr_head_sha is not yet populated (pre-migration or
+             *     webhook not yet fired). not_started renders no badge (T-409).
+             */
+            codex_status?: ("not_started" | "working" | "progress" | "pass" | "exhausted" | "failed" | "stale") | null;
+            /**
+             * Codex Progress
+             * @description Present only when codex_status is "progress". Shows turn N of
+             *     max_turns for the current sha (T-409).
+             */
+            codex_progress?: {
+                /** Turn */
+                turn: number;
+                /** Max Turns */
+                max_turns: number;
+                /** Sha */
+                sha: string;
+            } | null;
             /** Model */
             model?: string | null;
         };

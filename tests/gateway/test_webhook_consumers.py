@@ -532,10 +532,12 @@ class TestBuildMessage:
 
     def test_handles_only_relevant_events(self) -> None:
         consumer = AgentNotifierConsumer()
-        # PR_OPENED and PR_SYNCHRONIZE should not be handled
-        assert consumer.handles(_make_event(event_type=WebhookEventType.PR_OPENED)) is False
-        assert consumer.handles(_make_event(event_type=WebhookEventType.PR_SYNCHRONIZE)) is False
-        # These should be handled
+        # T-409: PR_OPENED and PR_SYNCHRONIZE are now handled to update pr_head_sha
+        # on the task so the board can derive discriminated codex status without
+        # fetching from GitHub at render time.
+        assert consumer.handles(_make_event(event_type=WebhookEventType.PR_OPENED)) is True
+        assert consumer.handles(_make_event(event_type=WebhookEventType.PR_SYNCHRONIZE)) is True
+        # These should be handled (unchanged)
         assert consumer.handles(_make_event(event_type=WebhookEventType.PR_MERGED)) is True
         assert consumer.handles(_make_event(event_type=WebhookEventType.PR_CLOSED)) is True
         assert consumer.handles(_make_event(event_type=WebhookEventType.REVIEW_SUBMITTED)) is True
@@ -783,6 +785,101 @@ class TestBoardRepositoryPrLookup:
         repo = BoardRepository(db_session)
         found = await repo.find_project_by_repo("nonexistent/repo")
         assert found is None
+
+    @pytest.mark.asyncio
+    async def test_find_projects_by_repo_returns_all_matching(
+        self, db_session: AsyncSession
+    ) -> None:
+        """find_projects_by_repo must return every project on the repo, not just the first."""
+        repo_url = "https://github.com/sachinkundu/cloglog"
+
+        project_a = Project(
+            name=f"project-a-{uuid.uuid4().hex[:6]}",
+            repo_url=repo_url,
+        )
+        project_b = Project(
+            name=f"project-b-{uuid.uuid4().hex[:6]}",
+            repo_url=repo_url,
+        )
+        db_session.add_all([project_a, project_b])
+        await db_session.flush()
+
+        repo = BoardRepository(db_session)
+        found = await repo.find_projects_by_repo("sachinkundu/cloglog")
+        found_ids = {p.id for p in found}
+        assert project_a.id in found_ids
+        assert project_b.id in found_ids
+
+
+class TestPrHeadShaWebhookUpdate:
+    """T-409: PR_OPENED / PR_SYNCHRONIZE must write pr_head_sha on every
+    matching project, not just the first one returned by find_project_by_repo.
+    """
+
+    @staticmethod
+    async def _seed_two_projects_same_repo(
+        session: AsyncSession, pr_url: str
+    ) -> tuple[Project, Task, Project, Task]:
+        """Two projects on the same GitHub repo, each with a task on the same PR URL."""
+        repo_url = "https://github.com/sachinkundu/cloglog"
+
+        async def _make_project_and_task(name: str) -> tuple[Project, Task]:
+            proj = Project(name=name, repo_url=repo_url)
+            session.add(proj)
+            await session.flush()
+            epic = Epic(project_id=proj.id, title="E", position=0)
+            session.add(epic)
+            await session.flush()
+            feat = Feature(epic_id=epic.id, title="F", position=0)
+            session.add(feat)
+            await session.flush()
+            task = Task(
+                feature_id=feat.id,
+                title="T",
+                status="review",
+                pr_url=pr_url,
+                position=0,
+            )
+            session.add(task)
+            await session.flush()
+            return proj, task
+
+        p_a, t_a = await _make_project_and_task(f"proj-a-{uuid.uuid4().hex[:6]}")
+        p_b, t_b = await _make_project_and_task(f"proj-b-{uuid.uuid4().hex[:6]}")
+        await session.commit()
+        return p_a, t_a, p_b, t_b
+
+    @pytest.mark.asyncio
+    async def test_synchronize_updates_both_projects(self, db_session: AsyncSession) -> None:
+        """A PR_SYNCHRONIZE webhook on a shared repo must stamp pr_head_sha on
+        the matching task in every registered project, not just one."""
+        pr_url = _unique_pr_url()
+        new_sha = "ab" * 20
+
+        _p_a, task_a, _p_b, task_b = await self._seed_two_projects_same_repo(db_session, pr_url)
+
+        consumer = AgentNotifierConsumer(session_factory=_make_session_factory(db_session))
+        event = WebhookEvent(
+            type=WebhookEventType.PR_SYNCHRONIZE,
+            delivery_id="d-sha-test",
+            repo_full_name="sachinkundu/cloglog",
+            pr_number=42,
+            pr_url=pr_url,
+            head_branch="feature-branch",
+            base_branch="main",
+            sender="sachinkundu",
+            raw={"pull_request": {"head": {"sha": new_sha}}},
+        )
+
+        await consumer.handle(event)
+
+        repo = BoardRepository(db_session)
+        updated_a = await repo.get_task(task_a.id)
+        updated_b = await repo.get_task(task_b.id)
+        assert updated_a is not None
+        assert updated_b is not None
+        assert updated_a.pr_head_sha == new_sha, "project A task must have updated SHA"
+        assert updated_b.pr_head_sha == new_sha, "project B task must have updated SHA"
 
 
 class TestAgentRepositoryBranchLookup:

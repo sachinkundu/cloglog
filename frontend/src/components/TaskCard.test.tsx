@@ -129,42 +129,55 @@ describe('TaskCard', () => {
     expect(onClick).not.toHaveBeenCalled()
   })
 
-  it('shows codex reviewed badge on a review-column card when codex_review_picked_up=true', () => {
+  it('shows codex pass badge on a review-column card when codex_status=pass', () => {
     const task = {
       ...baseTask,
       status: 'review',
       pr_url: 'https://github.com/sachinkundu/cloglog/pull/42',
-      codex_review_picked_up: true,
+      codex_status: 'pass' as const,
     }
     render(<TaskCard task={task} onClick={vi.fn()} />)
-    expect(screen.getByText('codex reviewed')).toBeInTheDocument()
+    expect(screen.getByText('codex pass')).toBeInTheDocument()
   })
 
-  it('hides codex reviewed badge when codex_review_picked_up=false', () => {
+  it('hides codex badge when codex_status is null and codex_review_picked_up is false', () => {
     const task = {
       ...baseTask,
       status: 'review',
       pr_url: 'https://github.com/sachinkundu/cloglog/pull/42',
+      codex_status: null,
       codex_review_picked_up: false,
     }
     render(<TaskCard task={task} onClick={vi.fn()} />)
-    expect(screen.queryByText('codex reviewed')).not.toBeInTheDocument()
+    expect(screen.queryByText(/codex/i)).not.toBeInTheDocument()
   })
 
-  it('hides codex reviewed badge when task moves back to in_progress (badge is review-column only)', () => {
+  it('shows legacy codex pass badge when codex_status=null but codex_review_picked_up=true (pre-migration)', () => {
+    const task = {
+      ...baseTask,
+      status: 'review',
+      pr_url: 'https://github.com/sachinkundu/cloglog/pull/42',
+      codex_status: null,
+      codex_review_picked_up: true,
+    }
+    render(<TaskCard task={task} onClick={vi.fn()} />)
+    expect(screen.getByText('codex pass')).toBeInTheDocument()
+  })
+
+  it('hides codex badge when task moves back to in_progress (badge is review-column only)', () => {
     const task = {
       ...baseTask,
       status: 'in_progress',
       pr_url: 'https://github.com/sachinkundu/cloglog/pull/42',
-      codex_review_picked_up: true,
+      codex_status: 'pass' as const,
     }
     render(<TaskCard task={task} onClick={vi.fn()} />)
-    expect(screen.queryByText('codex reviewed')).not.toBeInTheDocument()
+    expect(screen.queryByText(/codex/i)).not.toBeInTheDocument()
   })
 
-  it('hides codex reviewed badge when there is no PR', () => {
-    const task = { ...baseTask, status: 'review', codex_review_picked_up: true }
+  it('hides codex badge when there is no PR', () => {
+    const task = { ...baseTask, status: 'review', codex_status: 'pass' as const }
     render(<TaskCard task={task} onClick={vi.fn()} />)
-    expect(screen.queryByText('codex reviewed')).not.toBeInTheDocument()
+    expect(screen.queryByText(/codex/i)).not.toBeInTheDocument()
   })
 })

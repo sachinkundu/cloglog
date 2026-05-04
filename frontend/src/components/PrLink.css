@@ -51,7 +51,41 @@
   letter-spacing: 0.03em;
   padding: 1px 5px;
   border-radius: var(--radius-sm);
-  background: color-mix(in oklch, var(--accent, #7c3aed) 18%, transparent);
-  color: var(--accent, #7c3aed);
   text-transform: uppercase;
+}
+
+/* working / progress — blue, working pulses */
+.pr-codex-badge--working {
+  background: color-mix(in oklch, #3b82f6 18%, transparent);
+  color: #3b82f6;
+  animation: codex-pulse 1.4s ease-in-out infinite;
+}
+
+.pr-codex-badge--progress {
+  background: color-mix(in oklch, #3b82f6 18%, transparent);
+  color: #3b82f6;
+}
+
+/* pass — green */
+.pr-codex-badge--pass {
+  background: color-mix(in oklch, var(--green, #2ea043) 18%, transparent);
+  color: var(--green, #2ea043);
+}
+
+/* exhausted / failed — red */
+.pr-codex-badge--exhausted,
+.pr-codex-badge--failed {
+  background: color-mix(in oklch, #ef4444 18%, transparent);
+  color: #ef4444;
+}
+
+/* stale — amber */
+.pr-codex-badge--stale {
+  background: color-mix(in oklch, #f59e0b 18%, transparent);
+  color: #f59e0b;
+}
+
+@keyframes codex-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }

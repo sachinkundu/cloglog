@@ -75,7 +75,9 @@ describe('update_project tool', () => {
       .mockResolvedValueOnce({ id: 'proj-7', name: 'antisocial', repo_url: '' })  // /gateway/me
       .mockResolvedValueOnce({ id: 'proj-7', repo_url: 'https://github.com/o/r' })  // PATCH
 
-    const server = createServer(client)
+    // configRoot: null — skips the Guard 2 config.yaml check in ensureProject()
+    // so the test doesn't need a real config.yaml on disk with a matching UUID.
+    const server = createServer(client, { configRoot: null })
     const tools = (server as any)._registeredTools
 
     const result = await tools.update_project.handler({

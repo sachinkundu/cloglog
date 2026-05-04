@@ -33,11 +33,17 @@ function formatBlocker(b: Record<string, unknown>): string {
   return `  • ${JSON.stringify(b)}`
 }
 
-export function createServer(client: CloglogClient): McpServer {
+export function createServer(client: CloglogClient, opts?: { configRoot?: string | null }): McpServer {
   const handlers = createToolHandlers(client)
   let currentWorktreeId: string | null = null
   let currentProjectId: string | null = null
   let currentWorktreePath: string | null = null
+  // Guard 2 (T-398): for ensureProject() pre-registration checks. When opts is
+  // absent we auto-detect from process.cwd(). Pass { configRoot: null } in tests
+  // that call update_project without a real config.yaml on disk.
+  const resolvedConfigRoot = opts?.configRoot === undefined
+    ? findProjectRoot(process.cwd())
+    : opts?.configRoot
   const heartbeat = new HeartbeatTimer(async () => {
     if (currentWorktreeId) {
       await client.request('POST', `/api/v1/agents/${currentWorktreeId}/heartbeat`)
@@ -77,9 +83,33 @@ export function createServer(client: CloglogClient): McpServer {
   async function ensureProject(): Promise<string> {
     if (currentProjectId) return currentProjectId
     const me = await client.request('GET', '/api/v1/gateway/me') as Record<string, unknown>
-    const pid = me.id as string
-    currentProjectId = pid
-    return pid
+    const apiKeyProjectId = me.id as string
+    // Guard 2 (T-398): before caching, verify the API key's project matches
+    // config.yaml. ensureProject() is called by update_project (run by
+    // /cloglog init before any register_agent) — if a misconfigured key
+    // is used, we must catch it here too, not only in register_agent.
+    if (resolvedConfigRoot) {
+      const configProjectId = resolveProjectId(resolvedConfigRoot)
+      if (configProjectId && configProjectId !== apiKeyProjectId) {
+        const slug = resolveProjectSlug(resolvedConfigRoot)
+        const credPath = slug
+          ? join(DEFAULT_PROJECT_CREDENTIALS_DIR, slug)
+          : '~/.cloglog/credentials.d/<slug>'
+        throw new Error([
+          '⛔ MCP server API key belongs to a different project than config.yaml specifies.',
+          `  expected (config.yaml): ${configProjectId}`,
+          `  actual   (backend):     ${apiKeyProjectId}`,
+          '',
+          'The API key the MCP server loaded belongs to a different project.',
+          `Check that ${credPath} contains THIS project's key.`,
+          'Remediation: run /cloglog init to mint and write the correct per-project key,',
+          'or manually write the right key to the per-project credentials file.',
+          'See docs/setup-credentials.md.',
+        ].join('\n'))
+      }
+    }
+    currentProjectId = apiKeyProjectId
+    return apiKeyProjectId
   }
 
   /** Wrap a tool handler to catch API errors and return them as isError responses */

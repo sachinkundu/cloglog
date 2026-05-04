@@ -31,7 +31,7 @@ Schedule a real `asyncio.Task` retry on every rate-limit hit, with a rolling-win
 - `src/gateway/review_skip_comments.py`
   - Dedupe key now includes `body`: same-body within window suppressed (anti-spam preserved); different body for the same `(repo, pr, reason)` re-posts. Keeps PR comment in sync with rescheduled retry ETAs.
 - `tests/gateway/test_review_engine.py`
-  - `TestRateLimitRetry` × 8 + 1 in `TestPostSkipComment`: schedule-on-skip, retry-actually-runs (fast-forwarded sleep), second-push-replaces-pending, max=0 permanent leaves `_pending_retries` empty, slot reservation against unrelated PRs, zero-wait-at-boundary still schedules, capacity-full refuses second PR, comment truthfulness for permanent + capacity, max=2 distinct queue slots, concurrent-pushes arrival-order wins, body-aware dedupe.
+  - `TestRateLimitRetry` × 10 + 1 in `TestPostSkipComment`: schedule-on-skip, retry-actually-runs (fast-forwarded sleep), second-push-replaces-pending, max=0 permanent leaves `_pending_retries` empty, slot reservation against unrelated PRs, zero-wait-at-boundary still schedules, capacity-full refuses second PR, comment truthfulness for permanent + capacity, max=2 distinct queue slots, concurrent-pushes arrival-order wins, body-aware dedupe.
 - `docs/demos/wt-t381-rate-limit-retry/{demo-script.sh,demo.md}` — Showboat demo.
 
 ### Codex review rounds
@@ -47,7 +47,7 @@ Schedule a real `asyncio.Task` retry on every rate-limit hit, with a rolling-win
 ### Test evidence
 
 - `make quality` green at every push: 1310 backend tests + 110 silent-failure invariants + lint + types + contract + demo + MCP.
-- 8 new pin tests under `TestRateLimitRetry` plus 1 in `TestPostSkipComment`. Showboat demo verifies live behavior end-to-end.
+- 10 new pin tests under `TestRateLimitRetry` plus 1 in `TestPostSkipComment`. Showboat demo verifies live behavior end-to-end.
 
 ### Residual TODOs
 
@@ -64,5 +64,5 @@ The five codex rounds collectively are a case study in *concurrent-state racing 
 ## State after this wave
 
 - Rate-limit skip path now schedules a real `asyncio.Task` retry, with rolling-window-aware reservation; comment body always reflects the operational case (scheduled / permanent / capacity).
-- 9 new pin tests + 1 demo. Quality gate: 1310 passed at coverage 88.63%.
+- 11 new pin tests + 1 demo. Quality gate: 1310 passed at coverage 88.63%.
 - Next: monitor for restart-loss outages; if observed, file the persistent-queue follow-up.

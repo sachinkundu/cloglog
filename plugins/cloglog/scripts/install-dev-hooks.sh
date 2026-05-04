@@ -34,14 +34,16 @@ cat > "${HOOK_PATH}" <<'HOOK'
 #
 # Background: dev clone has a writable local `main` (post-T-300).
 # Direct main commits leak into worktrees branched from local main.
-# Override (ALLOW_MAIN_COMMIT=1) is for emergency-rollback cherry-picks
-# only; the standard flow is a wt-* branch + PR.
+# Override (ALLOW_MAIN_COMMIT=1) is approved for two paths only:
+#   1. close-wave Step 13 — the wave-fold commit (docs-only, bot-pushed).
+#   2. Emergency-rollback cherry-picks.
+# All other commits go via a wt-* branch + PR.
 branch="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
 if [[ "${branch}" == "main" && "${ALLOW_MAIN_COMMIT:-}" != "1" ]]; then
   echo "ERROR: commits to main are blocked." >&2
   echo "  Use a wt-* branch + PR (the standard flow), or set" >&2
-  echo "  ALLOW_MAIN_COMMIT=1 to override (rare — typically only for" >&2
-  echo "  cherry-picks during emergency rollback)." >&2
+  echo "  ALLOW_MAIN_COMMIT=1 to override (approved for close-wave" >&2
+  echo "  Step 13 wave-fold commits and emergency-rollback cherry-picks)." >&2
   exit 1
 fi
 HOOK

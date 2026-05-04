@@ -803,28 +803,69 @@ class TestAgentService:
 
         When a worktree is deleted, ON DELETE SET NULL clears close_off_worktree_id.
         Reconcile must still be able to call update_task_status("done") on those rows.
-        The carve-out uses the title prefix 'Close worktree ' as the secondary signal.
+        The carve-out uses title prefix 'Close worktree ' + canonical placement
+        (Operations epic / Worktree Close-off feature) to avoid false positives.
         """
+        from src.board.services import BoardService
+
         project = await _create_project(db_session)
-        task = await _create_task_chain(db_session, project)
         service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
         board_repo = BoardRepository(db_session)
+        board_service = BoardService(board_repo)
 
-        # Simulate legacy stale row: title matches pattern but FK is NULL
-        await board_repo.update_task(task.id, title="Close worktree wt-old")  # type: ignore[arg-type]
-        assert task.close_off_worktree_id is None  # FK never set — simulates SET NULL
+        # Register a target worktree so create_close_off_task has a valid FK
+        reg_target = await service.register(project.id, "/repo/wt-old", "wt-old")
+        target_wt_id = reg_target["worktree_id"]
+
+        # Create a real close-off task (correct placement: Operations / Worktree Close-off)
+        task, _ = await board_service.create_close_off_task(
+            project.id,
+            close_off_worktree_id=target_wt_id,  # type: ignore[arg-type]
+            worktree_name="wt-old",
+        )
+
+        # Simulate ON DELETE SET NULL by clearing the FK (worktree deleted)
+        await board_repo.update_task(task.id, close_off_worktree_id=None)  # type: ignore[arg-type]
 
         reg = await service.register(project.id, "/repo/wt-reconcile", "wt-reconcile")
         wt_id = reg["worktree_id"]
         await board_repo.update_task(task.id, worktree_id=wt_id)  # type: ignore[arg-type]
         await service.start_task(wt_id, task.id)  # type: ignore[arg-type]
 
-        # Must succeed despite NULL close_off_worktree_id
+        # Must succeed: title + placement both match, despite NULL close_off_worktree_id
         await service.update_task_status(wt_id, task.id, "done")  # type: ignore[arg-type]
 
         updated = await board_repo.get_task(task.id)
         assert updated is not None
         assert updated.status == "done"
+
+    async def test_task_with_close_worktree_title_outside_hierarchy_is_blocked(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Title prefix alone is not sufficient — placement must also match.
+
+        A user can create 'Close worktree docs cleanup' under any feature.
+        Without the placement check, such a task would bypass the user-only-done
+        invariant. The carve-out must require Operations epic / Worktree Close-off
+        feature in addition to the title prefix.
+        """
+        project = await _create_project(db_session)
+        # _create_task_chain puts the task under "Test Epic" / "Test Feature"
+        task = await _create_task_chain(db_session, project)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        board_repo = BoardRepository(db_session)
+
+        # Give it the close-off title prefix but leave it in the wrong hierarchy
+        await board_repo.update_task(task.id, title="Close worktree docs cleanup")  # type: ignore[arg-type]
+
+        reg = await service.register(project.id, "/repo/wt-fake-coff", "wt-fake-coff")
+        wt_id = reg["worktree_id"]
+        await board_repo.update_task(task.id, worktree_id=wt_id)  # type: ignore[arg-type]
+        await service.start_task(wt_id, task.id)  # type: ignore[arg-type]
+
+        # Must still be blocked — not in Operations / Worktree Close-off
+        with pytest.raises(ValueError, match="Agents cannot mark tasks as done"):
+            await service.update_task_status(wt_id, task.id, "done")  # type: ignore[arg-type]
 
     async def test_regular_task_still_blocked_from_done_by_agent(
         self, db_session: AsyncSession

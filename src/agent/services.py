@@ -512,11 +512,19 @@ class AgentService:
         # by the close-wave supervisor after the direct-to-main commit (T-395).
         # Exception B: legacy stale close-off rows whose close_off_worktree_id was
         # cleared by ON DELETE SET NULL when the worktree was torn down. These rows
-        # are identifiable by their canonical title prefix; reconcile auto-fixes them.
+        # are identifiable by canonical title prefix + placement (Operations epic /
+        # Worktree Close-off feature). Title alone is insufficient — any user can name
+        # a task "Close worktree ..." under any feature, so we require placement match.
         # Pin: test_unit.py::TestAgentService::test_close_off_task_can_be_marked_done_by_agent
-        is_close_off_task = task.close_off_worktree_id is not None or task.title.startswith(
-            "Close worktree "
-        )
+        is_close_off_task = task.close_off_worktree_id is not None
+        if not is_close_off_task and task.title.startswith("Close worktree "):
+            from src.board.templates import CLOSE_OFF_EPIC_TITLE, CLOSE_OFF_FEATURE_TITLE
+
+            feature = await self._board_repo.get_feature(task.feature_id)
+            if feature is not None and feature.title == CLOSE_OFF_FEATURE_TITLE:
+                epic = await self._board_repo.get_epic(feature.epic_id)
+                if epic is not None and epic.title == CLOSE_OFF_EPIC_TITLE:
+                    is_close_off_task = True
         if status == "done" and not is_close_off_task:
             raise ValueError(
                 "Agents cannot mark tasks as done. "

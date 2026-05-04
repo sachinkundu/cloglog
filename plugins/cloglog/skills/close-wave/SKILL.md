@@ -437,11 +437,17 @@ git push "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git" main:main
 ```
 
 If the push is rejected because origin/main has new commits (a PR merged
-in the Step 10 → Step 13 window), re-fetch and retry once:
+in the Step 10 → Step 13 window), the local close-wave commit and origin/main
+have diverged — `git merge --ff-only` would abort. Instead, recreate the
+commit on top of the new base and retry once:
 
 ```bash
+git reset --soft HEAD~1           # undo the wave-fold commit, keep staged changes
 git fetch origin
-git merge --ff-only origin/main
+git merge --ff-only origin/main   # advance local main to the new tip (no local commit yet)
+ALLOW_MAIN_COMMIT=1 git commit -m "chore(close-wave): <wave-name>
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 git push "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git" main:main
 ```
 

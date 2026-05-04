@@ -532,10 +532,12 @@ class TestBuildMessage:
 
     def test_handles_only_relevant_events(self) -> None:
         consumer = AgentNotifierConsumer()
-        # PR_OPENED and PR_SYNCHRONIZE should not be handled
-        assert consumer.handles(_make_event(event_type=WebhookEventType.PR_OPENED)) is False
-        assert consumer.handles(_make_event(event_type=WebhookEventType.PR_SYNCHRONIZE)) is False
-        # These should be handled
+        # T-409: PR_OPENED and PR_SYNCHRONIZE are now handled to update pr_head_sha
+        # on the task so the board can derive discriminated codex status without
+        # fetching from GitHub at render time.
+        assert consumer.handles(_make_event(event_type=WebhookEventType.PR_OPENED)) is True
+        assert consumer.handles(_make_event(event_type=WebhookEventType.PR_SYNCHRONIZE)) is True
+        # These should be handled (unchanged)
         assert consumer.handles(_make_event(event_type=WebhookEventType.PR_MERGED)) is True
         assert consumer.handles(_make_event(event_type=WebhookEventType.PR_CLOSED)) is True
         assert consumer.handles(_make_event(event_type=WebhookEventType.REVIEW_SUBMITTED)) is True

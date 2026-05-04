@@ -1081,13 +1081,28 @@ export interface components {
             pr_merged: boolean;
             /**
              * Codex Review Picked Up
-             * @description True when at least one codex review turn has been persisted
-             *     for this task's pr_url. Drives the "codex reviewed" badge on
-             *     review-column task cards (T-260). Projected read-only from
-             *     ``pr_review_turns``; never a write target.
+             * @description Deprecated boolean — use codex_status instead. Kept for
+             *     one release so existing consumers don't break.
              * @default false
              */
             codex_review_picked_up: boolean;
+            /**
+             * Codex Status
+             * @description Discriminated codex review state for this PR. Null when no PR.
+             */
+            codex_status?: "not_started" | "working" | "progress" | "pass" | "exhausted" | "failed" | "stale" | null;
+            /**
+             * Codex Progress
+             * @description Turn-level detail when codex_status="progress".
+             */
+            codex_progress?: {
+                /** Turn */
+                turn: number;
+                /** Max Turns */
+                max_turns: number;
+                /** Sha */
+                sha: string;
+            } | null;
             /** Model */
             model?: string | null;
         };

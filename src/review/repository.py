@@ -10,7 +10,14 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.review.interfaces import PriorContext, PriorTurnSummary, ReviewTurnSnapshot
+from src.review.interfaces import (
+    CodexProgress,
+    CodexStatus,
+    CodexStatusResult,
+    PriorContext,
+    PriorTurnSummary,
+    ReviewTurnSnapshot,
+)
 from src.review.models import PrReviewTurn, PrReviewTurnStatus
 
 
@@ -272,3 +279,79 @@ class ReviewTurnRepository:
         )
         result = await self._session.execute(stmt)
         return set(result.scalars().all())
+
+    async def codex_status_by_pr(
+        self,
+        *,
+        project_id: UUID,
+        pr_url_to_head_sha: dict[str, str],
+        max_turns: int,
+    ) -> dict[str, CodexStatusResult]:
+        if not pr_url_to_head_sha:
+            return {}
+
+        pr_urls = list(pr_url_to_head_sha.keys())
+        stmt = (
+            select(PrReviewTurn)
+            .where(
+                PrReviewTurn.project_id == project_id,
+                PrReviewTurn.stage == "codex",
+                PrReviewTurn.pr_url.in_(pr_urls),
+            )
+            .order_by(PrReviewTurn.pr_url, PrReviewTurn.created_at.asc())
+        )
+        rows = (await self._session.execute(stmt)).scalars().all()
+
+        # Group rows by pr_url
+        turns_by_pr: dict[str, list[PrReviewTurn]] = {url: [] for url in pr_urls}
+        for row in rows:
+            turns_by_pr[row.pr_url].append(row)
+
+        result: dict[str, CodexStatusResult] = {}
+        for pr_url, head_sha in pr_url_to_head_sha.items():
+            all_turns = turns_by_pr[pr_url]
+            result[pr_url] = self._derive_codex_status(all_turns, head_sha, max_turns)
+        return result
+
+    @staticmethod
+    def _derive_codex_status(
+        all_turns: list[PrReviewTurn],
+        head_sha: str,
+        max_turns: int,
+    ) -> CodexStatusResult:
+        if not head_sha:
+            return CodexStatusResult(status=CodexStatus.NOT_STARTED)
+
+        current = [t for t in all_turns if t.head_sha == head_sha]
+
+        if not current:
+            has_prior = bool(all_turns)
+            if has_prior:
+                return CodexStatusResult(status=CodexStatus.STALE)
+            return CodexStatusResult(status=CodexStatus.NOT_STARTED)
+
+        # Running turn → working
+        if any(t.status == PrReviewTurnStatus.RUNNING for t in current):
+            return CodexStatusResult(status=CodexStatus.WORKING)
+
+        # Pass
+        if any(t.status == PrReviewTurnStatus.COMPLETED and t.consensus_reached for t in current):
+            return CodexStatusResult(status=CodexStatus.PASS)
+
+        # Hard failure (timed_out or failed)
+        if any(
+            t.status in (PrReviewTurnStatus.TIMED_OUT, PrReviewTurnStatus.FAILED) for t in current
+        ):
+            return CodexStatusResult(status=CodexStatus.FAILED)
+
+        # All completed, no consensus
+        completed = [t for t in current if t.status == PrReviewTurnStatus.COMPLETED]
+        n = len(completed)
+        if n >= max_turns:
+            return CodexStatusResult(status=CodexStatus.EXHAUSTED)
+
+        # n < max_turns — still making progress
+        return CodexStatusResult(
+            status=CodexStatus.PROGRESS,
+            progress=CodexProgress(turn=n, max_turns=max_turns, sha=head_sha),
+        )

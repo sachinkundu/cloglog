@@ -42,3 +42,32 @@ class TestBoardReviewContextBoundary:
         assert offenders == [], (
             f"Board modules must not import src.review.models directly. Offenders: {offenders}"
         )
+
+    def test_ireviewer_turn_registry_exposes_codex_status_by_pr(self) -> None:
+        """IReviewTurnRegistry must expose codex_status_by_pr (T-409).
+
+        The method is the Open Host Service contract Board calls to derive
+        discriminated codex status per PR. If this test fails, the interface
+        was removed or renamed — update the Board route accordingly.
+        """
+        import inspect
+
+        from src.review.interfaces import IReviewTurnRegistry
+
+        assert hasattr(IReviewTurnRegistry, "codex_status_by_pr"), (
+            "IReviewTurnRegistry.codex_status_by_pr is missing — "
+            "Board.get_board calls it for the discriminated codex badge (T-409)."
+        )
+        sig = inspect.signature(IReviewTurnRegistry.codex_status_by_pr)
+        params = set(sig.parameters.keys())
+        assert "project_id" in params, "codex_status_by_pr must accept project_id"
+        assert "pr_url_to_head_sha" in params, "codex_status_by_pr must accept pr_url_to_head_sha"
+        assert "max_turns" in params, "codex_status_by_pr must accept max_turns"
+
+    def test_codex_status_enum_exported_from_interfaces(self) -> None:
+        """CodexStatus must be importable from src.review.interfaces (not models)."""
+        from src.review.interfaces import CodexStatus
+
+        assert CodexStatus.NOT_STARTED.value == "not_started"
+        assert CodexStatus.STALE.value == "stale"
+        assert CodexStatus.PASS.value == "pass"

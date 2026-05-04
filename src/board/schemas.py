@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
+from src.review.interfaces import CodexProgress, CodexStatus
+
 # --- Project ---
 
 
@@ -201,7 +203,11 @@ class TaskCard(TaskResponse):
     epic_title: str = ""
     feature_title: str = ""
     epic_color: str = ""
+    # Deprecated boolean — kept for one release so existing API consumers
+    # don't break. Use codex_status for the full discriminated state.
     codex_review_picked_up: bool = False
+    codex_status: CodexStatus | None = None
+    codex_progress: CodexProgress | None = None
 
 
 class BoardColumn(BaseModel):

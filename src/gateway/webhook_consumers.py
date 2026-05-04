@@ -58,6 +58,8 @@ class AgentNotifierConsumer:
     """Route PR events to the owning worktree agent via inbox file."""
 
     _handled = {
+        WebhookEventType.PR_OPENED,
+        WebhookEventType.PR_SYNCHRONIZE,
         WebhookEventType.PR_MERGED,
         WebhookEventType.PR_CLOSED,
         WebhookEventType.REVIEW_SUBMITTED,
@@ -83,6 +85,13 @@ class AgentNotifierConsumer:
             # For PR_MERGED, update the task's pr_merged flag regardless of agent status
             if event.type == WebhookEventType.PR_MERGED:
                 await self._mark_pr_merged(event.pr_url, session)
+
+            # Update pr_head_sha on the task so the board can project codex
+            # status without fetching from GitHub (T-409).
+            if event.type in (WebhookEventType.PR_OPENED, WebhookEventType.PR_SYNCHRONIZE):
+                head_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
+                if head_sha:
+                    await self._update_pr_head_sha(event.pr_url, head_sha, session)
 
             if result is None:
                 # _resolve_agent already logged the specific drop reason
@@ -226,6 +235,16 @@ class AgentNotifierConsumer:
         if task is not None:
             await repo.update_task(task.id, pr_merged=True)
             logger.info("Marked task %s pr_merged=True for %s", task.id, pr_url)
+
+    async def _update_pr_head_sha(self, pr_url: str, head_sha: str, session: AsyncSession) -> None:
+        """Store the current head SHA on the task for codex status projection (T-409)."""
+        from src.board.repository import BoardRepository
+
+        repo = BoardRepository(session)
+        task = await repo.find_task_by_pr_url(pr_url)
+        if task is not None:
+            await repo.update_task(task.id, pr_head_sha=head_sha)
+            logger.debug("Updated pr_head_sha=%s for task %s (%s)", head_sha[:7], task.id, pr_url)
 
     def _build_message(self, event: WebhookEvent) -> dict[str, Any] | None:
         if event.type == WebhookEventType.PR_MERGED:

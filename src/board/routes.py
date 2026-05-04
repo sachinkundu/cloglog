@@ -594,13 +594,13 @@ async def get_board(
     epic_id: UUID | None = None,
     exclude_done: bool = False,
 ) -> BoardResponse:
-    # DDD: Board projects a single boolean (``codex_review_picked_up``) from
-    # the Review context via its Open Host Service factory. Board never
-    # imports ``src.review.models`` or ``src.review.repository`` — only
-    # ``src.review.services.make_review_turn_registry``, whose return type
-    # is the ``IReviewTurnRegistry`` Protocol. See docs/ddd-context-map.md
-    # and the pin test in tests/board/test_board_review_boundary.py.
+    # DDD: Board projects codex state from the Review context via the Open
+    # Host Service factory. Board never imports ``src.review.models`` or
+    # ``src.review.repository`` — only ``src.review.services`` (factory)
+    # and ``src.review.interfaces`` (Protocol + enums). See
+    # docs/ddd-context-map.md and tests/board/test_board_review_boundary.py.
     from src.review.services import make_review_turn_registry
+    from src.shared.config import settings
 
     project = await service._repo.get_project(project_id)
     if project is None:
@@ -613,30 +613,54 @@ async def get_board(
         project_id, statuses=status, epic_id=epic_id, exclude_done=exclude_done
     )
 
-    # Single batched query across all pr_urls on the board (T-260). One
-    # round-trip per board load, not one per card. Empty input → empty set
-    # short-circuits in the repository. ``project_id`` is passed through
-    # so two cloglog projects tracking the same GitHub repo/PR URL never
-    # leak codex badges across each other's boards — pr_url uniqueness
-    # is feature-scoped today (see xfailed
-    # ``test_pr_url_reuse_blocked_cross_feature``), so cross-project
-    # collision is a real concern. PR #198 round 1 codex MEDIUM fix.
-    pr_urls = [t.pr_url for t in tasks if t.pr_url]
+    # Split tasks by whether they have a stored head_sha:
+    # - With sha: full discriminated codex status projection (T-409).
+    # - Without sha: legacy boolean check (tasks created before the migration
+    #   or whose PR webhook hasn't fired yet). This keeps codex_review_picked_up
+    #   accurate for all tasks on the board regardless of migration state.
+    pr_url_to_head_sha: dict[str, str] = {
+        t.pr_url: t.pr_head_sha for t in tasks if t.pr_url and t.pr_head_sha
+    }
+    legacy_pr_urls: list[str] = [t.pr_url for t in tasks if t.pr_url and not t.pr_head_sha]
+
     review_registry = make_review_turn_registry(session)
-    codex_touched = await review_registry.codex_touched_pr_urls(
-        project_id=project_id, pr_urls=pr_urls
+
+    # Full discriminated status for tasks with a known head SHA.
+    codex_statuses = await review_registry.codex_status_by_pr(
+        project_id=project_id,
+        pr_url_to_head_sha=pr_url_to_head_sha,
+        max_turns=settings.codex_max_turns,
+    )
+
+    # Legacy boolean for tasks that predate the pr_head_sha column.
+    legacy_codex_touched = await review_registry.codex_touched_pr_urls(
+        project_id=project_id, pr_urls=legacy_pr_urls
     )
 
     columns: dict[str, list[TaskCard]] = {col: [] for col in BOARD_COLUMNS}
     done_count = 0
 
     for task in tasks:
+        status_result = codex_statuses.get(task.pr_url) if task.pr_url else None
+        if status_result is not None:
+            # Full discriminated path — codex_review_picked_up mirrors "touched".
+            picked_up = status_result.status.value != "not_started"
+            codex_st = status_result.status
+            codex_prog = status_result.progress
+        else:
+            # Legacy path — no sha stored yet, fall back to boolean.
+            picked_up = bool(task.pr_url and task.pr_url in legacy_codex_touched)
+            codex_st = None
+            codex_prog = None
+
         card = TaskCard(
             **TaskResponse.model_validate(task).model_dump(),
             epic_title=task.feature.epic.title,
             feature_title=task.feature.title,
             epic_color=task.feature.epic.color,
-            codex_review_picked_up=bool(task.pr_url and task.pr_url in codex_touched),
+            codex_review_picked_up=bool(task.pr_url and picked_up),
+            codex_status=codex_st,
+            codex_progress=codex_prog,
         )
         if task.status in columns:
             columns[task.status].append(card)

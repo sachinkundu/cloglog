@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -75,6 +76,45 @@ class PriorContext:
         """Number of completed codex turns on this PR. Used to enforce the
         5-turn lifetime cap."""
         return len(self.turns)
+
+
+class CodexStatus(StrEnum):
+    """Discriminated codex review state for a single PR.
+
+    Projected by ``IReviewTurnRegistry.codex_status_by_pr`` for the Board
+    context. Each value maps to a distinct badge on the Kanban card so an
+    operator can answer "is codex working / done / stuck" at a glance without
+    grepping logs. ``NOT_STARTED`` renders no badge.
+    """
+
+    NOT_STARTED = "not_started"
+    WORKING = "working"
+    PROGRESS = "progress"
+    PASS = "pass"
+    EXHAUSTED = "exhausted"
+    FAILED = "failed"
+    STALE = "stale"
+
+
+@dataclass(frozen=True)
+class CodexProgress:
+    """Turn-level detail for the ``PROGRESS`` state.
+
+    Carried alongside ``CodexStatus.PROGRESS`` so the board can render
+    ``codex N/M`` without a second query.
+    """
+
+    turn: int
+    max_turns: int
+    sha: str
+
+
+@dataclass(frozen=True)
+class CodexStatusResult:
+    """Combined codex status + optional progress for one PR."""
+
+    status: CodexStatus
+    progress: CodexProgress | None = None
 
 
 class IReviewTurnRegistry(Protocol):
@@ -259,5 +299,42 @@ class IReviewTurnRegistry(Protocol):
         the xfailed ``test_pr_url_reuse_blocked_cross_feature``), a codex
         turn persisted for project A must NOT flip the badge on project
         B's board. PR #198 round 1 codex MEDIUM finding.
+        """
+        ...
+
+    async def codex_status_by_pr(
+        self,
+        *,
+        project_id: UUID,
+        pr_url_to_head_sha: dict[str, str],
+        max_turns: int,
+    ) -> dict[str, CodexStatusResult]:
+        """Derive a discriminated codex status for each PR in ``pr_url_to_head_sha``.
+
+        Batched projection used by the Board context to render the
+        state-aware codex badge (T-409). One round-trip per board load.
+
+        ``pr_url_to_head_sha`` maps each PR URL to its current head SHA
+        (stored in ``tasks.pr_head_sha`` by the webhook consumer on
+        ``PR_SYNCHRONIZE`` / ``PR_OPENED`` events — the Review context
+        does NOT fetch from GitHub). A PR whose SHA is empty string gets
+        ``NOT_STARTED`` status.
+
+        State machine (per PR, codex turns only):
+        - ``NOT_STARTED`` — no turns exist for this PR at all.
+        - ``WORKING``     — a turn row exists for ``head_sha`` with
+                            ``status='running'``.
+        - ``PASS``        — latest terminal turn for ``head_sha`` has
+                            ``consensus_reached=True``.
+        - ``EXHAUSTED``   — all turns for ``head_sha`` are completed,
+                            ``consensus_reached=False``, count ≥ max_turns.
+        - ``FAILED``      — latest terminal turn for ``head_sha`` has
+                            ``status IN ('timed_out', 'failed')``.
+        - ``PROGRESS``    — some completed turns, no consensus, count < max_turns.
+        - ``STALE``       — no turns for ``head_sha`` but earlier SHAs did
+                            have turns (push landed, no pickup).
+
+        ``project_id`` is required for cross-project isolation (same
+        reasoning as ``codex_touched_pr_urls``).
         """
         ...

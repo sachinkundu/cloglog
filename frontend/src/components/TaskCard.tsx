@@ -38,7 +38,8 @@ export function TaskCard({ task, onClick, worktreeNames }: TaskCardProps) {
           <PrLink
             url={task.pr_url}
             merged={task.pr_merged}
-            codexReviewed={task.status === 'review' && task.codex_review_picked_up}
+            codexStatus={task.status === 'review' ? task.codex_status : null}
+            codexProgress={task.codex_progress}
           />
         )}
       </div>

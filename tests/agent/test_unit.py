@@ -867,6 +867,44 @@ class TestAgentService:
         with pytest.raises(ValueError, match="Agents cannot mark tasks as done"):
             await service.update_task_status(wt_id, task.id, "done")  # type: ignore[arg-type]
 
+    async def test_non_owner_worktree_cannot_mark_close_off_task_done(
+        self, db_session: AsyncSession
+    ) -> None:
+        """T-395: only the main-agent that owns the close-off task may mark it done.
+
+        A secondary worktree agent in the same project must not be able to
+        prematurely close the supervisor's close-off card by reading its UUID
+        from the board and calling update_task_status("done") against its own
+        worktree_id. This would break the invariant that 'done' is the post-push
+        completion signal from the main agent after the direct-to-main commit.
+        """
+        project = await _create_project(db_session)
+        task = await _create_task_chain(db_session, project)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        board_repo = BoardRepository(db_session)
+
+        # Main agent registers and is assigned the close-off task
+        reg_main = await service.register(project.id, "/repo/main", "main")
+        main_wt_id = reg_main["worktree_id"]
+        reg_target = await service.register(project.id, "/repo/wt-target", "wt-target")
+        target_wt_id = reg_target["worktree_id"]
+
+        await board_repo.update_task(task.id, close_off_worktree_id=target_wt_id)  # type: ignore[arg-type]
+        await board_repo.update_task(task.id, worktree_id=main_wt_id)  # type: ignore[arg-type]
+        await service.start_task(main_wt_id, task.id)  # type: ignore[arg-type]
+
+        # A different worktree agent in the same project (role='worktree' because
+        # path contains /.claude/worktrees/) attempts to mark the task done
+        reg_other = await service.register(
+            project.id,
+            "/repo/.claude/worktrees/wt-other",
+            "wt-other",
+        )
+        other_wt_id = reg_other["worktree_id"]
+
+        with pytest.raises(ValueError, match="Only the main-agent that owns this close-off task"):
+            await service.update_task_status(other_wt_id, task.id, "done")  # type: ignore[arg-type]
+
     async def test_regular_task_still_blocked_from_done_by_agent(
         self, db_session: AsyncSession
     ) -> None:

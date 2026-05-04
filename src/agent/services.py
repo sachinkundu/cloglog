@@ -531,6 +531,21 @@ class AgentService:
                 "Move the task to 'review' and wait for the user "
                 "to drag it to done on the board."
             )
+        # Guard: only the owning main-agent may mark a close-off task done.
+        # Close-off tasks are assigned to the main-agent worktree (task.worktree_id)
+        # and only the main-agent role may perform the direct-to-main commit.
+        # Without this check any same-project worktree agent can prematurely close
+        # the supervisor's close-off card by reading its UUID from the board.
+        if (
+            status == "done"
+            and is_close_off_task
+            and (task.worktree_id != worktree_id or worktree.role != "main")
+        ):
+            raise ValueError(
+                "Only the main-agent that owns this close-off task may mark it done. "
+                "The close-off task must be assigned to the calling worktree "
+                "and the caller must have role='main'."
+            )
 
         # Guard: transitioning into in_progress runs the same blocker pass
         # as start_task, so agents cannot bypass it by PATCH-ing status.

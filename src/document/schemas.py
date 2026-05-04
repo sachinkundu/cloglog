@@ -7,8 +7,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
+from src.shared.text import NulSanitizedModel
 
-class DocumentCreate(BaseModel):
+
+class DocumentCreate(NulSanitizedModel):
     title: str = ""
     content: str = ""
     doc_type: str = "other"

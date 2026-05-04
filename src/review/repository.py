@@ -8,6 +8,7 @@ from uuid import UUID
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.review.interfaces import PriorContext, PriorTurnSummary, ReviewTurnSnapshot
@@ -35,6 +36,7 @@ class ReviewTurnRepository:
             elapsed_seconds=float(row.elapsed_seconds) if row.elapsed_seconds is not None else None,
             session_index=row.session_index,
             posted_at=row.posted_at,
+            outcome=row.outcome,
         )
 
     async def claim_turn(
@@ -211,6 +213,35 @@ class ReviewTurnRepository:
                 PrReviewTurn.turn_number == turn_number,
             )
             .values(findings_json=findings_json, learnings_json=learnings_json)
+        )
+        try:
+            await self._session.execute(stmt)
+            await self._session.commit()
+        except DBAPIError:
+            # Roll back the failed transaction so the session is reusable for
+            # a follow-up set_outcome call. T-407.
+            await self._session.rollback()
+            raise
+
+    async def set_outcome(
+        self,
+        *,
+        pr_url: str,
+        head_sha: str,
+        stage: str,
+        turn_number: int,
+        outcome: str,
+    ) -> None:
+        """Stamp an outcome marker; called best-effort after a persistence failure."""
+        stmt = (
+            update(PrReviewTurn)
+            .where(
+                PrReviewTurn.pr_url == pr_url,
+                PrReviewTurn.head_sha == head_sha,
+                PrReviewTurn.stage == stage,
+                PrReviewTurn.turn_number == turn_number,
+            )
+            .values(outcome=outcome)
         )
         await self._session.execute(stmt)
         await self._session.commit()

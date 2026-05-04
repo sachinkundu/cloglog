@@ -187,11 +187,19 @@ class AgentService:
         )
 
         wt_name = worktree.branch_name or worktree_path.rsplit("/", 1)[-1]
+        _online_pr: str | None = None
+        if current_task and isinstance(current_task.get("pr_url"), str):
+            _pr_url_str: str = current_task["pr_url"]  # type: ignore[assignment]
+            _pr_path = _pr_url_str.split("github.com/", 1)[-1]  # owner/repo/pull/NNN
+            _pr_parts = _pr_path.rsplit("/pull/", 1)
+            if len(_pr_parts) == 2:
+                _online_pr = f"{_pr_parts[0]}#{_pr_parts[1]}"
         log_event(
             logger,
             "agent.online",
             wt=wt_name,
             project=str(project_id),
+            pr=_online_pr,
         )
 
         return {

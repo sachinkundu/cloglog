@@ -1489,10 +1489,11 @@ class ReviewEngineConsumer:
             try:
                 await self._review_pr(event)
             except Exception:
+                _exc_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
                 logger.exception(
-                    "Review failed for PR #%d (%s)",
-                    event.pr_number,
-                    event.repo_full_name,
+                    "review.error pr=%s sha=%s",
+                    f"{event.repo_full_name}#{event.pr_number}",
+                    _exc_sha[:7] or "unknown",
                 )
 
     @staticmethod
@@ -1864,6 +1865,15 @@ class ReviewEngineConsumer:
         # as a one-shot skip comment so the operator can see the
         # configuration gap on GitHub.
         if review_root is None:
+            log_event(
+                logger,
+                "review.dispatch",
+                pr=_pr_key,
+                sha=_sha_short,
+                event=event.type,
+                action="skip",
+                reason="unconfigured_repo",
+            )
             await self._notify_skip(
                 event,
                 SkipReason.UNCONFIGURED_REPO,

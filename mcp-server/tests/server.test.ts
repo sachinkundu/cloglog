@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createServer } from '../src/server.js'
 import { CloglogClient } from '../src/client.js'
 
@@ -480,5 +483,109 @@ describe('list_worktrees tool (T-220)', () => {
     const description = tools.list_worktrees.description as string
     expect(description).toMatch(/supervisor restart|survives/i)
     expect(description).toContain('worktree_id')
+  })
+})
+
+describe('Guard 2 — register_agent verifies project_id (T-398)', () => {
+  let workDir: string
+
+  beforeEach(() => {
+    workDir = mkdtempSync(join(tmpdir(), 'cloglog-g2-'))
+  })
+
+  afterEach(() => {
+    rmSync(workDir, { recursive: true, force: true })
+  })
+
+  function makeWorktree(slug: string, projectId: string): string {
+    const root = join(workDir, slug)
+    mkdirSync(join(root, '.cloglog'), { recursive: true })
+    writeFileSync(
+      join(root, '.cloglog', 'config.yaml'),
+      `project: ${slug}\nproject_id: ${projectId}\nbackend_url: http://127.0.0.1:8001\n`,
+    )
+    return root
+  }
+
+  it('accepts registration when backend project_id matches config.yaml', async () => {
+    const worktreePath = makeWorktree('myproj', 'matching-uuid')
+    const client = mockClient()
+    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      worktree_id: 'wt-1',
+      project_id: 'matching-uuid',
+      current_task: null,
+      resumed: false,
+      agent_token: 'tok',
+    })
+
+    const server = createServer(client)
+    const tools = (server as any)._registeredTools
+    const result = await tools.register_agent.handler({ worktree_path: worktreePath })
+
+    expect(result.isError).toBeFalsy()
+    expect(result.content[0].text).toContain('matching-uuid')
+  })
+
+  it('refuses registration when backend project_id does not match config.yaml', async () => {
+    const worktreePath = makeWorktree('myproj2', 'config-uuid')
+    const client = mockClient()
+    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      worktree_id: 'wt-2',
+      project_id: 'wrong-backend-uuid',
+      current_task: null,
+      resumed: false,
+      agent_token: 'tok',
+    })
+
+    const server = createServer(client)
+    const tools = (server as any)._registeredTools
+    const result = await tools.register_agent.handler({ worktree_path: worktreePath })
+
+    expect(result.isError).toBe(true)
+    const msg = result.content[0].text as string
+    expect(msg).toContain('project_id mismatch')
+    expect(msg).toContain('config-uuid')
+    expect(msg).toContain('wrong-backend-uuid')
+  })
+
+  it('includes expected path in the mismatch diagnostic', async () => {
+    const worktreePath = makeWorktree('diagproj', 'diag-config-uuid')
+    const client = mockClient()
+    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      worktree_id: 'wt-3',
+      project_id: 'diag-backend-uuid',
+      current_task: null,
+      resumed: false,
+      agent_token: 'tok',
+    })
+
+    const server = createServer(client)
+    const tools = (server as any)._registeredTools
+    const result = await tools.register_agent.handler({ worktree_path: worktreePath })
+
+    expect(result.isError).toBe(true)
+    const msg = result.content[0].text as string
+    expect(msg).toContain('diagproj')
+    expect(msg).toContain('credentials.d')
+  })
+
+  it('proceeds without config.yaml project_id (legacy worktrees without project_id field)', async () => {
+    const root = join(workDir, 'legacy')
+    mkdirSync(join(root, '.cloglog'), { recursive: true })
+    writeFileSync(join(root, '.cloglog', 'config.yaml'), 'project: legacy\nbackend_url: http://x\n')
+
+    const client = mockClient()
+    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      worktree_id: 'wt-4',
+      project_id: 'any-backend-uuid',
+      current_task: null,
+      resumed: false,
+      agent_token: 'tok',
+    })
+
+    const server = createServer(client)
+    const tools = (server as any)._registeredTools
+    const result = await tools.register_agent.handler({ worktree_path: root })
+    expect(result.isError).toBeFalsy()
   })
 })

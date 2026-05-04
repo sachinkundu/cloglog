@@ -69,14 +69,18 @@ _resolve_api_key_read() {
 #   the project's .cloglog/config.yaml — used to derive the slug for the
 #   per-project lookup.
 #
-#   Fail-loud invariant: once ~/.cloglog/credentials.d/<slug> EXISTS, it
-#   must yield a usable key. If it exists but is unreadable, points at a
-#   directory, or contains no/empty CLOGLOG_API_KEY, the resolver returns
-#   empty AND logs to /tmp/agent-shutdown-debug.log — it does NOT fall
-#   through to the legacy global file, because that file may hold a
-#   different project's key and silently sending it recreates the bug
-#   T-382 was filed to remove. Empty return means the calling hook skips
-#   the POST instead of authenticating as the wrong project.
+#   Fail-loud invariants (T-382/T-398):
+#   1. Once ~/.cloglog/credentials.d/<slug> EXISTS, it must yield a usable
+#      key. If it exists but is unreadable, points at a directory, or
+#      contains no/empty CLOGLOG_API_KEY, the resolver returns empty AND
+#      logs to /tmp/agent-shutdown-debug.log — it does NOT fall through to
+#      the legacy global file (T-382).
+#   2. If the per-project file is MISSING but project_id is set in
+#      config.yaml, also refuse the legacy fallback and log (T-398). A
+#      missing credentials.d/<slug> on a project-id-scoped checkout means
+#      the file was never written, not that this is a legacy single-project
+#      host. Falling through would silently authenticate as the wrong
+#      project — the antisocial/cloglog incident this task fixes.
 resolve_api_key() {
   local cfg="$1"
   local key="${CLOGLOG_API_KEY:-}"
@@ -109,7 +113,17 @@ resolve_api_key() {
         >> /tmp/agent-shutdown-debug.log 2>&1 || true
       return
     fi
+    # Per-project file is missing. Guard 3 (T-398): if project_id is set in
+    # config.yaml, refuse the legacy fallback — the file was never written.
+    if [[ -n "$cfg" && -f "$cfg" ]] && grep -q '^project_id:' "$cfg"; then
+      local proj_id
+      proj_id=$(grep '^project_id:' "$cfg" | head -n1 | sed 's/^project_id:[[:space:]]*//')
+      echo "[$(date -Iseconds)] resolve_api_key: project_id=${proj_id} is set but ${proj_file} is missing; refusing legacy fallback (T-398)" \
+        >> /tmp/agent-shutdown-debug.log 2>&1 || true
+      return
+    fi
   fi
-  # Per-project file is genuinely missing — legacy fallback is OK.
+  # Per-project file is genuinely missing and no project_id is set —
+  # legacy single-project host, fallback is safe.
   _resolve_api_key_read "${HOME}/.cloglog/credentials"
 }

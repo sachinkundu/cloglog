@@ -1,6 +1,13 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { join } from 'node:path'
 import { z } from 'zod'
 import { CloglogClient } from './client.js'
+import {
+  findProjectRoot,
+  resolveProjectId,
+  resolveProjectSlug,
+  DEFAULT_PROJECT_CREDENTIALS_DIR,
+} from './credentials.js'
 import { CloglogApiError } from './errors.js'
 import { HeartbeatTimer } from './heartbeat.js'
 import { createToolHandlers } from './tools.js'
@@ -109,8 +116,40 @@ export function createServer(client: CloglogClient): McpServer {
     { worktree_path: z.string().describe('Absolute path to the git worktree') },
     async ({ worktree_path }) => {
       const result = await handlers.register_agent({ worktree_path }) as Record<string, unknown>
+      const backendProjectId = result.project_id as string
+
+      // Guard 2 (T-398): verify the backend project_id matches the
+      // project_id recorded in .cloglog/config.yaml for this worktree.
+      // A mismatch means the MCP server authenticated with a key that
+      // belongs to a different project — the antisocial/cloglog incident.
+      const configRoot = findProjectRoot(worktree_path) ?? worktree_path
+      const configProjectId = resolveProjectId(configRoot)
+      if (configProjectId && configProjectId !== backendProjectId) {
+        const slug = resolveProjectSlug(configRoot)
+        const credPath = slug
+          ? join(DEFAULT_PROJECT_CREDENTIALS_DIR, slug)
+          : '~/.cloglog/credentials.d/<slug>'
+        return {
+          content: [{
+            type: 'text' as const,
+            text: [
+              '⛔ register_agent refused: project_id mismatch.',
+              `  expected (config.yaml): ${configProjectId}`,
+              `  actual   (backend):     ${backendProjectId}`,
+              '',
+              'The API key the MCP server loaded belongs to a different project.',
+              `Check that ${credPath} contains THIS project's key.`,
+              'Remediation: run /cloglog init to mint and write the correct per-project key,',
+              'or manually write the right key to the per-project credentials file.',
+              'See docs/setup-credentials.md.',
+            ].join('\n'),
+          }],
+          isError: true,
+        }
+      }
+
       currentWorktreeId = result.worktree_id as string
-      currentProjectId = result.project_id as string
+      currentProjectId = backendProjectId
       currentWorktreePath = worktree_path
       // Store agent token for subsequent agent-scoped requests
       const agentToken = result.agent_token as string | undefined

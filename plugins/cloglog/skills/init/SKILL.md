@@ -51,7 +51,7 @@ Add to `~/.bashrc` or `~/.zshenv` so every Claude Code session inherits it.
 
 **4. GitHub App credentials (optional).** Steps 6–7 configure bot identity for agent PRs. You can run init without them and complete the bot setup later — agents just won't be able to push or create PRs until configured. See `${CLAUDE_PLUGIN_ROOT}/docs/setup-credentials.md`.
 
-**Re-running init** is safe. If this project is already bootstrapped (`.cloglog/config.yaml` has a `project_id` and `~/.cloglog/credentials` has a key), prerequisite 3 (`DASHBOARD_SECRET`) is no longer needed — the project already exists on the backend. Prerequisite 4 (GitHub App) is **host-local** and must be satisfied independently on every machine: `~/.agent-vm/credentials/github-app.pem` (the PEM secret), and `gh_app_id` / `gh_app_installation_id` in the gitignored `.cloglog/local.yaml` (non-secret operator-specific identifiers — T-348). `gh-app-token.py` reads them on every invocation.
+**Re-running init** is safe. If this project is already bootstrapped (`.cloglog/config.yaml` has a `project_id` and `~/.cloglog/credentials.d/<slug>` has a key), prerequisite 3 (`DASHBOARD_SECRET`) is no longer needed — the project already exists on the backend. Prerequisite 4 (GitHub App) is **host-local** and must be satisfied independently on every machine: `~/.agent-vm/credentials/github-app.pem` (the PEM secret), and `gh_app_id` / `gh_app_installation_id` in the gitignored `.cloglog/local.yaml` (non-secret operator-specific identifiers — T-348). `gh-app-token.py` reads them on every invocation.
 
 **Auto-repair on re-run.** Earlier versions of this skill wrote the `mcpServers.cloglog` block to `.claude/settings.json`. Claude Code does not load MCP servers from that file — they must live in `.mcp.json` at the project root. Re-running init detects that legacy layout and migrates the block: it moves `mcpServers.cloglog` into `.mcp.json` and strips the stale `mcpServers` key from `.claude/settings.json`. The migration is idempotent — a second re-run is a no-op.
 
@@ -170,8 +170,7 @@ cloned to a new machine), stop with a repair instruction:
 >
 > To repair:
 > 1. Obtain the project API key (rotate with `scripts/rotate-project-key.py` if lost).
-> 2. Write it. **Choose the right destination — writing the wrong file on a
->    multi-project host clobbers another project's key (T-382):**
+> 2. Write the per-project credentials file (T-398: always use `credentials.d/<slug>`):
 >
 >    ```bash
 >    # Derive THIS project's slug exactly the way the resolver does
@@ -186,19 +185,9 @@ cloned to a new machine), stop with a repair instruction:
 >    fi
 >    [ -z "$SLUG" ] && { echo "ERROR: cannot derive slug-safe identifier; refusing to write credentials" >&2; exit 1; }
 >
->    if [ -f ~/.cloglog/credentials ] && grep -q '^CLOGLOG_API_KEY=' ~/.cloglog/credentials; then
->      # Multi-project host: another project owns ~/.cloglog/credentials.
->      # Write to ~/.cloglog/credentials.d/<slug> so the legacy file stays
->      # intact for that other project.
->      mkdir -p ~/.cloglog/credentials.d
->      printf 'CLOGLOG_API_KEY=%s\n' "<key>" > ~/.cloglog/credentials.d/"$SLUG"
->      chmod 600 ~/.cloglog/credentials.d/"$SLUG"
->    else
->      # Single-project host: use the legacy global file.
->      mkdir -p ~/.cloglog
->      printf 'CLOGLOG_API_KEY=%s\n' "<key>" > ~/.cloglog/credentials
->      chmod 600 ~/.cloglog/credentials
->    fi
+>    mkdir -p ~/.cloglog/credentials.d
+>    printf 'CLOGLOG_API_KEY=%s\n' "<key>" > ~/.cloglog/credentials.d/"$SLUG"
+>    chmod 600 ~/.cloglog/credentials.d/"$SLUG"
 >    ```
 > 3. Restart Claude Code, then run `/cloglog init` again.
 >
@@ -209,24 +198,12 @@ cloned to a new machine), stop with a repair instruction:
 
 If no repo-local `project_id` exists, create the project directly against the backend.
 
-**Multi-project credentials check.** Since T-382 the MCP loader resolves
-`CLOGLOG_API_KEY` from env → `~/.cloglog/credentials.d/<project_slug>` →
-`~/.cloglog/credentials`. On a host that already runs another cloglog
-project, write the new key to its **own** per-project file under
-`credentials.d/`; the legacy global file is left untouched so the other
-project keeps working unchanged. On a fresh single-project host, write to
-the legacy global file (one less file to manage):
-
-```bash
-MULTI_PROJECT=false
-if [ -z "${CLOGLOG_API_KEY:-}" ] && [ -f ~/.cloglog/credentials ] \
-    && grep -q '^CLOGLOG_API_KEY=' ~/.cloglog/credentials; then
-  MULTI_PROJECT=true
-  echo "NOTE: ~/.cloglog/credentials already has a CLOGLOG_API_KEY (another project)."
-  echo "The new project's API key will be written to ~/.cloglog/credentials.d/<slug>"
-  echo "instead of overwriting the global file (T-382 per-project resolution)."
-fi
-```
+**Per-project credentials (T-398).** The key is always written to
+`~/.cloglog/credentials.d/<project_slug>`. `/init` never writes to the
+legacy `~/.cloglog/credentials` — since T-398 `project_id` is always set
+in `.cloglog/config.yaml` after bootstrap, and the T-398 strict-fallback
+guard refuses the legacy file when `project_id` is present. Writing there
+would produce a key that the MCP server can no longer reach.
 
 Proceed:
 
@@ -298,20 +275,13 @@ Proceed:
      exit 1
    fi
 
-   if [ "$MULTI_PROJECT" = "false" ]; then
-     # Single-project host: write the legacy global file. Backward
-     # compatible with operators who never adopt credentials.d/.
-     mkdir -p ~/.cloglog
-     printf 'CLOGLOG_API_KEY=%s\n' "$API_KEY" > ~/.cloglog/credentials
-     chmod 600 ~/.cloglog/credentials
-   else
-     # Multi-project host: write to ~/.cloglog/credentials.d/<slug> so
-     # the other project's key stays in ~/.cloglog/credentials and the
-     # T-382 resolver routes the right key to the right project.
-     mkdir -p ~/.cloglog/credentials.d
-     printf 'CLOGLOG_API_KEY=%s\n' "$API_KEY" > "${HOME}/.cloglog/credentials.d/${PROJECT_SLUG}"
-     chmod 600 "${HOME}/.cloglog/credentials.d/${PROJECT_SLUG}"
-   fi
+   # T-398: always write to ~/.cloglog/credentials.d/<slug>.
+   # /init never writes to ~/.cloglog/credentials — since project_id is set
+   # in config.yaml after bootstrap, the T-398 strict-fallback guard in the
+   # MCP server and hooks refuses the legacy file when project_id is present.
+   mkdir -p ~/.cloglog/credentials.d
+   printf 'CLOGLOG_API_KEY=%s\n' "$API_KEY" > "${HOME}/.cloglog/credentials.d/${PROJECT_SLUG}"
+   chmod 600 "${HOME}/.cloglog/credentials.d/${PROJECT_SLUG}"
    ```
 
 4. **Write `project`, `project_id`, and `backend_url` to config.** Seeding all three
@@ -353,14 +323,13 @@ Proceed:
 
 5. **Request restart.** Tell the operator:
 
-   If `MULTI_PROJECT=false` (single-project machine — key written to `~/.cloglog/credentials`):
-
    > **Project created successfully.**
    >
    > | Field | Value |
    > |-------|-------|
    > | Project ID | `<project_id>` |
-   > | API key | written to `~/.cloglog/credentials` |
+   > | Project slug | `<project_slug>` |
+   > | API key | written to `~/.cloglog/credentials.d/<project_slug>` |
    >
    > **Next step: restart Claude Code.**
    >
@@ -369,28 +338,11 @@ Proceed:
    > 2. Restart Claude Code in this directory
    > 3. Run `/cloglog init` again — the remaining steps (MCP config, `.cloglog/`,
    >    CLAUDE.md, GitHub bot) will complete on the second run.
-
-   If `MULTI_PROJECT=true` (existing credentials preserved — new key written to its own per-project file):
-
-   > **Project created successfully (multi-project machine).**
    >
-   > | Field | Value |
-   > |-------|-------|
-   > | Project ID | `<project_id>` |
-   > | Project slug | `<project_slug>` |
-   > | API key | written to `~/.cloglog/credentials.d/<project_slug>` |
-   >
-   > Your existing `~/.cloglog/credentials` was NOT modified. The MCP server's
-   > T-382 resolver picks the per-project file automatically based on the
-   > `project:` field in this repo's `.cloglog/config.yaml`. Then:
-   > 1. Exit this Claude Code session (`/exit`)
-   > 2. Restart Claude Code in this directory
-   > 3. Run `/cloglog init` again — the remaining steps complete on the second run.
-   >
-   > **No env export required** on multi-project hosts since T-382. If you previously
-   > kept `export CLOGLOG_API_KEY=...` in your shell RC for a different project, you
-   > can remove it — or keep it as an explicit override; env still beats both file
-   > sources.
+   > **No env export required** — the T-382 resolver picks the per-project key
+   > automatically based on the `project:` field in `.cloglog/config.yaml`. If you
+   > previously kept `export CLOGLOG_API_KEY=...` in your shell RC you can remove it,
+   > or keep it as an explicit override (env beats both file sources).
 
    **Stop here.** Do not proceed to Step 3 — the MCP server is not yet loaded and the
    remaining steps require it or write files that depend on having a valid project_id.

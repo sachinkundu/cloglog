@@ -16,6 +16,8 @@ import {
   findProjectRoot,
   loadApiKey,
   MissingCredentialsError,
+  ProjectIdSetMissingCredentialsError,
+  resolveProjectId,
   resolveProjectSlug,
   UnusableProjectCredentialsError,
 } from '../src/credentials.js'
@@ -516,5 +518,154 @@ describe('MCP server startup error handling (T-382 codex round 4)', () => {
     // Sanity: process.exit(78) is still wired in so the catch handler
     // actually short-circuits startup, not just logs.
     expect(src).toContain('process.exit(78)')
+  })
+
+  it('index.ts catches ProjectIdSetMissingCredentialsError alongside the other two (T-398)', () => {
+    const indexPath = pathResolve(__dirname, '..', 'src', 'index.ts')
+    const src = fsReadFileSync(indexPath, 'utf8')
+    expect(src).toContain('ProjectIdSetMissingCredentialsError')
+    expect(src).toMatch(/instanceof\s+ProjectIdSetMissingCredentialsError/)
+    expect(src).toContain('process.exit(78)')
+  })
+})
+
+describe('Guard 3 — strict fallback when project_id is set (T-398)', () => {
+  let workDir: string
+  let projectCredentialsDir: string
+  let legacyCredentialsPath: string
+
+  beforeEach(() => {
+    workDir = mkdtempSync(join(tmpdir(), 'cloglog-guard3-'))
+    projectCredentialsDir = join(workDir, 'credentials.d')
+    legacyCredentialsPath = join(workDir, 'credentials')
+    mkdirSync(projectCredentialsDir, { recursive: true })
+  })
+
+  afterEach(() => {
+    rmSync(workDir, { recursive: true, force: true })
+  })
+
+  function makeProject(name: string, slug: string | null, projectId: string | null): string {
+    const root = join(workDir, name)
+    mkdirSync(join(root, '.cloglog'), { recursive: true })
+    const lines: string[] = []
+    if (slug !== null) lines.push(`project: ${slug}`)
+    if (projectId !== null) lines.push(`project_id: ${projectId}`)
+    lines.push('backend_url: http://127.0.0.1:8001')
+    writeFileSync(join(root, '.cloglog', 'config.yaml'), lines.join('\n') + '\n')
+    return root
+  }
+
+  it('throws ProjectIdSetMissingCredentialsError when project_id is set and per-project file is missing', () => {
+    const project = makeProject('has-id-no-creds', 'myproj', 'abc-uuid-123')
+    writeFileSync(legacyCredentialsPath, 'CLOGLOG_API_KEY=legacy-key\n')
+
+    expect(() =>
+      loadApiKey({
+        env: {},
+        credentialsPath: legacyCredentialsPath,
+        projectCredentialsDir,
+        projectRoot: project,
+      }),
+    ).toThrow(ProjectIdSetMissingCredentialsError)
+  })
+
+  it('ProjectIdSetMissingCredentialsError names project_id, slug, and expected path in the message', () => {
+    const project = makeProject('has-id-no-creds-msg', 'msgproj', 'proj-uuid-456')
+    try {
+      loadApiKey({
+        env: {},
+        credentialsPath: legacyCredentialsPath,
+        projectCredentialsDir,
+        projectRoot: project,
+      })
+      throw new Error('expected error')
+    } catch (err) {
+      expect(err).toBeInstanceOf(ProjectIdSetMissingCredentialsError)
+      const msg = (err as Error).message
+      expect(msg).toContain('proj-uuid-456')
+      expect(msg).toContain('msgproj')
+      expect(msg).toContain(join(projectCredentialsDir, 'msgproj'))
+      expect(msg).toContain('project_id')
+    }
+  })
+
+  it('legacy fallback still works when project_id is absent from config', () => {
+    const project = makeProject('no-id', 'noidproj', null)
+    writeFileSync(legacyCredentialsPath, 'CLOGLOG_API_KEY=legacy-ok\n')
+
+    const key = loadApiKey({
+      env: {},
+      credentialsPath: legacyCredentialsPath,
+      projectCredentialsDir,
+      projectRoot: project,
+    })
+    expect(key).toBe('legacy-ok')
+  })
+
+  it('env override bypasses Guard 3 even when project_id is set and per-project file is missing', () => {
+    const project = makeProject('env-bypass-g3', 'envg3', 'some-uuid')
+    writeFileSync(legacyCredentialsPath, 'CLOGLOG_API_KEY=legacy-key\n')
+
+    const key = loadApiKey({
+      env: { CLOGLOG_API_KEY: 'env-override' },
+      credentialsPath: legacyCredentialsPath,
+      projectCredentialsDir,
+      projectRoot: project,
+    })
+    expect(key).toBe('env-override')
+  })
+
+  it('per-project file takes precedence when both project_id and the file are present', () => {
+    const project = makeProject('has-both', 'hasboth', 'uuid-hasboth')
+    writeFileSync(join(projectCredentialsDir, 'hasboth'), 'CLOGLOG_API_KEY=correct-key\n')
+    writeFileSync(legacyCredentialsPath, 'CLOGLOG_API_KEY=wrong-legacy-key\n')
+
+    const key = loadApiKey({
+      env: {},
+      credentialsPath: legacyCredentialsPath,
+      projectCredentialsDir,
+      projectRoot: project,
+    })
+    expect(key).toBe('correct-key')
+  })
+})
+
+describe('resolveProjectId', () => {
+  let workDir: string
+
+  beforeEach(() => {
+    workDir = mkdtempSync(join(tmpdir(), 'cloglog-projid-'))
+  })
+
+  afterEach(() => {
+    rmSync(workDir, { recursive: true, force: true })
+  })
+
+  it('reads project_id from .cloglog/config.yaml', () => {
+    const root = join(workDir, 'myproj')
+    mkdirSync(join(root, '.cloglog'), { recursive: true })
+    writeFileSync(join(root, '.cloglog', 'config.yaml'), 'project_id: abc-uuid-789\nproject: myproj\n')
+    expect(resolveProjectId(root)).toBe('abc-uuid-789')
+  })
+
+  it('returns null when config.yaml has no project_id', () => {
+    const root = join(workDir, 'noid')
+    mkdirSync(join(root, '.cloglog'), { recursive: true })
+    writeFileSync(join(root, '.cloglog', 'config.yaml'), 'project: noid\n')
+    expect(resolveProjectId(root)).toBeNull()
+  })
+
+  it('returns null when config.yaml is absent', () => {
+    const root = join(workDir, 'nocfg')
+    mkdirSync(root, { recursive: true })
+    expect(resolveProjectId(root)).toBeNull()
+  })
+
+  it('strips surrounding quotes from project_id', () => {
+    const root = join(workDir, 'quoted')
+    mkdirSync(join(root, '.cloglog'), { recursive: true })
+    writeFileSync(join(root, '.cloglog', 'config.yaml'), 'project_id: "quoted-uuid"\n')
+    expect(resolveProjectId(root)).toBe('quoted-uuid')
   })
 })

@@ -1,8 +1,8 @@
 ---
 verdict: no_demo
-diff_hash: a1c4b92a55ad1d37695ff44de653eb914dea6c8f68aab7e1b070046473fae4b9
+diff_hash: 31d628fef892b5239c7024d39658e30b713fedede0611b993715fb5a84515a52
 classifier: demo-classifier
-generated_at: 2026-05-04T09:15:00Z
+generated_at: 2026-05-04T09:35:00Z
 ---
 
 ## Why no demo

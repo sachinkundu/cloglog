@@ -37,6 +37,13 @@ CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 [[ "$TOOL_NAME" == "Bash" ]] || exit 0
 printf '%s' "$COMMAND" | grep -qE '\bgh pr create\b' || exit 0
 
+# Only fire when a PR was actually created — mirror remind-pr-update.sh:
+# extract the PR URL from the tool response; if absent the command failed
+# (auth error, --dry-run, GitHub validation error) and no monitor is needed.
+TOOL_RESPONSE=$(printf '%s' "$INPUT" | jq -r '.tool_response // empty' 2>/dev/null)
+PR_URL=$(printf '%s' "$TOOL_RESPONSE" | grep -oE 'https://github\.com/[^/]+/[^/]+/pull/[0-9]+' | head -1)
+[[ -n "$PR_URL" ]] || exit 0
+
 # ── Resolve inbox path ────────────────────────────────────────────────────
 LOOKUP_DIR="${CWD:-$PWD}"
 

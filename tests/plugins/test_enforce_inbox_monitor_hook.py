@@ -31,12 +31,29 @@ HOOK = REPO_ROOT / "plugins/cloglog/hooks/enforce-inbox-monitor-after-pr.sh"
 # ── helpers ──────────────────────────────────────────────────────────────
 
 
-def _make_payload(command: str, cwd: str | Path = "/tmp", tool_name: str = "Bash") -> dict:
-    return {
+FAKE_PR_URL = "https://github.com/owner/repo/pull/42"
+
+
+def _make_payload(
+    command: str,
+    cwd: str | Path = "/tmp",
+    tool_name: str = "Bash",
+    tool_response: str | None = None,
+) -> dict:
+    """Build a hook input payload.
+
+    Pass ``tool_response=FAKE_PR_URL`` (or any string containing a GitHub PR URL)
+    for tests that need the hook to advance past the 'was a PR actually created?'
+    guard and reach the monitor-presence check.
+    """
+    payload: dict = {
         "tool_name": tool_name,
         "tool_input": {"command": command},
         "cwd": str(cwd),
     }
+    if tool_response is not None:
+        payload["tool_response"] = tool_response
+    return payload
 
 
 def _run_hook(
@@ -121,14 +138,56 @@ def test_hook_passes_through_unrelated_gh_commands(tmp_path: Path) -> None:
 
 
 def test_hook_fires_on_gh_pr_create(tmp_path: Path) -> None:
-    """gh pr create without a monitor → exit 2."""
+    """gh pr create with a real PR URL in tool_response → triggers check."""
     # Use a non-git tmp_path so git fails → hook exits 2 with warning
     payload = _make_payload("gh pr create --base main --head my-branch", cwd=tmp_path)
+    # Simulate a successful pr create: tool_response contains a PR URL
+    payload["tool_response"] = "https://github.com/owner/repo/pull/42\n"
     result = _run_hook(payload, cwd=tmp_path)
     assert result.returncode == 2, (
-        "Hook must exit 2 (block) when gh pr create is the Bash command "
+        "Hook must exit 2 (block) when gh pr create produced a real PR URL "
         "and no inbox monitor can be confirmed. Got exit code "
         f"{result.returncode}."
+    )
+
+
+def test_hook_passes_when_pr_create_failed(tmp_path: Path) -> None:
+    """gh pr create failure (no PR URL in tool_response) → exit 0, no block.
+
+    Failed attempts (auth error, --dry-run, GitHub validation error) produce
+    no PR and require no inbox monitor. Blocking the next action would trap
+    the agent before it can fix the command and retry.
+    """
+    payload = _make_payload("gh pr create --base main --head my-branch", cwd=tmp_path)
+    # tool_response has no GitHub PR URL — simulates a failed / dry-run call
+    payload["tool_response"] = "error: pull request create failed: GraphQL: ... (422)"
+    result = _run_hook(payload, cwd=tmp_path)
+    assert result.returncode == 0, (
+        "Hook must exit 0 when tool_response contains no GitHub PR URL. "
+        "A failed or --dry-run gh pr create created no PR and needs no monitor. "
+        f"Got exit code {result.returncode}. stderr: {result.stderr!r}"
+    )
+
+
+def test_hook_passes_when_pr_create_dry_run(tmp_path: Path) -> None:
+    """gh pr create --dry-run → exit 0, no block."""
+    payload = _make_payload("gh pr create --dry-run --base main", cwd=tmp_path)
+    payload["tool_response"] = "Would have created pull request: ..."
+    result = _run_hook(payload, cwd=tmp_path)
+    assert result.returncode == 0, (
+        "Hook must exit 0 for --dry-run output (no real PR URL). "
+        f"Got exit code {result.returncode}. stderr: {result.stderr!r}"
+    )
+
+
+def test_hook_passes_when_tool_response_absent(tmp_path: Path) -> None:
+    """No tool_response field at all → exit 0 (treat as no PR created)."""
+    payload = _make_payload("gh pr create --base main", cwd=tmp_path)
+    # tool_response absent — happens when hook is misconfigured as PreToolUse
+    result = _run_hook(payload, cwd=tmp_path)
+    assert result.returncode == 0, (
+        "Hook must exit 0 when tool_response is absent (no PR created). "
+        f"Got exit code {result.returncode}. stderr: {result.stderr!r}"
     )
 
 
@@ -138,7 +197,9 @@ def test_hook_fires_on_gh_pr_create(tmp_path: Path) -> None:
 def test_hook_blocks_with_actionable_message_when_no_monitor(tmp_path: Path) -> None:
     """Blocked message must name the Monitor shape so the agent knows what to call."""
     # tmp_path is not a git repo → hook warns and exits 2
-    payload = _make_payload("gh pr create", cwd=tmp_path)
+    # tool_response contains a real PR URL so the hook advances past the
+    # 'was a PR created?' guard and reaches the monitor-presence check.
+    payload = _make_payload("gh pr create", cwd=tmp_path, tool_response=FAKE_PR_URL)
     result = _run_hook(payload, cwd=tmp_path)
     assert result.returncode != 0
     # Message must mention Monitor so agent knows the corrective action
@@ -168,7 +229,7 @@ def test_hook_blocks_when_ps_shows_no_matching_monitor(tmp_path: Path) -> None:
 
     # Fake ps returns output without any tail process on the cloglog inbox
     bin_dir = _make_fake_ps("bash some-other-process\nnode server.js", tmp_path)
-    payload = _make_payload("gh pr create --base main", cwd=tmp_path)
+    payload = _make_payload("gh pr create --base main", cwd=tmp_path, tool_response=FAKE_PR_URL)
     result = _run_hook(
         payload,
         cwd=tmp_path,
@@ -208,7 +269,7 @@ def test_hook_passes_when_monitor_is_running_on_correct_path(tmp_path: Path) -> 
     fake_ps_output = f"tail -n 0 -F {inbox_path}\nbash other-process"
     bin_dir = _make_fake_ps(fake_ps_output, tmp_path)
 
-    payload = _make_payload("gh pr create --base main", cwd=tmp_path)
+    payload = _make_payload("gh pr create --base main", cwd=tmp_path, tool_response=FAKE_PR_URL)
     result = _run_hook(
         payload,
         cwd=tmp_path,
@@ -262,7 +323,7 @@ def test_hook_resolves_worktree_inbox_path_via_git_common_dir(tmp_path: Path) ->
     bin_dir_wt = _make_fake_ps(fake_ps_wt, tmp_path / "bin_wt")
     (tmp_path / "bin_wt").mkdir(exist_ok=True)
 
-    payload = _make_payload("gh pr create --base main", cwd=wt_path)
+    payload = _make_payload("gh pr create --base main", cwd=wt_path, tool_response=FAKE_PR_URL)
     result_wt = _run_hook(
         payload,
         cwd=wt_path,
@@ -345,7 +406,7 @@ def test_hook_does_not_silently_pass_on_ps_failure() -> None:
                 "GIT_COMMITTER_EMAIL": "t@t",
             },
         )
-        payload = _make_payload("gh pr create", cwd=tmp)
+        payload = _make_payload("gh pr create", cwd=tmp, tool_response=FAKE_PR_URL)
         result = _run_hook(
             payload,
             cwd=tmp,

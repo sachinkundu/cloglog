@@ -1,6 +1,6 @@
 ---
 verdict: no_demo
-diff_hash: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+diff_hash: 45f5c108f3534c8e50e26df860825abe6595c45c7c45a556abda7ce1d62ed4c3
 classifier: demo-classifier
 generated_at: 2026-05-04T10:00:00Z
 ---

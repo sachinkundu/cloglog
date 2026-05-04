@@ -33,6 +33,7 @@ from typing import Any, Final, Protocol
 from uuid import UUID
 
 import httpx
+from sqlalchemy.exc import DBAPIError
 
 from src.gateway.review_engine import (
     REVIEW_TIMEOUT_SECONDS,
@@ -54,6 +55,7 @@ from src.review.interfaces import (
 )
 from src.shared.config import settings
 from src.shared.events import Event, EventType, event_bus
+from src.shared.text import strip_nul
 
 logger = logging.getLogger(__name__)
 
@@ -723,14 +725,45 @@ class ReviewLoop:
                 # (opencode emits no learnings and the codex stage's preamble
                 # is the only consumer); harmless to write on opencode rows
                 # too — learnings will be empty.
-                await self._registry.record_findings_and_learnings(
-                    pr_url=self._pr_url,
-                    head_sha=self._head_sha,
-                    stage=self._stage,
-                    turn_number=turn,
-                    findings_json=[f.model_dump() for f in result.findings],
-                    learnings_json=list(result.learnings),
+                #
+                # T-407: sanitize NUL bytes before persisting — PostgreSQL TEXT
+                # and JSONB reject U+0000 and asyncpg raises
+                # UntranslatableCharacterError. Codex/opencode output may embed
+                # NUL via binary-encoded strings or exemption.md file reads.
+                _findings_sanitized: list[dict[str, Any]] = strip_nul(
+                    [f.model_dump() for f in result.findings]
                 )
+                _learnings_sanitized: list[dict[str, Any]] = strip_nul(list(result.learnings))
+                try:
+                    await self._registry.record_findings_and_learnings(
+                        pr_url=self._pr_url,
+                        head_sha=self._head_sha,
+                        stage=self._stage,
+                        turn_number=turn,
+                        findings_json=_findings_sanitized,
+                        learnings_json=_learnings_sanitized,
+                    )
+                except DBAPIError as _db_exc:
+                    # T-407: persistence failure must NOT kill the consumer.
+                    # Log structured WARNING so ops can correlate the PR/SHA/stage.
+                    # Then best-effort stamp outcome='db_error' for T-409 badge.
+                    logger.warning(
+                        "event=review.persist result=db_error error_class=%s "
+                        "pr=%s sha=%s stage=%s msg=%.200s",
+                        type(_db_exc).__name__,
+                        self._pr_url,
+                        self._head_sha,
+                        self._stage,
+                        str(_db_exc),
+                    )
+                    with contextlib.suppress(Exception):
+                        await self._registry.set_outcome(
+                            pr_url=self._pr_url,
+                            head_sha=self._head_sha,
+                            stage=self._stage,
+                            turn_number=turn,
+                            outcome="db_error",
+                        )
                 logger.info(
                     "review_turn_end stage=%s turn=%d/%d pr=%d findings=%d "
                     "consensus=%s elapsed=%.1fs",

@@ -82,6 +82,9 @@ class PrReviewTurn(Base):
     # pre-T-375 historical rows remain valid.
     session_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # T-407: persistence-error marker. Set to 'db_error' when record_findings_and_learnings
+    # fails with a DBAPIError. T-409 reads this to render a failed-persistence badge.
+    outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),

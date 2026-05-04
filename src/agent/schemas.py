@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.shared.text import NulSanitizedModel
+
 # --- Registration ---
 
 
@@ -47,7 +49,7 @@ class StartTaskResponse(BaseModel):
     model: str | None = None
 
 
-class CompleteTaskRequest(BaseModel):
+class CompleteTaskRequest(NulSanitizedModel):
     task_id: UUID
     pr_url: str | None = None
 
@@ -57,7 +59,7 @@ class CompleteTaskResponse(BaseModel):
     next_task: TaskInfo | None = None
 
 
-class UpdateTaskStatusRequest(BaseModel):
+class UpdateTaskStatusRequest(NulSanitizedModel):
     task_id: UUID
     status: str  # review, blocked, etc.
     pr_url: str | None = None
@@ -82,7 +84,7 @@ class AssignTaskRequest(BaseModel):
     task_id: UUID
 
 
-class AddTaskNoteRequest(BaseModel):
+class AddTaskNoteRequest(NulSanitizedModel):
     task_id: UUID
     note: str
 
@@ -91,7 +93,7 @@ class MarkPrMergedRequest(BaseModel):
     task_id: UUID
 
 
-class ReportArtifactRequest(BaseModel):
+class ReportArtifactRequest(NulSanitizedModel):
     task_id: UUID
     artifact_path: str
 

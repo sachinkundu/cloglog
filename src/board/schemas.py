@@ -7,16 +7,20 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
+from src.shared.text import NulSanitizedModel
+
+_NulSanitized = NulSanitizedModel  # local alias for readability
+
 # --- Project ---
 
 
-class ProjectCreate(BaseModel):
+class ProjectCreate(_NulSanitized):
     name: str
     description: str = ""
     repo_url: str = ""
 
 
-class ProjectUpdate(BaseModel):
+class ProjectUpdate(_NulSanitized):
     # ``Project.name`` and ``Project.description`` are NOT NULL columns
     # with a default of ``""``. Typing them as plain ``str`` (not
     # ``str | None``) makes Pydantic 422 on explicit JSON ``null`` —
@@ -62,7 +66,7 @@ class ProjectSummary(ProjectResponse):
 # --- Epic ---
 
 
-class EpicCreate(BaseModel):
+class EpicCreate(_NulSanitized):
     title: str
     description: str = ""
     bounded_context: str = ""
@@ -70,7 +74,7 @@ class EpicCreate(BaseModel):
     position: int = 0
 
 
-class EpicUpdate(BaseModel):
+class EpicUpdate(_NulSanitized):
     title: str | None = None
     description: str | None = None
     bounded_context: str | None = None
@@ -97,13 +101,13 @@ class EpicResponse(BaseModel):
 # --- Feature ---
 
 
-class FeatureCreate(BaseModel):
+class FeatureCreate(_NulSanitized):
     title: str
     description: str = ""
     position: int = 0
 
 
-class FeatureUpdate(BaseModel):
+class FeatureUpdate(_NulSanitized):
     title: str | None = None
     description: str | None = None
     status: str | None = None
@@ -130,7 +134,7 @@ VALID_TASK_TYPES = {"spec", "plan", "impl", "task"}
 PIPELINE_ORDER = {"spec": 0, "plan": 1, "impl": 2, "task": -1}
 
 
-class TaskCreate(BaseModel):
+class TaskCreate(_NulSanitized):
     title: str
     description: str = ""
     priority: str = "normal"
@@ -139,7 +143,7 @@ class TaskCreate(BaseModel):
     model: str | None = None
 
 
-class TaskUpdate(BaseModel):
+class TaskUpdate(_NulSanitized):
     title: str | None = None
     description: str | None = None
     status: str | None = None
@@ -179,7 +183,7 @@ class TaskResponse(BaseModel):
 # --- Close-off tasks ---
 
 
-class CloseOffTaskCreate(BaseModel):
+class CloseOffTaskCreate(_NulSanitized):
     worktree_path: str
     worktree_name: str
 
@@ -290,19 +294,19 @@ class SearchResponse(BaseModel):
 # --- Import ---
 
 
-class ImportTask(BaseModel):
+class ImportTask(_NulSanitized):
     title: str
     description: str = ""
     priority: str = "normal"
 
 
-class ImportFeature(BaseModel):
+class ImportFeature(_NulSanitized):
     title: str
     description: str = ""
     tasks: list[ImportTask] = []
 
 
-class ImportEpic(BaseModel):
+class ImportEpic(_NulSanitized):
     title: str
     description: str = ""
     bounded_context: str = ""

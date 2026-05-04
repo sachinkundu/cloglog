@@ -11,6 +11,7 @@ All consensus logic, turn-accounting, and status handling are verified here.
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -19,6 +20,7 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from sqlalchemy.exc import DBAPIError
 
 from src.gateway.review_engine import ReviewFinding, ReviewResult
 from src.gateway.review_loop import (
@@ -28,6 +30,7 @@ from src.gateway.review_loop import (
     _reached_consensus,
 )
 from src.review.interfaces import PriorContext, PriorTurnSummary, ReviewTurnSnapshot
+from src.shared.text import strip_nul
 
 # ---------------------------------------------------------------------------
 # In-memory fake registry
@@ -227,6 +230,19 @@ class FakeRegistry:
                 )
             )
         return PriorContext(pr_url=pr_url, turns=turns)
+
+    async def set_outcome(
+        self,
+        *,
+        pr_url: str,
+        head_sha: str,
+        stage: str,
+        turn_number: int,
+        outcome: str,
+    ) -> None:
+        if not hasattr(self, "_outcomes"):
+            self._outcomes: dict[tuple[str, str, str, int], str] = {}
+        self._outcomes[(pr_url, head_sha, stage, turn_number)] = outcome
 
 
 # ---------------------------------------------------------------------------
@@ -1177,3 +1193,244 @@ class TestCodexTimeoutOutcomeAndRouting:
         assert outcome.last_timeout_diff_lines == 0
         assert outcome.last_timeout_seconds == 0.0
         assert outcome.last_timeout_stderr_excerpt == ""
+
+
+# ---------------------------------------------------------------------------
+# T-407: NUL byte sanitization + DBAPIError resilience
+# ---------------------------------------------------------------------------
+
+
+class _RaisingRegistry(FakeRegistry):
+    """FakeRegistry variant whose record_findings_and_learnings raises DBAPIError."""
+
+    def __init__(self, *, raise_on_record: bool = False) -> None:
+        super().__init__()
+        self.raise_on_record = raise_on_record
+        self.set_outcome_calls: list[dict[str, object]] = []
+
+    async def record_findings_and_learnings(  # type: ignore[override]
+        self,
+        *,
+        pr_url: str,
+        head_sha: str,
+        stage: str,
+        turn_number: int,
+        findings_json: list[dict[str, Any]],
+        learnings_json: list[dict[str, Any]],
+    ) -> None:
+        if self.raise_on_record:
+            # Simulate asyncpg NUL-byte error at the SQLAlchemy boundary.
+            raise DBAPIError("INSERT", {}, Exception("NUL byte not supported"))
+        await super().record_findings_and_learnings(
+            pr_url=pr_url,
+            head_sha=head_sha,
+            stage=stage,
+            turn_number=turn_number,
+            findings_json=findings_json,
+            learnings_json=learnings_json,
+        )
+
+    async def set_outcome(  # type: ignore[override]
+        self,
+        *,
+        pr_url: str,
+        head_sha: str,
+        stage: str,
+        turn_number: int,
+        outcome: str,
+    ) -> None:
+        self.set_outcome_calls.append(
+            {
+                "pr_url": pr_url,
+                "head_sha": head_sha,
+                "stage": stage,
+                "turn_number": turn_number,
+                "outcome": outcome,
+            }
+        )
+
+
+class TestNulSanitization:
+    """T-407: NUL bytes are stripped before review persistence calls."""
+
+    def test_strip_nul_string(self) -> None:
+        assert strip_nul("hello\x00world") == "helloworld"
+
+    def test_strip_nul_nested_dict(self) -> None:
+        result = strip_nul({"a": "x\x00y", "b": {"c": "\x00z"}})
+        assert result == {"a": "xy", "b": {"c": "z"}}
+
+    def test_strip_nul_list(self) -> None:
+        result = strip_nul(["ok", "bad\x00", {"k": "v\x00"}])
+        assert result == ["ok", "bad", {"k": "v"}]
+
+    def test_strip_nul_passthrough_non_string(self) -> None:
+        assert strip_nul(42) == 42
+        assert strip_nul(None) is None
+        assert strip_nul(True) is True
+
+    @pytest.mark.asyncio
+    async def test_nul_in_findings_stripped_before_persist(self) -> None:
+        """Findings containing NUL bytes are sanitized before reaching the registry."""
+        registry = _RaisingRegistry(raise_on_record=False)
+        reviewer = StubReviewer(
+            responses=[
+                (
+                    ReviewResult(
+                        verdict="comment",
+                        summary="ok",
+                        findings=[
+                            ReviewFinding(
+                                file="src/foo.py",
+                                line=1,
+                                severity="medium",
+                                body="bad\x00char",
+                            )
+                        ],
+                        status=None,
+                    ),
+                    1.0,
+                    False,
+                )
+            ]
+        )
+        # max_turns=1 so the loop ends after one turn regardless of consensus
+        loop = _make_loop(reviewer, max_turns=1, registry=registry)
+        with patch(_PATCH_POST_REVIEW, new=AsyncMock(return_value=True)):
+            outcome = await loop.run(diff="diff")
+
+        assert outcome.turns_used == 1
+        key = (_PR_URL, _SHA, "codex", 1)
+        persisted = registry._findings.get(key, [])
+        # NUL must be absent from persisted findings
+        assert persisted, "findings should be persisted"
+        assert all("\x00" not in str(v) for f in persisted for v in f.values())
+
+    @pytest.mark.asyncio
+    async def test_dbapierror_from_record_logged_as_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """DBAPIError from record_findings_and_learnings is caught, logged, consumer lives."""
+        registry = _RaisingRegistry(raise_on_record=True)
+        reviewer = StubReviewer(
+            responses=[
+                (
+                    ReviewResult(
+                        verdict="approve",
+                        summary="lgtm",
+                        findings=[],
+                        status=None,
+                    ),
+                    1.0,
+                    False,
+                )
+            ]
+        )
+        loop = _make_loop(reviewer, registry=registry)
+        with (
+            patch(_PATCH_POST_REVIEW, new=AsyncMock(return_value=True)),
+            caplog.at_level(logging.WARNING, logger="src.gateway.review_loop"),
+        ):
+            # Must NOT raise — consumer must survive
+            outcome = await loop.run(diff="diff")
+
+        assert outcome.turns_used == 1, "turn must complete even if persist fails"
+        warning_records = [r for r in caplog.records if "review.persist" in r.message]
+        assert warning_records, "structured WARNING must be emitted"
+        assert "db_error" in warning_records[0].message
+
+    @pytest.mark.asyncio
+    async def test_dbapierror_stamps_db_error_outcome(self) -> None:
+        """DBAPIError from record_findings_and_learnings triggers set_outcome('db_error')."""
+        registry = _RaisingRegistry(raise_on_record=True)
+        reviewer = StubReviewer(
+            responses=[
+                (
+                    ReviewResult(
+                        verdict="comment",
+                        summary="findings",
+                        findings=[],
+                        status=None,
+                    ),
+                    1.0,
+                    False,
+                )
+            ]
+        )
+        loop = _make_loop(reviewer, registry=registry)
+        with patch(_PATCH_POST_REVIEW, new=AsyncMock(return_value=True)):
+            await loop.run(diff="diff")
+
+        assert registry.set_outcome_calls, "set_outcome must be called after DBAPIError"
+        call = registry.set_outcome_calls[0]
+        assert call["outcome"] == "db_error"
+        assert call["turn_number"] == 1
+
+    @pytest.mark.asyncio
+    async def test_consumer_processes_next_event_after_dbapierror(self) -> None:
+        """After a DBAPIError on turn 1, the loop can successfully process turn 2."""
+        call_count = 0
+        original_raise = True
+
+        class _ToggleRegistry(_RaisingRegistry):
+            async def record_findings_and_learnings(  # type: ignore[override]
+                self,
+                *,
+                pr_url: str,
+                head_sha: str,
+                stage: str,
+                turn_number: int,
+                findings_json: list[dict[str, Any]],
+                learnings_json: list[dict[str, Any]],
+            ) -> None:
+                nonlocal call_count, original_raise
+                call_count += 1
+                if call_count == 1:
+                    raise DBAPIError("INSERT", {}, Exception("NUL"))
+                await FakeRegistry.record_findings_and_learnings(
+                    self,  # type: ignore[arg-type]
+                    pr_url=pr_url,
+                    head_sha=head_sha,
+                    stage=stage,
+                    turn_number=turn_number,
+                    findings_json=findings_json,
+                    learnings_json=learnings_json,
+                )
+
+        # Provide a finding in both turns so consensus only triggers in turn 2
+        # (predicate c: no new findings vs prior turn). Empty findings would
+        # trigger consensus immediately (empty-set difference = 0 → True).
+        shared_finding = ReviewFinding(file="src/x.py", line=5, severity="medium", body="issue")
+        registry = _ToggleRegistry()
+        reviewer = StubReviewer(
+            responses=[
+                (
+                    ReviewResult(
+                        verdict="comment",
+                        summary="a",
+                        findings=[shared_finding],
+                        status=None,
+                    ),
+                    1.0,
+                    False,
+                ),
+                (
+                    ReviewResult(
+                        verdict="comment",
+                        summary="b",
+                        findings=[shared_finding],
+                        status=None,
+                    ),
+                    1.0,
+                    False,
+                ),
+            ]
+        )
+        loop = _make_loop(reviewer, max_turns=2, registry=registry)
+        with patch(_PATCH_POST_REVIEW, new=AsyncMock(return_value=True)):
+            outcome = await loop.run(diff="diff")
+
+        assert outcome.turns_used == 2, "second turn must complete after first turn's persist error"
+        # Turn 2 findings must be persisted cleanly (call_count=2)
+        key2 = (_PR_URL, _SHA, "codex", 2)
+        assert key2 in registry._findings

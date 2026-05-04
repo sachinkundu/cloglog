@@ -72,10 +72,11 @@ places and runs Steps 2–14 unchanged otherwise:
 **Callable from reconcile** — everything else (Steps 2, 3, 5, 5a–5d, 6,
 7, 8, 9, 9.5, 10, 10.5, 11, 12, 13, 14) is identical to the user-driven
 mode. The cooperative shutdown, shutdown-artifact consolidation into
-the work log, worktree/branch/tab removal, quality gate on the
-`wt-close-*` branch, and learnings extraction all run unchanged. Anything close-wave does today for a
-single worktree is the correct behaviour for reconcile's case — the
-delegation is a pure entry-point change, not a refactor of the pipeline.
+the work log, worktree/branch/tab removal, quality gate on `main`, direct
+commit to main (Step 13), and learnings extraction all run unchanged.
+Anything close-wave does today for a single worktree is the correct
+behaviour for reconcile's case — the delegation is a pure entry-point
+change, not a refactor of the pipeline.
 
 ## Step 1: Detect Worktrees
 
@@ -83,7 +84,7 @@ delegation is a pure entry-point change, not a refactor of the pipeline.
 2. If `$ARGUMENTS` specifies worktree names, filter to only those.
 3. If no worktrees exist, tell the user there's nothing to close.
 4. Determine the wave name by examining existing work logs to figure out the current numbering (e.g., if `wave-1.md` exists, this is `wave-2`).
-5. **Resolve each worktree's close-off task UUID.** Call `mcp__cloglog__get_board()` and, for every `wt-<name>` in scope, find the task with `title == f"Close worktree {wt-name}"` and `status == "backlog"`. Capture the task UUID into a per-worktree map `close_off_task_ids[wt-name] → task_uuid`. The first entry's UUID is `PRIMARY_CLOSE_TASK_ID` — that's the one Step 9.7 marks `in_progress` to satisfy the T-371 `gh pr create` blocker hook. If a worktree has no matching backlog close-off row, fail loud — do not paper over with `create_close_off_task`; the worktree was created before the close-off-row invariant existed and reconcile owns that gap (T-371 reconcile rule).
+5. **Resolve each worktree's close-off task UUID.** Call `mcp__cloglog__get_board()` and, for every `wt-<name>` in scope, find the task with `title == f"Close worktree {wt-name}"` and `status == "backlog"`. Capture the task UUID into a per-worktree map `close_off_task_ids[wt-name] → task_uuid`. The first entry's UUID is `PRIMARY_CLOSE_TASK_ID` — that's the one Step 9.7 marks `in_progress` before the commit. If a worktree has no matching backlog close-off row, fail loud — do not paper over with `create_close_off_task`; the worktree was created before the close-off-row invariant existed and reconcile owns that gap (T-371 reconcile rule).
 6. Show the user what was detected: wave name, worktree list, close-off task IDs. Ask for confirmation before proceeding.
 
 ## Step 2: Detect Repo
@@ -325,26 +326,17 @@ list is cached at session start).
 
 ## Step 9.7: Mark the primary close-off task in_progress (T-371)
 
-Before any branch creation or `gh pr create` invocation, mark the
-**primary close-off task** (Step 1's `PRIMARY_CLOSE_TASK_ID`)
-`in_progress` so the wave's PR has a board task linked to it from the
-moment it is opened:
+Mark the **primary close-off task** (Step 1's `PRIMARY_CLOSE_TASK_ID`)
+`in_progress` before the commit so the board reflects that close-wave is active:
 
 ```
 mcp__cloglog__start_task(task_id: "<PRIMARY_CLOSE_TASK_ID>")
 ```
 
-This call is mandatory. The T-371 `require-task-for-pr.sh` PreToolUse
-hook hard-blocks `gh pr create` (exit 2) when no task is `in_progress`
-for this working directory, so skipping this step makes Step 13's
-`gh pr create` fail with the hook's actionable error. **Do not** try
-to start more than one close-off task here — `start_task` enforces
+**Do not** start more than one close-off task here — `start_task` enforces
 "one active task per agent" (`src/agent/services.py::start_task`).
-Multi-worktree waves move the remaining close-off tasks straight from
-`backlog` → `review` in Step 13.5 with the same `pr_url`; that
-transition does not require an intermediate `in_progress` step
-(`update_task_status` only checks `pr_url` for the `review` move,
-`src/agent/services.py:526`).
+Secondary close-off tasks in multi-worktree waves are moved directly from
+`backlog` → `done` in Step 13.5 without an intermediate `in_progress` step.
 
 If `start_task` returns `task_blocked` because pipeline ordering or
 feature-deps cite an upstream task that has not finished, **that is a
@@ -353,23 +345,22 @@ papering over with `force_unregister`. Close-off tasks have no
 predecessors by design (`src/board/templates.py`), so a `task_blocked`
 here is a regression in the close-off template.
 
-## Step 10: Open a close-wave branch
+## Step 10: Fetch and prepare for direct commit to main
 
-The dev clone now has a writable local `main`, so the main agent uses the same `wt-*` branch + PR flow as every other agent (no detached-HEAD push, no direct-`main` commit). See `docs/design/prod-branch-tracking.md` §7.
-
-Step 9 fetched and fast-forwarded `main`, but Step 9.5 (`make sync-mcp-dist`) runs between Step 9 and here, and any PR merged in that window (e.g., an implementation PR merged in another tab while close-wave was running) silently invalidates Step 9's fast-forward. **Always re-fetch immediately before creating the branch** so the close-wave branch base includes every merged commit:
+Re-fetch origin immediately before committing so the wave-fold lands on the
+freshest base. Any PR merged between Step 9 and here silently invalidates
+Step 9's fast-forward; re-fetching now closes that window:
 
 ```bash
 git fetch origin
 git merge --ff-only origin/main
-git checkout -b wt-close-<date>-<wave-name>
 ```
 
-A non-fast-forward state means real divergence — investigate, do not paper over with a merge commit.
+A non-fast-forward state means real divergence (e.g., a stray local-`main`
+commit) — investigate, do not paper over with a merge commit.
 
-Use today's date (`$(date -I)`) and the wave name from Step 1 (e.g., `wt-close-2026-04-26-wave-3` or `wt-close-2026-04-26-reconcile-wt-foo` for reconcile-delegated runs). All Step 11/12/13 edits (quality-gate fixes, work log, learnings) land on this branch — never on `main`.
-
-The dev clone's pre-commit hook (installed once via `${CLAUDE_PLUGIN_ROOT}/scripts/install-dev-hooks.sh`) rejects commits on `main` unless `ALLOW_MAIN_COMMIT=1` is set. If you find yourself reaching for that override here, stop — the right answer is the branch above.
+All Step 10.5/11/12 edits (quality-gate fixes, work log, learnings) accumulate
+on local `main` and are committed together in Step 13.
 
 ## Step 10.5: Run Quality Gate
 
@@ -380,7 +371,7 @@ Common post-merge problems:
 - Lint/format issues from merged code
 - Type errors from interface mismatches
 
-If the quality gate fails, fix the issues on the `wt-close-*` branch from Step 10 — these are integration issues that individual worktrees cannot detect, and they ship via the same PR as the work log and learnings update.
+If the quality gate fails, fix the issues directly on `main` — these are integration issues that individual worktrees cannot detect, and they ship in the same direct-to-main commit as the work log and learnings update.
 
 ## Step 11: Extract Learnings
 
@@ -422,91 +413,89 @@ Fill in the "Learnings & Issues" section of the work log with:
 
 Fill in "State After This Wave" with what's now implemented and verified working.
 
-## Step 13: Commit, push, and PR
+## Step 13: Commit and push directly to main (T-395)
 
-Commit all fixes, the work log, and any learnings routed by Step 11 (to `docs/invariants.md`, the relevant `plugins/cloglog/**/SKILL.md`, a design doc under `docs/design/`, or — rarely — `CLAUDE.md`) on the `wt-close-<date>-<wave-name>` branch from Step 10. Push the branch and open a PR against `main` using the **exact `Push + Create PR` sequence** from `plugins/cloglog/skills/github-bot/SKILL.md` — every `git push` and every `gh` invocation MUST go through the bot identity. A bare `gh pr create` falls back to the operator's personal `gh auth` and breaks the bot-identity invariant the github-bot skill exists to enforce; only the bot-authenticated form below is correct:
+Stage the work log, any routed learnings (quality-gate fixes,
+`docs/invariants.md`, SKILL.md updates, design docs — whatever Steps
+10.5/11/12 produced), then commit on `main` using the `ALLOW_MAIN_COMMIT=1`
+override and push via the bot identity. There is no PR for the wave-fold commit.
+
+```bash
+git add docs/work-logs/<date>-<wave-name>.md  # and any other staged files
+ALLOW_MAIN_COMMIT=1 git commit -m "chore(close-wave): <wave-name>
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
+```
+
+Then push directly to `main` via the bot identity inline-URL form (never mutate
+`.git/config`; see `docs/invariants.md` "No persistent bot-token origin URL"):
 
 ```bash
 BOT_TOKEN=$(uv run --with "PyJWT[crypto]" --with requests "${CLAUDE_PLUGIN_ROOT}/scripts/gh-app-token.py")
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's|.*github.com[:/]||;s|\.git$||')
-BRANCH=$(git rev-parse --abbrev-ref HEAD)
-git push "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git" "HEAD:${BRANCH}"
-git fetch origin "${BRANCH}"
-git branch --set-upstream-to=origin/${BRANCH}
-GH_TOKEN="$BOT_TOKEN" gh pr create --base main --head wt-close-<date>-<wave-name> \
-  --title "chore(close-wave): <wave-name>" \
-  --body "<work-log path + learnings summary, with the standard Demo + Test Report sections>"
+git push "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git" main:main
 ```
 
-### Step 13.5: Move close-off tasks to review (T-371)
-
-Capture the PR URL returned by `gh pr create` (or read it back via
-`gh pr view --json url -q .url`). Then, for **every** close-off task
-UUID resolved in Step 1's `close_off_task_ids` map, call:
-
-```
-mcp__cloglog__update_task_status(task_id: "<close_task_id>", status: "review", pr_url: "<PR_URL>")
-```
-
-The primary task transitions `in_progress` → `review`; remaining tasks
-go `backlog` → `review` directly (the `review` guard at
-`src/agent/services.py:526` only checks for a `pr_url`, no
-intermediate `in_progress` is required). All close-off tasks share the
-same `pr_url` — the wave PR fulfils all of them — and the existing
-`pr_merged` webhook fan-out flips `pr_merged=True` on each row when
-the PR merges.
-
-**Terminal state — `review + pr_merged=True`, awaiting user drag.**
-Close-off rows follow the standard agent task lifecycle: agents move
-tasks to `review` with a `pr_url`, the merge webhook flips
-`pr_merged=True`, and the **user** drags the card to `done` on the
-board (`src/agent/services.py:502-508` rejects any agent attempt to
-move tasks to `done`; this is the load-bearing user-only-done
-invariant). T-371 originally framed acceptance as "leaves the
-close-off task in `done` with no manual operator step", but
-implementing a system-owned automatic merge → done transition would
-violate that invariant project-wide. The narrowed acceptance — `review
-+ pr_merged=True`, user drags as the single closing click — matches
-how every other reviewed task ships in this project.
-
-Auto-merge applies per `plugins/cloglog/skills/github-bot/SKILL.md` "Auto-Merge on Codex Pass" once codex review and CI checks pass. After merge, fast-forward main and drop the local branch:
+If the push is rejected because origin/main has new commits (a PR merged
+in the Step 10 → Step 13 window), re-fetch and retry once:
 
 ```bash
-git checkout main
 git fetch origin
 git merge --ff-only origin/main
-git branch -D wt-close-<date>-<wave-name>
+git push "https://x-access-token:${BOT_TOKEN}@github.com/${REPO}.git" main:main
 ```
 
-A non-fast-forward state means real divergence — investigate, do not paper over with a merge commit.
+A second rejection means real concurrent activity — investigate before
+retrying again.
 
-Never commit directly to `main`. The dev clone's pre-commit hook (`${CLAUDE_PLUGIN_ROOT}/scripts/install-dev-hooks.sh`) blocks that path; the `ALLOW_MAIN_COMMIT=1` override exists only for emergency-rollback cherry-picks, not for close-wave.
+The dev-clone pre-commit hook (`${CLAUDE_PLUGIN_ROOT}/scripts/install-dev-hooks.sh`)
+rejects commits on `main`; `ALLOW_MAIN_COMMIT=1` is the approved override for this
+specific step. Do **not** use this override in any other code path — see
+`docs/invariants.md` "ALLOW_MAIN_COMMIT is only valid for close-wave Step 13 and
+emergency rollback".
+
+### Step 13.5: Mark close-off tasks done (T-395)
+
+After the push succeeds, mark every close-off task resolved. The wave-fold commit
+on `main` is the completion signal — there is no PR URL to attach.
+
+For the **primary** close-off task (already `in_progress` from Step 9.7):
+
+```
+mcp__cloglog__update_task_status(task_id: "<PRIMARY_CLOSE_TASK_ID>", status: "done")
+```
+
+For **every remaining** close-off task UUID from Step 1's `close_off_task_ids`
+map (still in `backlog`):
+
+```
+mcp__cloglog__update_task_status(task_id: "<close_task_id>", status: "done")
+```
+
+**Terminal state — `done`.** Close-off tasks are a special case:
+`src/agent/services.py::update_task_status` allows agent-driven `done`
+transitions when `task.close_off_worktree_id` is non-null (i.e., the task was
+created by `create_close_off_task`). This is the only carved-out exception to
+the user-only-done invariant (`src/agent/services.py:502-508`); the carve-out
+is pinned by
+`tests/agent/test_unit.py::TestAgentService::test_close_off_task_can_be_marked_done_by_agent`.
+
+No auto-merge step. No post-PR branch cleanup. The wave is complete when the
+push and the `done` transitions succeed.
 
 ## Step 14: Summary
 
 Print a summary table showing:
 
-| Worktree | PR | Shutdown path | Commits |
-|----------|-----|----------------|---------|
-| wt-... | #42 | cooperative | 5 |
-| wt-... | #43 | force_unregister (timeout) | 3 |
+| Worktree | Shutdown path | Commits |
+|----------|----------------|---------|
+| wt-... | cooperative | 5 |
+| wt-... | force_unregister (timeout) | 3 |
 
 - Integration verification: pass/fail, issues found and fixed.
-- Work log location.
+- Work log location (direct commit SHA on main).
 - New learnings added.
 - What's ready for the next wave.
-
-## Gotcha: `gh pr merge --delete-branch` exit code from a worktree
-
-`gh pr merge --delete-branch` exits non-zero from a worktree when `main`
-is checked out by the parent clone — the squash merge succeeds
-server-side, but the local post-merge cleanup (`git checkout main && git
-branch -D <branch>`) fails with `fatal: 'main' is already used by
-worktree at '<parent>'`, masking the successful merge. Do not panic on a
-non-zero exit — verify with the `pr_merged` inbox event or `gh pr view
-<num> --json state,mergedAt`. If you need clean post-merge state on the
-worktree side, do the ff-and-prune from the main clone, not as a
-side-effect of `gh pr merge`.
 
 ## Gotcha: pytest subprocess with extra deps
 

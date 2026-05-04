@@ -679,7 +679,7 @@ class TestAgentService:
         assert updated.status == "in_progress"
 
     async def test_agent_cannot_move_to_done(self, db_session: AsyncSession) -> None:
-        """Agent cannot move task to done via update_task_status."""
+        """Agent cannot move regular task to done via update_task_status."""
         project = await _create_project(db_session)
         task = await _create_task_chain(db_session, project)
         service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
@@ -688,6 +688,64 @@ class TestAgentService:
         wt_id = reg["worktree_id"]
         await service.start_task(wt_id, task.id)  # type: ignore[arg-type]
 
+        with pytest.raises(ValueError, match="Agents cannot mark tasks as done"):
+            await service.update_task_status(wt_id, task.id, "done")  # type: ignore[arg-type]
+
+    async def test_close_off_task_can_be_marked_done_by_agent(
+        self, db_session: AsyncSession
+    ) -> None:
+        """T-395: close-off tasks (close_off_worktree_id non-null) may be marked done
+        by the close-wave supervisor without user intervention.
+
+        Pin for the carve-out in src/agent/services.py::update_task_status:
+        is_close_off_task = task.close_off_worktree_id is not None.
+        """
+        project = await _create_project(db_session)
+        task = await _create_task_chain(db_session, project)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+        board_repo = BoardRepository(db_session)
+
+        # Register the main agent (supervisor calling close-wave)
+        reg = await service.register(project.id, "/repo/wt-main", "wt-main")
+        main_wt_id = reg["worktree_id"]
+
+        # Register a target worktree (the one being closed)
+        target_reg = await service.register(project.id, "/repo/wt-target", "wt-target")
+        target_wt_id = target_reg["worktree_id"]
+
+        # Mark the task as a close-off task by setting close_off_worktree_id
+        await board_repo.update_task(task.id, close_off_worktree_id=target_wt_id)  # type: ignore[arg-type]
+        await board_repo.update_task(task.id, worktree_id=main_wt_id)  # type: ignore[arg-type]
+
+        # Start the close-off task (backlog → in_progress)
+        await service.start_task(main_wt_id, task.id)  # type: ignore[arg-type]
+
+        # Agent can mark close-off task done directly (T-395 carve-out)
+        await service.update_task_status(main_wt_id, task.id, "done")  # type: ignore[arg-type]
+
+        updated = await board_repo.get_task(task.id)
+        assert updated is not None
+        assert updated.status == "done"
+
+    async def test_regular_task_still_blocked_from_done_by_agent(
+        self, db_session: AsyncSession
+    ) -> None:
+        """T-395: the close-off carve-out must not apply to regular tasks.
+
+        close_off_worktree_id=None means the task is a regular agent task;
+        the user-only-done invariant (src/agent/services.py:502-508) must
+        still block agent-driven done transitions for those.
+        """
+        project = await _create_project(db_session)
+        task = await _create_task_chain(db_session, project)
+        service = AgentService(AgentRepository(db_session), BoardRepository(db_session))
+
+        reg = await service.register(project.id, "/repo/wt-regular", "wt-regular")
+        wt_id = reg["worktree_id"]
+        await service.start_task(wt_id, task.id)  # type: ignore[arg-type]
+
+        # Regular task — close_off_worktree_id is None — must still be blocked
+        assert task.close_off_worktree_id is None
         with pytest.raises(ValueError, match="Agents cannot mark tasks as done"):
             await service.update_task_status(wt_id, task.id, "done")  # type: ignore[arg-type]
 

@@ -499,14 +499,6 @@ class AgentService:
         skip_pr: bool = False,
     ) -> None:
         """Update a task's status (e.g. to review, blocked)."""
-        # Guard: agents cannot move tasks to done — only user can via board UI
-        if status == "done":
-            raise ValueError(
-                "Agents cannot mark tasks as done. "
-                "Move the task to 'review' and wait for the user "
-                "to drag it to done on the board."
-            )
-
         worktree = await self._repo.get_worktree(worktree_id)
         if worktree is None:
             raise ValueError(f"Worktree {worktree_id} not found")
@@ -514,6 +506,18 @@ class AgentService:
         task = await self._board_repo.get_task(task_id)
         if task is None:
             raise ValueError(f"Task {task_id} not found")
+
+        # Guard: agents cannot move tasks to done — only user can via board UI.
+        # Exception: close-off tasks (close_off_worktree_id non-null) may be marked
+        # done by the close-wave supervisor after the direct-to-main commit (T-395).
+        # Pin: test_unit.py::TestAgentService::test_close_off_task_can_be_marked_done_by_agent
+        is_close_off_task = task.close_off_worktree_id is not None
+        if status == "done" and not is_close_off_task:
+            raise ValueError(
+                "Agents cannot mark tasks as done. "
+                "Move the task to 'review' and wait for the user "
+                "to drag it to done on the board."
+            )
 
         # Guard: transitioning into in_progress runs the same blocker pass
         # as start_task, so agents cannot bypass it by PATCH-ing status.

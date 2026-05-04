@@ -80,24 +80,39 @@ else
 fi
 
 # ── Detect running inbox monitor ──────────────────────────────────────────
-PS_OUTPUT=$(ps -ww -eo args 2>/dev/null) || {
+PS_OUTPUT=$(ps -ww -eo pid=,args= 2>/dev/null) || {
     cat >&2 << 'MSG'
-⚠ enforce-inbox-monitor: `ps -ww -eo args` failed — cannot inspect running
-processes. Arm inbox monitor manually before continuing.
+⚠ enforce-inbox-monitor: `ps -ww -eo pid=,args=` failed — cannot inspect
+running processes. Arm inbox monitor manually before continuing.
 MSG
     exit 2
 }
 
-if printf '%s\n' "$PS_OUTPUT" | grep -F "$INBOX_PATH" | grep -qF "tail"; then
+# Canonical form: absolute inbox path in process args (strip leading PID first).
+PS_ARGS=$(printf '%s\n' "$PS_OUTPUT" | awk '{$1=""; print}')
+if printf '%s\n' "$PS_ARGS" | grep -F "$INBOX_PATH" | grep -qF "tail"; then
     exit 0
 fi
 
-# Also accept the documented legacy relative-path form (tail -f .cloglog/inbox)
-# used by the setup/github-bot SKILLs for dedupe and crash-recovery flows.
-# Match only when .cloglog/inbox is preceded by whitespace (the relative form),
-# not by a slash (which would be an absolute path to a different inbox).
-if printf '%s\n' "$PS_OUTPUT" | grep -qE "tail[[:print:]]*[[:space:]]\.cloglog/inbox"; then
-    exit 0
+# Legacy form: relative .cloglog/inbox path (tail -f .cloglog/inbox), documented
+# in the setup/github-bot SKILLs for dedupe and crash-recovery flows.
+# On Linux, use /proc/<pid>/cwd to verify the process runs from the resolved
+# worktree or project root — prevents a relative-path tail in an unrelated
+# checkout from satisfying the check for the current agent's inbox.
+if [[ -d "/proc/1" ]]; then
+    while IFS= read -r line; do
+        pid=$(printf '%s' "$line" | awk '{print $1}')
+        [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        proc_cwd=$(readlink -f "/proc/$pid/cwd" 2>/dev/null) || continue
+        if [[ "$proc_cwd" == "$WORKTREE_ROOT" || "$proc_cwd" == "$PROJECT_ROOT" ]]; then
+            exit 0
+        fi
+    done < <(printf '%s\n' "$PS_OUTPUT" | grep -E "[[:space:]]tail[[:print:]]*[[:space:]]\.cloglog/inbox")
+else
+    # Non-Linux: /proc unavailable, accept any relative-form match.
+    if printf '%s\n' "$PS_ARGS" | grep -qE "tail[[:print:]]*[[:space:]]\.cloglog/inbox"; then
+        exit 0
+    fi
 fi
 
 INBOX_DIR=$(dirname "$INBOX_PATH")

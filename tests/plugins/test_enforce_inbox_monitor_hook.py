@@ -79,14 +79,22 @@ def _run_hook(
 
 
 def _make_fake_ps(output: str, tmp_path: Path) -> Path:
-    """Write a fake `ps` script that echoes controlled output, add to PATH."""
+    """Write a fake `ps` script that echoes controlled output, add to PATH.
+
+    The hook calls `ps -ww -eo pid=,args=`. This helper auto-prefixes each
+    non-empty output line with a high-numbered fake PID (99999) so callers
+    can keep passing the args-only strings they always used. The fake PID
+    will not have a /proc entry, so only the absolute-path code path triggers;
+    the legacy /proc-based cwd check will not fire for these fake processes.
+    """
+    prefixed = "\n".join(f"99999 {line}" if line.strip() else line for line in output.splitlines())
     bin_dir = tmp_path / "fakebin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     ps_script = bin_dir / "ps"
     ps_script.write_text(
         textwrap.dedent(f"""\
         #!/bin/bash
-        printf '%s\\n' {repr(output)}
+        printf '%s\\n' {repr(prefixed)}
         """)
     )
     ps_script.chmod(0o755)
@@ -282,16 +290,10 @@ def test_hook_passes_when_monitor_is_running_on_correct_path(tmp_path: Path) -> 
     assert result.stderr == "", "Hook must be silent (no stderr output) when monitor is confirmed."
 
 
-def test_hook_passes_when_monitor_uses_legacy_relative_path(tmp_path: Path) -> None:
-    """Legacy tail -f .cloglog/inbox (relative path) must be accepted.
-
-    The setup/github-bot SKILLs document this relative form as valid for dedupe
-    and crash-recovery flows. A session that still has this historical monitor
-    alive must not be hard-blocked on the next ``gh pr create``.
-    """
-    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+def _init_git_repo(path: Path) -> None:
+    subprocess.run(["git", "init", str(path)], check=True, capture_output=True)
     subprocess.run(
-        ["git", "-C", str(tmp_path), "commit", "--allow-empty", "-m", "init"],
+        ["git", "-C", str(path), "commit", "--allow-empty", "-m", "init"],
         check=True,
         capture_output=True,
         env={
@@ -303,22 +305,76 @@ def test_hook_passes_when_monitor_uses_legacy_relative_path(tmp_path: Path) -> N
         },
     )
 
-    # Legacy monitor: relative-path form as launched by older setup/crash-recovery flows
-    fake_ps_output = "tail -n 0 -F .cloglog/inbox\nbash other-process"
-    bin_dir = _make_fake_ps(fake_ps_output, tmp_path)
 
-    payload = _make_payload("gh pr create --base main", cwd=tmp_path, tool_response=FAKE_PR_URL)
-    result = _run_hook(
-        payload,
-        cwd=tmp_path,
-        env_extra={"PATH": f"{bin_dir}:{os.environ.get('PATH', '/usr/bin:/bin')}"},
+def test_hook_passes_when_monitor_uses_legacy_relative_path(tmp_path: Path) -> None:
+    """Legacy tail -f .cloglog/inbox (relative path, correct cwd) must be accepted.
+
+    The setup/github-bot SKILLs document this relative form as valid for dedupe
+    and crash-recovery flows. Uses a real tail process so /proc/<pid>/cwd resolves
+    to the worktree root and the hook can verify the monitor belongs to this checkout.
+    """
+    _init_git_repo(tmp_path)
+    inbox = tmp_path / ".cloglog" / "inbox"
+    inbox.parent.mkdir(exist_ok=True)
+    inbox.touch()
+
+    # Spawn a real tail process from the correct cwd (the worktree root)
+    proc = subprocess.Popen(
+        ["tail", "-n", "0", "-F", ".cloglog/inbox"],
+        cwd=str(tmp_path),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
-    assert result.returncode == 0, (
-        "Hook must accept the legacy relative-path monitor form "
-        "(tail -n 0 -F .cloglog/inbox). "
-        "Documented in setup/github-bot SKILLs as valid for dedupe/crash-recovery. "
-        f"stderr: {result.stderr!r}"
+    try:
+        payload = _make_payload("gh pr create --base main", cwd=tmp_path, tool_response=FAKE_PR_URL)
+        result = _run_hook(payload, cwd=tmp_path)  # real ps, real /proc
+        assert result.returncode == 0, (
+            "Hook must accept the legacy relative-path monitor form when the "
+            "tail process cwd matches the resolved worktree root. "
+            "Documented in setup/github-bot SKILLs as valid for dedupe/crash-recovery. "
+            f"stderr: {result.stderr!r}"
+        )
+    finally:
+        proc.terminate()
+        proc.wait()
+
+
+def test_hook_blocks_when_legacy_monitor_from_unrelated_checkout(tmp_path: Path) -> None:
+    """A relative-path tail from a DIFFERENT checkout must NOT satisfy the check.
+
+    Without the /proc cwd guard, a monitor from unrelated-checkout can silently
+    suppress the block for the current agent's inbox (codex session 4/5 finding).
+    """
+    _init_git_repo(tmp_path)
+    # Create .cloglog/inbox in the worktree so git resolution succeeds
+    inbox = tmp_path / ".cloglog" / "inbox"
+    inbox.parent.mkdir(exist_ok=True)
+    inbox.touch()
+
+    # Spawn tail from a DIFFERENT directory (simulates another checkout)
+    other_dir = tmp_path / "other_repo"
+    other_dir.mkdir()
+    other_inbox = other_dir / ".cloglog" / "inbox"
+    other_inbox.parent.mkdir()
+    other_inbox.touch()
+
+    proc = subprocess.Popen(
+        ["tail", "-n", "0", "-F", ".cloglog/inbox"],
+        cwd=str(other_dir),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
+    try:
+        payload = _make_payload("gh pr create --base main", cwd=tmp_path, tool_response=FAKE_PR_URL)
+        result = _run_hook(payload, cwd=tmp_path)  # real ps, real /proc
+        assert result.returncode == 2, (
+            "Hook must block when the only matching monitor is a relative-path "
+            "tail from a different checkout (cwd != WORKTREE_ROOT). "
+            f"stderr: {result.stderr!r}"
+        )
+    finally:
+        proc.terminate()
+        proc.wait()
 
 
 # ── worktree-vs-project-root inbox path resolution ───────────────────────

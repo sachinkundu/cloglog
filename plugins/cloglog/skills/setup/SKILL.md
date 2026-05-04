@@ -32,24 +32,26 @@ Save the returned `worktree_id` — you'll need it for agent operations.
 
 ### 2. Start inbox monitor (idempotent)
 
-The inbox file is at `<current working directory>/.cloglog/inbox`. **One inbox monitor per agent process, period.** Persistent monitors are session-local but are NOT auto-stopped on `/clear`, so a naive spawn on every `/cloglog setup` accumulates duplicate tails — every inbox event then fires N times.
+The inbox file is at `<current working directory>/.cloglog/inbox`. **One inbox monitor per agent process, period.** Persistent `tail` subprocesses survive `/clear` — after a session restart the prior tail is still running as an invisible orphan and `TaskList` returns empty because the new session's task registry is blank. Every naive spawn on `/cloglog setup` therefore accumulates a duplicate tail, and every inbox event fires N times where N is the number of setups run (T-419).
 
-Before spawning, reconcile against existing monitors:
+**Dedup at the process level, not the task level.** Run the dedup helper, which uses `ps` (host-wide) to find all existing tail processes watching this exact inbox path:
 
-1. Call `TaskList`.
-2. Filter for running Monitor tasks whose `command` ends in `.cloglog/inbox` and resolves to **this** project's inbox file. Match on path suffix (`/.cloglog/inbox`) and verify the resolved absolute path equals `<current working directory>/.cloglog/inbox` — historical monitors started with the relative path `tail -f .cloglog/inbox` (see the github-bot crash-recovery flow) must still be caught here, otherwise the dedupe is bypassed.
-3. Branch on the count of matches:
-   - **Exactly one** → reuse it. Tell the user: *"Reusing existing inbox monitor (task `<id>`)."* Do NOT spawn a new Monitor.
-   - **Zero** → spawn a fresh persistent monitor. **The inbox file may not exist yet** (the backend creates it on first webhook write), and `tail -f` against a missing file exits immediately — leaving the agent monitor-less. Wrap the tail so the file is materialised first:
-     ```
-     Monitor(
-       command: "mkdir -p <current working directory>/.cloglog && touch <current working directory>/.cloglog/inbox && tail -n 0 -F <current working directory>/.cloglog/inbox",
-       description: "Main agent inbox — messages from worktree agents",
-       persistent: true
-     )
-     ```
-     `-n 0` (start at end-of-file, only deliver events appended from now on) is the correct semantic for this codebase: the inbox is **append-only for the worktree's entire lifetime** (`src/gateway/webhook_consumers.py` always appends; `request_shutdown` is pinned by `tests/agent/test_unit.py` not to truncate). Re-delivering historical events would re-process already-handled `pr_merged`/`review_submitted` lines and crash `start_task` (see `src/agent/services.py:357-370` — only one active task per agent). To reconcile events that landed while the agent was offline, use the *Check PR Status* drill-down in `plugins/cloglog/skills/github-bot/SKILL.md`, not `tail` history. `-F` (capital) is a defence in depth — if the file is rotated or briefly removed, it re-opens by name instead of dying.
-   - **Two or more** → keep the oldest matching monitor (lowest creation time / first in `TaskList` ordering), `TaskStop` each of the others, and tell the user: *"Stopped N duplicate monitor(s); reusing task `<id>`."*
+```bash
+INBOX="<current working directory>/.cloglog/inbox"
+bash "${CLAUDE_PLUGIN_ROOT}/skills/setup/dedup-inbox-monitor.sh" "$INBOX"
+```
+
+The script always exits **2** — it kills every orphan/duplicate (including the `n ≥ 2` case where an older design would have kept one). Keeping a stale orphan tail leaves no Monitor task bound to the new session's task registry, so webhook events never arrive as notifications (T-419). Always spawn a fresh Monitor:
+
+**Spawn a fresh persistent monitor.** **The inbox file may not exist yet** (the backend creates it on first webhook write), and `tail -f` against a missing file exits immediately — leaving the agent monitor-less. Wrap the tail so the file is materialised first:
+  ```
+  Monitor(
+    command: "mkdir -p <current working directory>/.cloglog && touch <current working directory>/.cloglog/inbox && tail -n 0 -F <current working directory>/.cloglog/inbox",
+    description: "Main agent inbox — messages from worktree agents",
+    persistent: true
+  )
+  ```
+  `-n 0` (start at end-of-file, only deliver events appended from now on) is the correct semantic: the inbox is **append-only for the worktree's entire lifetime** (`src/gateway/webhook_consumers.py` always appends; `request_shutdown` is pinned by `tests/agent/test_unit.py` not to truncate). Re-delivering historical events would re-process already-handled `pr_merged`/`review_submitted` lines and crash `start_task` (see `src/agent/services.py:357-370` — only one active task per agent). To reconcile events that landed while the agent was offline, use the *Check PR Status* drill-down in `plugins/cloglog/skills/github-bot/SKILL.md`, not `tail` history. `-F` (capital) re-opens by name if the file is rotated or briefly removed.
 
 ### 3. Reconcile control events on crash recovery
 

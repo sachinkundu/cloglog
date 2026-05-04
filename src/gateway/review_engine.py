@@ -32,6 +32,7 @@ import shutil
 import tempfile
 import time
 from dataclasses import dataclass
+from dataclasses import replace as _dc_replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
@@ -2069,6 +2070,23 @@ class ReviewEngineConsumer:
                     prior_context = await registry.prior_findings_and_learnings(
                         pr_url=event.pr_url, stage="codex"
                     )
+                    # T-415: enrich prior findings with GitHub thread replies so
+                    # the next turn can see "won't fix / already fixed" responses.
+                    from src.gateway.review_thread_replies import (
+                        fetch_author_replies_for_findings,
+                    )
+                    from src.review.interfaces import PriorContext
+
+                    enriched_turns = []
+                    for turn in prior_context.turns:
+                        responses = await fetch_author_replies_for_findings(
+                            event.repo_full_name,
+                            event.pr_number,
+                            turn.findings,
+                            review_token,
+                        )
+                        enriched_turns.append(_dc_replace(turn, author_responses=responses))
+                    prior_context = PriorContext(pr_url=prior_context.pr_url, turns=enriched_turns)
                     loop_b = ReviewLoop(
                         CodexReviewer(project_root),
                         max_turns=settings.codex_max_turns,

@@ -52,12 +52,19 @@ class PriorTurnSummary:
     ``learnings`` is the optional ``learnings`` array from the same schema
     (empty list if codex didn't emit any). ``head_sha`` is included so the
     preamble can group findings by commit ("turn 1 on abc123 found …").
+
+    ``author_responses`` maps ``"file:line"`` to the latest non-bot reply on
+    the GitHub review-comment thread for that finding. ``None`` value means no
+    reply was found; absent key means the same. Populated by
+    ``src.gateway.review_thread_replies.enrich_prior_context`` after the
+    registry fetch; empty dict when running without a GitHub token (e.g. tests).
     """
 
     head_sha: str
     turn_number: int
     findings: list[dict[str, Any]] = field(default_factory=list)
     learnings: list[dict[str, Any]] = field(default_factory=list)
+    author_responses: dict[str, str | None] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

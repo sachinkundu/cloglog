@@ -282,6 +282,45 @@ def test_hook_passes_when_monitor_is_running_on_correct_path(tmp_path: Path) -> 
     assert result.stderr == "", "Hook must be silent (no stderr output) when monitor is confirmed."
 
 
+def test_hook_passes_when_monitor_uses_legacy_relative_path(tmp_path: Path) -> None:
+    """Legacy tail -f .cloglog/inbox (relative path) must be accepted.
+
+    The setup/github-bot SKILLs document this relative form as valid for dedupe
+    and crash-recovery flows. A session that still has this historical monitor
+    alive must not be hard-blocked on the next ``gh pr create``.
+    """
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "commit", "--allow-empty", "-m", "init"],
+        check=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        },
+    )
+
+    # Legacy monitor: relative-path form as launched by older setup/crash-recovery flows
+    fake_ps_output = "tail -n 0 -F .cloglog/inbox\nbash other-process"
+    bin_dir = _make_fake_ps(fake_ps_output, tmp_path)
+
+    payload = _make_payload("gh pr create --base main", cwd=tmp_path, tool_response=FAKE_PR_URL)
+    result = _run_hook(
+        payload,
+        cwd=tmp_path,
+        env_extra={"PATH": f"{bin_dir}:{os.environ.get('PATH', '/usr/bin:/bin')}"},
+    )
+    assert result.returncode == 0, (
+        "Hook must accept the legacy relative-path monitor form "
+        "(tail -n 0 -F .cloglog/inbox). "
+        "Documented in setup/github-bot SKILLs as valid for dedupe/crash-recovery. "
+        f"stderr: {result.stderr!r}"
+    )
+
+
 # ── worktree-vs-project-root inbox path resolution ───────────────────────
 
 

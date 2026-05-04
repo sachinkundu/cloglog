@@ -92,6 +92,14 @@ if printf '%s\n' "$PS_OUTPUT" | grep -F "$INBOX_PATH" | grep -qF "tail"; then
     exit 0
 fi
 
+# Also accept the documented legacy relative-path form (tail -f .cloglog/inbox)
+# used by the setup/github-bot SKILLs for dedupe and crash-recovery flows.
+# Match only when .cloglog/inbox is preceded by whitespace (the relative form),
+# not by a slash (which would be an absolute path to a different inbox).
+if printf '%s\n' "$PS_OUTPUT" | grep -qE "tail[[:print:]]*[[:space:]]\.cloglog/inbox"; then
+    exit 0
+fi
+
 INBOX_DIR=$(dirname "$INBOX_PATH")
 cat >&2 << MSG
 ⛔ PR created but no inbox monitor is running on:

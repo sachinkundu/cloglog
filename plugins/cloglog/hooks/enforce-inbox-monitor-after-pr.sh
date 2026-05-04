@@ -74,9 +74,11 @@ PROJECT_ROOT=$(dirname "$GIT_COMMON_DIR")
 if [[ "$WORKTREE_ROOT" == "$PROJECT_ROOT" ]]; then
     # Main checkout — inbox lives at the project root
     INBOX_PATH="${PROJECT_ROOT}/.cloglog/inbox"
+    EXPECTED_MONITOR_CWD="$PROJECT_ROOT"
 else
     # Inside a worktree — inbox lives at the worktree root
     INBOX_PATH="${WORKTREE_ROOT}/.cloglog/inbox"
+    EXPECTED_MONITOR_CWD="$WORKTREE_ROOT"
 fi
 
 # ── Detect running inbox monitor ──────────────────────────────────────────
@@ -104,7 +106,7 @@ if [[ -d "/proc/1" ]]; then
         pid=$(printf '%s' "$line" | awk '{print $1}')
         [[ "$pid" =~ ^[0-9]+$ ]] || continue
         proc_cwd=$(readlink -f "/proc/$pid/cwd" 2>/dev/null) || continue
-        if [[ "$proc_cwd" == "$WORKTREE_ROOT" || "$proc_cwd" == "$PROJECT_ROOT" ]]; then
+        if [[ "$proc_cwd" == "$EXPECTED_MONITOR_CWD" ]]; then
             exit 0
         fi
     done < <(printf '%s\n' "$PS_OUTPUT" | grep -E "[[:space:]]tail[[:print:]]*[[:space:]]\.cloglog/inbox")

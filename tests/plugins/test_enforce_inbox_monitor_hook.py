@@ -339,6 +339,52 @@ def test_hook_passes_when_monitor_uses_legacy_relative_path(tmp_path: Path) -> N
         proc.wait()
 
 
+def test_hook_blocks_when_legacy_monitor_from_main_checkout_in_worktree_session(
+    tmp_path: Path,
+) -> None:
+    """In a worktree session, a relative-path tail from the MAIN checkout must block.
+
+    The main checkout tails <project_root>/.cloglog/inbox, not the worktree inbox.
+    Accepting it would let a worktree agent skip arming its own inbox monitor because
+    the supervisor's legacy monitor happens to be running (codex session 5/5 finding).
+    """
+    main_repo = tmp_path / "main"
+    main_repo.mkdir()
+    _init_git_repo(main_repo)
+    wt_path = tmp_path / "wt-feature"
+    subprocess.run(
+        ["git", "-C", str(main_repo), "worktree", "add", str(wt_path), "-b", "wt-feature"],
+        check=True,
+        capture_output=True,
+    )
+    # Create inboxes for both main and worktree
+    for root in (main_repo, wt_path):
+        inbox = root / ".cloglog" / "inbox"
+        inbox.parent.mkdir(exist_ok=True)
+        inbox.touch()
+
+    # Legacy monitor running from the MAIN checkout root (supervisor monitor)
+    proc = subprocess.Popen(
+        ["tail", "-n", "0", "-F", ".cloglog/inbox"],
+        cwd=str(main_repo),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        # Hook runs from the WORKTREE — must not accept the main-checkout tail
+        payload = _make_payload("gh pr create --base main", cwd=wt_path, tool_response=FAKE_PR_URL)
+        result = _run_hook(payload, cwd=wt_path)
+        assert result.returncode == 2, (
+            "Hook must block when the only matching monitor is a relative-path "
+            "tail from the main checkout root. In a worktree session the expected "
+            "monitor cwd is the WORKTREE root, not PROJECT_ROOT. "
+            f"stderr: {result.stderr!r}"
+        )
+    finally:
+        proc.terminate()
+        proc.wait()
+
+
 def test_hook_blocks_when_legacy_monitor_from_unrelated_checkout(tmp_path: Path) -> None:
     """A relative-path tail from a DIFFERENT checkout must NOT satisfy the check.
 

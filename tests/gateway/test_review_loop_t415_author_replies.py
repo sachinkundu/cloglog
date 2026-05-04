@@ -303,6 +303,22 @@ class TestBuildEnrichedTurns:
         [turn] = _build_enriched_turns(ctx, [], [], _AUTHOR)
         assert turn.author_responses == {}
 
+    def test_review_count_mismatch_returns_none_not_misattributed(self) -> None:
+        """When review count > turn count on a SHA (db_error path dropped a turn),
+        position-based matching is unsafe — return None rather than misattribute."""
+        # SHA_1 has 2 codex reviews (turn 1 posted but findings not persisted,
+        # so only turn 2 is in PriorContext). Position would wrongly map turn 2
+        # to review 101 (turn 1's review). The fix: detect mismatch → None.
+        ctx = _make_context([{"file": "src/foo.py", "line": 10}], sha=_SHA_1, turn_number=2)
+        reviews = [_review(101, _SHA_1), _review(102, _SHA_1)]  # 2 reviews, 1 turn
+        comments = [
+            _root_comment(1, 101, "src/foo.py", 10),
+            _reply(2, 1, "reply to turn-1 thread — must NOT appear on turn-2"),
+            _root_comment(3, 102, "src/foo.py", 10),  # turn 2's real root, no reply
+        ]
+        [turn] = _build_enriched_turns(ctx, reviews, comments, _AUTHOR)
+        assert turn.author_responses == {}
+
     def test_original_line_fallback(self) -> None:
         """Comments on outdated commits use ``original_line`` instead of ``line``."""
         ctx = _make_context([{"file": "src/foo.py", "line": 10}])

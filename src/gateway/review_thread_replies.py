@@ -118,12 +118,24 @@ def _build_enriched_turns(
     for turn in prior_context.turns:
         turns_by_sha.setdefault(turn.head_sha, []).append(turn)
 
+    # Position-based matching is only safe when the review count equals the
+    # replayed-turn count for a SHA. When they differ it means a turn posted a
+    # GitHub review but its findings_json was never persisted (the db_error
+    # path in review_loop.py swallows DBAPIError after mark_posted). In that
+    # case enumerate() would assign the wrong review ID to every subsequent
+    # turn on that SHA. The proper fix is to store github_review_id on the
+    # pr_review_turns row; until that migration lands, return None for all
+    # turns on the mismatched SHA so we degrade to "(none)" rather than
+    # misattributing replies from an unrelated thread.
     turn_to_review_id: dict[tuple[str, int], int | None] = {}
     for sha, turns_on_sha in turns_by_sha.items():
         reviews_on_sha = codex_reviews_by_sha.get(sha, [])
-        for i, turn in enumerate(turns_on_sha):
-            rid = reviews_on_sha[i]["id"] if i < len(reviews_on_sha) else None
-            turn_to_review_id[(sha, turn.turn_number)] = rid
+        if len(reviews_on_sha) != len(turns_on_sha):
+            for turn in turns_on_sha:
+                turn_to_review_id[(sha, turn.turn_number)] = None
+        else:
+            for i, turn in enumerate(turns_on_sha):
+                turn_to_review_id[(sha, turn.turn_number)] = reviews_on_sha[i]["id"]
 
     # Index all PR comments.
     # Root comments: keyed by (review_id, path, line) → list of (comment_id, body).

@@ -30,8 +30,11 @@ hosts don't send the wrong project's key):
    else is rejected (no path traversal).
 
 3. **`~/.cloglog/credentials`** — a single `KEY=VALUE` file. This is the
-   legacy single-project location and is still consulted as the final
-   fallback. Hosts with one project keep working unchanged.
+   legacy single-project location and is consulted only when `.cloglog/config.yaml`
+   has **no** `project_id` set. Once `project_id` is present (i.e. after any
+   bootstrap), the runtime requires `~/.cloglog/credentials.d/<project_slug>` and
+   ignores this file — using it after bootstrap will fail at startup. Hosts
+   with one pre-bootstrap project keep working unchanged.
 
 Files in either location must be mode `0600`; anything looser earns a
 warning on stderr (the file is still read).

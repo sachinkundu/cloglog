@@ -295,6 +295,40 @@ def test_project_id_set_missing_per_project_file_blocks_legacy_fallback(tmp_path
     )
 
 
+def test_project_id_set_no_slug_derivable_blocks_legacy_fallback(tmp_path: Path) -> None:
+    """T-398 Guard 3 — slugless path: when project_id is set in config.yaml but
+    no slug-safe identifier can be derived (no `project:` field and the project
+    root basename contains non-slug chars), _api_key must return empty — NOT the
+    legacy global key.
+
+    This exercises the Guard 3 branch that sits OUTSIDE `if [[ -n "$slug" ]]`.
+    The existing test_project_id_set_missing_per_project_file_blocks_legacy_fallback
+    covers the slug-present case; this one covers the slugless bypass.
+    """
+    helpers = _render_launch_sh(tmp_path)
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+
+    # Project root basename contains a space — both `project:` (absent) and
+    # the basename fallback fail slug regex validation, so _project_slug returns empty.
+    project_root = tmp_path / "My Project"
+    project_root.mkdir()
+    (project_root / ".cloglog").mkdir()
+    (project_root / ".cloglog" / "config.yaml").write_text(
+        "project_id: slugless-uuid-1234\nbackend_url: http://127.0.0.1:8001\n"
+    )
+
+    _write_credfile(fake_home / ".cloglog" / "credentials", "WRONG-LEGACY-KEY")
+
+    resolved = _resolve_key(helpers, project_root, fake_home)
+    assert resolved == "", (
+        f"Expected empty (T-398 Guard 3 slugless — refuse legacy when project_id set "
+        f"but no slug derivable), got {resolved!r}. When project_id is set in "
+        "config.yaml, _api_key must refuse the legacy file even if no slug can "
+        "be derived from the project name or path."
+    )
+
+
 def test_skill_documents_per_project_resolution_order() -> None:
     """Text-level pin: SKILL.md `_api_key` block names the new resolution
     chain. Stops a future edit from silently reverting to the old global-only

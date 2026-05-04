@@ -115,14 +115,17 @@ export class UnusableProjectCredentialsError extends Error {
 export class ProjectIdSetMissingCredentialsError extends Error {
   constructor(
     public readonly projectId: string,
-    public readonly projectSlug: string,
+    public readonly projectSlug: string | null,
     public readonly expectedCredentialsPath: string,
   ) {
+    const slugNote = projectSlug
+      ? `per-project, slug=${projectSlug}`
+      : 'per-project — slug could not be derived from project name or path'
     super(
       [
         `cloglog-mcp: .cloglog/config.yaml sets project_id=${projectId} but no per-project credentials file was found.`,
         '',
-        `Expected: ${expectedCredentialsPath} (per-project, slug=${projectSlug})`,
+        `Expected: ${expectedCredentialsPath} (${slugNote})`,
         '',
         `When project_id is set, the legacy ~/.cloglog/credentials fallback is disabled`,
         `to prevent silently authenticating as the wrong project (T-398 hardening).`,
@@ -270,6 +273,15 @@ export function loadApiKey(opts: LoadApiKeyOptions = {}): string {
       throw new ProjectIdSetMissingCredentialsError(projectId, slug, projectCredentialsPath)
     }
     // project_id not set — legacy single-project host, fallback is safe.
+  } else {
+    // Guard 3 (T-398) — slugless path: project_id is set but no slug-safe
+    // identifier can be derived (e.g. project root path contains chars outside
+    // [A-Za-z0-9._-]). Even without a derivable slug, the presence of project_id
+    // makes the legacy global file unsafe — it may belong to a different project.
+    const projectId = resolveProjectId(projectRoot)
+    if (projectId) {
+      throw new ProjectIdSetMissingCredentialsError(projectId, null, '~/.cloglog/credentials.d/<slug>')
+    }
   }
 
   // 3. Legacy global. Same readKeyFile shape, but a present-but-broken

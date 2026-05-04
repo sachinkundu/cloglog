@@ -629,6 +629,23 @@ describe('Guard 3 — strict fallback when project_id is set (T-398)', () => {
     })
     expect(key).toBe('correct-key')
   })
+
+  it('throws ProjectIdSetMissingCredentialsError when project_id is set but no slug can be derived (slugless path)', () => {
+    // Reproduce a project whose root basename contains spaces, so both the
+    // `project:` field (absent) and the basename fallback fail slug validation.
+    // This exercises the Guard 3 branch that sits outside `if (slug)`.
+    const project = makeProject('My Project', null, 'slugless-uuid')
+    writeFileSync(legacyCredentialsPath, 'CLOGLOG_API_KEY=legacy-key\n')
+
+    expect(() =>
+      loadApiKey({
+        env: {},
+        credentialsPath: legacyCredentialsPath,
+        projectCredentialsDir,
+        projectRoot: project,
+      }),
+    ).toThrow(ProjectIdSetMissingCredentialsError)
+  })
 })
 
 describe('resolveProjectId', () => {

@@ -123,6 +123,17 @@ resolve_api_key() {
       return
     fi
   fi
+  # Guard 3 (T-398) — slugless path: project_id is set but no slug-safe
+  # identifier can be derived (e.g. project root contains non-slug chars).
+  # When slug was non-empty the guard ran inside the block above; this branch
+  # covers the case where slug derivation itself failed.
+  if [[ -z "$slug" ]] && [[ -n "$cfg" && -f "$cfg" ]] && grep -q '^project_id:' "$cfg"; then
+    local proj_id_ns
+    proj_id_ns=$(grep '^project_id:' "$cfg" | head -n1 | sed 's/^project_id:[[:space:]]*//')
+    echo "[$(date -Iseconds)] resolve_api_key: project_id=${proj_id_ns} set but no slug-safe identifier derivable; refusing legacy fallback (T-398)" \
+      >> /tmp/agent-shutdown-debug.log 2>&1 || true
+    return
+  fi
   # Per-project file is genuinely missing and no project_id is set —
   # legacy single-project host, fallback is safe.
   _resolve_api_key_read "${HOME}/.cloglog/credentials"

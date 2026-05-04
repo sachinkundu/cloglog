@@ -43,6 +43,7 @@ from src.gateway.review_skip_comments import SkipReason, post_skip_comment
 from src.gateway.webhook_consumers import emit_codex_review_timed_out
 from src.gateway.webhook_dispatcher import WebhookEvent, WebhookEventType
 from src.shared.config import settings
+from src.shared.log_event import log_event
 
 if TYPE_CHECKING:
     from src.agent.interfaces import IWorktreeQuery
@@ -1460,6 +1461,14 @@ class ReviewEngineConsumer:
                 event.pr_number,
                 event.repo_full_name,
             )
+            log_event(
+                logger,
+                "review.dispatch",
+                pr=f"{event.repo_full_name}#{event.pr_number}",
+                event=event.type,
+                action="skip",
+                reason="rate_limit",
+            )
             await self._notify_skip(event, SkipReason.RATE_LIMIT, comment_body)
             return
 
@@ -1634,6 +1643,9 @@ class ReviewEngineConsumer:
             ReviewLoop,
         )
 
+        # Stable correlation key for all review.* log lines for this PR+SHA.
+        _pr_key = f"{event.repo_full_name}#{event.pr_number}"
+
         # Claude bot token for reading diffs (has contents:read).
         claude_token = await get_github_app_token()
 
@@ -1642,6 +1654,7 @@ class ReviewEngineConsumer:
         # not suppress review of a newly-pushed commit B). Falls through to
         # the degraded path further down if empty.
         head_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
+        _sha_short = head_sha[:7] if head_sha else None
 
         # Per-PR session cap (spec §6.3, T-227): verdict-based with a backstop.
         # Skip further review when the latest codex review OF THE CURRENT head_sha
@@ -1696,6 +1709,15 @@ class ReviewEngineConsumer:
                     "PR #%d: latest bot review is an approval (:pass:) — skipping further review",
                     event.pr_number,
                 )
+                log_event(
+                    logger,
+                    "review.dispatch",
+                    pr=_pr_key,
+                    sha=_sha_short,
+                    event=event.type,
+                    action="skip",
+                    reason="approval",
+                )
                 return
             if skip and is_backstop:
                 logger.info(
@@ -1704,6 +1726,15 @@ class ReviewEngineConsumer:
                     event.pr_number,
                     prior,
                     MAX_REVIEWS_PER_PR,
+                )
+                log_event(
+                    logger,
+                    "review.dispatch",
+                    pr=_pr_key,
+                    sha=_sha_short,
+                    event=event.type,
+                    action="skip",
+                    reason="backstop",
                 )
                 await self._notify_skip(
                     event,
@@ -1720,6 +1751,15 @@ class ReviewEngineConsumer:
         filtered = filter_diff(diff)
         if not filtered.strip():
             logger.info("PR #%d has no reviewable files after filtering", event.pr_number)
+            log_event(
+                logger,
+                "review.dispatch",
+                pr=_pr_key,
+                sha=_sha_short,
+                event=event.type,
+                action="skip",
+                reason="no_reviewable_files",
+            )
             await self._notify_skip(
                 event,
                 SkipReason.NO_REVIEWABLE_FILES,
@@ -1735,6 +1775,15 @@ class ReviewEngineConsumer:
                 event.pr_number,
                 len(filtered),
                 MAX_DIFF_CHARS,
+            )
+            log_event(
+                logger,
+                "review.dispatch",
+                pr=_pr_key,
+                sha=_sha_short,
+                event=event.type,
+                action="skip",
+                reason="diff_too_large",
             )
             await self._notify_skip(
                 event,
@@ -1784,6 +1833,15 @@ class ReviewEngineConsumer:
                 event.repo_full_name,
                 event.pr_number,
             )
+            log_event(
+                logger,
+                "review.dispatch",
+                pr=_pr_key,
+                sha=_sha_short,
+                event=event.type,
+                action="skip",
+                reason="no_project",
+            )
             return
 
         # T-278 / T-281: resolve the PR's owning worktree per review, not
@@ -1823,6 +1881,17 @@ class ReviewEngineConsumer:
         # session ``prior + 1``. Both stages use the same counter so Stage A
         # and Stage B reviews are labelled consistently within a session.
         session_index = prior + 1
+
+        log_event(
+            logger,
+            "review.dispatch",
+            pr=_pr_key,
+            sha=_sha_short,
+            event=event.type,
+            action="enqueue",
+        )
+
+        _codex_consensus = False
 
         try:
             # ----- Stage A: opencode (gemma4:e4b) — up to opencode_max_turns -----
@@ -1919,6 +1988,7 @@ class ReviewEngineConsumer:
                         prior_context=prior_context,
                         pr_body=pr_body,
                     )
+                    _codex_consensus = getattr(outcome_b, "consensus_reached", False)
                     # T-374 (codex round 1 HIGH): finalize a codex timeout
                     # the same way the legacy ``_run_review_agent`` path
                     # does — probe codex/github liveness, format the
@@ -1969,6 +2039,13 @@ class ReviewEngineConsumer:
                 "review_session_end pr=%d repo=%s",
                 event.pr_number,
                 event.repo_full_name,
+            )
+            log_event(
+                logger,
+                "review.finalize",
+                pr=_pr_key,
+                sha=_sha_short,
+                outcome="consensus" if _codex_consensus else "exhausted",
             )
         finally:
             if review_root.is_temp and review_root.main_clone is not None:

@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
 
+from src.shared.log_event import log_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -75,6 +77,16 @@ class WebhookDispatcher:
             # Evict oldest entries — in practice duplicates arrive within seconds
             self._seen_delivery_ids = set(list(self._seen_delivery_ids)[self._max_seen // 2 :])
 
+        pr = event.pr_number if event.pr_number else None
+        log_event(
+            logger,
+            "webhook.received",
+            delivery=event.delivery_id,
+            event=event.type,
+            repo=event.repo_full_name,
+            pr=pr,
+        )
+
         for consumer in self._consumers:
             if consumer.handles(event):
                 asyncio.create_task(self._safe_handle(consumer, event))
@@ -82,7 +94,21 @@ class WebhookDispatcher:
     async def _safe_handle(self, consumer: WebhookConsumer, event: WebhookEvent) -> None:
         try:
             await consumer.handle(event)
+            log_event(
+                logger,
+                "webhook.dispatched",
+                delivery=event.delivery_id,
+                consumer=type(consumer).__name__,
+                result="ok",
+            )
         except Exception:
+            log_event(
+                logger,
+                "webhook.dispatched",
+                delivery=event.delivery_id,
+                consumer=type(consumer).__name__,
+                result="error",
+            )
             logger.exception(
                 "Consumer %s failed on event %s (delivery=%s)",
                 type(consumer).__name__,

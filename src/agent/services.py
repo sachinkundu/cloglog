@@ -18,6 +18,7 @@ from src.board.models import Task
 from src.board.repository import BoardRepository
 from src.shared.config import settings
 from src.shared.events import Event, EventType, event_bus
+from src.shared.log_event import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +184,14 @@ class AgentService:
                 project_id=project_id,
                 data={"worktree_id": str(worktree.id), "worktree_path": worktree_path},
             )
+        )
+
+        wt_name = worktree.branch_name or worktree_path.rsplit("/", 1)[-1]
+        log_event(
+            logger,
+            "agent.online",
+            wt=wt_name,
+            project=str(project_id),
         )
 
         return {
@@ -407,6 +416,14 @@ class AgentService:
                     "status": "in_progress",
                 },
             )
+        )
+
+        wt_name = worktree.branch_name or worktree.worktree_path.rsplit("/", 1)[-1]
+        log_event(
+            logger,
+            "agent.task_started",
+            wt=wt_name,
+            task=f"T-{task.number}",
         )
 
         return {"task_id": task_id, "status": "in_progress", "model": task.model}
@@ -742,6 +759,9 @@ class AgentService:
             )
         )
 
+        wt_name = worktree.branch_name or worktree.worktree_path.rsplit("/", 1)[-1]
+        log_event(logger, "agent.offline", wt=wt_name, reason="unregistered")
+
         await self._repo.delete_worktree(worktree_id)
 
     async def force_unregister(
@@ -880,6 +900,8 @@ class AgentService:
                         data=event_data,
                     )
                 )
+                wt_name = worktree.branch_name or worktree.worktree_path.rsplit("/", 1)[-1]
+                log_event(logger, "agent.offline", wt=wt_name, reason="heartbeat_timeout")
 
         return worktree_ids
 

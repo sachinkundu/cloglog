@@ -20,6 +20,18 @@ from starlette.responses import Response
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     import logging
 
+    # T-408: root stays WARNING (no sqlalchemy/asyncpg/uvicorn chatter); named
+    # domain loggers go to INFO so structured events are visible in prod logs.
+    logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(message)s")
+    for _domain_logger in (
+        "src.gateway.review_engine",
+        "src.gateway.review_loop",
+        "src.gateway.webhook_dispatcher",
+        "src.gateway.notification_listener",
+        "src.agent.services",
+    ):
+        logging.getLogger(_domain_logger).setLevel(logging.INFO)
+
     from src.gateway.notification_listener import run_notification_listener
     from src.gateway.review_engine import (
         ReviewEngineConsumer,

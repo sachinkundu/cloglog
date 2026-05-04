@@ -321,3 +321,117 @@ def test_cross_project_dedup_kills_only_target_inbox(tmp_path: Path) -> None:
             if _is_running(p.pid):
                 p.terminate()
             p.wait()
+
+
+# ── legacy relative-path form ─────────────────────────────────────────────
+
+
+def _spawn_legacy_tail(inbox: Path) -> subprocess.Popen:
+    """Spawn `tail -n 0 -F .cloglog/inbox` from the inbox's owning directory.
+
+    This is the legacy form documented in setup/github-bot SKILLs.  The cwd
+    is the project root (parent of .cloglog/), matching how the Monitor()
+    helper was historically invoked.
+    """
+    cwd = inbox.parent.parent  # .../project_root  (parent of .cloglog/)
+    return subprocess.Popen(
+        ["tail", "-n", "0", "-F", ".cloglog/inbox"],
+        cwd=str(cwd),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def test_legacy_relative_tail_is_detected_and_killed(tmp_path: Path) -> None:
+    """A surviving `tail -n 0 -F .cloglog/inbox` orphan from a prior session
+    must be detected and killed — not silently ignored.
+
+    Before the T-419 fix, the canonical-form awk pattern ($NF == abs_path)
+    did not match the relative-form process, so setup would take the '0 pids'
+    branch and spawn a duplicate tail alongside the orphan.
+    """
+    inbox = _make_inbox(tmp_path)
+    proc = _spawn_legacy_tail(inbox)
+    try:
+        time.sleep(0.1)
+        result = _run_dedup(inbox)
+
+        # Script must see the orphan (not take the zero-pids branch silently).
+        # Either it killed it (exit 2) or it counts it as the one live monitor (exit 0).
+        # Both are acceptable — what is NOT acceptable is exit 2 with the orphan still alive.
+        time.sleep(0.1)
+        if result.returncode == 2:
+            # Orphan-killed-spawn-fresh path — process must be dead.
+            assert not _is_running(proc.pid), (
+                f"Script exited 2 (spawn-fresh) but legacy tail PID {proc.pid} "
+                "is still alive. The legacy relative-path form was not detected."
+            )
+        else:
+            # exit 0: script kept the orphan as the one live monitor — also valid.
+            assert result.returncode == 0, (
+                f"Unexpected exit code {result.returncode} from dedup script. "
+                f"stderr: {result.stderr!r}"
+            )
+    finally:
+        if _is_running(proc.pid):
+            proc.terminate()
+        proc.wait()
+
+
+def test_legacy_form_from_different_cwd_is_not_matched(tmp_path: Path) -> None:
+    """A `tail .cloglog/inbox` started from a DIFFERENT project root must NOT
+    be treated as this project's monitor.
+
+    Without the /proc/<pid>/cwd guard, a legacy tail from an unrelated checkout
+    would satisfy the check for any project whose inbox dedup runs on the same host.
+    """
+    # Project A: the project we're deduping against
+    inbox_a = _make_inbox(tmp_path / "project_a")
+    # Project B: an unrelated checkout that happens to also run a legacy tail
+    inbox_b = _make_inbox(tmp_path / "project_b")
+
+    # Spawn a legacy tail from project_b's root
+    proc_b_legacy = _spawn_legacy_tail(inbox_b)
+    try:
+        time.sleep(0.1)
+
+        # Dedup against project_a — project_b's legacy tail must be untouched
+        _run_dedup(inbox_a)
+
+        time.sleep(0.1)
+        assert _is_running(proc_b_legacy.pid), (
+            f"Dedup against project_a killed a legacy tail (PID {proc_b_legacy.pid}) "
+            "that belongs to project_b. The /proc cwd guard must prevent this."
+        )
+    finally:
+        if _is_running(proc_b_legacy.pid):
+            proc_b_legacy.terminate()
+        proc_b_legacy.wait()
+
+
+def test_legacy_and_canonical_mixed_deduplicates_to_one(tmp_path: Path) -> None:
+    """One canonical tail + one legacy tail on the same inbox → dedup reduces to one."""
+    inbox = _make_inbox(tmp_path)
+    proc_canonical = _spawn_tail(inbox)  # absolute-path form
+    proc_legacy = _spawn_legacy_tail(inbox)  # relative-path form
+    try:
+        time.sleep(0.2)
+
+        _run_dedup(inbox)
+
+        time.sleep(0.1)
+        # Must end up with exactly one tail alive (either canonical or legacy),
+        # not two.
+        canonical_alive = _is_running(proc_canonical.pid)
+        legacy_alive = _is_running(proc_legacy.pid)
+        alive_count = sum([canonical_alive, legacy_alive])
+        assert alive_count <= 1, (
+            f"Dedup of mixed canonical+legacy tails left {alive_count} processes alive "
+            f"(canonical={canonical_alive}, legacy={legacy_alive}). "
+            "Expected exactly 0 or 1."
+        )
+    finally:
+        for p in (proc_canonical, proc_legacy):
+            if _is_running(p.pid):
+                p.terminate()
+            p.wait()

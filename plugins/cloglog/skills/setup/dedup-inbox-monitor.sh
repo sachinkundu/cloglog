@@ -13,24 +13,88 @@
 #   0  — exactly one tail monitor remains; caller must NOT spawn a new Monitor.
 #   2  — no live monitor (any orphan was killed); caller must spawn a fresh Monitor.
 #
-# Cross-project safety: the pattern anchors on the full absolute inbox path so
-# monitors belonging to other projects on the same host are not touched.
+# Two monitor forms are detected (mirrors enforce-inbox-monitor-after-pr.sh):
+#   Canonical: tail -n 0 -F <absolute_inbox_path>  — matched via $NF == inbox
+#   Legacy:    tail -n 0 -F .cloglog/inbox          — matched via /proc/<pid>/cwd
+#
+# Cross-project safety:
+#   Canonical form: `$NF == inbox` is exact string equality, so other projects'
+#     inbox paths never match.
+#   Legacy form: /proc/<pid>/cwd must equal the inbox owner directory
+#     (dirname dirname inbox), so a legacy tail from an unrelated checkout is
+#     not treated as this project's monitor.
 
 set -euo pipefail
 
 INBOX="${1:?usage: dedup-inbox-monitor.sh <inbox_absolute_path>}"
 
-# ── collect PIDs watching exactly this inbox ──────────────────────────────
-# Field 2 ($2) is the command name.  We require it to be "tail" or end with
-# "/tail" so that wrapper bash processes whose command line happens to contain
-# the word "tail" (e.g. the inbox path itself contains "tails") are not
-# mistakenly matched.  `$NF == inbox` anchors the last argument exactly to
-# this inbox path — no suffix, no other project's path.
-mapfile -t pids < <(
-  ps -ww -eo pid=,args= 2>/dev/null \
-    | awk -v inbox="$INBOX" '$2 ~ /\/tail$|^tail$/ && $NF == inbox {print $1}' \
-  || true
-)
+# The owning directory for a legacy-form cwd check: parent of .cloglog/.
+# e.g. /home/user/cloglog/.cloglog/inbox  →  /home/user/cloglog
+EXPECTED_CWD="$(dirname "$(dirname "$INBOX")")"
+
+# ── helper: collect all candidate tail PIDs ───────────────────────────────
+_collect_pids() {
+  local -a found=()
+
+  # 1. Canonical form: `tail ... <absolute-inbox-path>` — last argv == inbox.
+  #    Field 2 must be "tail" or end with "/tail" to exclude bash wrappers
+  #    whose command line happens to contain the inbox path (e.g. the Claude
+  #    harness shell snapshot that spawned the Monitor).
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] && found+=("$pid")
+  done < <(
+    ps -ww -eo pid=,args= 2>/dev/null \
+      | awk -v inbox="$INBOX" '$2 ~ /\/tail$|^tail$/ && $NF == inbox {print $1}' \
+    || true
+  )
+
+  # 2. Legacy form: `tail ... .cloglog/inbox` (relative path).
+  #    The setup and github-bot SKILLs document this as a supported form for
+  #    dedupe and crash-recovery flows; the enforce-inbox-monitor hook already
+  #    handles it via /proc/<pid>/cwd and we must too or we'll miss orphans
+  #    from prior sessions that used the relative form (T-419 codex finding).
+  if [[ -d "/proc/1" ]]; then
+    while IFS= read -r line; do
+      local pid
+      pid=$(printf '%s' "$line" | awk '{print $1}')
+      [[ "$pid" =~ ^[0-9]+$ ]] || continue
+      local proc_cwd
+      proc_cwd=$(readlink -f "/proc/$pid/cwd" 2>/dev/null) || continue
+      if [[ "$proc_cwd" == "$EXPECTED_CWD" ]]; then
+        found+=("$pid")
+      fi
+    done < <(
+      ps -ww -eo pid=,args= 2>/dev/null \
+        | grep -E '[[:space:]]tail[[:print:]]* \.cloglog/inbox$' \
+      || true
+    )
+  else
+    # Non-Linux (/proc unavailable): accept any relative-form tail whose cwd
+    # we cannot verify.  False positives are safe here — killing an orphan and
+    # respawning is always correct; failing to kill a duplicate is the bug.
+    while IFS= read -r line; do
+      local pid
+      pid=$(printf '%s' "$line" | awk '{print $1}')
+      [[ "$pid" =~ ^[0-9]+$ ]] && found+=("$pid")
+    done < <(
+      ps -ww -eo pid=,args= 2>/dev/null \
+        | grep -E '[[:space:]]tail[[:print:]]* \.cloglog/inbox$' \
+      || true
+    )
+  fi
+
+  # Deduplicate (a canonical + legacy match on the same PID is counted once).
+  local -A seen=()
+  for pid in "${found[@]}"; do
+    if [[ -z "${seen[$pid]+_}" ]]; then
+      seen[$pid]=1
+      printf '%s\n' "$pid"
+    fi
+  done
+}
+
+# ── collect all matching PIDs ─────────────────────────────────────────────
+mapfile -t pids < <(_collect_pids)
 
 n=${#pids[@]}
 

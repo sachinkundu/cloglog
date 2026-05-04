@@ -87,11 +87,15 @@ class AgentNotifierConsumer:
                 await self._mark_pr_merged(event.pr_url, session)
 
             # Update pr_head_sha on the task so the board can project codex
-            # status without fetching from GitHub (T-409).
+            # status without fetching from GitHub (T-409). Scoped by project
+            # via repo_full_name so two projects sharing the same PR URL cannot
+            # overwrite each other's head SHA.
             if event.type in (WebhookEventType.PR_OPENED, WebhookEventType.PR_SYNCHRONIZE):
                 head_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
                 if head_sha:
-                    await self._update_pr_head_sha(event.pr_url, head_sha, session)
+                    await self._update_pr_head_sha(
+                        event.pr_url, head_sha, event.repo_full_name, session
+                    )
 
             if result is None:
                 # _resolve_agent already logged the specific drop reason
@@ -236,12 +240,22 @@ class AgentNotifierConsumer:
             await repo.update_task(task.id, pr_merged=True)
             logger.info("Marked task %s pr_merged=True for %s", task.id, pr_url)
 
-    async def _update_pr_head_sha(self, pr_url: str, head_sha: str, session: AsyncSession) -> None:
-        """Store the current head SHA on the task for codex status projection (T-409)."""
+    async def _update_pr_head_sha(
+        self, pr_url: str, head_sha: str, repo_full_name: str, session: AsyncSession
+    ) -> None:
+        """Store the current head SHA on the task for codex status projection (T-409).
+
+        Scoped to the project that owns repo_full_name so two projects sharing
+        the same PR URL cannot overwrite each other's head SHA.
+        """
         from src.board.repository import BoardRepository
 
         repo = BoardRepository(session)
-        task = await repo.find_task_by_pr_url(pr_url)
+        project = await repo.find_project_by_repo(repo_full_name)
+        if project is None:
+            logger.debug("pr_head_sha update skipped: no project for repo %s", repo_full_name)
+            return
+        task = await repo.find_task_by_pr_url_for_project(pr_url, project.id)
         if task is not None:
             await repo.update_task(task.id, pr_head_sha=head_sha)
             logger.debug("Updated pr_head_sha=%s for task %s (%s)", head_sha[:7], task.id, pr_url)

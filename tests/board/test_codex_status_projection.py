@@ -184,6 +184,44 @@ async def test_failed_status(db_session: AsyncSession, project_id: UUID) -> None
     assert result.status == CodexStatus.FAILED
 
 
+async def test_failed_turn_then_retry_completed_shows_progress(
+    db_session: AsyncSession, project_id: UUID
+) -> None:
+    """Turn 1 timed_out, turn 2 completed no-consensus → PROGRESS not FAILED.
+
+    The review loop retries failed turns by inserting a higher turn_number.
+    FAILED should only reflect the *latest* turn's terminal state.
+    """
+    pr_url = "https://github.com/o/r/pull/8b"
+    sha = "ff" * 20
+    turns = [
+        PrReviewTurn(
+            project_id=project_id,
+            pr_url=pr_url,
+            pr_number=8,
+            head_sha=sha,
+            stage="codex",
+            turn_number=1,
+            status="timed_out",
+            consensus_reached=False,
+        ),
+        PrReviewTurn(
+            project_id=project_id,
+            pr_url=pr_url,
+            pr_number=8,
+            head_sha=sha,
+            stage="codex",
+            turn_number=2,
+            status="completed",
+            consensus_reached=False,
+        ),
+    ]
+    result = await _status(db_session, project_id, pr_url, sha, turns, max_turns=3)
+    assert result.status == CodexStatus.PROGRESS
+    assert result.progress is not None
+    assert result.progress.turn == 1
+
+
 async def test_progress_some_completed_not_max(db_session: AsyncSession, project_id: UUID) -> None:
     """N completed turns, no consensus, N < max_turns → PROGRESS with correct counts."""
     pr_url = "https://github.com/o/r/pull/8"

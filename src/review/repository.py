@@ -334,17 +334,19 @@ class ReviewTurnRepository:
         if any(t.status == PrReviewTurnStatus.RUNNING for t in current):
             return CodexStatusResult(status=CodexStatus.WORKING)
 
-        # Pass
+        # Pass: any completed turn with consensus is definitive regardless of turn order.
         if any(t.status == PrReviewTurnStatus.COMPLETED and t.consensus_reached for t in current):
             return CodexStatusResult(status=CodexStatus.PASS)
 
-        # Hard failure (timed_out or failed)
-        if any(
-            t.status in (PrReviewTurnStatus.TIMED_OUT, PrReviewTurnStatus.FAILED) for t in current
-        ):
+        # Determine terminal state from the latest turn (highest turn_number).
+        # The review loop retries failed turns by inserting a new turn with a
+        # higher turn_number, so an old timed_out/failed row does not make the
+        # whole SHA "failed" if a later turn succeeded or is still in progress.
+        latest = max(current, key=lambda t: t.turn_number)
+        if latest.status in (PrReviewTurnStatus.TIMED_OUT, PrReviewTurnStatus.FAILED):
             return CodexStatusResult(status=CodexStatus.FAILED)
 
-        # All completed, no consensus
+        # All completed, no consensus — count only the completed turns.
         completed = [t for t in current if t.status == PrReviewTurnStatus.COMPLETED]
         n = len(completed)
         if n >= max_turns:

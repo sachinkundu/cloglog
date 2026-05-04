@@ -622,6 +622,16 @@ class BoardRepository:
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def find_projects_by_repo(self, repo_full_name: str) -> list[Project]:
+        """Return all projects whose repo_url ends with repo_full_name.
+
+        Multiple cloglog projects can track the same GitHub repo, so unlike
+        find_project_by_repo this returns the full list.
+        """
+        stmt = select(Project).where(Project.repo_url.endswith(repo_full_name))
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
     # --- Search ---
 
     # Status groups for GitHub-style is: qualifiers

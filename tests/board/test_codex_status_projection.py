@@ -222,6 +222,32 @@ async def test_failed_turn_then_retry_completed_shows_progress(
     assert result.progress.turn == 1
 
 
+async def test_db_error_outcome_shows_failed(db_session: AsyncSession, project_id: UUID) -> None:
+    """A completed turn with outcome='db_error' must project as FAILED (T-407/T-409).
+
+    When record_findings_and_learnings raises DBAPIError, the loop stamps
+    outcome='db_error' on the completed row. The board badge should surface
+    this as FAILED, not PASS or PROGRESS.
+    """
+    pr_url = "https://github.com/o/r/pull/9db"
+    sha = "ab" * 20
+    turns = [
+        PrReviewTurn(
+            project_id=project_id,
+            pr_url=pr_url,
+            pr_number=9,
+            head_sha=sha,
+            stage="codex",
+            turn_number=1,
+            status="completed",
+            consensus_reached=True,
+            outcome="db_error",
+        ),
+    ]
+    result = await _status(db_session, project_id, pr_url, sha, turns, max_turns=3)
+    assert result.status == CodexStatus.FAILED
+
+
 async def test_progress_some_completed_not_max(db_session: AsyncSession, project_id: UUID) -> None:
     """N completed turns, no consensus, N < max_turns → PROGRESS with correct counts."""
     pr_url = "https://github.com/o/r/pull/8"

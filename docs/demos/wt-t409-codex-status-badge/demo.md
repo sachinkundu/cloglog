@@ -1,7 +1,7 @@
 # Operators can now see a discriminated codex-review badge on each Kanban task card — working / N of M / pass / exhausted / stale — instead of just a binary reviewed boolean.
 
-*2026-05-04T07:48:15Z by Showboat 0.6.1*
-<!-- showboat-id: 7a8c6721-a524-454a-8eda-a54f89d3455b -->
+*2026-05-04T08:50:49Z by Showboat 0.6.1*
+<!-- showboat-id: 64f94fd7-76f9-497b-915f-316e25bcdb76 -->
 
 New CodexStatus enum in src/review/interfaces.py — seven states replace the old 'touched' boolean
 
@@ -135,5 +135,5 @@ grep -E "PR_OPENED|PR_SYNCHRONIZE|pr_head_sha" src/gateway/webhook_consumers.py 
                     await self._update_pr_head_sha(
     async def _update_pr_head_sha(
             logger.debug("pr_head_sha update skipped: no project for repo %s", repo_full_name)
-            await repo.update_task(task.id, pr_head_sha=head_sha)
+                await repo.update_task(task.id, pr_head_sha=head_sha)
 ```

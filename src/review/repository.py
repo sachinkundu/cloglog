@@ -365,8 +365,15 @@ class ReviewTurnRepository:
         if any(t.status == PrReviewTurnStatus.RUNNING for t in current):
             return CodexStatusResult(status=CodexStatus.WORKING)
 
-        # Pass: any completed turn with consensus is definitive regardless of turn order.
-        if any(t.status == PrReviewTurnStatus.COMPLETED and t.consensus_reached for t in current):
+        # Pass: any completed turn with consensus, unless persistence failed (db_error).
+        # A db_error outcome means findings were not persisted despite apparent consensus —
+        # treat it as FAILED rather than PASS so the board surfaces the error state (T-407).
+        if any(
+            t.status == PrReviewTurnStatus.COMPLETED
+            and t.consensus_reached
+            and getattr(t, "outcome", None) != "db_error"
+            for t in current
+        ):
             return CodexStatusResult(status=CodexStatus.PASS)
 
         # Determine terminal state from the latest turn (highest turn_number).
@@ -375,6 +382,11 @@ class ReviewTurnRepository:
         # whole SHA "failed" if a later turn succeeded or is still in progress.
         latest = max(current, key=lambda t: t.turn_number)
         if latest.status in (PrReviewTurnStatus.TIMED_OUT, PrReviewTurnStatus.FAILED):
+            return CodexStatusResult(status=CodexStatus.FAILED)
+
+        # A completed turn with outcome='db_error' means findings persistence
+        # failed (T-407). Surface as FAILED so the badge shows the error state.
+        if getattr(latest, "outcome", None) == "db_error":
             return CodexStatusResult(status=CodexStatus.FAILED)
 
         # All completed, no consensus — count only the completed turns.

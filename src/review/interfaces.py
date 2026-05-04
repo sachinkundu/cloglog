@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 from uuid import UUID
 
 
@@ -87,6 +87,17 @@ class PriorContext:
         """Number of completed codex turns on this PR. Used to enforce the
         5-turn lifetime cap."""
         return len(self.turns)
+
+
+MAX_REVIEWS_PER_PR: Final[int] = 5
+"""Lifetime cap on bot codex review *sessions* per PR (T-227 / T-376).
+
+Counts distinct ``session_index`` values over rows where ``posted_at IS NOT
+NULL`` for ``stage='codex'``. Lives on the Review interface so both the
+Gateway review loop (which enforces the cap) and the Board projection
+(which renders the EXHAUSTED badge — T-424) can reference one source of
+truth without Board importing from Gateway.
+"""
 
 
 class CodexStatus(StrEnum):
@@ -336,6 +347,7 @@ class IReviewTurnRegistry(Protocol):
         project_id: UUID,
         pr_url_to_head_sha: dict[str, str],
         max_turns: int,
+        max_pr_sessions: int,
     ) -> dict[str, CodexStatusResult]:
         """Derive a discriminated codex status for each PR in ``pr_url_to_head_sha``.
 
@@ -354,8 +366,15 @@ class IReviewTurnRegistry(Protocol):
                             ``status='running'``.
         - ``PASS``        — latest terminal turn for ``head_sha`` has
                             ``consensus_reached=True``.
-        - ``EXHAUSTED``   — all turns for ``head_sha`` are completed,
-                            ``consensus_reached=False``, count ≥ max_turns.
+        - ``EXHAUSTED``   — all turns for ``head_sha`` are completed
+                            (``consensus_reached=False``) AND the PR-wide
+                            distinct posted ``session_index`` count is
+                            ≥ ``max_pr_sessions``. T-424 fix: previously
+                            keyed off the per-session ``max_turns``
+                            (``codex_max_turns``, default 1), which surfaced
+                            EXHAUSTED on the very first non-consensus turn
+                            even though ``MAX_REVIEWS_PER_PR=5`` further
+                            review sessions were still permitted.
         - ``FAILED``      — latest terminal turn for ``head_sha`` has
                             ``status IN ('timed_out', 'failed')``.
         - ``PROGRESS``    — some completed turns, no consensus, count < max_turns.

@@ -33,6 +33,7 @@ async def _status(
     head_sha: str,
     turns: list[PrReviewTurn],
     max_turns: int = 1,
+    max_pr_sessions: int = 5,
 ) -> CodexStatusResult:
     for turn in turns:
         session.add(turn)
@@ -43,6 +44,7 @@ async def _status(
         project_id=project_id,
         pr_url_to_head_sha={pr_url: head_sha},
         max_turns=max_turns,
+        max_pr_sessions=max_pr_sessions,
     )
     return result[pr_url]
 
@@ -122,10 +124,21 @@ async def test_pass_consensus(db_session: AsyncSession, project_id: UUID) -> Non
     assert result.progress is None
 
 
-async def test_exhausted_max_turns_no_consensus(db_session: AsyncSession, project_id: UUID) -> None:
-    """N completed turns, no consensus, N >= max_turns → EXHAUSTED."""
+async def test_exhausted_pr_wide_session_cap_no_consensus(
+    db_session: AsyncSession, project_id: UUID
+) -> None:
+    """T-424: EXHAUSTED iff distinct posted ``session_index`` for the PR
+    reaches ``max_pr_sessions`` AND latest SHA's turns are completed
+    without consensus.
+
+    Mirrors the live state when ``MAX_REVIEWS_PER_PR=5`` posted codex
+    sessions all closed without consensus on the current head_sha.
+    """
+    from datetime import UTC, datetime
+
     pr_url = "https://github.com/o/r/pull/5"
     sha = "d" * 40
+    posted = datetime.now(UTC)
     turns = [
         PrReviewTurn(
             project_id=project_id,
@@ -136,12 +149,84 @@ async def test_exhausted_max_turns_no_consensus(db_session: AsyncSession, projec
             turn_number=i,
             status="completed",
             consensus_reached=False,
+            session_index=i,
+            posted_at=posted,
         )
-        for i in range(1, 4)  # 3 turns
+        for i in range(1, 6)  # 5 distinct posted sessions
     ]
-    result = await _status(db_session, project_id, pr_url, sha, turns, max_turns=3)
+    result = await _status(
+        db_session, project_id, pr_url, sha, turns, max_turns=1, max_pr_sessions=5
+    )
     assert result.status == CodexStatus.EXHAUSTED
     assert result.progress is None
+
+
+async def test_progress_when_pr_session_cap_not_yet_reached(
+    db_session: AsyncSession, project_id: UUID
+) -> None:
+    """T-424 regression pin: a single completed non-consensus turn must NOT
+    surface EXHAUSTED while the PR-wide cap (``MAX_REVIEWS_PER_PR=5``) has
+    room for more review sessions.
+
+    Pre-fix the predicate keyed off the per-session ``codex_max_turns``
+    (default 1) and flipped EXHAUSTED on the first non-consensus turn even
+    though four more sessions were still permitted on later pushes.
+    """
+    from datetime import UTC, datetime
+
+    pr_url = "https://github.com/o/r/pull/424"
+    sha = "4a" * 20
+    turns = [
+        PrReviewTurn(
+            project_id=project_id,
+            pr_url=pr_url,
+            pr_number=424,
+            head_sha=sha,
+            stage="codex",
+            turn_number=1,
+            status="completed",
+            consensus_reached=False,
+            session_index=1,
+            posted_at=datetime.now(UTC),
+        ),
+    ]
+    result = await _status(
+        db_session, project_id, pr_url, sha, turns, max_turns=1, max_pr_sessions=5
+    )
+    assert result.status == CodexStatus.PROGRESS
+    assert result.progress is not None
+    assert result.progress.turn == 1
+
+
+async def test_progress_no_session_index_does_not_count_toward_exhausted(
+    db_session: AsyncSession, project_id: UUID
+) -> None:
+    """Pre-T-375 rows (``session_index IS NULL``) are not counted toward the
+    PR-wide cap — they predate the cross-session counter.
+
+    Mirrors ``count_posted_codex_sessions`` semantics in repository.py.
+    """
+    pr_url = "https://github.com/o/r/pull/424null"
+    sha = "5b" * 20
+    turns = [
+        PrReviewTurn(
+            project_id=project_id,
+            pr_url=pr_url,
+            pr_number=4240,
+            head_sha=sha,
+            stage="codex",
+            turn_number=i,
+            status="completed",
+            consensus_reached=False,
+            session_index=None,
+            posted_at=None,
+        )
+        for i in range(1, 8)  # 7 turns (distinct turn_number), none with session_index
+    ]
+    result = await _status(
+        db_session, project_id, pr_url, sha, turns, max_turns=1, max_pr_sessions=5
+    )
+    assert result.status == CodexStatus.PROGRESS
 
 
 async def test_failed_timed_out(db_session: AsyncSession, project_id: UUID) -> None:
@@ -336,11 +421,13 @@ async def test_cross_project_isolation(db_session: AsyncSession) -> None:
         project_id=project_a,
         pr_url_to_head_sha={pr_url: sha},
         max_turns=1,
+        max_pr_sessions=5,
     )
     result_b = await repo.codex_status_by_pr(
         project_id=project_b,
         pr_url_to_head_sha={pr_url: sha},
         max_turns=1,
+        max_pr_sessions=5,
     )
     assert result_a[pr_url].status == CodexStatus.PASS
     assert result_b[pr_url].status == CodexStatus.NOT_STARTED
@@ -353,6 +440,7 @@ async def test_empty_input_returns_empty(db_session: AsyncSession) -> None:
         project_id=uuid4(),
         pr_url_to_head_sha={},
         max_turns=1,
+        max_pr_sessions=5,
     )
     assert result == {}
 

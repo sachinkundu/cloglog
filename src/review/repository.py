@@ -317,6 +317,7 @@ class ReviewTurnRepository:
         project_id: UUID,
         pr_url_to_head_sha: dict[str, str],
         max_turns: int,
+        max_pr_sessions: int,
     ) -> dict[str, CodexStatusResult]:
         if not pr_url_to_head_sha:
             return {}
@@ -341,7 +342,9 @@ class ReviewTurnRepository:
         result: dict[str, CodexStatusResult] = {}
         for pr_url, head_sha in pr_url_to_head_sha.items():
             all_turns = turns_by_pr[pr_url]
-            result[pr_url] = self._derive_codex_status(all_turns, head_sha, max_turns)
+            result[pr_url] = self._derive_codex_status(
+                all_turns, head_sha, max_turns, max_pr_sessions
+            )
         return result
 
     @staticmethod
@@ -349,6 +352,7 @@ class ReviewTurnRepository:
         all_turns: list[PrReviewTurn],
         head_sha: str,
         max_turns: int,
+        max_pr_sessions: int,
     ) -> CodexStatusResult:
         if not head_sha:
             return CodexStatusResult(status=CodexStatus.NOT_STARTED)
@@ -389,13 +393,26 @@ class ReviewTurnRepository:
         if getattr(latest, "outcome", None) == "db_error":
             return CodexStatusResult(status=CodexStatus.FAILED)
 
-        # All completed, no consensus — count only the completed turns.
+        # All completed, no consensus — gate EXHAUSTED on the PR-wide session
+        # cap (``MAX_REVIEWS_PER_PR``), not the per-session ``max_turns``.
+        # T-424: the prior predicate ``len(completed) >= max_turns`` flipped
+        # EXHAUSTED on the very first non-consensus turn under the default
+        # ``codex_max_turns=1`` (T-367) even though up to MAX_REVIEWS_PER_PR
+        # additional review sessions were still permitted on later pushes.
+        # The badge now matches the actual review-loop cap enforced by
+        # ``_should_skip_for_cap``.
         completed = [t for t in current if t.status == PrReviewTurnStatus.COMPLETED]
         n = len(completed)
-        if n >= max_turns:
+        posted_sessions = len(
+            {
+                t.session_index
+                for t in all_turns
+                if t.session_index is not None and t.posted_at is not None
+            }
+        )
+        if posted_sessions >= max_pr_sessions:
             return CodexStatusResult(status=CodexStatus.EXHAUSTED)
 
-        # n < max_turns — still making progress
         return CodexStatusResult(
             status=CodexStatus.PROGRESS,
             progress=CodexProgress(turn=n, max_turns=max_turns, sha=head_sha),

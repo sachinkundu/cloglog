@@ -63,6 +63,11 @@ class TestBoardReviewContextBoundary:
         assert "project_id" in params, "codex_status_by_pr must accept project_id"
         assert "pr_url_to_head_sha" in params, "codex_status_by_pr must accept pr_url_to_head_sha"
         assert "max_turns" in params, "codex_status_by_pr must accept max_turns"
+        assert "max_pr_sessions" in params, (
+            "codex_status_by_pr must accept max_pr_sessions (T-424) — gates "
+            "EXHAUSTED on the PR-wide ``MAX_REVIEWS_PER_PR`` cap rather than "
+            "the per-session ``codex_max_turns``."
+        )
 
     def test_codex_status_enum_exported_from_interfaces(self) -> None:
         """CodexStatus must be importable from src.review.interfaces (not models)."""

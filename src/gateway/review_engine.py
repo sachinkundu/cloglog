@@ -42,6 +42,7 @@ from pydantic import BaseModel, Field, field_validator
 from src.gateway.review_skip_comments import SkipReason, post_skip_comment
 from src.gateway.webhook_consumers import emit_codex_review_timed_out
 from src.gateway.webhook_dispatcher import WebhookEvent, WebhookEventType
+from src.review.interfaces import MAX_REVIEWS_PER_PR
 from src.shared.config import settings
 from src.shared.log_event import log_event
 
@@ -84,14 +85,12 @@ RATE_LIMIT_WINDOW_SECONDS: Final = 3600.0
 RATE_LIMIT_RETRY_BUFFER_SECONDS: Final = 1.0
 REVIEW_POST_RETRY_DELAY_SECONDS: Final = 5.0
 REVIEW_REQUEST_TIMEOUT_SECONDS: Final = 30.0
-# Backstop cap on bot review sessions per PR (T-227). The primary stop
-# condition is verdict-based: skip further review when the latest codex
-# review emitted ``:pass:`` (verdict="approve") in its body — the bot is
-# satisfied, the author has the signal. This cap is a secondary safety net
-# so a coder/reviewer that never converges bails out instead of looping
-# forever. 5 is chosen to give larger PRs room for a few rounds while still
-# bounded; raise it only if a real PR hits the backstop without convergence.
-MAX_REVIEWS_PER_PR: Final = 5
+# ``MAX_REVIEWS_PER_PR`` lives in ``src.review.interfaces`` so the Board
+# projection (T-424 EXHAUSTED gating) reads the same constant without
+# importing from Gateway. Imported above and re-exported here for back-compat
+# with existing call sites (``MAX_REVIEWS_PER_PR`` is used throughout this
+# module and referenced by tests via ``from src.gateway.review_engine import
+# MAX_REVIEWS_PER_PR``).
 # Prefix that ``_format_review_body`` emits when ``result.verdict == "approve"``
 # AND the review contains no ``critical``/``high`` findings (see the demotion
 # rule in ``_format_review_body``). The cap check reads the latest codex review's

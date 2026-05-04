@@ -1819,6 +1819,25 @@ class ReviewEngineConsumer:
                 _deg_pr_key = f"{event.repo_full_name}#{event.pr_number}"
                 _deg_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
                 _deg_sha_short = _deg_sha[:7] or None
+                # Check unconfigured_repo BEFORE emitting enqueue so that a
+                # refused PR never shows action=enqueue alongside action=skip.
+                if settings.review_repo_roots:
+                    _deg_entry = settings.review_repo_roots.get(event.repo_full_name)
+                    if _deg_entry is None or _git_common_dir(Path(_deg_entry)) is None:
+                        log_event(
+                            logger,
+                            "review.dispatch",
+                            pr=_deg_pr_key,
+                            sha=_deg_sha_short,
+                            event=event.type,
+                            action="skip",
+                            reason="unconfigured_repo",
+                        )
+                        # _run_review_agent will also refuse and post the skip
+                        # comment; fall through so the user sees the comment.
+                        _skip_token = await get_codex_reviewer_token()
+                        await self._run_review_agent(filtered, event, _skip_token)
+                        return
                 log_event(
                     logger,
                     "review.dispatch",
@@ -1837,10 +1856,10 @@ class ReviewEngineConsumer:
                 )
                 _deg_t0 = time.monotonic()
                 review_token = await get_codex_reviewer_token()
-                result = await self._run_review_agent(filtered, event, review_token)
+                result, timed_out = await self._run_review_agent(filtered, event, review_token)
                 _deg_elapsed = time.monotonic() - _deg_t0
                 if result is not None:
-                    await post_review(
+                    posted = await post_review(
                         event.repo_full_name,
                         event.pr_number,
                         result,
@@ -1848,30 +1867,49 @@ class ReviewEngineConsumer:
                         review_token,
                         head_sha=head_sha,
                     )
-                    log_event(
-                        logger,
-                        "review.codex",
-                        pr=_deg_pr_key,
-                        sha=_deg_sha_short,
-                        turn=1,
-                        phase="finish",
-                        duration_s=f"{_deg_elapsed:.1f}",
-                    )
-                    log_event(
-                        logger,
-                        "review.finalize",
-                        pr=_deg_pr_key,
-                        sha=_deg_sha_short,
-                        outcome="consensus",
-                    )
+                    if posted:
+                        log_event(
+                            logger,
+                            "review.codex",
+                            pr=_deg_pr_key,
+                            sha=_deg_sha_short,
+                            turn=1,
+                            phase="finish",
+                            duration_s=f"{_deg_elapsed:.1f}",
+                        )
+                        log_event(
+                            logger,
+                            "review.finalize",
+                            pr=_deg_pr_key,
+                            sha=_deg_sha_short,
+                            outcome="consensus",
+                        )
+                    else:
+                        log_event(
+                            logger,
+                            "review.codex",
+                            pr=_deg_pr_key,
+                            sha=_deg_sha_short,
+                            turn=1,
+                            phase="interrupted",
+                            duration_s=f"{_deg_elapsed:.1f}",
+                        )
+                        log_event(
+                            logger,
+                            "review.finalize",
+                            pr=_deg_pr_key,
+                            sha=_deg_sha_short,
+                            outcome="exhausted",
+                        )
                 else:
+                    _deg_phase = "timeout" if timed_out else "interrupted"
                     log_event(
                         logger,
                         "review.codex",
                         pr=_deg_pr_key,
                         sha=_deg_sha_short,
                         turn=1,
-                        phase="interrupted",
+                        phase=_deg_phase,
                         duration_s=f"{_deg_elapsed:.1f}",
                     )
                     log_event(
@@ -2171,8 +2209,11 @@ class ReviewEngineConsumer:
         diff: str,
         event: WebhookEvent,
         codex_token: str,
-    ) -> ReviewResult | None:
+    ) -> tuple[ReviewResult | None, bool]:
         """Launch ``codex exec`` with the project prompt and diff via stdin.
+
+        Returns ``(result, timed_out)``. ``result`` is ``None`` on skip/error;
+        ``timed_out`` is ``True`` only on a double-timeout AGENT_TIMEOUT path.
 
         On timeout: capture buffered stderr, run parallel health probes
         (``codex --version`` + ``GET api.github.com/zen``), emit a
@@ -2209,17 +2250,6 @@ class ReviewEngineConsumer:
                     "review_source_root (T-350)",
                     event.repo_full_name,
                 )
-                _deg_ref_key = f"{event.repo_full_name}#{event.pr_number}"
-                _deg_ref_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
-                log_event(
-                    logger,
-                    "review.dispatch",
-                    pr=_deg_ref_key,
-                    sha=_deg_ref_sha[:7] or None,
-                    event=event.type,
-                    action="skip",
-                    reason="unconfigured_repo",
-                )
                 await self._notify_skip(
                     event,
                     SkipReason.UNCONFIGURED_REPO,
@@ -2231,7 +2261,7 @@ class ReviewEngineConsumer:
                         f"the cloglog backend to enable reviews for this repo."
                     ),
                 )
-                return None
+                return None, False
             registry_path = Path(registry_entry)
             if _git_common_dir(registry_path) is None:
                 logger.warning(
@@ -2239,17 +2269,6 @@ class ReviewEngineConsumer:
                     "a usable git repo — refusing (T-350 round 5)",
                     event.repo_full_name,
                     registry_entry,
-                )
-                _deg_inv_key = f"{event.repo_full_name}#{event.pr_number}"
-                _deg_inv_sha = (event.raw.get("pull_request") or {}).get("head", {}).get("sha", "")
-                log_event(
-                    logger,
-                    "review.dispatch",
-                    pr=_deg_inv_key,
-                    sha=_deg_inv_sha[:7] or None,
-                    event=event.type,
-                    action="skip",
-                    reason="unconfigured_repo",
                 )
                 await self._notify_skip(
                     event,
@@ -2261,7 +2280,7 @@ class ReviewEngineConsumer:
                         f"Fix the configuration on the cloglog backend."
                     ),
                 )
-                return None
+                return None, False
             project_root = registry_path
         else:
             # Legacy single-repo path — `settings.review_source_root` must
@@ -2284,7 +2303,7 @@ class ReviewEngineConsumer:
             )
             last_outcome = outcome
             if outcome.result is not None:
-                return outcome.result
+                return outcome.result, False
             if outcome.timed_out:
                 if attempt == 1:
                     logger.info(
@@ -2326,17 +2345,17 @@ class ReviewEngineConsumer:
                     timeout_seconds,
                 )
                 await self._post_agent_skip(event, SkipReason.AGENT_TIMEOUT, body, codex_token)
-                return None
+                return None, True
             # Non-timeout failure: unparseable output.
             logger.warning("Review agent produced no parseable output for PR #%d", event.pr_number)
             body = _format_unparseable_body(outcome)
             await self._post_agent_skip(event, SkipReason.AGENT_UNPARSEABLE, body, codex_token)
-            return None
+            return None, False
 
         # Unreachable — retained as a defensive return.
         if last_outcome is not None and last_outcome.result is not None:
-            return last_outcome.result
-        return None
+            return last_outcome.result, False
+        return None, False
 
     async def _run_agent_once(
         self,

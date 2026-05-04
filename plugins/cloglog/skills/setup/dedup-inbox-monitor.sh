@@ -69,18 +69,13 @@ _collect_pids() {
       || true
     )
   else
-    # Non-Linux (/proc unavailable): accept any relative-form tail whose cwd
-    # we cannot verify.  False positives are safe here — killing an orphan and
-    # respawning is always correct; failing to kill a duplicate is the bug.
-    while IFS= read -r line; do
-      local pid
-      pid=$(printf '%s' "$line" | awk '{print $1}')
-      [[ "$pid" =~ ^[0-9]+$ ]] && found+=("$pid")
-    done < <(
-      ps -ww -eo pid=,args= 2>/dev/null \
-        | grep -E '[[:space:]]tail[[:print:]]* \.cloglog/inbox$' \
-      || true
-    )
+    # Non-Linux (/proc unavailable): cwd cannot be verified for relative-form
+    # monitors.  Accepting them unconditionally is cross-project unsafe — two
+    # cloglog checkouts on the same macOS host would each match the other's
+    # legacy tail and could kill a monitor that belongs to the other project.
+    # Emit a diagnostic and skip the legacy scan; the canonical-form scan
+    # (absolute path) is still cross-project safe and covers the common case.
+    echo "WARNING: /proc not available; skipping legacy relative-path monitor scan. Legacy 'tail .cloglog/inbox' orphans from prior sessions will not be detected on this host." >&2
   fi
 
   # Deduplicate (a canonical + legacy match on the same PID is counted once).

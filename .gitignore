@@ -21,6 +21,10 @@ CONTRACT.yaml
 .cloglog/inbox
 .cloglog/db-schema.sql
 .cloglog/launch.sh
+# T-428: per-worktree claude PID file written by launch.sh; consumed by
+# the exit-on-unregister PostToolUse hook to target the right process.
+# Runtime-only — never tracked.
+.cloglog/claude.pid
 # T-371: per-worktree state file written by mcp-server register_agent —
 # carries the agent_token so out-of-process tooling (the require-task-for-pr
 # hook) can hit /api/v1/agents/{worktree_id}/tasks. Sensitive; never tracked.

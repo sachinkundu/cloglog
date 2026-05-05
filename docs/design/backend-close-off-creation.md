@@ -49,6 +49,20 @@ that gets back `worktree_id` can immediately rely on the close-off row
 existing on the board. Failure to file the close-off row is **not**
 fatal to `register_agent` — see *Failure handling* below.
 
+**Role gate — `role='worktree'` only.** `register_agent` is also
+called by the supervisor's `/cloglog setup` from the main checkout
+(`plugins/cloglog/skills/setup/SKILL.md:25-31`); that registration
+gets `role='main'` because the path lacks the
+`/.claude/worktrees/` marker (`src/agent/services.py:34, 147`). The
+main checkout has no teardown semantics — close-wave only targets
+paths under `.claude/worktrees/`
+(`plugins/cloglog/skills/close-wave/SKILL.md:81-88`) — so filing a
+`Close worktree <main-clone-name>` card for it would create a
+permanent backlog ghost on every supervisor's `get_my_tasks`. The
+trigger therefore guards on `worktree.role == 'worktree'` and
+short-circuits for `role='main'`. The same gate applies to the
+backfill migration's source query.
+
 ## Idempotency
 
 The natural key is `close_off_worktree_id` — the FK from the close-off
@@ -123,13 +137,20 @@ API contract change:
    response schema, so `mcp__cloglog__get_board()` cannot expose it
    today (`src/board/routes.py:686-694`). Add it to both schemas as
    `Optional[UUID]`. This is additive — no consumer breaks.
-2. **Filter close-wave Step 1.5 by
-   `close_off_worktree_id == <expected worktree UUID>`** (not just
-   `IS NOT NULL`). Step 1.5 already knows the worktree's UUID
-   because it iterates `wt-name → worktree_id` from the active set.
-   Keying on the FK directly disambiguates without depending on
-   title equality at all — the title check becomes a defensive sanity
-   assertion, not the load-bearing predicate.
+2. **Move close-wave's worktree inventory to Step 1, then filter
+   Step 1.5 by `close_off_worktree_id == <expected worktree UUID>`**
+   (not just `IS NOT NULL`). Today close-wave Step 1 discovers
+   worktree *names* from `git worktree list`
+   (`plugins/cloglog/skills/close-wave/SKILL.md:81-88`) and only
+   fetches `worktree_id` later in Step 5a (line 129-137). The new
+   FK-based predicate runs in Step 1.5, which is between those — so
+   T-434 must lift the inventory call earlier. Mirror reconcile's
+   pattern (`plugins/cloglog/skills/reconcile/SKILL.md:48-67`): call
+   `mcp__cloglog__list_worktrees()` first, build the
+   `wt-name → worktree_id` map, then run the close-off lookup
+   keyed on `close_off_worktree_id == map[wt-name]`. Title equality
+   becomes a defensive sanity assertion, not the load-bearing
+   predicate.
 
 Reconcile (T-371 rule) gets the same FK-based predicate update so
 its close-wave-delegation component does not regress on the same
@@ -211,8 +232,12 @@ groups:
 
    **Decision:** ship a one-shot Alembic data migration in the same
    PR as the trigger. The migration scans `worktrees` rows filtered
-   to **`status = 'online'`**, matching the existing pattern in
+   to **`status = 'online' AND role = 'worktree'`**, matching the
+   existing pattern in
    `src/alembic/versions/c7d9e0f1a2b3_backfill_worktree_branch_names.py:67-72`.
+   The `role = 'worktree'` predicate excludes the supervisor's main
+   checkout from the backfill for the same reason the live trigger
+   excludes it (above).
 
    "Row exists" is **not** equivalent to "active": heartbeat
    timeouts set `status = 'offline'` without deleting
@@ -223,9 +248,35 @@ groups:
    crashed agents — exactly the "stale/closed worktrees get nothing"
    case the spec excludes.
 
-   For each `status='online'` row the migration **resolves the
-   main-agent worktree using the same role/env fallback the HTTP
-   route uses** (`src/agent/routes.py:357-378`: prefer
+   **Sync SQL, not the async service.** Alembic's `upgrade()` runs
+   under a synchronous `connection.run_sync(...)` context
+   (`src/alembic/env.py:35-53`) and the existing data-migration
+   pattern uses `op.get_bind()` plus plain SQL
+   (`c7d9e0f1a2b3_backfill_worktree_branch_names.py:65-105`).
+   `BoardService.create_close_off_task` is `async` end-to-end and
+   cannot be awaited from that context. The migration therefore
+   reproduces the row-creation logic in sync SQL: it inserts into
+   `tasks` with the close-off title, `close_off_worktree_id`,
+   `worktree_id` (the resolved main-agent UUID, or NULL), and the
+   auto-provisioned epic/feature lookups inlined as SQL — the same
+   shape `create_close_off_task` performs but without the async
+   wrapper. The function is small (~60 lines in `services.py`),
+   reproducing it as SQL is straightforward, and keeping the
+   migration self-contained avoids the cross-cutting "expose an
+   async runner inside Alembic" plumbing the spec deliberately
+   doesn't scope.
+
+   The alternative — moving the backfill out of Alembic into an
+   application-level maintenance command (`make backfill-close-off`
+   or a CLI subcommand under `cloglog admin`) where `AsyncSession`
+   is available — is acceptable but adds an operational step
+   ("don't forget to run the command after the migration"). T-433
+   picks one; the default is sync SQL inside Alembic for atomicity
+   with the schema change.
+
+   For each `status='online' AND role='worktree'` row the migration
+   **resolves the main-agent worktree using the same role/env
+   fallback the HTTP route uses** (`src/agent/routes.py:357-378`: prefer
    `AgentRepository.get_main_agent_worktree(project_id)`, fall back
    to the worktree at `settings.main_agent_inbox_path.parent.parent`,
    else `None`) before calling
@@ -403,5 +454,19 @@ The implementation PR (T-434) MUST add or verify these pin tests:
    defensive sanity check) so a re-registered worktree with a stale
    orphan card does not produce an ambiguous match. Reconcile's
    close-wave-delegation component gets the same predicate update.
-10. The migration filters source rows by `worktrees.status = 'online'`
-    so offline (heartbeat-timed-out) rows are NOT backfilled.
+10. The migration filters source rows by
+    `worktrees.status = 'online' AND worktrees.role = 'worktree'`
+    so offline (heartbeat-timed-out) rows AND `role='main'`
+    registrations are both excluded from the backfill.
+11. Calling `register_agent` from the main checkout (`role='main'`)
+    does NOT file a close-off card. Pinned at the trigger level so a
+    future refactor cannot regress the carve-out.
+12. Close-wave Step 1 calls `mcp__cloglog__list_worktrees()` before
+    the board lookup and builds `wt-name → worktree_id` so Step 1.5's
+    FK-based predicate has the UUID it needs. Reconcile's
+    close-wave-delegation component already does this; pin keeps
+    close-wave aligned.
+13. The Alembic migration uses sync SQL via `op.get_bind()`, not the
+    async `BoardService.create_close_off_task`. Pin guards against a
+    later refactor that tries to await async services from
+    `upgrade()`.

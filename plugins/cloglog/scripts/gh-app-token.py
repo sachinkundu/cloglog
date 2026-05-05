@@ -59,6 +59,25 @@ def _read_scalar(path: Path, key: str) -> str:
     return ""
 
 
+def _find_local_yaml(start: Path) -> Path | None:
+    """Walk ancestor directories until .cloglog/local.yaml is found.
+
+    Worktrees have .cloglog/config.yaml but .cloglog/local.yaml (the gitignored,
+    per-host credentials file) lives in the main checkout above the worktree
+    directory. Without walking, _resolve stops at the worktree root and returns
+    an empty APP_ID. T-438 fix #2.
+    """
+    cur = start
+    while True:
+        candidate = cur / ".cloglog" / "local.yaml"
+        if candidate.is_file():
+            return candidate
+        parent = cur.parent
+        if parent == cur:
+            return None
+        cur = parent
+
+
 def _resolve(key: str) -> str:
     env = os.environ.get(key, "").strip()
     if env:
@@ -67,11 +86,14 @@ def _resolve(key: str) -> str:
     if root is None:
         return ""
     yaml_key = key.lower()
-    for filename in ("local.yaml", "config.yaml"):
-        value = _read_scalar(root / ".cloglog" / filename, yaml_key)
+    # Walk ancestors: a worktree has .cloglog/config.yaml but local.yaml lives
+    # in the main checkout above the worktree directory tree.
+    local_yaml = _find_local_yaml(root)
+    if local_yaml:
+        value = _read_scalar(local_yaml, yaml_key)
         if value:
             return value
-    return ""
+    return _read_scalar(root / ".cloglog" / "config.yaml", yaml_key)
 
 
 APP_ID = _resolve("GH_APP_ID")

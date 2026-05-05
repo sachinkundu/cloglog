@@ -240,7 +240,42 @@ the spec is explicit on this precedence and the test locks it in.
 
 **Pin:** `tests/test_check_demo_exemption_hash.py`
 
+## Worktree / gitignore
+
+### `task.md` is gitignored at any depth; `task.md.template` is not
+
+The `.gitignore` rule `task.md` (bare, no leading slash) prevents worktree
+agents from accidentally staging the per-launch `task.md` rendered by the
+launch SKILL into each worktree root. The paired `!plugins/cloglog/templates/task.md.template`
+line keeps the canonical template tracked so the launch SKILL can render it.
+
+A future `.gitignore` edit that anchors the rule with a leading slash (making
+it apply only at the repo root) or drops it entirely would let an agent's
+`git add .` silently stage `task.md` from nested worktree directories —
+pushing task UUIDs and worktree state into a commit without any lint or test
+catching it before review.
+
+**Pin:** `tests/plugins/test_task_md_gitignore.py`
+
 ## SKILLs that touch GitHub
+
+### `gh pr merge --delete-branch` must be guarded in worktree context
+
+When the github-bot SKILL runs inside a git worktree, `gh pr merge
+--squash --delete-branch` tries to switch to `main` locally to delete the
+merged branch — but `main` is already checked out in the primary worktree,
+causing a branch-switch collision. The fix is a one-line worktree detection
+(`git rev-parse --git-dir | grep -qF "worktrees"`) that omits
+`--delete-branch` when running from a worktree; the remote branch is cleaned
+up by GitHub's merge event regardless.
+
+Silent-failure shape: a SKILL edit that removes the guard (e.g., inlining
+the merge command during a refactor) would let the agent merge the PR
+successfully but then hang or error on local branch cleanup — either blocking
+the `pr_merged` event or leaving the agent unable to unregister. No lint or
+build catches this because the SKILL is bash prose, not compiled code.
+
+**Pin:** `tests/plugins/test_github_bot_skill_worktree_merge.py`
 
 ### `ALLOW_MAIN_COMMIT=1` is only valid in close-wave Step 13 and emergency rollback
 

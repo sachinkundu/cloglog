@@ -271,7 +271,12 @@ REASON=$(printf '%s' "$PAYLOAD" | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/auto_me
 GATE_RC=$?
 
 if [[ "$GATE_RC" == "0" ]]; then
-  GH_TOKEN="$BOT_TOKEN" gh pr merge "$PR_NUM" --squash --delete-branch
+  # Skip --delete-branch when running from a worktree — gh tries to switch to
+  # main to delete the local branch and collides with the main worktree's
+  # checkout. The remote branch is cleaned up by GitHub on merge. T-438 fix #1.
+  WORKTREE_MERGE_FLAGS="--delete-branch"
+  git rev-parse --git-dir 2>/dev/null | grep -qF "worktrees" && WORKTREE_MERGE_FLAGS=""
+  GH_TOKEN="$BOT_TOKEN" gh pr merge "$PR_NUM" --squash $WORKTREE_MERGE_FLAGS
   # The pr_merged webhook fires next; the inbox handler runs the existing
   # mark_pr_merged → report_artifact → per-task work log → agent_unregistered → exit flow.
 else
@@ -307,7 +312,9 @@ else
         '{reviewer: $reviewer, body: $body, checks: $checks, labels: $labels, has_human_changes_requested: ($has_human_cr == "true"), mergeable_state: $merge_state}')
       REASON=$(printf '%s' "$PAYLOAD" | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/auto_merge_gate.py")
       if [[ "$REASON" == "merge" ]]; then
-        GH_TOKEN="$BOT_TOKEN" gh pr merge "$PR_NUM" --squash --delete-branch
+        WORKTREE_MERGE_FLAGS="--delete-branch"
+        git rev-parse --git-dir 2>/dev/null | grep -qF "worktrees" && WORKTREE_MERGE_FLAGS=""
+        GH_TOKEN="$BOT_TOKEN" gh pr merge "$PR_NUM" --squash $WORKTREE_MERGE_FLAGS
       fi
       # If still not_green here, CI ended red — let the existing CI failure
       # flow take over.

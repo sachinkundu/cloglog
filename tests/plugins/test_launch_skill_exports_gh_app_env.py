@@ -304,3 +304,41 @@ def test_gh_app_token_script_resolves_from_local_yaml() -> None:
         "gh-app-token.py must define a _resolve helper that walks "
         "env → local.yaml → config.yaml. See T-348."
     )
+
+
+def test_gh_app_token_script_walks_ancestors_for_local_yaml() -> None:
+    """``gh-app-token.py`` must walk ancestor directories when
+    ``.cloglog/local.yaml`` is absent at the project root.
+
+    A git worktree at ``.claude/worktrees/wt-*`` has its own
+    ``.cloglog/config.yaml`` (symlinked or copied at worktree-create time)
+    but ``.cloglog/local.yaml`` (gitignored, per-host credentials) only
+    lives in the main checkout above the worktree tree. Without ancestor
+    walking, ``_resolve`` stops at the worktree root, finds no ``local.yaml``
+    there, and returns an empty ``APP_ID`` — causing every
+    ``gh-app-token.py`` call from inside a worktree to exit with
+    ``GH_APP_ID is required``. T-438 fix #2.
+    """
+    script = REPO_ROOT / "plugins/cloglog/scripts/gh-app-token.py"
+    text = _read(script)
+    assert "_find_local_yaml" in text, (
+        "gh-app-token.py must define a _find_local_yaml helper that walks "
+        "ancestor directories to find .cloglog/local.yaml. Worktrees have "
+        "only config.yaml — local.yaml lives in the main checkout above "
+        "the worktree directory tree. T-438 fix #2."
+    )
+    assert ".parent" in text, (
+        "_find_local_yaml must traverse ancestor directories via Path.parent — "
+        "a check limited to the project root cannot find local.yaml in the "
+        "main checkout when invoked from a worktree. T-438 fix #2."
+    )
+    # The walk must be bounded by the first ancestor with .cloglog/config.yaml
+    # (the paired main checkout) — it must NOT traverse past that point into
+    # unrelated parent directories that could carry a different installation's
+    # credentials. Pin: the boundary check must reference config.yaml.
+    assert '"config.yaml"' in text or "'config.yaml'" in text, (
+        "_find_local_yaml must stop at the first ancestor directory that carries "
+        ".cloglog/config.yaml (the paired main checkout) and not walk further. "
+        "An unbounded walk can pick credentials from an unrelated parent directory "
+        "and mint a token for the wrong GitHub App installation. T-438 fix #2."
+    )

@@ -59,6 +59,37 @@ def _read_scalar(path: Path, key: str) -> str:
     return ""
 
 
+def _find_local_yaml(start: Path) -> Path | None:
+    """Find .cloglog/local.yaml, bounded by the paired main checkout.
+
+    Worktrees have .cloglog/config.yaml but .cloglog/local.yaml (the gitignored,
+    per-host credentials file) lives in the main checkout above the worktree
+    directory tree. This function starts at `start` (the worktree root), then
+    walks up only until the first ancestor directory that also carries
+    .cloglog/config.yaml — that ancestor is the main checkout. It checks that
+    directory for local.yaml and stops there.
+
+    The walk is deliberately bounded: it does NOT traverse past the first
+    config.yaml ancestor, so credentials from an unrelated parent directory
+    (e.g. another project's checkout nested at a higher path) are never
+    selected. T-438 fix #2.
+    """
+    # Check the starting directory first (non-worktree invocation or already resolved).
+    candidate = start / ".cloglog" / "local.yaml"
+    if candidate.is_file():
+        return candidate
+
+    # Walk up looking for the first ancestor that has .cloglog/config.yaml —
+    # that is the paired main checkout. Check it for local.yaml and stop.
+    cur = start.parent
+    while cur != cur.parent:  # stop at filesystem root
+        if (cur / ".cloglog" / "config.yaml").is_file():
+            local = cur / ".cloglog" / "local.yaml"
+            return local if local.is_file() else None
+        cur = cur.parent
+    return None
+
+
 def _resolve(key: str) -> str:
     env = os.environ.get(key, "").strip()
     if env:
@@ -67,11 +98,14 @@ def _resolve(key: str) -> str:
     if root is None:
         return ""
     yaml_key = key.lower()
-    for filename in ("local.yaml", "config.yaml"):
-        value = _read_scalar(root / ".cloglog" / filename, yaml_key)
+    # Walk ancestors: a worktree has .cloglog/config.yaml but local.yaml lives
+    # in the main checkout above the worktree directory tree.
+    local_yaml = _find_local_yaml(root)
+    if local_yaml:
+        value = _read_scalar(local_yaml, yaml_key)
         if value:
             return value
-    return ""
+    return _read_scalar(root / ".cloglog" / "config.yaml", yaml_key)
 
 
 APP_ID = _resolve("GH_APP_ID")

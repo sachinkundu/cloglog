@@ -541,7 +541,7 @@ reviewer_bot_logins:
 # Single-line regex of allowlisted paths (paths whose changes never need a
 # stakeholder demo). Same shape `scripts/check-demo.sh` parses with
 # grep+sed. Cloglog's default below is sensible for most projects:
-demo_allowlist_paths: '^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates)/|^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$'
+demo_allowlist_paths: '^docs/|^CLAUDE\.md|^README\.md$|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates|docs|scripts)/|^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$'
 
 # T-321 — worktree_scopes: scope-name → list of repo-relative path prefixes
 # the protect-worktree-writes hook treats as in-scope for that worktree.

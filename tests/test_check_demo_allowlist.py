@@ -36,8 +36,8 @@ CHECK_DEMO_SH = REPO_ROOT / "scripts" / "check-demo.sh"
 # the script. Tests provision a copy of cloglog's default in the tmp repo so
 # check-demo.sh has a config to read.
 DEMO_ALLOWLIST_REGEX = (
-    r"^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|"
-    r"^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates)/|"
+    r"^docs/|^CLAUDE\.md|^README\.md$|^\.claude/|^\.cloglog/|^scripts/|^\.github/|"
+    r"^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates|docs|scripts)/|"
     r"^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$"
 )
 
@@ -119,6 +119,7 @@ def _commit(repo: Path, env: dict[str, str], relpath: str, contents: str = "x\n"
 ALLOWLISTED_PATHS = [
     "docs/foo.md",
     "CLAUDE.md",
+    "README.md",
     ".claude/agents/new-agent.md",
     ".cloglog/config.yaml",
     "scripts/helper.sh",
@@ -134,6 +135,10 @@ ALLOWLISTED_PATHS = [
     "plugins/cloglog/skills/demo/SKILL.md",
     "plugins/cloglog/agents/demo-classifier.md",
     "plugins/cloglog/templates/codex-review-prompt.md",
+    # T-438: docs/ and scripts/ under plugin dirs are workflow tooling
+    # (design docs, helper scripts) — never user-observable code.
+    "plugins/cloglog/docs/setup-credentials.md",
+    "plugins/cloglog/scripts/gh-app-token.py",
     "pyproject.toml",
     "ruff.toml",
     "uv.lock",

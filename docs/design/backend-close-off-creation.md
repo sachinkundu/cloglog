@@ -59,8 +59,12 @@ Concretely:
 
 1. `register_agent` resolves (or creates) the worktree row by
    `(project_id, worktree_path)`.
-2. After commit, call
-   `BoardService.create_close_off_task(project_id, close_off_worktree_id=worktree.id, worktree_name=worktree.name, main_agent_worktree_id=...)`.
+2. After commit, derive the worktree name with the existing rule
+   `worktree_name = worktree.branch_name or worktree.worktree_path.rsplit("/", 1)[-1]`
+   — the `Worktree` ORM model (`src/agent/models.py:24`) has no `name`
+   field; that derivation is what `services.py` already uses elsewhere
+   (e.g. line 770 in the unregister log path). Then call
+   `BoardService.create_close_off_task(project_id, close_off_worktree_id=worktree.id, worktree_name=worktree_name, main_agent_worktree_id=...)`.
 3. That service already returns `(task, created)` with `created=False`
    on idempotent hits — the spec adds no new dedup logic, only a new
    call site.
@@ -72,28 +76,65 @@ row. **No duplicate ever lands.**
 
 ## Force-unregister and re-register
 
-Force-unregister marks the worktree row inactive but does not delete it
-or its close-off task. If the worktree is later re-registered (rare but
-the path is exercised by reconcile self-heal flows):
+The reusable-row plan I considered first (and codex correctly rejected)
+is **incompatible with the current data model**. Two facts force the
+hand:
 
-- If the existing close-off row is still in `backlog` → reuse it. The
-  natural-key lookup already returns it; nothing to do.
-- If the existing close-off row is in `in_progress` / `review` / `done`
-  → **do not** file a new one. The original row tracks the same
-  worktree's teardown work; a second row for the same `close_off_worktree_id`
-  would either violate the unique constraint (if we add one) or
-  duplicate the supervisor's close-off card.
+- `AgentService.force_unregister` (`src/agent/services.py:773, 837`)
+  **deletes** the `worktrees` row outright — there is no inactive
+  tombstone.
+- The close-off FK is `ON DELETE SET NULL` (Alembic
+  `d2a1b3c4e5f6_add_close_off_worktree_id_to_tasks.py` lines 41-48).
+  When the worktree row is deleted, `tasks.close_off_worktree_id` on
+  the existing close-off card is silently cleared. The card lingers on
+  the board but is no longer reachable through the natural-key lookup
+  `find_close_off_task(close_off_worktree_id)`.
 
-Implementation note: the `find_close_off_task` lookup is unconditional
-on status, so the natural-key path already does the right thing. We do
-**not** need a "create-new-if-status-not-backlog" branch — that was
-considered and rejected because it lets a single worktree accumulate
-multiple close-off rows over its lifetime, which breaks close-wave's
-1:1 assumption (`close_off_task_ids[wt-name] → task_uuid`).
+Therefore: when the same `worktree_path` is registered again after a
+force-unregister, it gets a brand-new worktree UUID. The old close-off
+card has `close_off_worktree_id = NULL`; the lookup against the new
+UUID misses; the trigger files **a new** close-off row.
 
-If operationally we ever need to re-open teardown for a worktree whose
-close-off was already closed, that's a manual board action (move the
-existing task back to `backlog`), not a re-creation.
+**Decision (revised):** re-register after force-unregister files a new
+close-off row. The original card stays on the board with
+`close_off_worktree_id = NULL` — that is the documented "lingers on
+backlog as a flag" behaviour from the migration's docstring (lines
+9-13). Operators who notice the orphan can dispose of it manually; it
+does not break correctness because close-wave's Step 1.5 lookup is
+predicated on `status == "backlog"` AND the worktree being **active**
+(via the per-worktree map built from currently-known `wt-name`s), so a
+stale card whose worktree is gone never enters the close-wave fold.
+
+This raises one consumer concern that the implementation PR (T-434)
+must address: **close-wave Step 1.5 keys on title equality** within
+the set of *currently active* worktrees
+(`plugins/cloglog/skills/close-wave/SKILL.md:87`). If a `wt-x` is
+force-unregistered then re-created at the same path *while the old
+close-off card is still in `backlog` status*, Step 1.5's
+`title == "Close worktree wt-x"` filter sees two backlog rows and
+errors with ambiguous match.
+
+The fix lives in close-wave (T-434 implementation owns the edit):
+filter Step 1.5's title lookup by `close_off_worktree_id IS NOT NULL`
+in addition to title and backlog status. That is sufficient because
+the migration's `ON DELETE SET NULL` guarantees orphaned cards from
+deleted worktrees are exactly those with NULL FK — the live card from
+the re-registration is the only remaining match. This is a one-line
+predicate change, pinned by a new test in
+`tests/plugins/test_close_wave_skill.py` (or wherever Step 1.5
+lookups are exercised).
+
+Reconcile (T-371 rule) keeps owning the wider self-heal: if a
+worktree is active but has no close-off card with
+`close_off_worktree_id = worktree.id`, it files one. That covers both
+the "trigger ran and failed silently" gap and the "orphan card
+exists, no live card" gap.
+
+If operationally we ever need to re-open teardown for a worktree
+whose close-off was already closed, that's a manual board action
+(move the existing task back to `backlog`) — but only if the worktree
+is still alive. After force-unregister, the "re-open" affordance is
+gone with the row.
 
 ## Project opt-out
 
@@ -147,11 +188,50 @@ groups:
    active worktree on day one.
 
    **Decision:** ship a one-shot Alembic data migration in the same
-   PR as the trigger. The migration scans `worktrees` filtered to
-   active rows (no `force_unregistered_at`, no later replacement at
-   the same path) and calls the same `create_close_off_task` service
-   for each. The migration is idempotent — re-running it is a no-op
-   because the natural-key lookup short-circuits.
+   PR as the trigger. The migration scans currently-existing
+   `worktrees` rows (force-unregister deletes rows, so any row still
+   present is by definition active) and, for each, **resolves the
+   main-agent worktree using the same role/env fallback the HTTP
+   route uses** (`src/agent/routes.py:357-378`: prefer
+   `AgentRepository.get_main_agent_worktree(project_id)`, fall back
+   to the worktree at `settings.main_agent_inbox_path.parent.parent`,
+   else `None`) before calling
+   `BoardService.create_close_off_task(..., main_agent_worktree_id=...)`.
+   Skipping the resolver would create rows with `worktree_id = NULL`,
+   breaking the visibility contract pinned by
+   `tests/agent/test_close_off_task.py:521-565` (close-off must surface
+   in the main agent's `mcp__cloglog__get_my_tasks`) — the same T-305
+   regression the route already defends against.
+
+   The migration is idempotent — re-running it is a no-op because the
+   natural-key `find_close_off_task` lookup short-circuits. The
+   resolver is best-effort: when no main agent is registered (a
+   downstream project that never ran `/cloglog setup`), the row is
+   filed unassigned, exactly matching the live trigger's behaviour
+   for the same condition.
+
+   **Concurrency.** The migration and live `register_agent` calls can
+   race: both pass `find_close_off_task` before either inserts the
+   FK; the loser then hits the
+   `uq_tasks_close_off_worktree_id` unique index
+   (Alembic `d2a1b3c4e5f6` lines 49-54), aborting the transaction.
+   Two acceptable mitigations — pick one in T-434:
+
+   - **(Preferred)** Wrap `create_close_off_task` in a
+     catch-`IntegrityError` → rollback → re-read with
+     `find_close_off_task` → return the existing row. This makes the
+     service genuinely upsert-shaped without restructuring it as a
+     SQL `INSERT ... ON CONFLICT`. The same handler covers the live
+     trigger's race against itself in pathological double-call
+     scenarios.
+   - **Quiesce live registrations during the migration.** Acceptable
+     for cloglog (single host, operator-driven `make migrate`) but
+     not portable to downstream projects that may run migrations
+     under load. Document the constraint in the migration docstring
+     if chosen.
+
+   The "no special handling" line in the prior draft was wrong;
+   codex caught it.
 
 2. **Stale / closed / force-unregistered worktrees with no close-off
    row.** Leave alone. There is no useful teardown work to track on a
@@ -199,9 +279,14 @@ bootstrap scripts do not POST it."
 
 If `create_close_off_task` raises inside the `register_agent` flow:
 
-- **Database error** (FK violation, unique constraint, transient
-  connection blip): roll back the close-off task creation but
-  **commit** the worktree registration. `register_agent` returns
+- **`IntegrityError` on `uq_tasks_close_off_worktree_id`** (the
+  migration / re-entrant register race described under *Migration
+  plan / Concurrency*): catch, rollback the close-off insert,
+  re-read with `find_close_off_task(close_off_worktree_id)`, return
+  the existing row. This is a clean idempotent hit, not a failure.
+- **Other database error** (FK violation against a deleted parent,
+  transient connection blip): roll back the close-off task creation
+  but **commit** the worktree registration. `register_agent` returns
   success. The supervisor's invariant ("the agent is registered") is
   preserved; the close-off row gap is detected and self-healed by
   the next reconcile run (T-371 reconcile rule covers this).
@@ -239,13 +324,28 @@ never starting at all. The trigger is best-effort within
 The implementation PR (T-434) MUST add or verify these pin tests:
 
 1. `register_agent` first call for a new `worktree_path` files exactly
-   one close-off row.
+   one close-off row, with `worktree_id` set to the resolved main
+   agent (or NULL if none registered, surfacing the existing
+   diagnostic warning).
 2. Second `register_agent` call for the same `worktree_path` (resume,
    crash + relaunch) does **not** file a duplicate.
-3. Re-registration of a force-unregistered worktree reuses the
-   existing close-off row regardless of its current status.
-4. Title is exactly `Close worktree <wt-name>`.
+3. Re-registration after `force_unregister` files a **new** close-off
+   row keyed on the new worktree UUID. The old card lingers with
+   `close_off_worktree_id = NULL` and is filtered out by close-wave's
+   updated Step 1.5 predicate.
+4. Title is exactly `Close worktree <wt-name>` where `<wt-name>` is
+   `worktree.branch_name or worktree.worktree_path.rsplit("/", 1)[-1]`.
 5. Close-off-task creation failure does NOT fail the
    `register_agent` call.
-6. The one-shot data migration is idempotent (re-running over a
-   fully-backfilled DB makes no changes).
+6. The migration/race `IntegrityError` path returns the existing row
+   instead of propagating (concurrent migration + live register on
+   the same worktree → exactly one row, no aborted transaction).
+7. The one-shot data migration is idempotent (re-running over a
+   fully-backfilled DB makes no changes) AND resolves
+   `main_agent_worktree_id` so backfilled rows surface in
+   `mcp__cloglog__get_my_tasks` per the
+   `tests/agent/test_close_off_task.py:521-565` visibility contract.
+8. Close-wave Step 1.5 lookup is filtered by
+   `close_off_worktree_id IS NOT NULL` so a re-registered worktree
+   with a stale orphan card does not produce an ambiguous title
+   match.

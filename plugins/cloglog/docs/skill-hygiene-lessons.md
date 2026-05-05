@@ -179,9 +179,29 @@ The guide assumes every skill has at least an informal eval set:
 - **Performance comparison:** with-skill vs. without-skill — back-and-forth
   count, failed calls, tokens consumed.
 
-cloglog plugin skills were not authored with `skill-creator`, so none have
-these eval sets today. The audit should flag the absence; building eval sets
-is downstream follow-up work, not blocking on the hygiene refactor.
+cloglog plugin skills were not authored with `skill-creator`. Coverage
+splits by layer:
+
+- **Functional layer — partially covered.** `tests/plugins/` already
+  carries 30+ pytest-based pin tests that lock structural / behavioural
+  invariants in the SKILLs (e.g. `test_setup_skill_dedup.py`,
+  `test_launch_skill_has_agent_started_timeout.py`,
+  `test_init_bootstrap_skill.py`,
+  `test_close_wave_skill_lifecycle_calls.py`,
+  `test_github_bot_skill_worktree_merge.py`). These are real regression
+  pins, not absent — but they are not the full functional eval suite the
+  guide describes (varied scenarios, edge-case explosion, with-skill vs.
+  without-skill comparison).
+- **Triggering layer — entirely absent.** No should-fire / should-not-fire
+  prompt corpus exists for any skill's frontmatter `description`; no
+  harness exercises the model's skill-selection behaviour against user
+  phrasing. This is the gap §11 specifically targets.
+
+The audit should distinguish these two layers when flagging coverage —
+not blanket-claim "no eval sets." Building the trigger-prompt corpus
+(and any remaining functional-layer gaps after auditing
+`tests/plugins/`) is downstream follow-up work, not blocking on the
+hygiene refactor.
 
 ## 12. The audit rubric (apply to every skill in plugins/cloglog/skills/)
 

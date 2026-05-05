@@ -110,26 +110,45 @@ fi
 
 # Acceptance path 2 — exemption.md with a matching diff_hash.
 if [[ -f "$EXEMPTION_FILE" ]]; then
-  # Extract diff_hash from the YAML frontmatter. Using grep+sed per the
-  # project rule in docs/invariants.md § "Hook scripts parse config with
-  # grep+sed" — no Python YAML dependency, and anchoring to the first
-  # `---` block avoids picking up a `diff_hash:` line that happens to
-  # appear in the prose body.
-  STORED_HASH=$(awk '
-    /^---[[:space:]]*$/ { fence++; next }
-    fence == 1 && /^diff_hash:[[:space:]]+/ {
-      sub(/^diff_hash:[[:space:]]+/, "")
-      gsub(/[[:space:]]+$/, "")
-      print
-      exit
-    }
-  ' "$EXEMPTION_FILE")
+  # Extract frontmatter fields. Using awk per the project rule in
+  # docs/invariants.md § "Hook scripts parse config with grep+sed" — no
+  # Python YAML dependency. The fence counter (fence==1) restricts parsing
+  # to the first YAML block, so a field mentioned in the prose body is
+  # never picked up.
+  _extract_fm_field() {
+    local field="$1" file="$2"
+    awk -v field="$field" '
+      /^---[[:space:]]*$/ { fence++; next }
+      fence == 1 && $0 ~ ("^" field ":[[:space:]]+") {
+        sub("^" field ":[[:space:]]+", "")
+        gsub(/[[:space:]]+$/, "")
+        print
+        exit
+      }
+    ' "$file"
+  }
 
-  if [[ -z "$STORED_HASH" ]]; then
-    echo "  ERROR: $EXEMPTION_FILE is missing a diff_hash in its frontmatter."
-    echo "  Re-run the 'cloglog:demo' skill to regenerate the exemption."
-    exit 1
-  fi
+  STORED_HASH=$(_extract_fm_field "diff_hash" "$EXEMPTION_FILE")
+  FM_VERDICT=$(_extract_fm_field "verdict" "$EXEMPTION_FILE")
+  FM_CLASSIFIER=$(_extract_fm_field "classifier" "$EXEMPTION_FILE")
+  FM_GENERATED_AT=$(_extract_fm_field "generated_at" "$EXEMPTION_FILE")
+
+  # All four frontmatter keys are required — a renderer regression that
+  # drops any of them must be a hard gate failure, not a silent pass.
+  for _field_name in verdict diff_hash classifier generated_at; do
+    _field_val=""
+    case "$_field_name" in
+      verdict)      _field_val="$FM_VERDICT" ;;
+      diff_hash)    _field_val="$STORED_HASH" ;;
+      classifier)   _field_val="$FM_CLASSIFIER" ;;
+      generated_at) _field_val="$FM_GENERATED_AT" ;;
+    esac
+    if [[ -z "$_field_val" ]]; then
+      echo "  ERROR: $EXEMPTION_FILE is missing required frontmatter key: $_field_name"
+      echo "  Re-run the 'cloglog:demo' skill to regenerate the exemption."
+      exit 1
+    fi
+  done
 
   # Hash MUST be computed with the same command the classifier uses so
   # bytes match exactly. Everyone (classifier, skill, this script) excludes

@@ -1,0 +1,14 @@
+---
+verdict: no_demo
+diff_hash: {{ diff_hash }}
+classifier: demo-classifier
+generated_at: {{ generated_at }}
+---
+
+## Why no demo
+
+{{ reasoning }}
+
+## Changed files
+
+{{ file_list }}

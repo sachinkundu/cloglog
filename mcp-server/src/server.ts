@@ -768,5 +768,62 @@ export function createServer(client: CloglogClient, opts?: { configRoot?: string
     })
   )
 
+  // ── Reorder (T-394) ──────────────────────────────────
+  //
+  // Mirror the three drag-and-drop endpoints the frontend already calls
+  // (src/board/routes.py reorder_epics / reorder_features / reorder_tasks).
+  // Items carry the *new* absolute position for every entity in the
+  // affected scope — the frontend convention is `i * 1000` so manual
+  // gaps stay available between siblings (frontend/src/components/BacklogTree.tsx).
+
+  const reorderItemSchema = z.object({
+    id: z.string().describe('UUID of the entity being repositioned'),
+    position: z.number().int().describe('New absolute position'),
+  })
+
+  server.tool(
+    'reorder_epics',
+    'Reorder epics within the current project. Pass the full new ordering as items=[{id, position}, ...] — positions are absolute and overwrite the existing values. Mirrors the drag-and-drop endpoint the frontend BacklogTree calls.',
+    {
+      items: z.array(reorderItemSchema).min(1).describe('New (id, position) tuples for every epic being moved'),
+    },
+    wrapHandler(async ({ items }: { items: Array<{ id: string; position: number }> }) => {
+      const pid = requireProject()
+      if (typeof pid !== 'string') return pid
+      const result = await handlers.reorder_epics({ project_id: pid, items })
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] }
+    })
+  )
+
+  server.tool(
+    'reorder_features',
+    'Reorder features within an epic. Pass the full new ordering for the affected siblings as items=[{id, position}, ...] — positions are absolute and overwrite the existing values.',
+    {
+      epic_id: z.string().describe('UUID of the parent epic'),
+      items: z.array(reorderItemSchema).min(1).describe('New (id, position) tuples for every feature being moved'),
+    },
+    wrapHandler(async ({ epic_id, items }: { epic_id: string; items: Array<{ id: string; position: number }> }) => {
+      const pid = requireProject()
+      if (typeof pid !== 'string') return pid
+      const result = await handlers.reorder_features({ project_id: pid, epic_id, items })
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] }
+    })
+  )
+
+  server.tool(
+    'reorder_tasks',
+    'Reorder tasks within a feature. Pass the full new ordering for the affected siblings as items=[{id, position}, ...] — positions are absolute and overwrite the existing values.',
+    {
+      feature_id: z.string().describe('UUID of the parent feature'),
+      items: z.array(reorderItemSchema).min(1).describe('New (id, position) tuples for every task being moved'),
+    },
+    wrapHandler(async ({ feature_id, items }: { feature_id: string; items: Array<{ id: string; position: number }> }) => {
+      const pid = requireProject()
+      if (typeof pid !== 'string') return pid
+      const result = await handlers.reorder_tasks({ feature_id, items })
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] }
+    })
+  )
+
   return server
 }

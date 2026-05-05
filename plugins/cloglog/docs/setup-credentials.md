@@ -130,26 +130,14 @@ chmod 600 ~/.cloglog/credentials.d/"$PROJECT_SLUG"
 # 4. Store project, project_id, and backend_url (T-382: persist `project:`
 #    so the per-project resolver finds the slug source on first restart;
 #    without it the resolver falls back to basename($PROJECT_ROOT) and
-#    misses the credentials.d/<slug> file we just wrote). Update in place
-#    if already present; append if not. Never use >> alone — the scalar
-#    parser reads the first matching key, so a duplicate line silently
-#    shadows the new value on re-runs.
+#    misses the credentials.d/<slug> file we just wrote). The Python helper
+#    upserts each key atomically — safe against delimiter chars in PROJECT_SLUG
+#    or BACKEND_URL (&, |, /, \) and prevents duplicate-key shadows on re-runs.
 mkdir -p .cloglog
-if [ -f .cloglog/config.yaml ] && grep -q '^project:' .cloglog/config.yaml; then
-  sed -i "s/^project:.*/project: ${PROJECT_SLUG}/" .cloglog/config.yaml
-else
-  printf 'project: %s\n' "$PROJECT_SLUG" >> .cloglog/config.yaml
-fi
-if [ -f .cloglog/config.yaml ] && grep -q '^project_id:' .cloglog/config.yaml; then
-  sed -i "s/^project_id:.*/project_id: ${PROJECT_ID}/" .cloglog/config.yaml
-else
-  printf 'project_id: %s\n' "$PROJECT_ID" >> .cloglog/config.yaml
-fi
-if [ -f .cloglog/config.yaml ] && grep -q '^backend_url:' .cloglog/config.yaml; then
-  sed -i "s|^backend_url:.*|backend_url: ${BACKEND_URL}|" .cloglog/config.yaml
-else
-  printf 'backend_url: %s\n' "$BACKEND_URL" >> .cloglog/config.yaml
-fi
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/set_yaml_keys.py" .cloglog/config.yaml \
+  project="${PROJECT_SLUG}" \
+  project_id="${PROJECT_ID}" \
+  backend_url="${BACKEND_URL}"
 ```
 
 Store the key in your password manager; the backend keeps only a SHA-256

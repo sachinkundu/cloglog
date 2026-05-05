@@ -304,29 +304,14 @@ Proceed:
    ```bash
    mkdir -p .cloglog
 
-   # project — slug source for ~/.cloglog/credentials.d/<slug> (T-382). The
-   # resolver validates against [A-Za-z0-9._-]+ so we write the same slug the
-   # credentials.d file was named with, not the raw PROJECT_NAME.
-   if [ -f .cloglog/config.yaml ] && grep -q '^project:' .cloglog/config.yaml; then
-     sed -i "s/^project:.*/project: ${PROJECT_SLUG}/" .cloglog/config.yaml
-   else
-     printf 'project: %s\n' "$PROJECT_SLUG" >> .cloglog/config.yaml
-   fi
-
-   # project_id — update in place or append (never use >> alone: scalar parser
-   # returns first match, so a duplicate key silently shadows the new value).
-   if [ -f .cloglog/config.yaml ] && grep -q '^project_id:' .cloglog/config.yaml; then
-     sed -i "s/^project_id:.*/project_id: ${PROJECT_ID}/" .cloglog/config.yaml
-   else
-     printf 'project_id: %s\n' "$PROJECT_ID" >> .cloglog/config.yaml
-   fi
-
-   # backend_url — persist so Step 3/4 and hooks use the same URL after restart
-   if [ -f .cloglog/config.yaml ] && grep -q '^backend_url:' .cloglog/config.yaml; then
-     sed -i "s|^backend_url:.*|backend_url: ${BACKEND_URL}|" .cloglog/config.yaml
-   else
-     printf 'backend_url: %s\n' "$BACKEND_URL" >> .cloglog/config.yaml
-   fi
+   # Use the Python helper to upsert all three keys atomically.
+   # Safe against delimiter chars (&, |, /, \) in PROJECT_SLUG or BACKEND_URL
+   # that would trip sed substitution. Creates the file if absent; updates
+   # in place if the key exists (no duplicate-key shadow on re-runs).
+   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/set_yaml_keys.py" .cloglog/config.yaml \
+     project="${PROJECT_SLUG}" \
+     project_id="${PROJECT_ID}" \
+     backend_url="${BACKEND_URL}"
    ```
 
 5. **Request restart.** Tell the operator:

@@ -1,112 +1,87 @@
-"""T-353 pin: launch SKILL emits a syntactically clean launch.sh.
+"""T-353/T-354 pin: launch SKILL renders a syntactically clean launch.sh.
 
-Prior bug (observed in antisocial 2026-04-30): the SKILL used an *unquoted*
-heredoc with `\\$1` / `\\$2` escapes for helper-function positional args. When
-the SKILL block was relayed through the LLM-agent Bash-tool → bash boundary,
-the `\\$N` escapes collapsed inconsistently, producing rendered files like
-`local file="\\"; local key="\\"` and tripping
-`unexpected EOF while looking for matching '"'` at exec time.
+Pre-T-354 the SKILL emitted ``launch.sh`` from a quoted heredoc (T-353
+fixed an earlier ``\\$N`` escape bug) and then ran ``sed -i`` to bake
+host paths in. The sed pass tripped on host paths containing replacement
+metacharacters (``&`` ``\\`` ``|``), and the ``_sed_escape_replacement``
+helper that mitigated it lost its ``$1`` reference on the LLM-agent →
+bash boundary, silently producing empty escapes. Visible failure: every
+supervisor-rendered ``launch.sh`` shipped with the fallback prompt
+``Read /AGENT_PROMPT.md and begin.`` (literal ``/AGENT_PROMPT.md`` at
+filesystem root because ``${WORKTREE_PATH}`` was substituted with empty
+string).
 
-This pin reads the SKILL, materialises the launch.sh-emitting block against
-fixture paths, and asserts that:
-  - The rendered file passes `bash -n` (syntactically valid).
-  - The exact helper-arg lines that broke in antisocial are present.
-  - The two operator-host paths got substituted in via `sed`.
-  - No `\\$` antipattern remains in the rendered file.
-  - No unsubstituted `@@...@@` placeholders remain.
+T-354 dropped the heredoc + sed shape entirely. The template
+``templates/launch.sh.template`` is now a tracked static file; the
+SKILL invokes ``scripts/render_template.py`` against it with
+``--var KEY=VALUE`` bindings. Replacement is a literal Python
+``str.replace`` so ``&``/``\\``/``|``/newlines round-trip verbatim.
+
+This pin renders the template against adversarial host paths and asserts:
+  - The rendered file passes ``bash -n`` (syntactically valid).
+  - The exact helper-arg lines that broke in antisocial 2026-04-30 are
+    present.
+  - The two operator-host paths got substituted in.
+  - No unsubstituted ``@@...@@`` placeholders remain.
+  - The ``\\$`` antipattern from the pre-T-353 unquoted-heredoc shape
+    is absent.
 """
 
 from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SKILL_PATH = REPO_ROOT / "plugins/cloglog/skills/launch/SKILL.md"
-
-HEREDOC_OPEN = "cat > \"${WORKTREE_PATH}/.cloglog/launch.sh\" << 'EOF'"
-
-
-def _extract_emit_block(skill_text: str) -> str:
-    """Extract the bash that emits launch.sh: from `cat > ... << 'EOF'`
-    through both `sed -i` substitution lines (stopping before `chmod +x`)."""
-    lines = skill_text.splitlines()
-    start = None
-    for i, line in enumerate(lines):
-        if line.strip() == HEREDOC_OPEN:
-            start = i
-            break
-    assert start is not None, (
-        f"Could not find quoted-heredoc opener {HEREDOC_OPEN!r} in {SKILL_PATH}. "
-        "T-353 requires `<< 'EOF'` (single-quoted delimiter)."
-    )
-    # Find the closing EOF line (must be the literal `EOF` on its own).
-    eof = None
-    for j in range(start + 1, len(lines)):
-        if lines[j].strip() == "EOF":
-            eof = j
-            break
-    assert eof is not None, "No closing EOF for the launch.sh heredoc"
-    # Then collect every line between EOF and `chmod +x` — this captures the
-    # `sed -i` substitution pair and any setup lines (e.g. the
-    # `_sed_escape_replacement` helper added in T-353 codex round 1) that
-    # must run before them. Skip blank lines and pure-comment lines so we
-    # don't trip on Markdown prose mixed in (we are inside a fenced bash
-    # block so that's unlikely, but be defensive).
-    post_lines: list[str] = []
-    found_chmod = False
-    sed_count = 0
-    for k in range(eof + 1, len(lines)):
-        stripped = lines[k].strip()
-        if stripped.startswith("chmod +x"):
-            found_chmod = True
-            break
-        post_lines.append(lines[k])
-        if stripped.startswith("sed -i"):
-            sed_count += 1
-    assert found_chmod, "No `chmod +x` line found after the launch.sh heredoc"
-    assert sed_count == 2, (
-        f"Expected 2 `sed -i` substitution lines after the heredoc; got {sed_count}"
-    )
-    block_lines = lines[start : eof + 1] + post_lines
-    return "\n".join(block_lines) + "\n"
+PLUGIN_ROOT = REPO_ROOT / "plugins/cloglog"
+SKILL_PATH = PLUGIN_ROOT / "skills/launch/SKILL.md"
+TEMPLATE_PATH = PLUGIN_ROOT / "templates/launch.sh.template"
+RENDER_SCRIPT = PLUGIN_ROOT / "scripts/render_template.py"
 
 
-def test_launch_sh_renders_clean(tmp_path: Path) -> None:
-    skill_text = SKILL_PATH.read_text()
-    emit_block = _extract_emit_block(skill_text)
-
-    # T-353 codex round 1: include `&` in both fixture paths so the sed
-    # replacement-string escape is exercised. In a sed replacement, `&`
-    # expands to the matched text; without the `s/[&|\]/\\&/g` escape,
-    # the rendered file would contain `fake@@WORKTREE_PATH@@wt` instead of
-    # `fake&wt`. Real-world trigger: a checkout under `~/R&D/`.
-    wt_path = tmp_path / "fake&wt" / "foo"
-    proj_root = tmp_path / "fake&proj"
-    (wt_path / ".cloglog").mkdir(parents=True)
-    proj_root.mkdir(parents=True)
-
-    # Run the extracted block under bash with the fixture paths.
+def _render(tmp_path: Path, worktree_path: Path, project_root: Path) -> Path:
+    out = worktree_path / ".cloglog" / "launch.sh"
+    out.parent.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
-        ["bash", "-c", emit_block],
-        env={
-            "PATH": "/usr/bin:/bin",
-            "WORKTREE_PATH": str(wt_path),
-            "PROJECT_ROOT": str(proj_root),
-        },
+        [
+            sys.executable,
+            str(RENDER_SCRIPT),
+            "--template",
+            str(TEMPLATE_PATH),
+            "--output",
+            str(out),
+            "--var",
+            f"WORKTREE_PATH={worktree_path}",
+            "--var",
+            f"PROJECT_ROOT={project_root}",
+        ],
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, (
-        f"Emit block failed: stdout={result.stdout!r} stderr={result.stderr!r}"
+        f"render_template.py failed: stdout={result.stdout!r} stderr={result.stderr!r}"
     )
+    return out
 
-    rendered = (wt_path / ".cloglog" / "launch.sh").read_text()
+
+def test_launch_sh_renders_clean(tmp_path: Path) -> None:
+    """Adversarial host paths (``&``, ``|``, ``\\``) must round-trip
+    literally. Pre-T-354 the sed shape would have spliced placeholder
+    text back in via ``&`` expansion or broken on the ``|`` delimiter.
+    """
+    wt_path = tmp_path / "fake&wt|odd\\dir" / "foo"
+    proj_root = tmp_path / "fake&proj|p\\r"
+    wt_path.mkdir(parents=True)
+    proj_root.mkdir(parents=True)
+
+    rendered_path = _render(tmp_path, wt_path, proj_root)
+    rendered = rendered_path.read_text(encoding="utf-8")
 
     # 1. Syntactically valid bash.
     syntax_check = subprocess.run(
-        ["bash", "-n", str(wt_path / ".cloglog" / "launch.sh")],
+        ["bash", "-n", str(rendered_path)],
         capture_output=True,
         text=True,
     )
@@ -114,7 +89,7 @@ def test_launch_sh_renders_clean(tmp_path: Path) -> None:
         f"`bash -n` failed on rendered launch.sh: {syntax_check.stderr!r}"
     )
 
-    # 2. The exact helper-arg lines that broke in antisocial must be present.
+    # 2. Helper-arg lines that broke in antisocial 2026-04-30 are present.
     assert 'local file="$1"; local key="$2"' in rendered, (
         "T-353 regression: `_read_scalar_yaml` lost its $1/$2 references"
     )
@@ -123,36 +98,62 @@ def test_launch_sh_renders_clean(tmp_path: Path) -> None:
         "T-353 regression: `_unregister_fallback` lost its ${1:-unknown} reference"
     )
 
-    # 3. Operator-host paths were substituted in.
+    # 3. Operator-host paths substituted verbatim.
     assert f'WORKTREE_PATH="{wt_path}"' in rendered, (
-        "sed substitution for WORKTREE_PATH did not land"
+        "WORKTREE_PATH placeholder did not round-trip literally"
     )
     assert f'PROJECT_ROOT="{proj_root}"' in rendered, (
-        "sed substitution for PROJECT_ROOT did not land"
+        "PROJECT_ROOT placeholder did not round-trip literally"
+    )
+    # 3b. The fallback prompt's path must also be substituted — that's the
+    # exact failure mode the T-354 bug produced (`/AGENT_PROMPT.md` at root).
+    assert f"Read {wt_path}/AGENT_PROMPT.md and begin." in rendered, (
+        "T-354 regression: fallback prompt's WORKTREE_PATH placeholder lost. "
+        "Pre-fix this rendered as `Read /AGENT_PROMPT.md and begin.`"
     )
 
-    # 4. The pre-T-353 antipattern (`\$` inside a heredoc) must not appear in
-    # the rendered output. A quoted heredoc emits `$` literally; any `\$` byte
-    # in the rendered file means the SKILL slipped back to the unquoted form.
+    # 4. The pre-T-353 antipattern must not appear.
     assert "\\$" not in rendered, (
-        "T-353 regression: rendered launch.sh contains the `\\$` antipattern. "
-        "The launch SKILL heredoc must be quoted (`<< 'EOF'`)."
+        "T-353 regression: rendered launch.sh contains the `\\$` antipattern"
     )
 
     # 5. No leftover placeholders.
-    assert "@@WORKTREE_PATH@@" not in rendered, (
-        "Unsubstituted @@WORKTREE_PATH@@ placeholder remains"
-    )
-    assert "@@PROJECT_ROOT@@" not in rendered, "Unsubstituted @@PROJECT_ROOT@@ placeholder remains"
+    leftover = re.findall(r"@@[A-Z_]+@@", rendered)
+    assert not leftover, f"Unsubstituted placeholders remain: {leftover}"
 
 
-def test_skill_uses_quoted_heredoc() -> None:
-    """Direct text-level pin: SKILL.md must contain the quoted-EOF opener and
-    must not contain the unquoted-EOF opener for the launch.sh emitter."""
-    skill_text = SKILL_PATH.read_text()
-    assert HEREDOC_OPEN in skill_text, f"SKILL.md must use quoted heredoc: {HEREDOC_OPEN!r}"
-    unquoted_pattern = re.compile(r'cat > "\$\{WORKTREE_PATH\}/\.cloglog/launch\.sh" << EOF\b')
-    assert not unquoted_pattern.search(skill_text), (
-        "SKILL.md must not use the unquoted `<< EOF` form for launch.sh "
-        "(T-353: collapses `\\$N` across the LLM-agent boundary)."
+def test_launch_sh_template_no_metacharacter_escape_dance() -> None:
+    """The whole point of T-354: the SKILL must NOT contain a sed-based
+    rendering pipeline for launch.sh. A regression that re-introduces
+    `cat > .../launch.sh << 'EOF'` plus `sed -i` reopens the metacharacter-
+    escape bug class.
+    """
+    skill_text = SKILL_PATH.read_text(encoding="utf-8")
+    assert 'cat > "${WORKTREE_PATH}/.cloglog/launch.sh"' not in skill_text, (
+        "T-354 regression: SKILL.md re-introduced an inline heredoc for launch.sh. "
+        "Render via scripts/render_template.py against templates/launch.sh.template instead."
     )
+    assert "_sed_escape_replacement" not in skill_text, (
+        "T-354 regression: SKILL.md re-introduced the sed-escape helper. "
+        "render_template.py uses literal str.replace — no escape needed."
+    )
+    # The recipe must invoke the render script.
+    assert "scripts/render_template.py" in skill_text, (
+        "SKILL.md must invoke scripts/render_template.py — that is the "
+        "single rendering contract for launch.sh and task.md."
+    )
+
+
+def test_launch_sh_template_is_tracked() -> None:
+    """The template file must exist as a tracked static file under
+    plugins/cloglog/templates/. Encoding it as bash heredoc lines inside
+    the SKILL Markdown was the T-354 antipattern.
+    """
+    assert TEMPLATE_PATH.is_file(), (
+        f"{TEMPLATE_PATH} missing — launch.sh.template must be tracked under "
+        "plugins/cloglog/templates/"
+    )
+    body = TEMPLATE_PATH.read_text(encoding="utf-8")
+    assert body.startswith("#!/bin/bash"), "Template must begin with bash shebang"
+    assert "@@WORKTREE_PATH@@" in body
+    assert "@@PROJECT_ROOT@@" in body

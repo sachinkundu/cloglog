@@ -1,0 +1,24 @@
+# Task — @@TASK_NUMBER@@: @@TASK_TITLE@@
+
+Priority: @@PRIORITY@@
+Feature: @@FEATURE_REF@@
+
+## Task IDs
+- Task ID: `@@TASK_UUID@@`
+- Feature ID: `@@FEATURE_UUID@@`
+- Worktree ID: `@@WORKTREE_UUID@@`
+- Worktree name: `@@WORKTREE_NAME@@`
+- Worktree path: `@@WORKTREE_PATH@@`
+- Project root: `@@PROJECT_ROOT@@`
+
+## Description
+
+@@TASK_DESCRIPTION@@
+
+## Sibling work in flight
+
+@@SIBLING_WARNINGS@@
+
+## Residual TODOs hint
+
+@@RESIDUAL_NOTES@@

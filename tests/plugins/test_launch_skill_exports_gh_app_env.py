@@ -26,6 +26,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 LAUNCH_SKILL = REPO_ROOT / "plugins/cloglog/skills/launch/SKILL.md"
 PLUGIN_ROOT = REPO_ROOT / "plugins/cloglog"
+LAUNCH_TEMPLATE = PLUGIN_ROOT / "templates/launch.sh.template"
 
 OPERATOR_APP_ID = "3235173"
 OPERATOR_INSTALLATION_ID = "120404294"
@@ -37,13 +38,16 @@ def _read(p: Path) -> str:
 
 
 def test_launch_skill_defines_scalar_yaml_helper() -> None:
-    """The heredoc must define a generic ``_read_scalar_yaml`` helper that
-    parses YAML scalars via grep+sed (no python YAML lib).
+    """The launch.sh template must define a generic ``_read_scalar_yaml``
+    helper that parses YAML scalars via grep+sed (no python YAML lib).
 
-    This is the workhorse used by both ``_gh_app_id`` and
-    ``_gh_app_installation_id`` — pinning it once covers both readers.
+    Post-T-354 the helpers live in ``templates/launch.sh.template``
+    (a tracked static file rendered by ``render_template.py``), not in
+    a SKILL-embedded heredoc. This is the workhorse used by both
+    ``_gh_app_id`` and ``_gh_app_installation_id`` — pinning it once
+    covers both readers.
     """
-    body = _read(LAUNCH_SKILL)
+    body = _read(LAUNCH_TEMPLATE)
     fn_match = re.search(r"_read_scalar_yaml\(\)\s*\{(.*?)\n\}", body, flags=re.DOTALL)
     assert fn_match, (
         "_read_scalar_yaml() helper missing from launch SKILL.md heredoc — "
@@ -74,7 +78,7 @@ def test_launch_skill_readers_resolve_env_first_then_local_then_config() -> None
     otherwise an operator who exported `GH_APP_ID` for a temporary App gets
     clobbered as soon as the worktree agent reads stale YAML.
     """
-    body = _read(LAUNCH_SKILL)
+    body = _read(LAUNCH_TEMPLATE)
     for fn_name, env_var, yaml_key in (
         ("_gh_app_id", "GH_APP_ID", "gh_app_id"),
         ("_gh_app_installation_id", "GH_APP_INSTALLATION_ID", "gh_app_installation_id"),
@@ -116,61 +120,37 @@ def test_launch_skill_readers_resolve_env_first_then_local_then_config() -> None
 
 
 def test_launch_sh_exports_both_gh_app_env_vars() -> None:
-    """The heredoc body must export both vars *before* ``claude`` runs.
+    """The launch.sh template must export both vars *before* ``claude`` runs.
 
     A reader that lands here as a future maintainer should see at a glance
     that the export lines are gated on a non-empty value — an empty config
     must not clobber an env var the operator has set in their shell RC
     (back-compat path).
     """
-    body = _read(LAUNCH_SKILL)
-    # Find the rendered launch.sh body (between the heredoc markers).
-    # T-353: SKILL now uses a quoted heredoc (`<< 'EOF'`); accept either form
-    # so this pin survives both quoted and (legacy) unquoted variants while
-    # asserting the export-before-claude property below.
-    heredoc = re.search(
-        r"cat > \"\$\{WORKTREE_PATH\}/\.cloglog/launch\.sh\".*?<<\s*'?EOF'?\n(.*?)\nEOF\n",
-        body,
-        flags=re.DOTALL,
-    )
-    assert heredoc, "Could not locate launch.sh heredoc in launch SKILL.md"
-    rendered = heredoc.group(1)
+    rendered = _read(LAUNCH_TEMPLATE)
 
     # The export must come before the `claude --dangerously-skip-permissions` invocation.
     claude_idx = rendered.find("claude --dangerously-skip-permissions")
-    assert claude_idx > 0, "claude invocation missing from launch.sh heredoc"
+    assert claude_idx > 0, "claude invocation missing from launch.sh template"
     pre_claude = rendered[:claude_idx]
 
-    # T-353: with the quoted heredoc, `$_GH_APP_ID` appears literally
-    # (no backslash escape). Match either form so the pin holds across
-    # the heredoc-quoting refactor.
-    assert (
-        'export GH_APP_ID="$_GH_APP_ID"' in pre_claude
-        or 'export GH_APP_ID="\\$_GH_APP_ID"' in pre_claude
-    ), (
+    assert 'export GH_APP_ID="$_GH_APP_ID"' in pre_claude, (
         "launch.sh must export GH_APP_ID from the config-derived value "
         "before invoking claude. Without this, the github-bot skill's "
         "gh-app-token.py exits with 'env var required' on every task "
         "after a /clear."
     )
-    assert (
-        'export GH_APP_INSTALLATION_ID="$_GH_APP_INSTALLATION_ID"' in pre_claude
-        or 'export GH_APP_INSTALLATION_ID="\\$_GH_APP_INSTALLATION_ID"' in pre_claude
-    ), "launch.sh must export GH_APP_INSTALLATION_ID before invoking claude."
+    assert 'export GH_APP_INSTALLATION_ID="$_GH_APP_INSTALLATION_ID"' in pre_claude, (
+        "launch.sh must export GH_APP_INSTALLATION_ID before invoking claude."
+    )
 
     # Gate on non-empty so a missing config key doesn't clobber a shell-RC export.
-    assert (
-        '[[ -n "$_GH_APP_ID" ]] && export GH_APP_ID' in pre_claude
-        or '[[ -n "\\$_GH_APP_ID" ]] && export GH_APP_ID' in pre_claude
-    ), (
+    assert '[[ -n "$_GH_APP_ID" ]] && export GH_APP_ID' in pre_claude, (
         "GH_APP_ID export must be gated on a non-empty config value — "
         "otherwise an operator who keeps the values in their shell RC "
         "(back-compat) would have them clobbered to empty."
     )
-    assert (
-        '[[ -n "$_GH_APP_INSTALLATION_ID" ]] && export GH_APP_INSTALLATION_ID' in pre_claude
-        or '[[ -n "\\$_GH_APP_INSTALLATION_ID" ]] && export GH_APP_INSTALLATION_ID' in pre_claude
-    )
+    assert '[[ -n "$_GH_APP_INSTALLATION_ID" ]] && export GH_APP_INSTALLATION_ID' in pre_claude
 
 
 def test_no_operator_host_literals_in_plugin_or_tracked_cloglog_dir() -> None:

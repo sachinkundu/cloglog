@@ -37,41 +37,50 @@ import subprocess
 import textwrap
 from pathlib import Path
 
-from tests.plugins.test_launch_skill_renders_clean_launch_sh import (
-    _extract_emit_block,
-)
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SKILL_PATH = REPO_ROOT / "plugins/cloglog/skills/launch/SKILL.md"
+PLUGIN_ROOT = REPO_ROOT / "plugins/cloglog"
+TEMPLATE_PATH = PLUGIN_ROOT / "templates/launch.sh.template"
+RENDER_SCRIPT = PLUGIN_ROOT / "scripts/render_template.py"
 
 
 def _render_launch_sh(tmp_path: Path) -> Path:
-    """Render the launch.sh that the SKILL emits, then truncate it at the
-    `cd "$WORKTREE_PATH"` line so the helper functions can be sourced
-    without triggering the trap setup or the `claude` exec."""
-    skill_text = SKILL_PATH.read_text()
-    emit_block = _extract_emit_block(skill_text)
+    """Render the launch.sh from templates/launch.sh.template via
+    render_template.py, then truncate it at the ``cd "$WORKTREE_PATH"``
+    line so the helper functions can be sourced without triggering the
+    trap setup or the ``claude`` exec.
+
+    Post-T-354 the helpers live in the static template, not in a
+    SKILL-embedded heredoc.
+    """
+    import sys
 
     wt_path = tmp_path / "wt"
     proj_root = tmp_path / "proj"
     (wt_path / ".cloglog").mkdir(parents=True)
     proj_root.mkdir(parents=True)
 
+    out = wt_path / ".cloglog" / "launch.sh"
     result = subprocess.run(
-        ["bash", "-c", emit_block],
-        env={
-            "PATH": "/usr/bin:/bin",
-            "WORKTREE_PATH": str(wt_path),
-            "PROJECT_ROOT": str(proj_root),
-        },
+        [
+            sys.executable,
+            str(RENDER_SCRIPT),
+            "--template",
+            str(TEMPLATE_PATH),
+            "--output",
+            str(out),
+            "--var",
+            f"WORKTREE_PATH={wt_path}",
+            "--var",
+            f"PROJECT_ROOT={proj_root}",
+        ],
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, (
-        f"emit block failed: stdout={result.stdout!r} stderr={result.stderr!r}"
+        f"render_template.py failed: stdout={result.stdout!r} stderr={result.stderr!r}"
     )
 
-    rendered = (wt_path / ".cloglog" / "launch.sh").read_text()
+    rendered = out.read_text()
 
     # Slice off everything from `cd "$WORKTREE_PATH"` onward — those lines
     # set traps and exec `claude`, which we do not want when sourcing.
@@ -330,13 +339,18 @@ def test_project_id_set_no_slug_derivable_blocks_legacy_fallback(tmp_path: Path)
 
 
 def test_skill_documents_per_project_resolution_order() -> None:
-    """Text-level pin: SKILL.md `_api_key` block names the new resolution
-    chain. Stops a future edit from silently reverting to the old global-only
-    behaviour."""
-    skill_text = SKILL_PATH.read_text()
-    assert "_project_slug" in skill_text, (
-        "SKILL.md `_api_key` must call `_project_slug` for per-project resolution (T-382)."
+    """Text-level pin: ``launch.sh.template``'s ``_api_key`` block names
+    the per-project resolution chain. Stops a future edit from silently
+    reverting to the old global-only behaviour.
+
+    Post-T-354 the helpers live in ``templates/launch.sh.template``,
+    not in a SKILL-embedded heredoc.
+    """
+    template_text = TEMPLATE_PATH.read_text()
+    assert "_project_slug" in template_text, (
+        "launch.sh.template `_api_key` must call `_project_slug` for "
+        "per-project resolution (T-382)."
     )
-    assert "credentials.d/" in skill_text, (
-        "SKILL.md `_api_key` must reference `~/.cloglog/credentials.d/<slug>` (T-382)."
+    assert "credentials.d/" in template_text, (
+        "launch.sh.template `_api_key` must reference `~/.cloglog/credentials.d/<slug>` (T-382)."
     )

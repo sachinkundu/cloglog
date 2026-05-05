@@ -126,22 +126,18 @@ BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 DEMO_DIR="docs/demos/${BRANCH//\//-}"
 mkdir -p "$DEMO_DIR"
 
-cat > "$DEMO_DIR/exemption.md" <<MD
----
-verdict: no_demo
-diff_hash: <classifier's diff_hash, verbatim>
-classifier: demo-classifier
-generated_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
----
+# Build the file list as a markdown bullet list (one item per changed file).
+FILE_LIST="$(git diff --name-only "$MERGE_BASE" HEAD | sed 's/^/- /')"
 
-## Why no demo
-
-<paste classifier reasoning verbatim — signal, counter-signal, counterfactual>
-
-## Changed files
-
-$(git diff --name-only "$MERGE_BASE" HEAD | sed 's/^/- /')
-MD
+# Render via Jinja2 — safe against backticks, $(), pipes in reasoning.
+# CLAUDE_PLUGIN_ROOT must be set (standard worktree env).
+uv run --with jinja2 "${CLAUDE_PLUGIN_ROOT}/scripts/render_template.py" \
+  --template "${CLAUDE_PLUGIN_ROOT}/templates/exemption.md.template" \
+  --output "$DEMO_DIR/exemption.md" \
+  --var "diff_hash=<classifier's diff_hash, verbatim>" \
+  --var "reasoning=<classifier reasoning verbatim — signal, counter-signal, counterfactual>" \
+  --var "generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --var "file_list=$FILE_LIST"
 ```
 
 Then:

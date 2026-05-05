@@ -238,7 +238,7 @@ def test_exemption_missing_hash_rejected(tmp_path: Path) -> None:
     _write_exemption(tmp_path, diff_hash="", include_hash=False)
     result = _run(["bash", str(CHECK_DEMO_SH)], tmp_path, env)
     assert result.returncode != 0
-    assert "missing a diff_hash" in result.stdout, (
+    assert "missing required frontmatter key: diff_hash" in result.stdout, (
         f"Expected rejection of exemption missing diff_hash.\n"
         f"stdout: {result.stdout!r}\nstderr: {result.stderr!r}"
     )

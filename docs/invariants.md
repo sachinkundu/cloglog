@@ -240,6 +240,32 @@ the spec is explicit on this precedence and the test locks it in.
 
 **Pin:** `tests/test_check_demo_exemption_hash.py`
 
+### Exemption frontmatter must carry all four required keys
+
+`scripts/check-demo.sh` requires `verdict`, `diff_hash`, `classifier`, and
+`generated_at` to all be present and non-empty in the YAML frontmatter.
+A renderer regression that drops any of these fields must be a hard gate
+failure — if only `diff_hash` were checked, a bug that silently removes
+`verdict` would still pass. The `cloglog:demo` skill produces the exemption
+by rendering `plugins/cloglog/templates/exemption.md.template` via
+`render_template.py`; the template carries all four keys, but a future
+template edit that removes one would silently pass a gate that only checked
+`diff_hash`. Each missing key is reported by name so the agent knows which
+field to fix.
+
+**Pin:** `tests/test_exemption_template.py` (functions `test_gate_rejects_missing_*`)
+
+### Exemption.md is rendered via Jinja2, not a heredoc
+
+`plugins/cloglog/skills/demo/SKILL.md` produces `exemption.md` by calling
+`render_template.py` with `plugins/cloglog/templates/exemption.md.template`.
+The predecessor used an unquoted heredoc; classifier reasoning is free-form
+prose that may contain backticks and `$()` sequences. Jinja2 substitution is
+literal — no shell evaluation risk. The snapshot and special-chars tests pin
+this guarantee.
+
+**Pin:** `tests/test_exemption_template.py` (functions `test_snapshot_fixed_inputs`, `test_special_chars_round_trip`)
+
 ## Worktree / gitignore
 
 ### `task.md` is gitignored at any depth; `task.md.template` is not

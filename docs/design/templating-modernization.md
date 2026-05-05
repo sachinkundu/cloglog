@@ -96,7 +96,7 @@ The codex review flagged that earlier versions of this doc were missing the `plu
 
 ### Phase 2 — broken or fragile sites
 - **T-466** (`init` config.yaml `sed -i` updates) — latent escape footgun on slug/URL chars. Highest priority of the remaining sites. (priority: expedite)
-- **T-467** (`demo` exemption.md) — unquoted heredoc with classifier-supplied prose; ships a `\`` away from corruption. (priority: expedite)
+- ✅ **T-467** (`demo` exemption.md) — Jinja2-rendered via `render_template.py` + `exemption.md.template`; `check-demo.sh` hardened to require all four frontmatter keys.
 
 ### Phase 3 — working-but-fragile (multi-line, conditionals, freehand agent emission)
 - **T-462** (`codex-review-prompt.md` per-stack additions) — agent-driven generation is lossy.

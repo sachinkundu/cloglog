@@ -28,8 +28,20 @@ backend, not a property of a particular plugin's templated shell script.
 
 ## Trigger event
 
-**Decision:** trigger inside `register_agent` (`src/agent/services.py`),
-on the **first** call for a given `worktree_path` within a project.
+**Decision:** trigger at the **route/composition layer**
+(`src/agent/routes.py`, the `register_agent` POST handler), on the
+**first** call for a given `worktree_path` within a project. The
+route already plays the cross-context orchestrator role today —
+`/agents/close-off-task` resolves a worktree, looks up the main
+agent, and then calls `BoardService.create_close_off_task`
+(`routes.py:346-378`). The new path mirrors that shape: the route
+calls `AgentService.register(...)` first, then — for `role='worktree'`
+rows on the first registration — calls
+`BoardService.create_close_off_task(...)`. This keeps the cross-context
+boundary clean: `AgentService` does not gain a direct dependency on
+`BoardService`, and `src/board/interfaces.py` does not need a new
+"ensure close-off" port (the existing route-layer composition is the
+documented seam).
 "First" is keyed on the worktree row, not the session: the supervisor
 calls `register_agent` once at launch, the worktree-agent process calls
 it again from inside the worktree, and any later resume calls it again
@@ -73,15 +85,24 @@ Concretely:
 
 1. `register_agent` resolves (or creates) the worktree row by
    `(project_id, worktree_path)`.
-2. After commit, derive the worktree name with the existing rule
+2. **In the route handler (not in `AgentService`),** after
+   `service.register(...)` returns, gate on
+   `worktree.role == 'worktree'`. For `role='main'` registrations,
+   skip the rest of this step — those carry no teardown
+   semantics (see *Role gate* above).
+3. Derive the worktree name with the existing rule
    `worktree_name = worktree.branch_name or worktree.worktree_path.rsplit("/", 1)[-1]`
    — the `Worktree` ORM model (`src/agent/models.py:24`) has no `name`
    field; that derivation is what `services.py` already uses elsewhere
-   (e.g. line 770 in the unregister log path). Then call
+   (e.g. line 770 in the unregister log path).
+4. Resolve `main_agent_worktree_id` using the same role/env fallback
+   as the existing `/agents/close-off-task` route
+   (`routes.py:357-378`).
+5. Call
    `BoardService.create_close_off_task(project_id, close_off_worktree_id=worktree.id, worktree_name=worktree_name, main_agent_worktree_id=...)`.
-3. That service already returns `(task, created)` with `created=False`
+   That service already returns `(task, created)` with `created=False`
    on idempotent hits — the spec adds no new dedup logic, only a new
-   call site.
+   call site at the route layer.
 
 A re-registered worktree (same path, new session_id) hits step 1 with
 the same worktree row (the row is keyed on `worktree_path`, sessions
@@ -230,12 +251,12 @@ groups:
    land the row idempotently — but operators don't always resume every
    active worktree on day one.
 
-   **Decision:** ship a one-shot Alembic data migration in the same
-   PR as the trigger. The migration scans `worktrees` rows filtered
-   to **`status = 'online' AND role = 'worktree'`**, matching the
-   existing pattern in
-   `src/alembic/versions/c7d9e0f1a2b3_backfill_worktree_branch_names.py:67-72`.
-   The `role = 'worktree'` predicate excludes the supervisor's main
+   **Decision:** ship a one-shot **application-level backfill
+   command** in the same PR as the trigger (see *Application-level
+   command, not Alembic* below for why this is not an Alembic data
+   migration). The command scans `worktrees` rows filtered to
+   **`status = 'online' AND role = 'worktree'`**. The
+   `role = 'worktree'` predicate excludes the supervisor's main
    checkout from the backfill for the same reason the live trigger
    excludes it (above).
 
@@ -248,34 +269,55 @@ groups:
    crashed agents — exactly the "stale/closed worktrees get nothing"
    case the spec excludes.
 
-   **Sync SQL, not the async service.** Alembic's `upgrade()` runs
-   under a synchronous `connection.run_sync(...)` context
-   (`src/alembic/env.py:35-53`) and the existing data-migration
-   pattern uses `op.get_bind()` plus plain SQL
-   (`c7d9e0f1a2b3_backfill_worktree_branch_names.py:65-105`).
-   `BoardService.create_close_off_task` is `async` end-to-end and
-   cannot be awaited from that context. The migration therefore
-   reproduces the row-creation logic in sync SQL: it inserts into
-   `tasks` with the close-off title, `close_off_worktree_id`,
-   `worktree_id` (the resolved main-agent UUID, or NULL), and the
-   auto-provisioned epic/feature lookups inlined as SQL — the same
-   shape `create_close_off_task` performs but without the async
-   wrapper. The function is small (~60 lines in `services.py`),
-   reproducing it as SQL is straightforward, and keeping the
-   migration self-contained avoids the cross-cutting "expose an
-   async runner inside Alembic" plumbing the spec deliberately
-   doesn't scope.
+   **Application-level command, not Alembic.** The original draft
+   said the migration should reproduce close-off creation in sync
+   SQL inside `upgrade()`. Codex round 4 correctly rejected that:
+   `BoardService.create_close_off_task` is not a bare insert. It
+   allocates numbers via `next_epic_number` /
+   `next_feature_number` / `next_task_number`
+   (`src/board/services.py:434-470`,
+   `src/board/repository.py:92`), routes the task insert through
+   `BoardService.create_task` whose contract recomputes feature/epic
+   rollups when a task is added to a `done` feature
+   (`src/board/services.py:140`), and the sequential-numbering
+   contract is API-pinned at
+   `tests/e2e/test_board_consistency.py:223`. A SQL replay would
+   silently regress all three: backfilled cards could land in a
+   `done` close-off feature without re-opening it, and the migration
+   could consume `next_*_num` slots that the API later reuses.
 
-   The alternative — moving the backfill out of Alembic into an
-   application-level maintenance command (`make backfill-close-off`
-   or a CLI subcommand under `cloglog admin`) where `AsyncSession`
-   is available — is acceptable but adds an operational step
-   ("don't forget to run the command after the migration"). T-433
-   picks one; the default is sync SQL inside Alembic for atomicity
-   with the schema change.
+   **Decision:** the backfill ships as an application-level
+   maintenance command — `make backfill-close-off` (a thin wrapper
+   around a `cloglog admin backfill-close-off` CLI subcommand, or
+   equivalent — T-433 picks the exact spelling). The command opens
+   an `AsyncSession`, iterates `worktrees.status='online' AND
+   worktrees.role='worktree'`, resolves the main agent via the same
+   route-layer fallback, and calls
+   `BoardService.create_close_off_task(...)` for each. That reuses
+   every service-side invariant exactly — numbering, rollups, the
+   `IntegrityError` catch (see *Concurrency* below), and the same
+   visibility contract pinned by `test_close_off_task.py:521-565`.
 
-   For each `status='online' AND role='worktree'` row the migration
-   **resolves the main-agent worktree using the same role/env
+   The Alembic migration in the same PR carries **only** the
+   schema additions: `close_off_worktree_id` on `TaskCard` /
+   `TaskResponse` is a Pydantic-only change (no DB migration);
+   if any DB column changes are needed (none expected, the FK
+   already exists) they live in a sibling Alembic file. The
+   operational ordering is:
+
+   1. PR ships → schema change deploys.
+   2. Operator runs `make backfill-close-off` once (idempotent —
+      re-runs short-circuit on `find_close_off_task`).
+   3. From this point on every new `register_agent` files its own
+      close-off row via the trigger.
+
+   The backfill command is documented in `docs/setup-credentials.md`
+   adjacent to the existing `make migrate` instructions, and the
+   release note for T-434 calls it out so operators on hosts with
+   pre-existing worktrees do not skip it.
+
+   For each `status='online' AND role='worktree'` row the backfill
+   command **resolves the main-agent worktree using the same role/env
    fallback the HTTP route uses** (`src/agent/routes.py:357-378`: prefer
    `AgentRepository.get_main_agent_worktree(project_id)`, fall back
    to the worktree at `settings.main_agent_inbox_path.parent.parent`,
@@ -287,35 +329,27 @@ groups:
    in the main agent's `mcp__cloglog__get_my_tasks`) — the same T-305
    regression the route already defends against.
 
-   The migration is idempotent — re-running it is a no-op because the
-   natural-key `find_close_off_task` lookup short-circuits. The
+   The backfill command is idempotent — re-running it is a no-op
+   because the natural-key `find_close_off_task` lookup
+   short-circuits inside `BoardService.create_close_off_task`. The
    resolver is best-effort: when no main agent is registered (a
    downstream project that never ran `/cloglog setup`), the row is
    filed unassigned, exactly matching the live trigger's behaviour
    for the same condition.
 
-   **Concurrency.** The migration and live `register_agent` calls can
-   race: both pass `find_close_off_task` before either inserts the
-   FK; the loser then hits the
+   **Concurrency.** The backfill command and live `register_agent`
+   calls can race: both pass `find_close_off_task` before either
+   inserts the FK; the loser then hits the
    `uq_tasks_close_off_worktree_id` unique index
    (Alembic `d2a1b3c4e5f6` lines 49-54), aborting the transaction.
-   Two acceptable mitigations — pick one in T-434:
-
-   - **(Preferred)** Wrap `create_close_off_task` in a
-     catch-`IntegrityError` → rollback → re-read with
-     `find_close_off_task` → return the existing row. This makes the
-     service genuinely upsert-shaped without restructuring it as a
-     SQL `INSERT ... ON CONFLICT`. The same handler covers the live
-     trigger's race against itself in pathological double-call
-     scenarios.
-   - **Quiesce live registrations during the migration.** Acceptable
-     for cloglog (single host, operator-driven `make migrate`) but
-     not portable to downstream projects that may run migrations
-     under load. Document the constraint in the migration docstring
-     if chosen.
-
-   The "no special handling" line in the prior draft was wrong;
-   codex caught it.
+   The mitigation lands inside `BoardService.create_close_off_task`
+   itself: wrap the insert in
+   catch-`IntegrityError` → rollback → re-read with
+   `find_close_off_task` → return the existing row. That makes the
+   service genuinely upsert-shaped without an `INSERT ... ON
+   CONFLICT` rewrite, and covers the same trigger-vs-trigger race in
+   pathological double-call scenarios. Both the route-layer trigger
+   and the backfill command benefit from one fix in one place.
 
 2. **Stale / closed / force-unregistered worktrees with no close-off
    row.** Leave alone. There is no useful teardown work to track on a
@@ -323,10 +357,12 @@ groups:
    pollute the board with rows the supervisor cannot meaningfully
    action.
 
-The migration runs forward only. Downgrade is a no-op (we do not
-delete the backfilled rows on rollback — they are real teardown work
-the operator may legitimately complete). This is documented on the
-migration's `downgrade()` with a comment.
+The backfill command has no rollback semantics — backfilled rows
+are real teardown work that operators may legitimately complete, so
+"undoing" the backfill would discard live state. The CLI flag layout
+intentionally has no `--rollback` / `--undo` option; reverting the
+T-434 PR ships the schema/contract change back without touching the
+filed close-off rows.
 
 ## Per-project agent-side workflow vs. backend trigger
 
@@ -361,40 +397,57 @@ bootstrap scripts do not POST it."
 
 ## Failure handling
 
-If `create_close_off_task` raises inside the `register_agent` flow:
+The original draft of this section made close-off creation
+best-effort. Codex round 4 correctly rejected that: T-378 hardened
+`.cloglog/on-worktree-create.sh` to fail loud on any close-off
+creation error precisely because the warn-and-continue path masked a
+real-world incident on 2026-04-24
+(`.cloglog/on-worktree-create.sh:88, 168-190`;
+`tests/plugins/test_on_worktree_create_fails_loud.py:6`). Downstream
+consumers — close-wave's Step 1.5 (`close-wave/SKILL.md:87`) and the
+supervisor's `setup` skill that hands directly off to close-wave when
+no backlog tasks remain (`setup/SKILL.md:104`) — still treat a
+missing close-off row as a hard failure. Best-effort here would
+silently regress the same fail-loud contract.
+
+**Revised rule:** first-time close-off creation for a `role='worktree'`
+registration is a **hard gate**. If the row cannot be created, the
+HTTP `register_agent` call returns 5xx (or whatever status the
+existing `routes.py` close-off path uses on failure — match it
+exactly), the supervisor's launch flow surfaces the error the same
+way the on-worktree-create.sh POST does today, and the worktree
+agent does not proceed to start work.
+
+Within that gate the per-error handling is:
 
 - **`IntegrityError` on `uq_tasks_close_off_worktree_id`** (the
-  migration / re-entrant register race described under *Migration
-  plan / Concurrency*): catch, rollback the close-off insert,
-  re-read with `find_close_off_task(close_off_worktree_id)`, return
-  the existing row. This is a clean idempotent hit, not a failure.
-- **Other database error** (FK violation against a deleted parent,
-  transient connection blip): roll back the close-off task creation
-  but **commit** the worktree registration. `register_agent` returns
-  success. The supervisor's invariant ("the agent is registered") is
-  preserved; the close-off row gap is detected and self-healed by
-  the next reconcile run (T-371 reconcile rule covers this).
-- **Programmer error** (KeyError, AttributeError on a missing
-  `worktree.name`, etc.): log loud, return success on
-  `register_agent`, file an `mcp_tool_error` style backend log so
-  the supervisor sees it. Do not block the agent from launching.
-- **Migration concurrency** (the one-shot backfill running while a
-  fresh `register_agent` lands): handled by the `IntegrityError`
-  catch described above (and, more fully, under *Migration plan /
-  Concurrency*). The current `create_close_off_task` is
-  lookup-then-insert with no retry — without the catch, the loser
-  hits `uq_tasks_close_off_worktree_id` and aborts its transaction
-  (Alembic `d2a1b3c4e5f6` lines 41-54). The catch turns that abort
-  into a clean idempotent hit. The alternative — quiescing live
-  registrations during migration — is also acceptable for cloglog
-  and must be documented in the migration docstring if chosen.
+  migration / re-entrant register race): catch, rollback the
+  close-off insert, re-read with
+  `find_close_off_task(close_off_worktree_id)`, return the existing
+  row. This is a **clean idempotent hit**, not a failure — the
+  row exists, so the gate passes.
+- **All other failures** (transient DB error, FK violation, schema
+  bug, missing main-agent resolver, etc.): roll back the
+  registration's close-off step **and** the worktree registration
+  itself, return 5xx. The launch skill already knows how to surface
+  that — `routes.py:184-205` of the existing close-off endpoint is
+  the template.
+- **Resume / re-register** (worktree row already exists): the route
+  short-circuits via the existing
+  `worktree_id` lookup; `find_close_off_task` returns the existing
+  row; gate passes idempotently. No regression here — the gate only
+  fails when a brand-new `role='worktree'` row could not get its
+  close-off card on first creation.
 
-The principle: `register_agent` is the agent lifecycle's load-bearing
-event. The close-off row is **important but not critical** to that
-event succeeding. A close-off row gap is detectable and self-healing
-via reconcile; a `register_agent` failure cascades into the agent
-never starting at all. The trigger is best-effort within
-`register_agent`'s success path, not a synchronous gate on it.
+This matches the on-worktree-create.sh behaviour exactly, so swapping
+the per-project POST for the backend trigger is a pure refactor of
+*where* the gate lives, not a downgrade of the contract.
+
+Reconcile (T-371) remains the self-heal path for any orphan/missing
+row that slips through after the fact (manual DB edits, partial
+recovery, etc.) — but it is **not** the primary correctness mechanism
+for the happy launch path, which is what the prior draft incorrectly
+implied.
 
 ## In scope (T-434), expanded by codex round 2
 
@@ -466,7 +519,22 @@ The implementation PR (T-434) MUST add or verify these pin tests:
     FK-based predicate has the UUID it needs. Reconcile's
     close-wave-delegation component already does this; pin keeps
     close-wave aligned.
-13. The Alembic migration uses sync SQL via `op.get_bind()`, not the
-    async `BoardService.create_close_off_task`. Pin guards against a
-    later refactor that tries to await async services from
-    `upgrade()`.
+13. The backfill ships as an application-level command
+    (`make backfill-close-off` or equivalent) that opens an
+    `AsyncSession` and reuses `BoardService.create_close_off_task`,
+    NOT as an Alembic data migration. Pin guards against a future
+    refactor that tries to inline the row-creation logic in sync
+    SQL inside `upgrade()` and silently regresses numbering /
+    rollup invariants.
+14. The route-layer `register_agent` handler — not
+    `AgentService.register` — calls
+    `BoardService.create_close_off_task`. Pin keeps the
+    cross-context orchestration at the documented composition
+    boundary and prevents `AgentService` from growing a direct
+    `BoardService` dependency.
+15. First-time close-off creation for a `role='worktree'`
+    registration is a **hard gate**. If the row cannot be created
+    (any error other than the idempotent `IntegrityError` re-read),
+    the HTTP `register_agent` call fails. Pin guards against a
+    future refactor that re-introduces best-effort behaviour and
+    silently regresses the T-378 fail-loud contract.

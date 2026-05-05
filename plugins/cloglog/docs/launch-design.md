@@ -73,8 +73,12 @@ without changing the substitution semantics. The same script handles
 `task.md` rendering (replacing the prior heredoc + multi-pass sed with
 `r FILE` for multi-line values).
 
-The bash-side SKILL recipe shrinks to a single `python3 render_template.py`
-invocation per file, with `--var key=value` flags carrying the bindings.
+The bash-side SKILL recipe shrinks to a single
+`uv run --with jinja2 render_template.py` invocation per file, with
+`--var key=value` flags carrying the bindings. `uv run --with jinja2`
+is mandatory — Jinja2 is not assumed to live in the host's system
+`python3`, and the wrapper provisions it in an ephemeral env (mirrors
+the `gh-app-token.py` pattern, T-437 codex round 1).
 This is also why both files are now tracked under `templates/`: a
 template living in version control can be linted, syntax-checked, and
 diffed across history; a template encoded as bash heredoc lines inside a

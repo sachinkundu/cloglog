@@ -24,7 +24,7 @@ Values come from ``--var key=value`` flags or the process environment
 
 Usage::
 
-    python3 render_template.py \\
+    uv run --with jinja2 "${CLAUDE_PLUGIN_ROOT}/scripts/render_template.py" \\
         --template path/to/template \\
         --output path/to/output \\
         --var key=value [--var key2=value2 ...]
@@ -108,7 +108,13 @@ def main(argv: list[str] | None = None) -> int:
     for key in referenced - values.keys():
         if not VAR_KEY_RE.fullmatch(key):
             continue
+        # Try the lower-case key first (the new contract), then the
+        # upper-case shape for back-compat with callers that still export
+        # `TASK_NUMBER`/`WORKTREE_PATH` etc. into the process env (T-437
+        # codex round 2 — preserve the documented env-fallback contract).
         env_val = os.environ.get(key)
+        if env_val is None:
+            env_val = os.environ.get(key.upper())
         if env_val is not None:
             values[key] = env_val
 

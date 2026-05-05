@@ -192,6 +192,62 @@ def test_skill_uses_render_template_script() -> None:
     )
 
 
+def test_uppercase_env_fallback_renders_lowercase_placeholder() -> None:
+    """T-437 codex round 2: env-fallback must accept uppercase env var names
+    for back-compat with the pre-T-437 contract (callers that exported
+    `TASK_NUMBER`/`WORKTREE_PATH` etc. into the process env). The lower-case
+    `{{ task_number }}` placeholder must resolve from `TASK_NUMBER` env when
+    no `--var task_number=…` is provided.
+    """
+    import os
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wt = Path(tmp) / "wt-fake"
+        wt.mkdir()
+        # Provide every required key via uppercase env, no --var.
+        env = {
+            **os.environ,
+            "TASK_NUMBER": "T-555",
+            "TASK_TITLE": "Uppercase env-fallback works",
+            "PRIORITY": "normal",
+            "FEATURE_REF": "F-99 some feature",
+            "TASK_UUID": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "FEATURE_UUID": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "WORKTREE_UUID": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            "WORKTREE_NAME": "wt-fake",
+            "WORKTREE_PATH": str(wt),
+            "PROJECT_ROOT": str(REPO_ROOT),
+            "TASK_DESCRIPTION": "Round-tripped from uppercase env.",
+            "SIBLING_WARNINGS": "(none)",
+            "RESIDUAL_NOTES": "(none)",
+        }
+        out = wt / "task.md"
+        result = subprocess.run(
+            [
+                "uv",
+                "run",
+                "--with",
+                "jinja2",
+                str(RENDER_SCRIPT),
+                "--template",
+                str(TASK_TEMPLATE),
+                "--output",
+                str(out),
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, (
+            f"render_template.py failed under uppercase-env-only: "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+        body = out.read_text(encoding="utf-8")
+        assert "T-555" in body
+        assert "Uppercase env-fallback works" in body
+        assert "Round-tripped from uppercase env." in body
+
+
 def test_task_md_template_has_required_placeholders() -> None:
     """Pin the placeholder set used by the SKILL — adding or removing a
     placeholder must update both the template and the SKILL's

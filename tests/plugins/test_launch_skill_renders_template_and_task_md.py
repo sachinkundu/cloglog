@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import re
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
@@ -38,7 +37,10 @@ RENDER_SCRIPT = PLUGIN_ROOT / "scripts/render_template.py"
 
 def _render_task_md(out_path: Path, **bindings: str) -> None:
     cmd = [
-        sys.executable,
+        "uv",
+        "run",
+        "--with",
+        "jinja2",
         str(RENDER_SCRIPT),
         "--template",
         str(TASK_TEMPLATE),

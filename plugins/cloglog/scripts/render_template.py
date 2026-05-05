@@ -4,6 +4,14 @@
 Used by the cloglog launch SKILL to produce ``.cloglog/launch.sh`` and
 ``task.md`` from the static templates in ``plugins/cloglog/templates/``.
 
+Requires: jinja2
+Usage: uv run --with jinja2 "${CLAUDE_PLUGIN_ROOT}/scripts/render_template.py" ...
+
+Always invoke under ``uv run --with jinja2`` so the Jinja2 dependency is
+provisioned in an ephemeral env (mirrors the ``gh-app-token.py`` pattern,
+T-437/T-354). Plain ``python3 render_template.py`` will ``ModuleNotFoundError``
+on any host whose system interpreter doesn't already have Jinja2.
+
 Engine: Jinja2 with ``StrictUndefined`` (T-437). The placeholder syntax
 is ``{{ key }}`` where ``key`` matches ``[a-z_][a-z0-9_]*``. Autoescape
 is OFF — the outputs are bash and Markdown, not HTML — so values

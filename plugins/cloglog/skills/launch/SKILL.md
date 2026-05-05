@@ -81,7 +81,10 @@ cp "${CLAUDE_PLUGIN_ROOT}/templates/AGENT_PROMPT.md" "${WORKTREE_PATH}/AGENT_PRO
 #    Engine is Jinja2 with autoescape OFF (T-437); placeholder syntax is
 #    `{{ key }}`. Replacement is literal — values containing `&`, `\`,
 #    `|`, or newlines round-trip verbatim, preserving the T-354 fix.
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/render_template.py" \
+#    `uv run --with jinja2` provisions Jinja2 in an ephemeral env so the
+#    script works on hosts whose system `python3` lacks the package
+#    (mirrors the gh-app-token.py pattern).
+uv run --with jinja2 "${CLAUDE_PLUGIN_ROOT}/scripts/render_template.py" \
   --template "${CLAUDE_PLUGIN_ROOT}/templates/task.md.template" \
   --output "${WORKTREE_PATH}/task.md" \
   --var "task_number=${TASK_NUMBER}" \
@@ -225,7 +228,7 @@ printf '%s\n' "${TASK_MODEL:-}" > "${WORKTREE_PATH}/.cloglog/task-model"
 # via Jinja2 with autoescape OFF — values containing `&`, `\`, `|`,
 # or newlines round-trip verbatim. T-354 closed the prior heredoc + sed
 # shape; T-437 swapped the literal-replace engine for Jinja2.
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/render_template.py" \
+uv run --with jinja2 "${CLAUDE_PLUGIN_ROOT}/scripts/render_template.py" \
   --template "${CLAUDE_PLUGIN_ROOT}/templates/launch.sh.template" \
   --output "${WORKTREE_PATH}/.cloglog/launch.sh" \
   --var "worktree_path=${WORKTREE_PATH}" \

@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import re
 import subprocess
-import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -46,7 +45,10 @@ def _render(tmp_path: Path, worktree_path: Path, project_root: Path) -> Path:
     out.parent.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
         [
-            sys.executable,
+            "uv",
+            "run",
+            "--with",
+            "jinja2",
             str(RENDER_SCRIPT),
             "--template",
             str(TEMPLATE_PATH),

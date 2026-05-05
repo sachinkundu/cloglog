@@ -52,8 +52,6 @@ def _render_launch_sh(tmp_path: Path) -> Path:
     Post-T-354 the helpers live in the static template, not in a
     SKILL-embedded heredoc.
     """
-    import sys
-
     wt_path = tmp_path / "wt"
     proj_root = tmp_path / "proj"
     (wt_path / ".cloglog").mkdir(parents=True)
@@ -62,7 +60,10 @@ def _render_launch_sh(tmp_path: Path) -> Path:
     out = wt_path / ".cloglog" / "launch.sh"
     result = subprocess.run(
         [
-            sys.executable,
+            "uv",
+            "run",
+            "--with",
+            "jinja2",
             str(RENDER_SCRIPT),
             "--template",
             str(TEMPLATE_PATH),

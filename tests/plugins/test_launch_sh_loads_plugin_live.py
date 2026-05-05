@@ -6,61 +6,53 @@ Without `--plugin-dir`, claude resolves the cloglog plugin from its
 install-time cache (`claude plugins install`). Edits to
 `plugins/cloglog/skills/**`, `hooks/**`, or `templates/**` are then
 silently invisible to agents launched after the edit — the cache freezes
-the plugin contents at install time. This pin asserts that the rendered
-launch.sh:
+the plugin contents at install time.
 
-  - declares a `--plugin-dir` flag in the claude invocation, AND
-  - the flag's path is anchored on `$WORKTREE_PATH/plugins/cloglog`
-    (the worktree-local plugin source, not a shared install).
-
-A regression that drops the flag, or hardcodes a single shared path
-(e.g. `~/.claude/plugins/...`), reopens the install-time-cache trap.
+Post-T-354 the launch.sh is rendered from
+``templates/launch.sh.template`` via ``scripts/render_template.py``,
+so this pin reads the template directly rather than re-extracting a
+heredoc body from SKILL.md.
 """
 
 from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SKILL_PATH = REPO_ROOT / "plugins/cloglog/skills/launch/SKILL.md"
-
-HEREDOC_OPEN = "cat > \"${WORKTREE_PATH}/.cloglog/launch.sh\" << 'EOF'"
-
-
-def _extract_emit_block(skill_text: str) -> str:
-    lines = skill_text.splitlines()
-    start = next(i for i, ln in enumerate(lines) if ln.strip() == HEREDOC_OPEN)
-    eof = next(j for j in range(start + 1, len(lines)) if lines[j].strip() == "EOF")
-    post: list[str] = []
-    for k in range(eof + 1, len(lines)):
-        if lines[k].strip().startswith("chmod +x"):
-            break
-        post.append(lines[k])
-    return "\n".join(lines[start : eof + 1] + post) + "\n"
+PLUGIN_ROOT = REPO_ROOT / "plugins/cloglog"
+SKILL_PATH = PLUGIN_ROOT / "skills/launch/SKILL.md"
+TEMPLATE_PATH = PLUGIN_ROOT / "templates/launch.sh.template"
+RENDER_SCRIPT = PLUGIN_ROOT / "scripts/render_template.py"
 
 
 def _render(tmp_path: Path) -> str:
-    skill = SKILL_PATH.read_text()
-    block = _extract_emit_block(skill)
     wt = tmp_path / "wt-foo"
     proj = tmp_path / "proj"
     (wt / ".cloglog").mkdir(parents=True)
     (wt / "plugins" / "cloglog").mkdir(parents=True)
     proj.mkdir(parents=True)
+    out = wt / ".cloglog" / "launch.sh"
     result = subprocess.run(
-        ["bash", "-c", block],
-        env={
-            "PATH": "/usr/bin:/bin",
-            "WORKTREE_PATH": str(wt),
-            "PROJECT_ROOT": str(proj),
-        },
+        [
+            sys.executable,
+            str(RENDER_SCRIPT),
+            "--template",
+            str(TEMPLATE_PATH),
+            "--output",
+            str(out),
+            "--var",
+            f"WORKTREE_PATH={wt}",
+            "--var",
+            f"PROJECT_ROOT={proj}",
+        ],
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    return (wt / ".cloglog" / "launch.sh").read_text()
+    return out.read_text()
 
 
 def test_rendered_launch_sh_passes_plugin_dir_flag(tmp_path: Path) -> None:
@@ -75,8 +67,6 @@ def test_rendered_launch_sh_passes_plugin_dir_flag(tmp_path: Path) -> None:
 
 def test_plugin_dir_flag_anchors_on_worktree_path(tmp_path: Path) -> None:
     rendered = _render(tmp_path)
-    # The path must be derived from $WORKTREE_PATH so each worktree picks
-    # up edits to its own plugin copy, not a shared install.
     pattern = re.compile(
         r"--plugin-dir\s+\$?\{?WORKTREE_PATH\}?/plugins/cloglog\b"
         r'|--plugin-dir\s+"?[^\s"]*/plugins/cloglog\b'
@@ -89,13 +79,18 @@ def test_plugin_dir_flag_anchors_on_worktree_path(tmp_path: Path) -> None:
     )
 
 
-def test_skill_documents_plugin_dir_rationale() -> None:
-    """The prose must explain *why* — a future edit that drops the flag
-    leaves the next reader no way to rediscover the install-time-cache
-    failure mode."""
-    body = SKILL_PATH.read_text()
-    assert "--plugin-dir" in body, "launch SKILL.md must mention --plugin-dir"
-    assert "T-387" in body, (
-        "launch SKILL.md must reference T-387 so the plugin live-load "
-        "rationale survives future edits."
+def test_template_documents_plugin_dir_rationale() -> None:
+    """The prose anchor moved from the SKILL heredoc to the
+    ``docs/launch-design.md`` history. Pin the T-387 reference there so
+    a future edit that drops ``--plugin-dir`` from the template leaves a
+    breadcrumb for the next reader.
+    """
+    template_body = TEMPLATE_PATH.read_text()
+    assert "--plugin-dir" in template_body, "launch.sh.template must reference --plugin-dir"
+    design_doc = PLUGIN_ROOT / "docs/launch-design.md"
+    assert design_doc.is_file(), f"{design_doc} missing — T-354 design doc"
+    design_body = design_doc.read_text()
+    assert "T-387" in design_body, (
+        "docs/launch-design.md must reference T-387 so the plugin "
+        "live-load rationale survives future edits."
     )

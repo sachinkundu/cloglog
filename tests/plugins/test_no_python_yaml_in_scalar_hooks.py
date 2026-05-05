@@ -29,6 +29,7 @@ SCALAR_HOOK_FILES = [
 PROTECT_WORKTREE_WRITES = REPO_ROOT / "plugins/cloglog/hooks/protect-worktree-writes.sh"
 
 LAUNCH_SKILL = REPO_ROOT / "plugins/cloglog/skills/launch/SKILL.md"
+LAUNCH_TEMPLATE = REPO_ROOT / "plugins/cloglog/templates/launch.sh.template"
 
 
 def _read(p: Path) -> str:
@@ -82,45 +83,28 @@ def test_protect_worktree_writes_invokes_the_vendored_parser() -> None:
 
 
 def test_launch_skill_template_emits_no_import_yaml() -> None:
-    """The launch.sh template inside SKILL.md must not bake in import yaml.
+    """The launch.sh template must not bake in ``import yaml``.
 
-    The template is rendered into a standalone bash exec inside the
-    worktree (see Step 4c), with no plugin root in scope. We allow an
-    inlined grep+sed equivalent — but `import yaml` is forbidden, since
-    the rendered script runs under whatever python3 the host happens to
-    have.
+    Post-T-354 the template is the static file
+    ``plugins/cloglog/templates/launch.sh.template`` (rendered into the
+    worktree by ``scripts/render_template.py``). The rendered script
+    runs as a standalone bash exec inside the worktree, with no plugin
+    root in scope. We allow an inlined grep+sed equivalent — but
+    ``import yaml`` is forbidden, since the rendered script runs under
+    whatever python3 the host happens to have.
     """
-    body = _read(LAUNCH_SKILL)
-    # Extract the launch.sh heredoc body (between "<< EOF" and the closing EOF).
-    match = re.search(
-        r"cat > \"\$\{WORKTREE_PATH\}/\.cloglog/launch\.sh\" << '?EOF'?\n(.*?)\nEOF",
-        body,
-        flags=re.DOTALL,
-    )
-    assert match, (
-        "Could not find the `cat > ... launch.sh << EOF` heredoc in the "
-        "launch SKILL.md — has the template been restructured?"
-    )
-    template = match.group(1)
-    assert "import yaml" not in template, (
-        "The launch.sh template still bakes `import yaml` into the "
-        "rendered launcher — T-312 forbids this. Inline a grep+sed "
-        "equivalent that mirrors plugins/cloglog/hooks/lib/parse-yaml-scalar.sh."
+    body = _read(LAUNCH_TEMPLATE)
+    assert "import yaml" not in body, (
+        "launch.sh.template still bakes `import yaml` into the rendered "
+        "launcher — T-312 forbids this. Inline a grep+sed equivalent "
+        "that mirrors plugins/cloglog/hooks/lib/parse-yaml-scalar.sh."
     )
 
 
 def test_launch_skill_template_uses_grep_sed_for_backend_url() -> None:
     """Pin the rendered _backend_url() shape: grep + sed scalar parse."""
-    body = _read(LAUNCH_SKILL)
-    match = re.search(
-        r"cat > \"\$\{WORKTREE_PATH\}/\.cloglog/launch\.sh\" << '?EOF'?\n(.*?)\nEOF",
-        body,
-        flags=re.DOTALL,
-    )
-    assert match
-    template = match.group(1)
-    # Locate the _backend_url() function block.
-    fn = re.search(r"_backend_url\(\)\s*\{(.*?)\n\}", template, flags=re.DOTALL)
+    body = _read(LAUNCH_TEMPLATE)
+    fn = re.search(r"_backend_url\(\)\s*\{(.*?)\n\}", body, flags=re.DOTALL)
     assert fn, "_backend_url() function missing from launch.sh template"
     body_fn = fn.group(1)
     assert "grep '^backend_url:'" in body_fn, (

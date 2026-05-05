@@ -95,10 +95,14 @@ def test_launch_skill_backend_url_block_uses_grep_sed_not_yaml() -> None:
     python3 launch.sh runs under typically lacks PyYAML, so the previous
     snippet silently swallowed ImportError and returned the default port,
     breaking unregister-by-path on portable hosts.
+
+    Post-T-354 the helpers live in ``templates/launch.sh.template``,
+    not in a SKILL-embedded heredoc.
     """
-    body = _read(LAUNCH_SKILL)
+    template = REPO_ROOT / "plugins/cloglog/templates/launch.sh.template"
+    body = _read(template)
     fn_match = re.search(r"_backend_url\(\)\s*\{(.*?)\n\}", body, flags=re.DOTALL)
-    assert fn_match, "_backend_url() block missing from launch SKILL.md"
+    assert fn_match, "_backend_url() block missing from launch.sh.template"
     fn_body = fn_match.group(1)
 
     assert "import yaml" not in fn_body, (

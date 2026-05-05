@@ -75,6 +75,9 @@ export interface ToolHandlers {
   add_task_dependency(args: { task_id: string; depends_on_id: string }): Promise<unknown>
   remove_task_dependency(args: { task_id: string; depends_on_id: string }): Promise<unknown>
   search(args: { project_id: string; query: string; limit?: number; status_filter?: string[] }): Promise<unknown>
+  reorder_epics(args: { project_id: string; items: Array<{ id: string; position: number }> }): Promise<unknown>
+  reorder_features(args: { project_id: string; epic_id: string; items: Array<{ id: string; position: number }> }): Promise<unknown>
+  reorder_tasks(args: { feature_id: string; items: Array<{ id: string; position: number }> }): Promise<unknown>
 }
 
 export function createToolHandlers(client: CloglogClient): ToolHandlers {
@@ -290,6 +293,22 @@ export function createToolHandlers(client: CloglogClient): ToolHandlers {
 
     async remove_task_dependency({ task_id, depends_on_id }) {
       return client.request('DELETE', `/api/v1/tasks/${task_id}/dependencies/${depends_on_id}`)
+    },
+
+    async reorder_epics({ project_id, items }) {
+      return client.request('POST', `/api/v1/projects/${project_id}/epics/reorder`, { items })
+    },
+
+    async reorder_features({ project_id, epic_id, items }) {
+      return client.request(
+        'POST',
+        `/api/v1/projects/${project_id}/epics/${epic_id}/features/reorder`,
+        { items },
+      )
+    },
+
+    async reorder_tasks({ feature_id, items }) {
+      return client.request('POST', `/api/v1/features/${feature_id}/tasks/reorder`, { items })
     },
 
     async search({ project_id, query, limit, status_filter }) {

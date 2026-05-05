@@ -557,6 +557,39 @@ describe('Tool Handlers', () => {
     )
   })
 
+  it('reorder_epics calls POST /projects/{id}/epics/reorder with the items payload', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({ status: 'ok' })
+    const items = [
+      { id: 'e1', position: 0 },
+      { id: 'e2', position: 1000 },
+    ]
+    await handlers.reorder_epics({ project_id: 'proj-1', items })
+    expect(client.request).toHaveBeenCalledWith(
+      'POST', '/api/v1/projects/proj-1/epics/reorder', { items }
+    )
+  })
+
+  it('reorder_features calls POST /projects/{id}/epics/{epic_id}/features/reorder', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({ status: 'ok' })
+    const items = [{ id: 'f1', position: 0 }]
+    await handlers.reorder_features({ project_id: 'proj-1', epic_id: 'epic-1', items })
+    expect(client.request).toHaveBeenCalledWith(
+      'POST', '/api/v1/projects/proj-1/epics/epic-1/features/reorder', { items }
+    )
+  })
+
+  it('reorder_tasks calls POST /features/{feature_id}/tasks/reorder (no project in path — backend resolves it)', async () => {
+    (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({ status: 'ok' })
+    const items = [
+      { id: 't1', position: 0 },
+      { id: 't2', position: 1000 },
+    ]
+    await handlers.reorder_tasks({ feature_id: 'feat-1', items })
+    expect(client.request).toHaveBeenCalledWith(
+      'POST', '/api/v1/features/feat-1/tasks/reorder', { items }
+    )
+  })
+
   it('remove_task_dependency calls DELETE /tasks/{id}/dependencies/{depends_on_id}', async () => {
     (client.request as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true })
 

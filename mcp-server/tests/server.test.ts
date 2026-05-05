@@ -596,3 +596,92 @@ describe('Guard 2 — register_agent verifies project_id (T-398)', () => {
     expect(result.isError).toBeFalsy()
   })
 })
+
+describe('reorder tools (T-394)', () => {
+  // Mirror the three drag-and-drop endpoints exposed via MCP so agents
+  // can reprioritise the backlog the same way the frontend does.
+
+  async function registerAndGetTools() {
+    const client = mockClient()
+    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      worktree_id: 'wt-r',
+      project_id: 'proj-r',
+      current_task: null,
+      resumed: false,
+      agent_token: 'tok-r',
+    })
+    const server = createServer(client)
+    const tools = (server as any)._registeredTools
+    await tools.register_agent.handler({ worktree_path: '/tmp/not-a-repo' })
+    ;(client.request as ReturnType<typeof vi.fn>).mockClear()
+    return { client, tools }
+  }
+
+  it('exposes the three reorder tools', () => {
+    const server = createServer(mockClient())
+    const tools = (server as any)._registeredTools
+    expect(tools.reorder_epics).toBeDefined()
+    expect(tools.reorder_features).toBeDefined()
+    expect(tools.reorder_tasks).toBeDefined()
+  })
+
+  it('refuses to reorder before register_agent — keeps the project-scoped guidance consistent with other board tools', async () => {
+    const client = mockClient()
+    const server = createServer(client)
+    const tools = (server as any)._registeredTools
+    const result = await tools.reorder_epics.handler({ items: [{ id: 'e1', position: 0 }] })
+    expect(result.content[0].text).toMatch(/Not registered/)
+    expect(client.request).not.toHaveBeenCalled()
+  })
+
+  it('reorder_epics POSTs to /projects/{pid}/epics/reorder with the items payload', async () => {
+    const { client, tools } = await registerAndGetTools()
+    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ status: 'ok' })
+    const items = [
+      { id: 'e1', position: 0 },
+      { id: 'e2', position: 1000 },
+    ]
+    const result = await tools.reorder_epics.handler({ items })
+    expect(client.request).toHaveBeenCalledWith(
+      'POST',
+      '/api/v1/projects/proj-r/epics/reorder',
+      { items },
+    )
+    expect(result.content[0].text).toContain('"status": "ok"')
+  })
+
+  it('reorder_features POSTs to /projects/{pid}/epics/{epic_id}/features/reorder', async () => {
+    const { client, tools } = await registerAndGetTools()
+    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ status: 'ok' })
+    const items = [{ id: 'f1', position: 0 }]
+    await tools.reorder_features.handler({ epic_id: 'epic-1', items })
+    expect(client.request).toHaveBeenCalledWith(
+      'POST',
+      '/api/v1/projects/proj-r/epics/epic-1/features/reorder',
+      { items },
+    )
+  })
+
+  it('reorder_tasks POSTs to /features/{feature_id}/tasks/reorder', async () => {
+    const { client, tools } = await registerAndGetTools()
+    ;(client.request as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ status: 'ok' })
+    const items = [
+      { id: 't1', position: 0 },
+      { id: 't2', position: 1000 },
+    ]
+    await tools.reorder_tasks.handler({ feature_id: 'feat-1', items })
+    expect(client.request).toHaveBeenCalledWith(
+      'POST',
+      '/api/v1/features/feat-1/tasks/reorder',
+      { items },
+    )
+  })
+
+  it('surfaces backend errors as isError responses (e.g. invalid id)', async () => {
+    const { client, tools } = await registerAndGetTools()
+    ;(client.request as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('invalid id'))
+    const result = await tools.reorder_epics.handler({ items: [{ id: 'bogus', position: 0 }] })
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain('invalid id')
+  })
+})

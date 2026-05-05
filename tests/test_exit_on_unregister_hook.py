@@ -112,3 +112,157 @@ def test_hook_is_wired_in_settings():
     assert "mcp__cloglog__unregister_agent" in matchers, (
         "exit-on-unregister hook is not wired into PostToolUse"
     )
+
+
+# ---------------------------------------------------------------------------
+# T-428: 5 deterministic recurrences on 2026-05-05 (close-wave work logs
+# t394, t354, t437, t438) where the hook fired (debug log shows
+# "exit-on-unregister.sh scheduled TERM ...") yet claude survived until tab
+# force-close. Either the kill targeted a transient wrapper that exited
+# before the kill landed, or claude's Node process trapped TERM with cleanup
+# logic that did not exit. The fix:
+#   1. launch.sh.template writes <worktree>/.cloglog/claude.pid, and
+#   2. the hook prefers that file over $PPID and escalates TERM → INT → KILL.
+# These pin tests reproduce both failure modes and assert the parent dies
+# anyway. Bare existence checks (the original test below) cannot catch a
+# parent that traps TERM — they would have passed all 5 recurrences.
+# ---------------------------------------------------------------------------
+
+
+def _run_signal_resistant_parent(
+    payload: str,
+    *,
+    trap_signals: tuple[str, ...],
+    parent_sleep: int = 30,
+    pidfile: Path | None = None,
+) -> int:
+    """Spawn a bash parent that traps the given signals, then runs the hook.
+
+    Simulates the real failure mode where claude's Node process catches
+    TERM (and/or INT) and does not exit. The hook must escalate to KILL.
+
+    If `pidfile` is provided, the parent writes its own PID there before
+    invoking the hook — exercises the .cloglog/claude.pid lookup path.
+    """
+    if shutil.which("setsid") is None:
+        pytest.skip("setsid required (Linux only)")
+    traps = " ".join(f"trap '' {sig}" for sig in trap_signals)
+    pidfile_setup = ""
+    cwd_arg = ""
+    if pidfile is not None:
+        pidfile_setup = f"echo $$ > {pidfile}; "
+        # cwd in input must be inside a git repo whose .cloglog/claude.pid
+        # the hook will read. We pass the pidfile's parent's parent.
+        worktree_root = pidfile.parent.parent
+        cwd_arg = str(worktree_root)
+    payload_with_cwd = payload
+    if cwd_arg:
+        body = json.loads(payload)
+        body["cwd"] = cwd_arg
+        payload_with_cwd = json.dumps(body)
+    cmd = (
+        f"{traps}; {pidfile_setup}"
+        f"echo {json.dumps(payload_with_cwd)} | bash {HOOK}; sleep {parent_sleep}"
+    )
+    proc = subprocess.Popen(["bash", "-c", cmd])
+    try:
+        return proc.wait(timeout=parent_sleep + 5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        raise
+
+
+def test_parent_trapping_term_is_escalated_to_kill():
+    """T-428: a parent that ignores TERM must still die — escalation to
+    INT, then KILL. Reproduces the 2026-05-05 failure mode where claude
+    survived a single TERM."""
+    rc = _run_signal_resistant_parent(
+        _payload(),
+        trap_signals=("TERM", "INT"),
+        parent_sleep=20,
+    )
+    assert rc in (-signal.SIGKILL, 128 + signal.SIGKILL), (
+        f"parent ignoring TERM/INT must die of SIGKILL, got rc={rc}. "
+        "If this fails the hook is back to the 2026-05-05 single-TERM bug."
+    )
+
+
+def test_parent_trapping_term_only_dies_on_int():
+    """T-428: parent traps TERM but not INT — escalation to INT must
+    succeed before reaching KILL."""
+    rc = _run_signal_resistant_parent(
+        _payload(),
+        trap_signals=("TERM",),
+        parent_sleep=20,
+    )
+    # bash -c with `trap '' TERM` ignores TERM entirely; INT kills it.
+    assert rc in (-signal.SIGINT, 128 + signal.SIGINT), (
+        f"parent must die of SIGINT after TERM is trapped, got rc={rc}"
+    )
+
+
+def test_hook_prefers_pidfile_over_ppid(tmp_path):
+    """T-428: when <worktree>/.cloglog/claude.pid exists and points at a
+    live process, the hook targets it instead of $PPID. This is the
+    authoritative-PID path the launcher.sh now writes — it survives
+    spawn-time variance in how claude wraps the hook script."""
+    if shutil.which("git") is None:
+        pytest.skip("git required")
+    # Build a real git worktree-ish layout so `git rev-parse --show-toplevel`
+    # from cwd resolves to tmp_path/wt.
+    wt = tmp_path / "wt"
+    (wt / ".cloglog").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(wt)], check=True)
+    pidfile = wt / ".cloglog" / "claude.pid"
+    # Spawn a victim process whose only job is to sleep — the pidfile
+    # points at IT, and we assert the victim dies (not the bash parent).
+    victim = subprocess.Popen(["bash", "-c", "sleep 30"])
+    pidfile.write_text(str(victim.pid))
+    try:
+        body = json.loads(_payload())
+        body["cwd"] = str(wt)
+        payload = json.dumps(body)
+        # Run the hook from a parent that is NOT the victim. If the hook
+        # used $PPID it would kill us; with pidfile it kills victim.
+        cmd = f"echo {json.dumps(payload)} | bash {HOOK}; sleep 15"
+        runner = subprocess.Popen(["bash", "-c", cmd])
+        try:
+            victim_rc = victim.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            runner.kill()
+            victim.kill()
+            raise AssertionError("hook did not target the pidfile PID") from None
+        finally:
+            runner.terminate()
+            try:
+                runner.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                runner.kill()
+        assert victim_rc in (-signal.SIGTERM, 128 + signal.SIGTERM), (
+            f"victim (pidfile target) should die of SIGTERM, got rc={victim_rc}"
+        )
+    finally:
+        if victim.poll() is None:
+            victim.kill()
+            victim.wait()
+
+
+def test_launch_template_writes_pidfile():
+    """T-428: pin the launcher-side half of the fix. Without this write,
+    the hook falls back to $PPID and the 2026-05-05 bug recurs."""
+    template = REPO_ROOT / "plugins" / "cloglog" / "templates" / "launch.sh.template"
+    text = template.read_text()
+    assert "claude.pid" in text, (
+        "launch.sh.template must write <worktree>/.cloglog/claude.pid for "
+        "the exit-on-unregister hook to target the right process (T-428)"
+    )
+    # Order: the write must come AFTER `CLAUDE_PID=$!` (we need the real
+    # PID, not an empty var) and BEFORE `wait` (so the file exists for
+    # the entire claude lifetime).
+    pid_capture = text.index("CLAUDE_PID=$!")
+    pid_write = text.index("claude.pid")
+    wait_call = text.index('wait "$CLAUDE_PID"')
+    assert pid_capture < pid_write < wait_call, (
+        "claude.pid write must be ordered: CLAUDE_PID=$! < write < wait"
+    )

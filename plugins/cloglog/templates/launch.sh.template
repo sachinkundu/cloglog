@@ -155,4 +155,15 @@ if [[ -d "$WORKTREE_PATH/plugins/cloglog" ]]; then
 fi
 claude --dangerously-skip-permissions ${_MODEL_FLAG:+$_MODEL_FLAG} ${_PLUGIN_DIR_FLAG:+$_PLUGIN_DIR_FLAG} "$_CLAUDE_PROMPT" &
 CLAUDE_PID=$!
+# T-428: persist the claude PID so the exit-on-unregister PostToolUse hook
+# can target it directly. The hook's previous strategy of `kill -TERM $PPID`
+# is unreliable — depending on how claude spawns the hook (sh -c vs bash -c
+# vs direct exec), $PPID may be a transient wrapper shell rather than the
+# claude node process itself. Five recurrences on 2026-05-05 (close-wave
+# work logs t394, t354, t437, t438) showed the hook firing yet claude
+# surviving until tab force-close. The .pid file gives the hook an
+# authoritative target. Best-effort cleanup on launcher exit.
+mkdir -p "$WORKTREE_PATH/.cloglog" 2>/dev/null || true
+echo "$CLAUDE_PID" > "$WORKTREE_PATH/.cloglog/claude.pid" 2>/dev/null || true
+trap 'rm -f "$WORKTREE_PATH/.cloglog/claude.pid" 2>/dev/null || true' EXIT
 wait "$CLAUDE_PID"

@@ -130,26 +130,32 @@ chmod 600 ~/.cloglog/credentials.d/"$PROJECT_SLUG"
 # 4. Store project, project_id, and backend_url (T-382: persist `project:`
 #    so the per-project resolver finds the slug source on first restart;
 #    without it the resolver falls back to basename($PROJECT_ROOT) and
-#    misses the credentials.d/<slug> file we just wrote). Update in place
-#    if already present; append if not. Never use >> alone — the scalar
-#    parser reads the first matching key, so a duplicate line silently
-#    shadows the new value on re-runs.
+#    misses the credentials.d/<slug> file we just wrote). The inline Python
+#    upserts each key atomically — safe against delimiter chars in PROJECT_SLUG
+#    or BACKEND_URL (&, |, /, \) and prevents duplicate-key shadows on re-runs.
 mkdir -p .cloglog
-if [ -f .cloglog/config.yaml ] && grep -q '^project:' .cloglog/config.yaml; then
-  sed -i "s/^project:.*/project: ${PROJECT_SLUG}/" .cloglog/config.yaml
-else
-  printf 'project: %s\n' "$PROJECT_SLUG" >> .cloglog/config.yaml
-fi
-if [ -f .cloglog/config.yaml ] && grep -q '^project_id:' .cloglog/config.yaml; then
-  sed -i "s/^project_id:.*/project_id: ${PROJECT_ID}/" .cloglog/config.yaml
-else
-  printf 'project_id: %s\n' "$PROJECT_ID" >> .cloglog/config.yaml
-fi
-if [ -f .cloglog/config.yaml ] && grep -q '^backend_url:' .cloglog/config.yaml; then
-  sed -i "s|^backend_url:.*|backend_url: ${BACKEND_URL}|" .cloglog/config.yaml
-else
-  printf 'backend_url: %s\n' "$BACKEND_URL" >> .cloglog/config.yaml
-fi
+python3 - .cloglog/config.yaml \
+  "project=${PROJECT_SLUG}" \
+  "project_id=${PROJECT_ID}" \
+  "backend_url=${BACKEND_URL}" <<'PY'
+import re, sys
+from pathlib import Path
+
+def upsert(p, u):
+    lines = p.read_text(encoding='utf-8').splitlines(keepends=True) if p.exists() else []
+    rem = dict(u); out = []
+    for ln in lines:
+        k = next((k for k in rem if re.match(rf"^{re.escape(k)}\s*:", ln)), None)
+        out.append(f"{k}: {rem.pop(k)}\n" if k else ln)
+    if rem and out and not out[-1].endswith('\n'):
+        out[-1] += '\n'
+    out.extend(f"{k}: {v}\n" for k, v in rem.items())
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix('.tmp'); tmp.write_text(''.join(out)); tmp.replace(p)
+
+p = Path(sys.argv[1])
+upsert(p, {a.partition('=')[0]: a.partition('=')[2] for a in sys.argv[2:] if '=' in a})
+PY
 ```
 
 Store the key in your password manager; the backend keeps only a SHA-256

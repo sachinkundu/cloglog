@@ -55,11 +55,15 @@ have to subscribe to, with no benefit over piggy-backing on
 `register_agent`. The two events would always fire together; one of them
 is redundant.
 
-The hook fires **after** the worktree row is committed by
-`register_agent` and **before** the response is returned, so the caller
-that gets back `worktree_id` can immediately rely on the close-off row
-existing on the board. Failure to file the close-off row is **not**
-fatal to `register_agent` — see *Failure handling* below.
+The hook fires inside the same route handler invocation as
+`register_agent`, ordered so that close-off creation happens **before
+the registration's commits and `WORKTREE_ONLINE` event are visible to
+other consumers** (see *Failure handling* below — the current
+`AgentService.register` flow needs T-434 plumbing work to defer those
+emissions). For `role='worktree'` first registrations, failure to
+file the close-off row is **fatal** to `register_agent`; the route
+returns 5xx and no online state is leaked. This matches the existing
+`.cloglog/on-worktree-create.sh` fail-loud contract from T-378.
 
 **Role gate — `role='worktree'` only.** `register_agent` is also
 called by the supervisor's `/cloglog setup` from the main checkout
@@ -329,27 +333,69 @@ groups:
    in the main agent's `mcp__cloglog__get_my_tasks`) — the same T-305
    regression the route already defends against.
 
-   The backfill command is idempotent — re-running it is a no-op
-   because the natural-key `find_close_off_task` lookup
-   short-circuits inside `BoardService.create_close_off_task`. The
-   resolver is best-effort: when no main agent is registered (a
-   downstream project that never ran `/cloglog setup`), the row is
-   filed unassigned, exactly matching the live trigger's behaviour
-   for the same condition.
+   The backfill command is idempotent on the natural key — re-runs
+   short-circuit inside `BoardService.create_close_off_task`. But
+   the existing service path is **not** self-healing on
+   `worktree_id` (`src/agent/routes.py:380-420` documents this:
+   when a row exists with `worktree_id IS NULL`, idempotent re-calls
+   do not backfill the assignee even if the resolver now succeeds —
+   the warning at line 388 fires precisely on this pathology).
+
+   That gives the backfill two unacceptable failure shapes if it
+   runs without a main agent:
+
+   1. Operator runs `make backfill-close-off` before
+      `/cloglog setup` → unassigned rows lands → second run after
+      setup is a no-op → rows never surface in the supervisor's
+      `get_my_tasks`.
+   2. Per-project resolver returns `None` because the
+      `main_agent_inbox_path` env var is unset → same outcome.
+
+   **Decision:** the backfill command **fails fast** if
+   `AgentRepository.get_main_agent_worktree(project_id)` (with the
+   documented env fallback) returns `None`. Exit non-zero with a
+   message instructing the operator to run `/cloglog setup` first.
+   The fail-fast guard is mandatory — best-effort here would
+   silently regress the visibility contract pinned by
+   `tests/agent/test_close_off_task.py:521-565`.
+
+   T-434 also adds an idempotency-with-repair behaviour on the
+   service: when `find_close_off_task` returns an existing row with
+   `worktree_id IS NULL` AND the caller now resolves a main agent,
+   the service backfills `worktree_id` on that existing row before
+   returning. That covers two adjacent paths the current code does
+   not — (a) the live trigger on a re-register after a downstream
+   operator finally runs setup, and (b) a manual MCP
+   `create_close_off_task` re-call. Pin obligation carried in #7.
 
    **Concurrency.** The backfill command and live `register_agent`
    calls can race: both pass `find_close_off_task` before either
-   inserts the FK; the loser then hits the
-   `uq_tasks_close_off_worktree_id` unique index
-   (Alembic `d2a1b3c4e5f6` lines 49-54), aborting the transaction.
-   The mitigation lands inside `BoardService.create_close_off_task`
-   itself: wrap the insert in
-   catch-`IntegrityError` → rollback → re-read with
-   `find_close_off_task` → return the existing row. That makes the
-   service genuinely upsert-shaped without an `INSERT ... ON
-   CONFLICT` rewrite, and covers the same trigger-vs-trigger race in
-   pathological double-call scenarios. Both the route-layer trigger
-   and the backfill command benefit from one fix in one place.
+   inserts the FK. Today's `BoardService.create_close_off_task`
+   commits in two steps — `create_task()` inserts the row, then
+   `update_task()` stamps `close_off_worktree_id`
+   (`src/board/services.py:471-486`). Both calls commit
+   independently (`src/board/repository.py:242-279`). A naive
+   catch-`IntegrityError` → re-read on the second commit therefore
+   leaves the loser's task row persisted with `close_off_worktree_id
+   = NULL` — an orphan that pollutes the board and breaks the
+   spec's idempotency claim.
+
+   **Required refactor for T-434:** change
+   `BoardService.create_close_off_task` to insert the task with
+   `close_off_worktree_id` set in the *initial* INSERT (single
+   commit), so the unique-index violation aborts the whole row
+   instead of just the FK update. With that in place, the loser's
+   pattern becomes: catch `IntegrityError` → rollback (a single
+   uncommitted row, cleanly discarded) → re-read with
+   `find_close_off_task` → return the existing row. Pin obligation
+   #6 carries this requirement. Both the route-layer trigger and
+   the backfill command then benefit from one fix in one place.
+
+   The smaller alternative — quiesce live registrations during
+   backfill — remains acceptable for cloglog (single-host,
+   operator-driven `make backfill-close-off`) and **must** be
+   documented in the command's `--help` if T-433 picks it instead
+   of the refactor.
 
 2. **Stale / closed / force-unregistered worktrees with no close-off
    row.** Leave alone. There is no useful teardown work to track on a
@@ -427,11 +473,31 @@ Within that gate the per-error handling is:
   row. This is a **clean idempotent hit**, not a failure — the
   row exists, so the gate passes.
 - **All other failures** (transient DB error, FK violation, schema
-  bug, missing main-agent resolver, etc.): roll back the
-  registration's close-off step **and** the worktree registration
-  itself, return 5xx. The launch skill already knows how to surface
-  that — `routes.py:184-205` of the existing close-off endpoint is
-  the template.
+  bug, missing main-agent resolver, etc.): the route returns 5xx and
+  the worktree registration must not be visible as "online" to other
+  consumers. **The current `AgentService.register` flow does not
+  support a clean rollback** — `services.py:133-212` commits the
+  worktree row, token hash, session row, and `WORKTREE_ONLINE` event
+  along the way (`repository.py:23-65, 135-163, 218-226` show each
+  step commits independently). T-434 therefore must restructure the
+  route so first-time close-off creation runs **before** the
+  registration's commits and emitted events — concretely, the route
+  opens one session, calls a refactored `AgentService.register` that
+  defers commit/event emission, then calls
+  `BoardService.create_close_off_task` on the same session, and only
+  commits + publishes `WORKTREE_ONLINE` once both succeed.
+  Alternative shape — wrap both calls in an outer SAVEPOINT so a
+  failure in close-off creation rolls back to before the `register`
+  state is visible. T-433 picks one. Either way, the spec is clear:
+  do **not** ship a route that calls `register` then `create` then
+  tries to "undo" a committed registration; the codebase does not
+  support that.
+
+  Until that refactor lands, the `register_agent` route MUST NOT
+  emit a `WORKTREE_ONLINE` event before the close-off gate passes —
+  the event is the load-bearing signal supervisors and dashboards
+  consume, and a partial registration that emits ONLINE then 5xxs
+  is worse than no rollback at all.
 - **Resume / re-register** (worktree row already exists): the route
   short-circuits via the existing
   `worktree_id` lookup; `find_close_off_task` returns the existing
@@ -471,7 +537,6 @@ cards can be produced.
   the `mcp__cloglog__create_close_off_task` MCP tool — both stay as
   one-off backfill affordances for the supervisor and reconcile.
 - Any change to the close-off task title shape.
-- Any change to close-wave's Step 1.5 lookup predicate.
 
 ## Pins this spec carries
 
@@ -489,16 +554,27 @@ The implementation PR (T-434) MUST add or verify these pin tests:
    updated Step 1.5 predicate.
 4. Title is exactly `Close worktree <wt-name>` where `<wt-name>` is
    `worktree.branch_name or worktree.worktree_path.rsplit("/", 1)[-1]`.
-5. Close-off-task creation failure does NOT fail the
-   `register_agent` call.
+5. First-time close-off-task creation failure (any error other than
+   the idempotent re-read on a unique-index hit) **does** fail the
+   `register_agent` call. Matches the `.cloglog/on-worktree-create.sh`
+   fail-loud contract from T-378 and prevents the 2026-04-24
+   missing-close-off incident from regressing through a different
+   path.
 6. The migration/race `IntegrityError` path returns the existing row
-   instead of propagating (concurrent migration + live register on
-   the same worktree → exactly one row, no aborted transaction).
-7. The one-shot data migration is idempotent (re-running over a
-   fully-backfilled DB makes no changes) AND resolves
-   `main_agent_worktree_id` so backfilled rows surface in
-   `mcp__cloglog__get_my_tasks` per the
-   `tests/agent/test_close_off_task.py:521-565` visibility contract.
+   AND does not leak an orphan task row from the loser's partial
+   commits. T-434 must refactor `BoardService.create_close_off_task`
+   to insert the task with `close_off_worktree_id` set in the
+   initial INSERT (no follow-up `update_task` for the FK) so the
+   unique-index violation aborts the whole row, not just the FK
+   stamp.
+7. The backfill command (a) is idempotent on the natural key, (b)
+   fails fast when no main agent resolves so it cannot file
+   unassigned rows that the existing service path will never
+   repair, and (c) `BoardService.create_close_off_task` backfills
+   `worktree_id` on a previously-unassigned existing row when the
+   resolver now succeeds, preserving the visibility contract pinned
+   by `tests/agent/test_close_off_task.py:521-565` across both
+   live-trigger and manual MCP re-calls.
 8. `TaskCard` and `TaskResponse` (`src/board/schemas.py`) expose
    `close_off_worktree_id: Optional[UUID]`; round-trip pinned in
    `tests/board/test_schemas.py`.
@@ -538,3 +614,19 @@ The implementation PR (T-434) MUST add or verify these pin tests:
     the HTTP `register_agent` call fails. Pin guards against a
     future refactor that re-introduces best-effort behaviour and
     silently regresses the T-378 fail-loud contract.
+16. The route does NOT emit `WORKTREE_ONLINE` (or any other
+    event-bus signal that consumers treat as "agent live") before
+    the close-off gate passes. Pin via an integration test that
+    asserts a forced close-off failure on first registration
+    leaves no `WORKTREE_ONLINE` on the bus and no committed
+    worktree row visible through `get_active_tasks` /
+    `list_worktrees`.
+17. `BoardService.create_close_off_task` inserts the task with
+    `close_off_worktree_id` set in the initial INSERT so an
+    `IntegrityError` aborts the whole row, not a leftover task with
+    NULL FK. Pin via a concurrent-call test that asserts exactly
+    one task row exists for the contended worktree after the race.
+18. The backfill command fails fast when no main agent resolves.
+    Pin via a CLI test that runs the command against a project
+    with no `role='main'` worktree and asserts non-zero exit + no
+    rows filed.

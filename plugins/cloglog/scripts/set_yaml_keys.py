@@ -40,6 +40,9 @@ def upsert_keys(config_path: Path, updates: dict[str, str]) -> None:
         else:
             out.append(line)
 
+    if remaining and out and not out[-1].endswith("\n"):
+        out[-1] += "\n"
+
     for key, value in remaining.items():
         out.append(f"{key}: {value}\n")
 

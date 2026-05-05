@@ -172,6 +172,32 @@ def test_special_chars_round_trip(tmp_path: Path, special_value: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Trailing-newline regression (codex session-1 finding)
+# ---------------------------------------------------------------------------
+
+
+def test_append_does_not_glue_onto_last_line_without_trailing_newline(
+    tmp_path: Path,
+) -> None:
+    """File ending without \\n must not have appended key glued to previous line."""
+    cfg = tmp_path / "config.yaml"
+    # Write without trailing newline — some editors produce this.
+    cfg.write_bytes(b"reviewer_bot_logins: [codex[bot]]")
+
+    result = _run(cfg, "project=my-slug")
+    assert result.returncode == 0, result.stderr
+
+    content = cfg.read_text()
+    lines = content.splitlines()
+    assert any(ln == "project: my-slug" for ln in lines), (
+        f"appended key glued to previous line: {lines}"
+    )
+    assert all("reviewer_bot_logins" not in ln or "project" not in ln for ln in lines), (
+        f"keys merged onto one line: {lines}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Duplicate-key footgun: second invocation must UPDATE, not append
 # ---------------------------------------------------------------------------
 

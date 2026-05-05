@@ -114,15 +114,37 @@ close-off card is still in `backlog` status*, Step 1.5's
 `title == "Close worktree wt-x"` filter sees two backlog rows and
 errors with ambiguous match.
 
-The fix lives in close-wave (T-434 implementation owns the edit):
-filter Step 1.5's title lookup by `close_off_worktree_id IS NOT NULL`
-in addition to title and backlog status. That is sufficient because
-the migration's `ON DELETE SET NULL` guarantees orphaned cards from
-deleted worktrees are exactly those with NULL FK — the live card from
-the re-registration is the only remaining match. This is a one-line
-predicate change, pinned by a new test in
-`tests/plugins/test_close_wave_skill.py` (or wherever Step 1.5
-lookups are exercised).
+The fix is two-step and **scope-expands T-434** to include a board
+API contract change:
+
+1. **Surface `close_off_worktree_id` on `TaskCard` /
+   `TaskResponse`** (`src/board/schemas.py:161-213`). The field is
+   nullable on the model already; it just isn't carried through the
+   response schema, so `mcp__cloglog__get_board()` cannot expose it
+   today (`src/board/routes.py:686-694`). Add it to both schemas as
+   `Optional[UUID]`. This is additive — no consumer breaks.
+2. **Filter close-wave Step 1.5 by
+   `close_off_worktree_id == <expected worktree UUID>`** (not just
+   `IS NOT NULL`). Step 1.5 already knows the worktree's UUID
+   because it iterates `wt-name → worktree_id` from the active set.
+   Keying on the FK directly disambiguates without depending on
+   title equality at all — the title check becomes a defensive sanity
+   assertion, not the load-bearing predicate.
+
+Reconcile (T-371 rule) gets the same FK-based predicate update so
+its close-wave-delegation component does not regress on the same
+ambiguity.
+
+Both edits land in the same T-434 PR as the trigger and migration so
+the consumer contract and the producer contract ship in lockstep.
+Pinned by a new test in `tests/plugins/test_close_wave_skill.py` (or
+wherever Step 1.5 lookups are exercised) plus the existing
+`tests/board/test_schemas.py` getting a `close_off_worktree_id` round-trip
+case.
+
+Codex round 2 caught that the prior "filter by `IS NOT NULL`" plan
+was unimplementable — `TaskCard` does not expose the field — so the
+schema change is non-negotiable for the design to be consistent.
 
 Reconcile (T-371 rule) keeps owning the wider self-heal: if a
 worktree is active but has no close-off card with
@@ -188,9 +210,20 @@ groups:
    active worktree on day one.
 
    **Decision:** ship a one-shot Alembic data migration in the same
-   PR as the trigger. The migration scans currently-existing
-   `worktrees` rows (force-unregister deletes rows, so any row still
-   present is by definition active) and, for each, **resolves the
+   PR as the trigger. The migration scans `worktrees` rows filtered
+   to **`status = 'online'`**, matching the existing pattern in
+   `src/alembic/versions/c7d9e0f1a2b3_backfill_worktree_branch_names.py:67-72`.
+
+   "Row exists" is **not** equivalent to "active": heartbeat
+   timeouts set `status = 'offline'` without deleting
+   (`src/agent/services.py:879-916`); only `force_unregister`
+   (`services.py:773, 837`) and `remove_offline_agents`
+   (`services.py:866-874`) delete rows. Backfilling close-off cards
+   for offline rows would pollute the board with teardown work for
+   crashed agents — exactly the "stale/closed worktrees get nothing"
+   case the spec excludes.
+
+   For each `status='online'` row the migration **resolves the
    main-agent worktree using the same role/env fallback the HTTP
    route uses** (`src/agent/routes.py:357-378`: prefer
    `AgentRepository.get_main_agent_worktree(project_id)`, fall back
@@ -295,9 +328,15 @@ If `create_close_off_task` raises inside the `register_agent` flow:
   `register_agent`, file an `mcp_tool_error` style backend log so
   the supervisor sees it. Do not block the agent from launching.
 - **Migration concurrency** (the one-shot backfill running while a
-  fresh `register_agent` lands): both call the same idempotent
-  service; whichever loses the race short-circuits on the natural-key
-  lookup. No special handling.
+  fresh `register_agent` lands): handled by the `IntegrityError`
+  catch described above (and, more fully, under *Migration plan /
+  Concurrency*). The current `create_close_off_task` is
+  lookup-then-insert with no retry — without the catch, the loser
+  hits `uq_tasks_close_off_worktree_id` and aborts its transaction
+  (Alembic `d2a1b3c4e5f6` lines 41-54). The catch turns that abort
+  into a clean idempotent hit. The alternative — quiescing live
+  registrations during migration — is also acceptable for cloglog
+  and must be documented in the migration docstring if chosen.
 
 The principle: `register_agent` is the agent lifecycle's load-bearing
 event. The close-off row is **important but not critical** to that
@@ -305,6 +344,17 @@ event succeeding. A close-off row gap is detectable and self-healing
 via reconcile; a `register_agent` failure cascades into the agent
 never starting at all. The trigger is best-effort within
 `register_agent`'s success path, not a synchronous gate on it.
+
+## In scope (T-434), expanded by codex round 2
+
+The schema additions (`close_off_worktree_id` on `TaskCard` /
+`TaskResponse`) and the close-wave / reconcile predicate updates
+land in the same T-434 PR as the backend trigger and migration.
+They are non-negotiable: without them the force-unregister edge
+case produces ambiguous title matches that close-wave's Step 1.5
+cannot disambiguate. T-433 (plan) must order these edits before the
+migration so the consumer contract ships before any new orphan
+cards can be produced.
 
 ## Out of scope
 
@@ -345,7 +395,13 @@ The implementation PR (T-434) MUST add or verify these pin tests:
    `main_agent_worktree_id` so backfilled rows surface in
    `mcp__cloglog__get_my_tasks` per the
    `tests/agent/test_close_off_task.py:521-565` visibility contract.
-8. Close-wave Step 1.5 lookup is filtered by
-   `close_off_worktree_id IS NOT NULL` so a re-registered worktree
-   with a stale orphan card does not produce an ambiguous title
-   match.
+8. `TaskCard` and `TaskResponse` (`src/board/schemas.py`) expose
+   `close_off_worktree_id: Optional[UUID]`; round-trip pinned in
+   `tests/board/test_schemas.py`.
+9. Close-wave Step 1.5 lookup keys on
+   `close_off_worktree_id == worktree.id` (with title equality as a
+   defensive sanity check) so a re-registered worktree with a stale
+   orphan card does not produce an ambiguous match. Reconcile's
+   close-wave-delegation component gets the same predicate update.
+10. The migration filters source rows by `worktrees.status = 'online'`
+    so offline (heartbeat-timed-out) rows are NOT backfilled.

@@ -332,3 +332,13 @@ def test_gh_app_token_script_walks_ancestors_for_local_yaml() -> None:
         "a check limited to the project root cannot find local.yaml in the "
         "main checkout when invoked from a worktree. T-438 fix #2."
     )
+    # The walk must be bounded by the first ancestor with .cloglog/config.yaml
+    # (the paired main checkout) — it must NOT traverse past that point into
+    # unrelated parent directories that could carry a different installation's
+    # credentials. Pin: the boundary check must reference config.yaml.
+    assert '"config.yaml"' in text or "'config.yaml'" in text, (
+        "_find_local_yaml must stop at the first ancestor directory that carries "
+        ".cloglog/config.yaml (the paired main checkout) and not walk further. "
+        "An unbounded walk can pick credentials from an unrelated parent directory "
+        "and mint a token for the wrong GitHub App installation. T-438 fix #2."
+    )

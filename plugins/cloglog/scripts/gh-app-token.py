@@ -60,22 +60,34 @@ def _read_scalar(path: Path, key: str) -> str:
 
 
 def _find_local_yaml(start: Path) -> Path | None:
-    """Walk ancestor directories until .cloglog/local.yaml is found.
+    """Find .cloglog/local.yaml, bounded by the paired main checkout.
 
     Worktrees have .cloglog/config.yaml but .cloglog/local.yaml (the gitignored,
     per-host credentials file) lives in the main checkout above the worktree
-    directory. Without walking, _resolve stops at the worktree root and returns
-    an empty APP_ID. T-438 fix #2.
+    directory tree. This function starts at `start` (the worktree root), then
+    walks up only until the first ancestor directory that also carries
+    .cloglog/config.yaml — that ancestor is the main checkout. It checks that
+    directory for local.yaml and stops there.
+
+    The walk is deliberately bounded: it does NOT traverse past the first
+    config.yaml ancestor, so credentials from an unrelated parent directory
+    (e.g. another project's checkout nested at a higher path) are never
+    selected. T-438 fix #2.
     """
-    cur = start
-    while True:
-        candidate = cur / ".cloglog" / "local.yaml"
-        if candidate.is_file():
-            return candidate
-        parent = cur.parent
-        if parent == cur:
-            return None
-        cur = parent
+    # Check the starting directory first (non-worktree invocation or already resolved).
+    candidate = start / ".cloglog" / "local.yaml"
+    if candidate.is_file():
+        return candidate
+
+    # Walk up looking for the first ancestor that has .cloglog/config.yaml —
+    # that is the paired main checkout. Check it for local.yaml and stop.
+    cur = start.parent
+    while cur != cur.parent:  # stop at filesystem root
+        if (cur / ".cloglog" / "config.yaml").is_file():
+            local = cur / ".cloglog" / "local.yaml"
+            return local if local.is_file() else None
+        cur = cur.parent
+    return None
 
 
 def _resolve(key: str) -> str:

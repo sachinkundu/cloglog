@@ -1,4 +1,4 @@
-"""Pin test: T-352.
+"""Pin tests: T-352, T-428, T-475.
 
 After a successful `mcp__cloglog__unregister_agent` tool call, the
 PostToolUse hook at `plugins/cloglog/hooks/exit-on-unregister.sh` MUST
@@ -17,9 +17,11 @@ mirrors the live launcher → claude → hook process tree.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import signal
 import subprocess
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -266,3 +268,114 @@ def test_launch_template_writes_pidfile():
     assert pid_capture < pid_write < wait_call, (
         "claude.pid write must be ordered: CLAUDE_PID=$! < write < wait"
     )
+
+
+# ---------------------------------------------------------------------------
+# T-475: breadcrumb and tree-walk fallback.
+#
+# Root cause of 2026-05-05 regression: wt-t430/t432/t435 had the T-352 hook
+# (no pidfile, just $PPID, no debug log). $PPID was a transient wrapper shell
+# spawned by Claude Code; that wrapper exited before the setsid delay fired,
+# so the killer saw "parent already gone" and quit — claude stayed alive.
+#
+# Two new invariants:
+#   1. A breadcrumb is written to the debug log the moment the hook fires,
+#      before any early-exit guard — so investigators can distinguish "hook
+#      never ran" from "hook ran but conditions failed".
+#   2. When no pidfile exists but an ancestor process has
+#      --dangerously-skip-permissions in its args (launch.sh always passes
+#      this to claude), the hook walks the process tree to find and kill
+#      claude, rather than targeting $PPID (transient wrapper).
+# ---------------------------------------------------------------------------
+
+
+def test_breadcrumb_written_when_hook_fires(tmp_path):
+    """T-475: debug log must contain an 'exit-on-unregister.sh fired' line
+    the moment the hook runs, even when it exits early (e.g. IS_ERROR guard).
+    Uses CLOGLOG_SHUTDOWN_LOG to avoid polluting /tmp/agent-shutdown-debug.log."""
+    if shutil.which("setsid") is None:
+        pytest.skip("setsid required (Linux only)")
+
+    log = tmp_path / "shutdown-debug.log"
+    env = {**os.environ, "CLOGLOG_SHUTDOWN_LOG": str(log)}
+
+    # IS_ERROR=true triggers early exit — before the "scheduled" log line.
+    payload = _payload(is_error=True)
+    cmd = f"echo {json.dumps(payload)} | bash {HOOK}"
+    subprocess.run(["bash", "-c", cmd], env=env, check=True)
+
+    assert log.exists(), "hook must create the debug log"
+    content = log.read_text()
+    assert "exit-on-unregister.sh fired" in content, (
+        "T-475: breadcrumb must appear in debug log even when IS_ERROR guard "
+        "exits early. Without this, 'no log entries' is ambiguous: it could "
+        "mean the hook never ran OR it ran but conditions failed."
+    )
+    assert "scheduled" not in content, (
+        "IS_ERROR=true must NOT reach the 'scheduled' log line — breadcrumb only, no killer spawned"
+    )
+
+
+def test_hook_finds_claude_via_tree_walk(tmp_path):
+    """T-475: when no pidfile and $PPID is a transient wrapper without
+    --dangerously-skip-permissions, the hook must walk the process tree to
+    find and kill the ancestor that has that flag (simulating claude).
+
+    Process tree:
+        victim  (bash victim.sh --dangerously-skip-permissions)
+          wrapper  (bash -c 'echo PAYLOAD | bash HOOK')
+            hook  ($PPID = wrapper; tree walk → victim at level ≤ 2)
+
+    Expected: victim receives SIGTERM from the setsid escalating killer.
+    The hook's $PPID (wrapper) has no --dangerously-skip-permissions flag,
+    so the tree walk must look one level higher to find the victim.
+    """
+    if shutil.which("setsid") is None:
+        pytest.skip("setsid required (Linux only)")
+
+    log = tmp_path / "shutdown-debug.log"
+    env = {**os.environ, "CLOGLOG_SHUTDOWN_LOG": str(log)}
+    payload = _payload()
+
+    # victim_script: run the hook as a child (wrapper), then sleep.
+    # Invoked as "bash victim_script.sh --dangerously-skip-permissions" so
+    # ps -o args= shows the flag — this is how the tree walk identifies claude.
+    wrapper_cmd = f"echo {json.dumps(payload)} | bash {HOOK}"
+    victim_script = tmp_path / "victim.sh"
+    victim_script.write_text(
+        textwrap.dedent(f"""\
+            #!/bin/bash
+            bash -c {json.dumps(wrapper_cmd)}
+            sleep 60
+        """)
+    )
+    victim_script.chmod(0o755)
+
+    proc = subprocess.Popen(
+        ["bash", str(victim_script), "--dangerously-skip-permissions"],
+        env=env,
+    )
+    try:
+        rc = proc.wait(timeout=25)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        raise AssertionError(
+            "victim did not exit within 25s — tree walk did not find claude ancestor "
+            "(T-475: hook must walk process tree when no pidfile)"
+        ) from None
+
+    assert rc in (-signal.SIGTERM, 128 + signal.SIGTERM), (
+        f"victim (ancestor with --dangerously-skip-permissions) must die of SIGTERM "
+        f"via tree walk; got rc={rc}. "
+        "If SIGKILL: escalation reached but TERM/INT were ignored — check target. "
+        "If 0: victim exited naturally before the hook killed it."
+    )
+
+    # Bonus: verify the log shows tree-walk was used as the source
+    if log.exists():
+        content = log.read_text()
+        assert "tree-walk" in content, (
+            "debug log must record that tree-walk strategy was used "
+            "(source=tree-walk-l<N> in 'scheduled' line)"
+        )

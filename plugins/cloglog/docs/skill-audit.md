@@ -24,7 +24,7 @@ Legend: ✅ passes · ⚠️ partial / minor issue · ❌ fails
 | demo | ⚠️ | ✅ 2,916 | ❌ inline rationale + gotchas | ❌ Step 0 / Step 5 templates >40 lines | Pattern 1 | ✅ user-invocable: false, called from PR flow | ⚠️ "Stop and ask" intro buries Step 0 | ❌ none | ✅ | T-446, T-453 |
 | github-bot | ⚠️ | ❌ 5,164 (over 5K) | ❌ heavy T-NNN history + Codex internals | ❌ auto-merge gate invocation, push+PR templates | Pattern 1+4 (mixed) | ⚠️ broad "ALL GitHub operations" — no negative trigger | ✅ | ❌ none | ✅ | T-447, T-454, T-460 |
 | init | ⚠️ | ❌ 6,554 (over 5K) | ❌ extensive T-NNN history + Python merge inline | ❌ Step 2 phase-1 detection ~70 lines, Step 3 merge ~60 lines, Step 4b stack templates | Pattern 1 | ✅ user-invocable, single trigger phrase | ✅ | ❌ none | ✅ | T-448, T-455, T-461 |
-| launch | ⚠️ | ✅ 3,387 | ❌ T-NNN refs (T-353/T-354/T-360/T-384/T-437/T-348) | ⚠️ Step 4e shell + render_template invocation OK, but inline | Pattern 2 (multi-step lifecycle) | ✅ explicit `F-*`/`T-*` trigger | ✅ | ⚠️ delegates rationale to `docs/launch-design.md` (good!) but still inlines T-NNN | ✅ | task description claims sibling refactor task exists — **it does not** (F-56 had only T-430). T-449 files it now. |
+| launch | ⚠️ | ✅ 3,387 | ❌ T-NNN refs (T-353/T-354/T-360/T-384/T-437/T-348) | ⚠️ Step 4e shell + render_template invocation OK, but inline | Pattern 2 (multi-step lifecycle) | ✅ explicit `F-*`/`T-*` trigger | ✅ | ⚠️ delegates rationale to `docs/launch-design.md` (good!) but still inlines T-NNN | ✅ | T-354 (done) was the prior launch refactor (heredoc→Jinja2, recipe-shape, scripts/) and shipped most of the structural work. T-449 files the residual T-NNN-marker sweep that T-354 didn't cover. |
 | reconcile | ⚠️ | ✅ 2,582 | ❌ Case-classification rationale + T-270/T-371/T-374/T-395 history | ❌ Step 5.0 predicate explanation reads as essay | Pattern 1 | ✅ explicit invocation | ✅ | ❌ none | ✅ | T-450, T-456 |
 | setup | ⚠️ | ✅ 1,898 | ⚠️ T-294/T-419 history embedded, but tighter | ✅ already extracted dedup helper to `scripts/` (only skill that does!) | Pattern 1 | ⚠️ broad description (overlaps with init for "session start"); no negative trigger | ✅ | ⚠️ has `scripts/`, no `references/` | ✅ | T-451, T-457 |
 
@@ -143,12 +143,50 @@ No skill has a `README.md` inside its folder. ✅ across the board.
 
 ### I. Eval sets (rubric §11)
 
-**No skill has eval sets.** The guide expects every skill to ship with
-trigger tests (10–20 prompts that should/shouldn't fire) and functional
-tests. Building these for the seven cloglog skills is downstream work — it
-is in the audit's out-of-scope clause and should be a separate downstream
-feature, not a hygiene-refactor task. **Filed as T-460** (downstream
-feature proposal).
+The guide expects every skill to ship with **two** layers of eval coverage:
+(1) trigger tests — 10–20 prompts that should fire, plus prompts that
+should NOT, exercising the skill's `description` field via real model
+behaviour; and (2) functional tests — valid outputs, error handling,
+edge cases.
+
+**Functional layer: partially covered.** `tests/plugins/` carries 30+
+pytest-based pin tests that lock structural and behavioural invariants in
+the SKILLs themselves. Sample coverage:
+
+- `test_setup_skill_dedup.py` — pins the `dedup-inbox-monitor.sh` helper's
+  three exit-code contracts plus its referencing in `setup/SKILL.md`.
+- `test_launch_skill_has_agent_started_timeout.py` — pins the launch
+  SKILL's confirmation-deadline contract.
+- `test_init_bootstrap_skill.py` / `test_init_mints_per_project_credentials.py`
+  / `test_init_repo_url_backfill.py` — pin init's bootstrap detection,
+  per-project credentials, and `repo_url` backfill.
+- `test_close_wave_skill_lifecycle_calls.py` /
+  `test_close_wave_skill_no_detached_push.py` — pin close-wave's MCP-call
+  ordering and bot-token-only push paths.
+- `test_github_bot_skill_worktree_merge.py` — pins github-bot's
+  worktree-aware `gh pr merge` flag handling.
+- `test_enforce_inbox_monitor_hook.py`,
+  `test_auto_merge_skill_handles_silent_holds.py`, etc.
+
+These cover **structural invariants and behavioural pins** the skills
+must obey — they are real functional regression coverage, not absent.
+What they are **not** is a full functional eval suite per the guide
+(varied input scenarios, edge-case explosion, performance comparison
+with-skill vs. without-skill).
+
+**Trigger layer: entirely absent.** No corpus of "should-fire" /
+"should-not-fire" prompts exists for any of the seven skills' frontmatter
+`description` fields. There is no harness that exercises the model's
+skill-selection behaviour in response to user phrasing. This is the gap
+the guide §11 specifically calls out.
+
+The downstream-feature proposal (T-458) is therefore narrowed: build the
+**trigger-prompt eval corpus** (and round out the functional eval beyond
+the pin-test layer where gaps remain — to be surveyed under that feature),
+not "build evals from scratch as if pin tests don't exist." A correctly
+scoped task list under that feature will audit `tests/plugins/` first
+to identify which skills already have functional pins and which still
+need them, then layer trigger-prompt suites on top.
 
 ## Per-skill summary
 
@@ -197,10 +235,19 @@ feature proposal).
 - ❌ T-NNN markers (T-353, T-354, T-360, T-378, T-384, T-387, T-437,
   T-419, T-348, T-332, T-329, T-356) inline despite design doc existing.
   Audit each marker — promote to `docs/launch-design.md` if not already
-  there, then drop the inline ref (T-449). **NB:** task T-430's
-  description claimed a launch-skill refactor task already existed under
-  F-56; verified via `mcp__cloglog__list_features` /
-  `get_backlog` — F-56 had only T-430. T-449 files the refactor now.
+  there, then drop the inline ref (T-449). **NB on prior refactor history:**
+  T-430's description hinted that a sibling launch-skill refactor task
+  already existed under F-56. Two relevant prior tasks: **T-354** (now
+  `done`, "Refactor launch SKILL — extract scripts, recipe-shape SKILL.md,
+  deterministic templating (drop heredoc+sed)") shipped the structural
+  refactor (heredoc→Jinja2 via T-437 follow-up, render_template.py,
+  AGENT_PROMPT.md template). The 2026-05-05 T-394 work-log mentions
+  "T-431 launch refactor" as scaffolding under F-56, but
+  `mcp__cloglog__search T-431` returns zero results — the row was never
+  persisted (or was renumbered into T-430 + T-449). The hygiene scope
+  remaining after T-354 is the inline T-NNN-marker sweep — exactly
+  what T-449 files. T-449 builds on T-354's done baseline; do not redo
+  T-354's structural work.
 
 ### reconcile
 - ❌ Case A/B/C rationale reads as essay rather than recipe; T-NNN
@@ -237,7 +284,7 @@ All filed under F-56 (Plugin SKILL Hygiene). Each is one PR's worth of work.
 | T-455 | init | Move Step 4b stack templates → `references/stack-bootstrap-templates/` | Body size |
 | T-456 | reconcile | Extract completed-cleanly predicate → `scripts/check-completed-cleanly.sh` | Embedded scripts |
 | T-457 | setup | Add negative trigger to description (Do NOT use for /cloglog init scope) | Frontmatter |
-| T-458 | downstream feature proposal | Propose new feature: build eval sets for cloglog plugin skills (skill-creator-driven) | Eval sets |
+| T-458 | downstream feature proposal | Narrowed: propose feature for **trigger-prompt eval corpus** (functional pin coverage already partially exists under `tests/plugins/`) | Eval sets |
 | T-459 | close-wave | Add negative trigger vs reconcile delegation | Frontmatter |
 | T-460 | github-bot | Add negative trigger ("Do NOT use for read-only operator-invoked gh commands") | Frontmatter |
 | T-461 | init | Extract phase-1 detection + Python merge + URL canonicalize → `scripts/` | Embedded scripts |

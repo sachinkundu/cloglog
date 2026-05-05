@@ -1,35 +1,37 @@
 #!/usr/bin/env python3
-"""Render a placeholder template via literal string substitution.
+"""Render a Jinja2 template with literal substitution.
 
 Used by the cloglog launch SKILL to produce ``.cloglog/launch.sh`` and
 ``task.md`` from the static templates in ``plugins/cloglog/templates/``.
 
-Why a script instead of a SKILL-embedded heredoc + sed pipeline:
-the prior shape (T-353/T-354) escaped sed replacement metacharacters
-(``&``, ``\\``, ``|``) inside a bash helper whose ``$1`` reference was
-lost when the SKILL block crossed the LLM-agent → bash boundary,
-producing empty escapes and silently corrupted renderings (literal
-``/AGENT_PROMPT.md`` at filesystem root in the agent's prompt). Python's
-``str.replace`` is literal — no metacharacter has special meaning — so
-adversarial inputs (``R&D follow-up``, paths under ``~/R&D/``, titles
-containing the chosen sed delimiter) round-trip verbatim.
+Requires: jinja2
+Usage: uv run --with jinja2 "${CLAUDE_PLUGIN_ROOT}/scripts/render_template.py" ...
 
-The placeholder syntax is ``@@KEY@@`` where ``KEY`` matches
-``[A-Z_][A-Z0-9_]*``. Values come from ``--var KEY=VALUE`` flags or the
-process environment (``--var`` wins on conflict). Multi-line values are
-supported because replacement is a single ``str.replace`` call per key
-— no need for sed's ``r FILE`` ``d`` dance.
+Always invoke under ``uv run --with jinja2`` so the Jinja2 dependency is
+provisioned in an ephemeral env (mirrors the ``gh-app-token.py`` pattern,
+T-437/T-354). Plain ``python3 render_template.py`` will ``ModuleNotFoundError``
+on any host whose system interpreter doesn't already have Jinja2.
+
+Engine: Jinja2 with ``StrictUndefined`` (T-437). The placeholder syntax
+is ``{{ key }}`` where ``key`` matches ``[a-z_][a-z0-9_]*``. Autoescape
+is OFF — the outputs are bash and Markdown, not HTML — so values
+containing ``&``, ``\\``, ``|``, or newlines round-trip verbatim. The
+T-354 metacharacter-escape gotcha (sed splicing ``&``/``\\``/``|``) is
+preserved by Jinja2's literal substitution semantics.
+
+Values come from ``--var key=value`` flags or the process environment
+(``--var`` wins on conflict).
 
 Usage::
 
-    python3 render_template.py \\
+    uv run --with jinja2 "${CLAUDE_PLUGIN_ROOT}/scripts/render_template.py" \\
         --template path/to/template \\
         --output path/to/output \\
-        --var KEY=VALUE [--var KEY2=VALUE2 ...]
+        --var key=value [--var key2=value2 ...]
 
 Exit codes:
     0 — rendered cleanly
-    1 — at least one ``@@KEY@@`` placeholder had no value (strict default)
+    1 — at least one ``{{ key }}`` placeholder had no value (strict default)
     2 — argument shape error (malformed ``--var``, missing template, etc.)
 """
 
@@ -41,23 +43,28 @@ import re
 import sys
 from pathlib import Path
 
-PLACEHOLDER_RE = re.compile(r"@@([A-Z_][A-Z0-9_]*)@@")
+from jinja2 import Environment, StrictUndefined
+from jinja2.meta import find_undeclared_variables
+
+VAR_KEY_RE = re.compile(r"[a-z_][a-z0-9_]*")
+
+
+def _env() -> Environment:
+    return Environment(
+        undefined=StrictUndefined,
+        autoescape=False,
+        keep_trailing_newline=True,
+    )
 
 
 def render(template_text: str, values: dict[str, str], allow_unset: bool) -> tuple[str, list[str]]:
-    missing: list[str] = []
-
-    def sub(match: "re.Match[str]") -> str:
-        key = match.group(1)
-        if key in values:
-            return values[key]
-        env = os.environ.get(key)
-        if env is not None:
-            return env
-        missing.append(key)
-        return "" if allow_unset else match.group(0)
-
-    return PLACEHOLDER_RE.sub(sub, template_text), missing
+    env = _env()
+    declared = find_undeclared_variables(env.parse(template_text))
+    missing = sorted(declared - values.keys())
+    if missing and not allow_unset:
+        return "", missing
+    ctx = {**{k: "" for k in missing}, **values} if allow_unset else values
+    return env.from_string(template_text).render(**ctx), missing
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -68,13 +75,13 @@ def main(argv: list[str] | None = None) -> int:
         "--var",
         action="append",
         default=[],
-        metavar="KEY=VALUE",
+        metavar="key=value",
         help="Variable binding (repeatable); also reads from process env",
     )
     p.add_argument(
         "--allow-unset",
         action="store_true",
-        help="Render unset @@KEY@@ as empty string instead of failing",
+        help="Render unset {{ key }} as empty string instead of failing",
     )
     args = p.parse_args(argv)
 
@@ -85,23 +92,36 @@ def main(argv: list[str] | None = None) -> int:
     values: dict[str, str] = {}
     for kv in args.var:
         if "=" not in kv:
-            print(f"render_template: --var must be KEY=VALUE: {kv!r}", file=sys.stderr)
+            print(f"render_template: --var must be key=value: {kv!r}", file=sys.stderr)
             return 2
         key, _, val = kv.partition("=")
-        if not re.fullmatch(r"[A-Z_][A-Z0-9_]*", key):
-            print(f"render_template: --var key must match [A-Z_][A-Z0-9_]*: {key!r}", file=sys.stderr)
+        if not VAR_KEY_RE.fullmatch(key):
+            print(
+                f"render_template: --var key must match [a-z_][a-z0-9_]*: {key!r}",
+                file=sys.stderr,
+            )
             return 2
         values[key] = val
 
     text = args.template.read_text(encoding="utf-8")
+    referenced = find_undeclared_variables(_env().parse(text))
+    for key in referenced - values.keys():
+        if not VAR_KEY_RE.fullmatch(key):
+            continue
+        # Try the lower-case key first (the new contract), then the
+        # upper-case shape for back-compat with callers that still export
+        # `TASK_NUMBER`/`WORKTREE_PATH` etc. into the process env (T-437
+        # codex round 2 — preserve the documented env-fallback contract).
+        env_val = os.environ.get(key)
+        if env_val is None:
+            env_val = os.environ.get(key.upper())
+        if env_val is not None:
+            values[key] = env_val
+
     rendered, missing = render(text, values, args.allow_unset)
 
     if missing and not args.allow_unset:
-        unique = sorted(set(missing))
-        print(
-            f"render_template: unsubstituted placeholders: {unique}",
-            file=sys.stderr,
-        )
+        print(f"render_template: unsubstituted placeholders: {missing}", file=sys.stderr)
         return 1
 
     args.output.parent.mkdir(parents=True, exist_ok=True)

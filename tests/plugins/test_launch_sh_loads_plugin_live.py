@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import re
 import subprocess
-import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -37,16 +36,19 @@ def _render(tmp_path: Path) -> str:
     out = wt / ".cloglog" / "launch.sh"
     result = subprocess.run(
         [
-            sys.executable,
+            "uv",
+            "run",
+            "--with",
+            "jinja2",
             str(RENDER_SCRIPT),
             "--template",
             str(TEMPLATE_PATH),
             "--output",
             str(out),
             "--var",
-            f"WORKTREE_PATH={wt}",
+            f"worktree_path={wt}",
             "--var",
-            f"PROJECT_ROOT={proj}",
+            f"project_root={proj}",
         ],
         capture_output=True,
         text=True,

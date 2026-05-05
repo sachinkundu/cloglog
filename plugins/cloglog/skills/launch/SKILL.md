@@ -78,25 +78,28 @@ rendered from
 cp "${CLAUDE_PLUGIN_ROOT}/templates/AGENT_PROMPT.md" "${WORKTREE_PATH}/AGENT_PROMPT.md"
 
 # 2. Per-task delta — render via the deterministic Python helper.
-#    Replacement is literal `str.replace`, so values containing `&`, `\`,
-#    `|`, or newlines round-trip verbatim. No sed-replacement escape
-#    gymnastics required (T-354).
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/render_template.py" \
+#    Engine is Jinja2 with autoescape OFF (T-437); placeholder syntax is
+#    `{{ key }}`. Replacement is literal — values containing `&`, `\`,
+#    `|`, or newlines round-trip verbatim, preserving the T-354 fix.
+#    `uv run --with jinja2` provisions Jinja2 in an ephemeral env so the
+#    script works on hosts whose system `python3` lacks the package
+#    (mirrors the gh-app-token.py pattern).
+uv run --with jinja2 "${CLAUDE_PLUGIN_ROOT}/scripts/render_template.py" \
   --template "${CLAUDE_PLUGIN_ROOT}/templates/task.md.template" \
   --output "${WORKTREE_PATH}/task.md" \
-  --var "TASK_NUMBER=${TASK_NUMBER}" \
-  --var "TASK_TITLE=${TASK_TITLE}" \
-  --var "PRIORITY=${PRIORITY}" \
-  --var "FEATURE_REF=${FEATURE_REF:-(none)}" \
-  --var "TASK_UUID=${TASK_UUID}" \
-  --var "FEATURE_UUID=${FEATURE_UUID:-(none)}" \
-  --var "WORKTREE_UUID=${WORKTREE_UUID}" \
-  --var "WORKTREE_NAME=${WORKTREE_NAME}" \
-  --var "WORKTREE_PATH=${WORKTREE_PATH}" \
-  --var "PROJECT_ROOT=${PROJECT_ROOT}" \
-  --var "TASK_DESCRIPTION=${TASK_DESCRIPTION:-(none)}" \
-  --var "SIBLING_WARNINGS=${SIBLING_WARNINGS:-(none)}" \
-  --var "RESIDUAL_NOTES=${RESIDUAL_NOTES:-(none)}"
+  --var "task_number=${TASK_NUMBER}" \
+  --var "task_title=${TASK_TITLE}" \
+  --var "priority=${PRIORITY}" \
+  --var "feature_ref=${FEATURE_REF:-(none)}" \
+  --var "task_uuid=${TASK_UUID}" \
+  --var "feature_uuid=${FEATURE_UUID:-(none)}" \
+  --var "worktree_uuid=${WORKTREE_UUID}" \
+  --var "worktree_name=${WORKTREE_NAME}" \
+  --var "worktree_path=${WORKTREE_PATH}" \
+  --var "project_root=${PROJECT_ROOT}" \
+  --var "task_description=${TASK_DESCRIPTION:-(none)}" \
+  --var "sibling_warnings=${SIBLING_WARNINGS:-(none)}" \
+  --var "residual_notes=${RESIDUAL_NOTES:-(none)}"
 ```
 
 The agent reads `AGENT_PROMPT.md` first; the template's first section
@@ -221,15 +224,15 @@ mkdir -p "${WORKTREE_PATH}/.cloglog"
 printf '%s\n' "${TASK_MODEL:-}" > "${WORKTREE_PATH}/.cloglog/task-model"
 
 # Render the launcher from the static template. The two operator-host
-# values (WORKTREE_PATH, PROJECT_ROOT) are baked in by render_template.py
-# via literal `str.replace`. No bash-escape gymnastics: a path under
-# `~/R&D/foo|bar` round-trips verbatim. T-354 closed the prior heredoc +
-# sed shape, which lost `&`/`\`/`|` to sed's replacement-string semantics.
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/render_template.py" \
+# values (worktree_path, project_root) are baked in by render_template.py
+# via Jinja2 with autoescape OFF — values containing `&`, `\`, `|`,
+# or newlines round-trip verbatim. T-354 closed the prior heredoc + sed
+# shape; T-437 swapped the literal-replace engine for Jinja2.
+uv run --with jinja2 "${CLAUDE_PLUGIN_ROOT}/scripts/render_template.py" \
   --template "${CLAUDE_PLUGIN_ROOT}/templates/launch.sh.template" \
   --output "${WORKTREE_PATH}/.cloglog/launch.sh" \
-  --var "WORKTREE_PATH=${WORKTREE_PATH}" \
-  --var "PROJECT_ROOT=${PROJECT_ROOT}"
+  --var "worktree_path=${WORKTREE_PATH}" \
+  --var "project_root=${PROJECT_ROOT}"
 chmod +x "${WORKTREE_PATH}/.cloglog/launch.sh"
 
 # new-tab -- <command> starts the command in the tab's initial pane — no write-chars, no list-clients, no pane-id needed.
@@ -273,7 +276,7 @@ After all agents are launched, the main agent does NOT trust tab creation as pro
 3. **Diagnostic checklist on timeout.** Print these commands verbatim for the operator (substitute `<worktree>` with the absolute worktree path and `<wt-name>` with the tab/branch name):
 
    1. `zellij action list-tabs --json | jq -r --arg n "<wt-name>" '.[] | select(.name == $n) | .tab_id'` — tab present? Empty ⇒ launcher never ran.
-   2. `bash -n <worktree>/.cloglog/launch.sh` — syntax valid? Non-zero ⇒ template-rendering regression (re-run `render_template.py` against the template; check for unsubstituted `@@VAR@@` tokens).
+   2. `bash -n <worktree>/.cloglog/launch.sh` — syntax valid? Non-zero ⇒ template-rendering regression (re-run `render_template.py` against the template; check for unsubstituted `{{ var }}` tokens).
    3. `tail -20 /tmp/agent-shutdown-debug.log` — any trap fire mentioning this worktree? Process started then died on signal.
    4. **Credentials.** `CLOGLOG_API_KEY` and `DATABASE_URL` live in different homes — probe each at its real source:
       - `printenv CLOGLOG_API_KEY` in the launcher shell. If the repo has `project_id` in `.cloglog/config.yaml` (bootstrapped), the key should live in `~/.cloglog/credentials.d/<project_slug>`; legacy repos without `project_id` fall back to `~/.cloglog/credentials`. Run `grep '^project_id:' <worktree>/.cloglog/config.yaml` to determine which applies. The project API key MUST NOT live in `<worktree>/.env`; `tests/test_mcp_json_no_secret.py` and `.cloglog/on-worktree-create.sh` pin that invariant. If the operator following this checklist is tempted to add the key to `.env`, that is the regression — fix the env or the credentials file instead.

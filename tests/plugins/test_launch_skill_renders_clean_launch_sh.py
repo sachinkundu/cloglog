@@ -53,9 +53,9 @@ def _render(tmp_path: Path, worktree_path: Path, project_root: Path) -> Path:
             "--output",
             str(out),
             "--var",
-            f"WORKTREE_PATH={worktree_path}",
+            f"worktree_path={worktree_path}",
             "--var",
-            f"PROJECT_ROOT={project_root}",
+            f"project_root={project_root}",
         ],
         capture_output=True,
         text=True,
@@ -118,7 +118,7 @@ def test_launch_sh_renders_clean(tmp_path: Path) -> None:
     )
 
     # 5. No leftover placeholders.
-    leftover = re.findall(r"@@[A-Z_]+@@", rendered)
+    leftover = re.findall(r"\{\{\s*[a-z_][a-z0-9_]*\s*\}\}", rendered)
     assert not leftover, f"Unsubstituted placeholders remain: {leftover}"
 
 
@@ -155,5 +155,5 @@ def test_launch_sh_template_is_tracked() -> None:
     )
     body = TEMPLATE_PATH.read_text(encoding="utf-8")
     assert body.startswith("#!/bin/bash"), "Template must begin with bash shebang"
-    assert "@@WORKTREE_PATH@@" in body
-    assert "@@PROJECT_ROOT@@" in body
+    assert "{{ worktree_path }}" in body
+    assert "{{ project_root }}" in body

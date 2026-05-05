@@ -16,20 +16,21 @@ plugins/cloglog/
 │   ├── task.md.template               # Per-task delta — rendered
 │   └── launch.sh.template             # Bash launcher — rendered
 └── scripts/
-    └── render_template.py             # Deterministic @@KEY@@ → value
+    └── render_template.py             # Deterministic {{ key }} → value
 ```
 
 ## Rendering contract
 
-`render_template.py` substitutes `@@KEY@@` placeholders (where `KEY`
-matches `[A-Z_][A-Z0-9_]*`) with values supplied via `--var KEY=VALUE`
-or the process environment. Replacement is a literal Python
-`str.replace`, so values containing shell or sed metacharacters
+`render_template.py` substitutes `{{ key }}` placeholders (where `key`
+matches `[a-z_][a-z0-9_]*`) with values supplied via `--var key=value`
+or the process environment. The engine is Jinja2 with autoescape OFF
+and `StrictUndefined`, so values containing shell metacharacters
 (`&`, `\`, `|`, `$`, newlines, etc.) round-trip verbatim.
 
-Strict by default: any unset `@@KEY@@` token after the substitution
-pass fails the script with exit 1. `--allow-unset` opts in to empty-
-string fallback.
+Strict by default: any unset `{{ key }}` token fails the script with
+exit 1 (the AST is walked up-front so every missing key is reported in
+one shot, not just the first one Jinja trips on at render time).
+`--allow-unset` opts in to empty-string fallback.
 
 ## History
 
@@ -64,14 +65,16 @@ the placeholder. The visible failure was every supervisor-rendered
 text was substituted with empty string).
 
 The fix is to stop trying to escape one shell language inside another
-inside a third. `render_template.py` does literal Python `str.replace`
-— there is no shell or sed metacharacter that has special meaning in
-the replacement value. The same script handles `task.md` rendering
-(replacing the prior heredoc + multi-pass sed with `r FILE` for
-multi-line values).
+inside a third. `render_template.py` substitutes values verbatim into
+the template — there is no shell or sed metacharacter with special
+meaning in the replacement value. T-437 swapped the original literal
+`str.replace` engine for Jinja2 (autoescape OFF, `StrictUndefined`)
+without changing the substitution semantics. The same script handles
+`task.md` rendering (replacing the prior heredoc + multi-pass sed with
+`r FILE` for multi-line values).
 
 The bash-side SKILL recipe shrinks to a single `python3 render_template.py`
-invocation per file, with `--var KEY=VALUE` flags carrying the bindings.
+invocation per file, with `--var key=value` flags carrying the bindings.
 This is also why both files are now tracked under `templates/`: a
 template living in version control can be linted, syntax-checked, and
 diffed across history; a template encoded as bash heredoc lines inside a
@@ -175,11 +178,11 @@ model is used for every task, not just the initial one. The
   template under `templates/` and re-launch. A hand-edit on the
   rendered file is overwritten on the next launch and looks like a
   silent regression.
-- **Adding a new placeholder?** Add it to the template, add a
-  corresponding `--var KEY=VALUE` line in SKILL.md, and add a pin test
-  that asserts the binding round-trips for an adversarial value (one
-  that contains `&`, `|`, `\` or a newline).
+- **Adding a new placeholder?** Add it to the template as
+  `{{ key }}`, add a corresponding `--var key=value` line in SKILL.md,
+  and add a pin test that asserts the binding round-trips for an
+  adversarial value (one that contains `&`, `|`, `\` or a newline).
 - **Adding a new template?** Place it under `plugins/cloglog/templates/`,
-  follow the same `@@KEY@@` placeholder convention, and call
+  follow the same `{{ key }}` Jinja2 placeholder convention, and call
   `render_template.py` from the SKILL with explicit `--var` bindings.
   Do not add a second rendering pathway — there is one contract.

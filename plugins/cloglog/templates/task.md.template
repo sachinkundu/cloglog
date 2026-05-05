@@ -1,24 +1,24 @@
-# Task — @@TASK_NUMBER@@: @@TASK_TITLE@@
+# Task — {{ task_number }}: {{ task_title }}
 
-Priority: @@PRIORITY@@
-Feature: @@FEATURE_REF@@
+Priority: {{ priority }}
+Feature: {{ feature_ref }}
 
 ## Task IDs
-- Task ID: `@@TASK_UUID@@`
-- Feature ID: `@@FEATURE_UUID@@`
-- Worktree ID: `@@WORKTREE_UUID@@`
-- Worktree name: `@@WORKTREE_NAME@@`
-- Worktree path: `@@WORKTREE_PATH@@`
-- Project root: `@@PROJECT_ROOT@@`
+- Task ID: `{{ task_uuid }}`
+- Feature ID: `{{ feature_uuid }}`
+- Worktree ID: `{{ worktree_uuid }}`
+- Worktree name: `{{ worktree_name }}`
+- Worktree path: `{{ worktree_path }}`
+- Project root: `{{ project_root }}`
 
 ## Description
 
-@@TASK_DESCRIPTION@@
+{{ task_description }}
 
 ## Sibling work in flight
 
-@@SIBLING_WARNINGS@@
+{{ sibling_warnings }}
 
 ## Residual TODOs hint
 
-@@RESIDUAL_NOTES@@
+{{ residual_notes }}

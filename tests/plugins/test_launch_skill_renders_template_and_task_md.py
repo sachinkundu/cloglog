@@ -1,12 +1,11 @@
-"""Pin: T-360 / T-354 — launch SKILL Step 3 renders AGENT_PROMPT.md + task.md.
+"""Pin: T-360 / T-354 / T-437 — launch SKILL Step 3 renders AGENT_PROMPT.md + task.md.
 
 The structural fix for the 2026-04-30 inbox-path incident (T-360) is to
 copy the workflow template verbatim and emit only the per-task delta as
-``task.md``. The rendering shape itself was rewritten by T-354: drop the
-SKILL-embedded heredoc + sed pipeline (which silently corrupted values
-containing ``&``/``\\``/``|``) in favour of
-``scripts/render_template.py`` against
-``templates/task.md.template``.
+``task.md``. The rendering shape itself was rewritten by T-354 (drop the
+SKILL-embedded heredoc + sed pipeline that silently corrupted values
+containing ``&``/``\\``/``|``) and again by T-437 (Jinja2 with
+autoescape OFF and ``StrictUndefined``, ``{{ key }}`` syntax).
 
 This pin renders the template against fixture variables and asserts:
 
@@ -15,10 +14,10 @@ This pin renders the template against fixture variables and asserts:
 2. ``AGENT_PROMPT.md`` is byte-identical to the template — the launch
    path must not paraphrase the template into per-agent variants
    (T-360).
-3. ``task.md`` has every ``@@PLACEHOLDER@@`` substituted with the
+3. ``task.md`` has every ``{{ placeholder }}`` substituted with the
    fixture value — no leftover tokens.
 4. Adversarial values (titles containing ``&``, ``\\``, ``|``,
-   newlines) round-trip literally — the T-354 fix.
+   newlines) round-trip literally — the T-354 fix, preserved by T-437.
 """
 
 from __future__ import annotations
@@ -64,19 +63,19 @@ def test_step3_emits_both_files_with_substituted_placeholders() -> None:
         (wt / "AGENT_PROMPT.md").write_bytes(PROMPT_TEMPLATE.read_bytes())
 
         bindings = dict(
-            WORKTREE_PATH=str(wt),
-            WORKTREE_NAME="wt-fake",
-            WORKTREE_UUID="11111111-1111-1111-1111-111111111111",
-            TASK_NUMBER="T-999",
-            TASK_TITLE="Fake task title",
-            TASK_UUID="22222222-2222-2222-2222-222222222222",
-            PRIORITY="normal",
-            FEATURE_REF="F-99 Some feature",
-            FEATURE_UUID="33333333-3333-3333-3333-333333333333",
-            PROJECT_ROOT=str(REPO_ROOT),
-            TASK_DESCRIPTION="Make the thing do the thing.",
-            SIBLING_WARNINGS="(none)",
-            RESIDUAL_NOTES="(none)",
+            worktree_path=str(wt),
+            worktree_name="wt-fake",
+            worktree_uuid="11111111-1111-1111-1111-111111111111",
+            task_number="T-999",
+            task_title="Fake task title",
+            task_uuid="22222222-2222-2222-2222-222222222222",
+            priority="normal",
+            feature_ref="F-99 Some feature",
+            feature_uuid="33333333-3333-3333-3333-333333333333",
+            project_root=str(REPO_ROOT),
+            task_description="Make the thing do the thing.",
+            sibling_warnings="(none)",
+            residual_notes="(none)",
         )
         _render_task_md(wt / "task.md", **bindings)
 
@@ -97,19 +96,19 @@ def test_step3_emits_both_files_with_substituted_placeholders() -> None:
         for needle in (
             "T-999",
             "Fake task title",
-            bindings["TASK_UUID"],
-            bindings["WORKTREE_UUID"],
-            bindings["WORKTREE_PATH"],
-            bindings["PROJECT_ROOT"],
+            bindings["task_uuid"],
+            bindings["worktree_uuid"],
+            bindings["worktree_path"],
+            bindings["project_root"],
             "Make the thing do the thing.",
         ):
             assert needle in task_body, f"Missing fixture value {needle!r} in rendered task.md"
 
-        # 3. No @@...@@ placeholders left.
-        leftover = re.findall(r"@@[A-Z_]+@@", task_body)
+        # 3. No {{ ... }} placeholders left.
+        leftover = re.findall(r"\{\{\s*[a-z_][a-z0-9_]*\s*\}\}", task_body)
         assert not leftover, (
             f"Unsubstituted placeholders remain in task.md: {leftover}. "
-            "Every @@PLACEHOLDER@@ token must have a matching --var binding "
+            "Every {{ placeholder }} token must have a matching --var binding "
             "in the SKILL's render_template.py invocation."
         )
 
@@ -140,36 +139,36 @@ def test_task_md_round_trips_metacharacters() -> None:
         )
         adversarial_residual = "Note: don't forget the &\\| trio."
         bindings = dict(
-            WORKTREE_PATH=str(wt),
-            WORKTREE_NAME="wt-fake",
-            WORKTREE_UUID="11111111-1111-1111-1111-111111111111",
-            TASK_NUMBER="T-999",
-            TASK_TITLE=adversarial_title,
-            TASK_UUID="22222222-2222-2222-2222-222222222222",
-            PRIORITY="normal",
-            FEATURE_REF=adversarial_feature,
-            FEATURE_UUID="33333333-3333-3333-3333-333333333333",
-            PROJECT_ROOT=str(REPO_ROOT),
-            TASK_DESCRIPTION=adversarial_desc,
-            SIBLING_WARNINGS="(none)",
-            RESIDUAL_NOTES=adversarial_residual,
+            worktree_path=str(wt),
+            worktree_name="wt-fake",
+            worktree_uuid="11111111-1111-1111-1111-111111111111",
+            task_number="T-999",
+            task_title=adversarial_title,
+            task_uuid="22222222-2222-2222-2222-222222222222",
+            priority="normal",
+            feature_ref=adversarial_feature,
+            feature_uuid="33333333-3333-3333-3333-333333333333",
+            project_root=str(REPO_ROOT),
+            task_description=adversarial_desc,
+            sibling_warnings="(none)",
+            residual_notes=adversarial_residual,
         )
         _render_task_md(wt / "task.md", **bindings)
 
         task_body = (wt / "task.md").read_text(encoding="utf-8")
         # Each adversarial value must appear verbatim.
         for label, value in (
-            ("TASK_TITLE", adversarial_title),
-            ("FEATURE_REF", adversarial_feature),
-            ("TASK_DESCRIPTION", adversarial_desc),
-            ("RESIDUAL_NOTES", adversarial_residual),
+            ("task_title", adversarial_title),
+            ("feature_ref", adversarial_feature),
+            ("task_description", adversarial_desc),
+            ("residual_notes", adversarial_residual),
         ):
             assert value in task_body, (
                 f"Adversarial {label} did not round-trip literally. "
                 f"Expected {value!r}, got:\n{task_body}"
             )
         # Placeholder text must not be spliced back in.
-        for tok in ("@@TASK_TITLE@@", "@@FEATURE_REF@@", "@@TASK_DESCRIPTION@@"):
+        for tok in ("{{ task_title }}", "{{ feature_ref }}", "{{ task_description }}"):
             assert tok not in task_body
 
 
@@ -198,19 +197,20 @@ def test_task_md_template_has_required_placeholders() -> None:
     """
     body = TASK_TEMPLATE.read_text(encoding="utf-8")
     required = {
-        "@@TASK_NUMBER@@",
-        "@@TASK_TITLE@@",
-        "@@PRIORITY@@",
-        "@@FEATURE_REF@@",
-        "@@TASK_UUID@@",
-        "@@FEATURE_UUID@@",
-        "@@WORKTREE_UUID@@",
-        "@@WORKTREE_NAME@@",
-        "@@WORKTREE_PATH@@",
-        "@@PROJECT_ROOT@@",
-        "@@TASK_DESCRIPTION@@",
-        "@@SIBLING_WARNINGS@@",
-        "@@RESIDUAL_NOTES@@",
+        "task_number",
+        "task_title",
+        "priority",
+        "feature_ref",
+        "task_uuid",
+        "feature_uuid",
+        "worktree_uuid",
+        "worktree_name",
+        "worktree_path",
+        "project_root",
+        "task_description",
+        "sibling_warnings",
+        "residual_notes",
     }
-    missing = required - set(re.findall(r"@@[A-Z_]+@@", body))
+    found = set(re.findall(r"\{\{\s*([a-z_][a-z0-9_]*)\s*\}\}", body))
+    missing = required - found
     assert not missing, f"task.md.template missing placeholders: {missing}"

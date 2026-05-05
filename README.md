@@ -97,7 +97,7 @@ reviewer_bot_logins:
   - cloglog-codex-reviewer[bot]
 
 # Single-line regex of paths whose changes never need a stakeholder demo.
-demo_allowlist_paths: '^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates)/|^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$'
+demo_allowlist_paths: '^docs/|^CLAUDE\.md|^README\.md$|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates|docs|scripts)/|^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$'
 
 # protect-worktree-writes hook scope map. Hook strips `wt-` from the worktree
 # basename and looks up the remainder here (prefix-matched). Keys must match

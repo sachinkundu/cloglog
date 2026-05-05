@@ -36,7 +36,7 @@ CHECK_DEMO_SH = REPO_ROOT / "scripts" / "check-demo.sh"
 # the script. Tests provision a copy of cloglog's default in the tmp repo so
 # check-demo.sh has a config to read.
 DEMO_ALLOWLIST_REGEX = (
-    r"^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|"
+    r"^docs/|^CLAUDE\.md|^README\.md$|^\.claude/|^\.cloglog/|^scripts/|^\.github/|"
     r"^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates|docs|scripts)/|"
     r"^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$"
 )
@@ -119,6 +119,7 @@ def _commit(repo: Path, env: dict[str, str], relpath: str, contents: str = "x\n"
 ALLOWLISTED_PATHS = [
     "docs/foo.md",
     "CLAUDE.md",
+    "README.md",
     ".claude/agents/new-agent.md",
     ".cloglog/config.yaml",
     "scripts/helper.sh",

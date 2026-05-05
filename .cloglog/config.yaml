@@ -28,7 +28,7 @@ reviewer_bot_logins:
 # scripts/check-demo.sh and the demo skill. Stored as a YAML scalar so the
 # scalar reader at plugins/cloglog/hooks/lib/parse-yaml-scalar.sh handles
 # it without a YAML list parser.
-demo_allowlist_paths: '^docs/|^CLAUDE\.md|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates|docs|scripts)/|^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$'
+demo_allowlist_paths: '^docs/|^CLAUDE\.md|^README\.md$|^\.claude/|^\.cloglog/|^scripts/|^\.github/|^tests/|^Makefile$|^plugins/[^/]+/(hooks|skills|agents|templates|docs|scripts)/|^pyproject\.toml$|^ruff\.toml$|package-lock\.json$|\.lock$'
 
 # T-358: operator off-switch for desktop toasts (notify-send). Set to false
 # to suppress every toast class without affecting the persisted Notification

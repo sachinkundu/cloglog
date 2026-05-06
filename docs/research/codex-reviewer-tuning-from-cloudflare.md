@@ -149,25 +149,36 @@ headroom on the size class where codex spends most of its time
   PR #330 was a real instance, not hypothetical.
 - **Follow-up title:** "Raise `REVIEW_TIMEOUT_BASE_SECONDS` to 420s."
 
-### 3.2 `opencode_max_turns = 5`, `codex_max_turns = 2`
+### 3.2 Per-turn caps and consensus stop rules — already in place
+
+**Correction (codex round 1).** The current settings are
+`codex_max_turns = 1` (set in `src/shared/config.py:50-58`, deliberate
+T-367 change documented in `docs/work-logs/2026-05-02-wave-t367-codex-memory-work-log.md`)
+and `MAX_REVIEWS_PER_PR = 5`. The `_reached_consensus` predicate at
+`src/gateway/review_loop.py:344-364` already implements predicate (c)
+"no new findings vs. all prior turns" — including the case-normalized
+subset-of-prior check pinned by `tests/gateway/test_review_loop.py:380-396`.
+
+So a recommendation to "add subset-of-prior consensus" would be a
+no-op. PR #329's 5/5 exhaustion did NOT happen because the predicate
+was missing — each round's findings were genuinely new (codex found
+different real issues each pass on the spec). The exhaustion is a
+content problem, not a stop-rule problem.
 
 Cloudflare cites a re-review average of **2.7 reviews per MR**
-(initial + re-reviews on push). They don't bound turns within a single
-review — their coordinator runs once, dispatches once, and finishes.
-The "iterative consensus" predicate we run (`_reached_consensus`) has
-no Cloudflare counterpart because their coordinator's single-pass
-design doesn't iterate.
+(initial + re-reviews on push) and doesn't bound turns within a single
+review — their coordinator's single-pass design doesn't iterate. Their
+data point: **0.6% of MRs hit a "break glass" override** (288 / 48,095).
+Our break-glass rate on the comparable PRs we've shipped this week is
+higher — probably 5–15% — but the diagnosis is **not** missing stop
+rules; the predicates are in place.
 
-PR #329 hit `MAX_REVIEWS_PER_PR = 2` codex sessions (5 codex sessions
-in newer wording — `MAX_REVIEWS_PER_PR` is renamed but the behaviour
-is the per-PR cap) and forced human merge. Their data point:
-**0.6% of MRs hit a "break glass" override** (288 / 48,095). Our
-break-glass rate on the comparable PRs we've shipped this week is much
-higher — probably 5–15% if we counted, since most spec-only PRs hit
-exhaustion.
-
-**Recommendation:** Do NOT raise the codex per-PR cap. Cloudflare's
-0.6% break-glass rate comes from a different mechanism — their
+**Recommendation:** Do NOT change the per-PR cap or consensus rules
+today. The genuine exhaustion driver is *findings churn* (codex
+finding new real issues round after round on long specs), and the
+intervention space for that is upstream prompt or input-shape
+changes, not stop-rule plumbing. Cloudflare's 0.6% break-glass rate
+comes from a different mechanism — their
 coordinator runs once, then the human pushes a fix, and the next
 review is a *fresh* review on the new SHA, not turn N+1 of the same
 review. Our exhaustion comes from codex disagreeing with itself across
@@ -204,31 +215,31 @@ caching. We don't today (codex CLI invocation, no cache config).
   CLI invocation to a caching-aware wrapper) outweighs ~$0–$50/year
   of API spend.
 
-### 3.4 What we ship that they don't, and should consider dropping
+### 3.4 Prompt scope on the live runtime prompt — already trimmed
 
-Our codex prompt (`plugins/cloglog/templates/codex-review-prompt.md`)
-ends with a long **"Demo expectations"** block (lines 54–69) telling
-codex to also audit demo coverage. That's an entire orthogonal
-dimension bolted on. Cloudflare keeps each specialist prompt
-single-purpose; mixing review correctness + demo audit in one prompt
-is the kind of dimension-cross-talk that produces noise.
+**Correction (codex round 1).** The runtime prompt the live review
+engine loads is `.github/codex/prompts/review.md` (per
+`src/gateway/review_engine.py:413-418`), NOT
+`plugins/cloglog/templates/codex-review-prompt.md` — that template is
+read only at project initialization to generate the project-specific
+prompt (`plugins/cloglog/skills/init/SKILL.md:894-900`). The current
+`.github/codex/prompts/review.md:1-120` already contains no
+"Demo expectations" block — the dimension-cross-talk this section
+originally proposed eliminating is already not a problem in the live
+prompt.
 
-PR #330 row #31 (codex missed sites grep finds) is consistent with the
-prompt being too broad — codex's attention is split between "verify
-patch correctness by reading neighbours" and "audit demo coverage."
-The fix is to either drop the demo-audit block from the codex prompt
-(let `demo-reviewer` agent do that work — which it already does) or
-defer.
+PR #330 row #31 (codex missed sites grep finds) is therefore not
+explained by demo-audit cross-talk. The likelier cause is the
+inherent limitation of LLM review on docs-sweep tasks where the
+deterministic grep is the right tool — covered by the systematic
+post-codex-grep pattern T-435 itself adopted ("How this sweep was
+conducted (after codex review)").
 
-- **Adopt:** Drop the "Demo expectations" block from
-  `plugins/cloglog/templates/codex-review-prompt.md`. The
-  `demo-reviewer` subagent already covers this surface.
-- **Self-defense:** if we don't ship this, codex stays distracted —
-  we get demo-coverage findings *and* miss correctness findings. The
-  miss is worse than the duplicated demo-coverage check; the
-  classifier + demo-reviewer combo is the authoritative demo gate
-  per `docs/invariants.md`.
-- **Follow-up title:** "Drop demo-coverage block from codex prompt."
+- **Drop.** No follow-up to file. If the operator's intent is to
+  also ensure the *plugin template* (used to seed future repos)
+  stays free of demo-audit content, that is a separate plugin-side
+  concern, not a tuning of the live cloglog reviewer. Note the
+  distinction and move on.
 
 ## 4. Prompt-engineering lessons
 
@@ -253,19 +264,30 @@ already follow this principle. Concrete items they list that we don't:
   specific library-suggestion pattern.
 
 **Recommendation:** Extend the "What NOT to report" section of the
-codex prompt with these three items, copied close to verbatim from
-Cloudflare's security-reviewer prompt (with attribution). This is a
-~10-line prompt edit; the win is fewer noise findings on PRs that
-already pass.
+**live runtime prompt at `.github/codex/prompts/review.md`** (per
+`src/gateway/review_engine.py:413-418`) with these three items,
+copied close to verbatim from Cloudflare's security-reviewer prompt
+(with attribution). This is a ~10-line prompt edit; the win is fewer
+noise findings on PRs that already pass.
 
-- **Adopt.** Self-defense: if we don't ship this, codex keeps
-  emitting low-information theoretical-risk findings that the
-  operator manually ignores in `auto_merge_gate.py` overrides —
-  observed on multiple recent PRs. The cost of NOT shipping this is
-  recurring "this finding is correct in theory but irrelevant"
-  human-merge friction.
+The current `.github/codex/prompts/review.md:65-72` "What NOT to
+report" section is the correct edit target. The plugin template at
+`plugins/cloglog/templates/codex-review-prompt.md` is generic seed
+material for future repos — touching it would NOT change cloglog's
+own reviewer behaviour; that is a separate decision (port the same
+wording forward so future projects start with the tuned shape too).
+
+- **Adopt — but target `.github/codex/prompts/review.md`, not the
+  plugin template.** Self-defense: if we don't ship this, codex
+  keeps emitting low-information theoretical-risk findings that the
+  operator manually ignores. The cost of NOT shipping is recurring
+  "this finding is correct in theory but irrelevant" human-merge
+  friction.
 - **Follow-up title:** "Add Cloudflare-style anti-noise items to
-  codex prompt's 'What NOT to report' list."
+  `.github/codex/prompts/review.md` 'What NOT to report' list."
+  Optional second follow-up, dependent on operator intent: port the
+  same wording into `plugins/cloglog/templates/codex-review-prompt.md`
+  so newly-`init`'d projects inherit the tuning.
 
 ### Where Cloudflare doesn't help us
 
@@ -311,9 +333,9 @@ recurring.
 | # | Title | Cost | What ships broken if dropped |
 |---|---|---|---|
 | 1 | Raise `REVIEW_TIMEOUT_BASE_SECONDS` to 420s | 1-line constant | PRs near the 100-line / 5-min boundary keep timing out (PR #330 instance) |
-| 2 | Treat finding-set ⊆ prior-set as consensus (predicate d) | ~10 lines in `_reached_consensus` | PR #329-class spec-rejection loops keep exhausting `MAX_REVIEWS_PER_PR` and forcing human merge |
-| 3 | Drop "Demo expectations" block from codex prompt | ~16 lines removed from `plugins/cloglog/templates/codex-review-prompt.md` | Codex stays distracted across two dimensions; demo-coverage already authoritatively handled by `demo-reviewer` agent |
-| 4 | Add Cloudflare-style anti-noise items to "What NOT to report" | ~10 lines added | Codex keeps emitting theoretical-risk findings that the operator manually ignores in auto-merge overrides |
+| 2 | ~~Treat finding-set ⊆ prior-set as consensus~~ — **DROPPED, already shipped.** `_reached_consensus` (`src/gateway/review_loop.py:344-364`) already implements this; pinned by `tests/gateway/test_review_loop.py:380-396`. PR #329's 5/5 exhaustion was findings-churn, not a missing predicate. |  |  |
+| 3 | ~~Drop "Demo expectations" block~~ — **DROPPED, already absent.** The live runtime prompt `.github/codex/prompts/review.md` has no such block; only the plugin template would have the issue, and editing it does NOT retune the live reviewer. |  |  |
+| 4 | Add Cloudflare-style anti-noise items to "What NOT to report" in `.github/codex/prompts/review.md` (live runtime prompt — NOT the plugin template) | ~10 lines added | Codex keeps emitting theoretical-risk findings that the operator manually ignores in auto-merge overrides |
 
 ## 7. Gaps noted but not filed (self-defense rule failed)
 

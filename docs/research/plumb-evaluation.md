@@ -226,8 +226,12 @@ candidate follow-up?
 
 - "Adopt plumb" — nothing ships broken. Drop.
 - "Reimplement plumb's portable subset for the cloglog plugin" — nothing
-  ships broken; cloglog already has demo + invariants + ddd-reviewer covering
-  the failure modes plumb addresses. Drop.
+  ships broken. cloglog itself has demo + invariants + the repo-local
+  `.claude/agents/ddd-reviewer.md` covering much of this risk; the shipped
+  plugin does NOT include `ddd-reviewer` (only `pr-postprocessor` and
+  `worktree-agent` ship under `plugins/cloglog/agents/`), so downstream
+  repos rely on demo + invariants alone — still no concrete missed-gap
+  evidence today. Drop.
 - "Add `# inv:NN` annotation to invariant pin tests, gated by `make
   invariants`" — *something* potentially ships broken: today the link
   between `docs/invariants.md` entries and their pin tests is by
@@ -247,4 +251,6 @@ sibling context.
   wt-t473 at the time of this evaluation**; will land separately.
 - Existing surface this would interact with: `docs/invariants.md`,
   `scripts/check-demo.sh`, `plugins/cloglog/skills/demo/`,
-  `plugins/cloglog/agents/ddd-reviewer.md`.
+  `.claude/agents/ddd-reviewer.md` (repo-local — NOT shipped via the plugin;
+  only `pr-postprocessor.md` and `worktree-agent.md` ship under
+  `plugins/cloglog/agents/`).

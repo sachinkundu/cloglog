@@ -8,7 +8,7 @@ date: 2026-05-06
 
 # memento — fit evaluation
 
-Source: <https://github.com/mandel-macaque/memento>. Sibling research on `plumb` (T-472) covers spec↔test↔code; this memo is **agent-recording only** — cross-link, no comparison.
+Source: <https://github.com/mandel-macaque/memento>. Sibling research on `plumb` (T-472) covers spec↔test↔code separately under PR #336 (different branch — not in this checkout); this memo is **agent-recording only** — no comparison.
 
 ## 1. What memento does (in cloglog vocabulary)
 
@@ -109,4 +109,4 @@ Candidate follow-ups considered and **dropped**:
 
 ## Cross-link
 
-Sibling task wt-t472-plumb-research covers `plumb` (spec↔test↔code), the other half of F-59. See its memo for the provenance layer this one does not address.
+Sibling task T-472 covers `plumb` (spec↔test↔code), the other half of F-59. The plumb memo lands separately via PR #336 — it is not in this checkout. After both PRs merge, the two memos sit alongside each other in `docs/research/`.

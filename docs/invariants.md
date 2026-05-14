@@ -83,6 +83,23 @@ predicate — don't re-derive it.
 
 ## Hooks / infra
 
+### No raw psql against cloglog DBs (dev/prod or default)
+
+Direct `psql` / `pg_dump` (with or without `docker (compose )?exec`)
+access against the cloglog dev/prod databases — or any connection
+that lands on the default `cloglog` DB via `-U cloglog` — bypasses
+MCP and the audit log, normalising drift around the multi-agent
+infrastructure the MCP exists to replace. The `block-direct-db.sh`
+PreToolUse hook hard-rejects these shapes and the `make
+db-refresh-from-prod` wrapper that internally pg_dumps cloglog into
+cloglog_dev. The hook evaluates each shell statement independently
+so compound `psql -d postgres ...; psql -d cloglog_dev ...` calls
+cannot launder forbidden access behind an allowed admin probe.
+Inline `ALLOW_RAW_DB=1 ...` is the only escape — if you reach for it,
+file a task to add the missing MCP tool first.
+
+**Pin:** `tests/plugins/test_block_direct_db_hook.py`
+
 ### Hook scripts parse `.cloglog/config.yaml` without `import yaml`
 
 Hook scripts run under the system `python3`, which has no PyYAML. A

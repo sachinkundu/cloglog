@@ -69,7 +69,8 @@ invariants: ## Run silent-failure pin tests (see docs/invariants.md)
 	  tests/plugins/test_launch_skill_renders_clean_launch_sh.py \
 	  tests/plugins/test_launch_sh_loads_plugin_live.py \
 	  tests/plugins/test_launch_skill_has_agent_started_timeout.py \
-	  tests/plugins/test_close_tab_safety.py
+	  tests/plugins/test_close_tab_safety.py \
+	  tests/plugins/test_block_direct_db_hook.py
 
 # ── Quality ───────────────────────────────────
 

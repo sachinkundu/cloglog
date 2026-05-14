@@ -79,6 +79,11 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/prefer-mcp.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/block-direct-db.sh",
+            "timeout": 5
           }
         ]
       },

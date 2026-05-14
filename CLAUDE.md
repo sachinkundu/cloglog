@@ -61,6 +61,25 @@ Authoritative rule: `docs/design/agent-lifecycle.md` §4.1. The `prefer-mcp.sh` 
 1. **Always choose the best option, not the easiest.** Pick the architecturally sound solution even if it requires more work. Never take shortcuts that create tech debt.
 2. **Boy Scout Rule: leave the code better than you found it.** Fix pre-existing problems in code you touch — broken tests, inconsistent naming, bugs.
 
+## No psql for board lookups
+
+Never shell out to `psql` (or any raw DB read/write) against the
+cloglog dev or prod database for board state, audits, or fixes. Every
+shortcut around MCP weakens the product premise — cloglog *is* the
+multi-agent infra; raw-DB access from any agent is exactly what MCP
+replaces. Use `mcp__cloglog__search` for entity lookup (T-NNN/F-NN/E-N
+or free text), `mcp__cloglog__get_board` / `list_epics` / `list_features`
+for board state, and `mcp__cloglog__get_active_tasks` for non-done
+tasks.
+
+The `block-direct-db.sh` PreToolUse hook enforces this — `psql ...
+cloglog_dev|cloglog_prod` and `docker exec ... psql ... cloglog`
+calls are rejected. An inline `ALLOW_RAW_DB=1 ...` env prefix
+releases the call for genuine schema audits, but if you find yourself
+reaching for it, **file a task to add the missing MCP tool first** —
+the escape hatch exists so real audits aren't impossible, not as a
+back door around the rule. Pin: `tests/plugins/test_block_direct_db_hook.py`.
+
 ## Silent-Failure Invariants → `docs/invariants.md`
 
 Codebase-specific gotchas that can ship broken without automated catch live in `docs/invariants.md`. Each entry names the invariant and its pin test. Before pushing work that touches those areas, run `make invariants`. New incidents add an entry there, not here.

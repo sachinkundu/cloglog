@@ -1,6 +1,6 @@
 ---
 verdict: no_demo
-diff_hash: 2f581f332a7051126a460969a0b429e66c292f6b7ae56ea417b869ebd351af19
+diff_hash: b50149477f57b27fdf9f224615688123799a664af1df29e2a01325eee0f15128
 classifier: demo-classifier
 generated_at: 2026-05-14T10:40:40Z
 ---
@@ -12,6 +12,8 @@ Diff adds a Claude Code PreToolUse hook (plugins/cloglog/hooks/block-direct-db.s
 ## Changed files
 
 - CLAUDE.md
+- Makefile
+- docs/invariants.md
 - plugins/cloglog/hooks/block-direct-db.sh
 - plugins/cloglog/settings.json
 - tests/plugins/test_block_direct_db_hook.py

@@ -44,13 +44,26 @@
 #   rejection only within the statement that carries `-d postgres`, so
 #   `psql -d postgres ...; psql -d cloglog_dev ...` is still rejected.
 #
-# Escape hatch:
-#   Inline env prefix `ALLOW_RAW_DB=1 ...` releases the call. Same
-#   pattern as prefer-mcp.sh's `CLOGLOG_ALLOW_DIRECT_API=1` — must be
-#   set on the command line itself (each Bash tool call is a fresh
-#   shell, so exporting earlier does not persist). If you find
-#   yourself reaching for ALLOW_RAW_DB=1, file a task to add the
+# Escape hatch (statement-scoped, T-417 codex round 5):
+#   Inline env prefix `ALLOW_RAW_DB=1 ...` releases the specific
+#   statement that carries it. Same pattern as prefer-mcp.sh's
+#   `CLOGLOG_ALLOW_DIRECT_API=1` — must be set on the command line
+#   itself.  Round-5 review caught a whole-command scope bug: prior
+#   versions exited on `ALLOW_RAW_DB=1 true; psql -d cloglog_dev ...`
+#   because the prefix appeared anywhere in the flattened command.
+#   The check now runs INSIDE the per-statement loop so prepending an
+#   allowed statement can't whitewash a sibling forbidden one. If you
+#   find yourself reaching for ALLOW_RAW_DB=1, file a task to add the
 #   missing MCP tool first — see CLAUDE.md "No psql for board lookups".
+#
+# Exported libpq vars (T-417 codex round 5):
+#   In real shell semantics, `export PGDATABASE=cloglog_dev` persists
+#   into a subsequent `psql ...` statement on the same line; the
+#   second statement looks innocent to a regex but the connection
+#   still targets cloglog_dev. The hook treats `export
+#   PGDATABASE=cloglog{,_dev,_prod}` and `export PGUSER=cloglog` as
+#   block triggers in their own right when they appear anywhere in a
+#   command that also runs psql or pg_dump.
 
 INPUT=$(cat)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name')
@@ -61,11 +74,6 @@ COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
 
 # Flatten newlines so the regex spans multi-line heredocs / pipelines.
 COMMAND_FLAT=$(printf '%s' "$COMMAND" | tr '\n' ' ')
-
-# --- Escape hatch -------------------------------------------------------
-if echo "$COMMAND_FLAT" | grep -qE '(^|[[:space:];&|(])ALLOW_RAW_DB=1(\b|[[:space:]])'; then
-  exit 0
-fi
 
 # --- Wrapper Makefile target — checked at the whole-command level -----
 # Wrappers don't fit the statement model (the outer command is `make`,
@@ -96,11 +104,26 @@ USER_PAT='(-U[[:space:]]+cloglog\>|--username[[:space:]]+cloglog\>|--username=cl
 ENV_DB_PAT="(^|[[:space:];&|(])PGDATABASE=${PROTECTED_DB}(\\>|[[:space:]])"
 ENV_USER_PAT='(^|[[:space:];&|(])PGUSER=cloglog(\>|[[:space:]])'
 
+# Exported libpq vars — `export PGDATABASE=cloglog_dev; psql ...`
+# persists the var into the later statement in real shell semantics.
+# Round 5: treat the export itself as a trigger when the command also
+# contains a psql / pg_dump call.  Same shapes as ENV_*_PAT but
+# preceded by `export ` (with optional `-x` etc.).
+EXPORT_DB_PAT="\\<export\\>[[:space:]]+([a-zA-Z_][a-zA-Z0-9_]*=[^[:space:]]*[[:space:]]+)*PGDATABASE=${PROTECTED_DB}(\\>|[[:space:]])"
+EXPORT_USER_PAT='\<export\>[[:space:]]+([a-zA-Z_][a-zA-Z0-9_]*=[^[:space:]]*[[:space:]]+)*PGUSER=cloglog(\>|[[:space:]])'
+
 # Admin-DB allowlist (statement-scoped). Same shapes as DB_TARGET_PAT
 # but for the `postgres` maintenance DB.
 POSTGRES_DB_PAT='(-d[[:space:]]+postgres\>|--dbname[[:space:]]+postgres\>|--dbname=postgres\>|postgresql://[^[:space:]]*/postgres(\>|[[:space:]?]))'
 
 REJECT="${REJECT:-0}"
+
+# Cross-statement state: an `export PGDATABASE=cloglog…` or `export
+# PGUSER=cloglog` in any earlier statement applies to all later ones
+# in the same Bash payload (real shell semantics). Track here and
+# treat as a trigger when a later psql/pg_dump statement runs.
+EXPORTED_DB=0
+EXPORTED_USER=0
 
 OLD_IFS="$IFS"
 IFS=$'\n'
@@ -108,8 +131,24 @@ for stmt in $(printf '%s' "$COMMAND_FLAT" | tr ';|&' '\n'); do
   stmt_trim=$(echo "$stmt" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
   [[ -z "$stmt_trim" ]] && continue
 
-  # Per-statement admin allowlist — explicit -d postgres anywhere in
-  # this statement means it targets the maintenance DB.
+  # Detect `export PG... = cloglog...` in this statement. Once an
+  # export lands, it persists for the rest of the command.
+  if echo "$stmt_trim" | grep -qE "$EXPORT_DB_PAT"; then
+    EXPORTED_DB=1
+  fi
+  if echo "$stmt_trim" | grep -qE "$EXPORT_USER_PAT"; then
+    EXPORTED_USER=1
+  fi
+
+  # Statement-scoped escape hatch (round 5). `ALLOW_RAW_DB=1` as an
+  # inline env prefix on THIS statement releases just this one.  An
+  # earlier `ALLOW_RAW_DB=1 true` cannot whitewash a sibling.
+  if echo "$stmt_trim" | grep -qE '(^|[[:space:];&|(])ALLOW_RAW_DB=1(\b|[[:space:]])'; then
+    continue
+  fi
+
+  # Per-statement admin allowlist — explicit -d postgres in THIS
+  # statement means it targets the maintenance DB.
   if echo "$stmt_trim" | grep -qE "$POSTGRES_DB_PAT"; then
     continue
   fi
@@ -121,11 +160,14 @@ for stmt in $(printf '%s' "$COMMAND_FLAT" | tr ';|&' '\n'); do
   echo "$stmt_trim" | grep -qE '\<pg_dump\>' && is_pgdump=1
   [[ "$is_psql" == "1" || "$is_pgdump" == "1" ]] || continue
 
-  # Does this statement carry any block trigger?
+  # Block triggers: explicit CLI/URI target, cloglog user, inline env
+  # prefix, OR a persistent export that landed in an earlier
+  # statement of this same payload.
   if echo "$stmt_trim" | grep -qE "$DB_TARGET_PAT" \
      || echo "$stmt_trim" | grep -qE "$USER_PAT" \
      || echo "$stmt_trim" | grep -qE "$ENV_DB_PAT" \
-     || echo "$stmt_trim" | grep -qE "$ENV_USER_PAT"; then
+     || echo "$stmt_trim" | grep -qE "$ENV_USER_PAT" \
+     || [[ "$EXPORTED_DB" == "1" || "$EXPORTED_USER" == "1" ]]; then
     REJECT=1
     if [[ "$is_pgdump" == "1" ]]; then
       BLOCKED_REASON="${BLOCKED_REASON:-direct pg_dump against cloglog DB}"

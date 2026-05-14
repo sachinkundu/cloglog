@@ -371,6 +371,85 @@ def test_hook_blocks_pgdatabase_env_pg_dump() -> None:
     assert result.returncode != 0
 
 
+def test_hook_blocks_allow_raw_db_on_different_statement() -> None:
+    """T-417 codex round 5: ALLOW_RAW_DB=1 must be statement-scoped.
+    Prepending an allowed harmless statement that carries the prefix
+    must NOT whitewash a sibling forbidden psql call."""
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": ("ALLOW_RAW_DB=1 true; psql -U cloglog -d cloglog_dev -c 'select 1'"),
+        },
+    }
+    result = _run_hook(payload)
+    assert result.returncode != 0, (
+        "ALLOW_RAW_DB=1 in an earlier statement must not release a "
+        "later statement that opens a raw cloglog_dev session. The "
+        "escape hatch is statement-scoped."
+    )
+
+
+def test_hook_allows_allow_raw_db_inline_with_psql() -> None:
+    """The escape hatch DOES work when the prefix is on the same
+    statement as the psql call (the documented contract)."""
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": "ALLOW_RAW_DB=1 psql -U cloglog -d cloglog_dev -c 'select 1'",
+        },
+    }
+    result = _run_hook(payload)
+    assert result.returncode == 0
+
+
+def test_hook_blocks_export_pgdatabase_cloglog_dev_then_psql() -> None:
+    """T-417 codex round 5: shell-level `export PGDATABASE=...`
+    persists into the subsequent psql statement. After the
+    statement split, the second statement looks innocent — but the
+    libpq env carries through. Treat the export itself as a trigger
+    when the command also runs psql / pg_dump."""
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": "export PGDATABASE=cloglog_dev; psql -U postgres -c 'select 1'",
+        },
+    }
+    result = _run_hook(payload)
+    assert result.returncode != 0
+
+
+def test_hook_blocks_export_pgdatabase_cloglog_default_then_psql() -> None:
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": "export PGDATABASE=cloglog; psql -U postgres -c 'select 1'",
+        },
+    }
+    result = _run_hook(payload)
+    assert result.returncode != 0
+
+
+def test_hook_blocks_export_pguser_cloglog_then_psql() -> None:
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "export PGUSER=cloglog; psql -c 'select 1'"},
+    }
+    result = _run_hook(payload)
+    assert result.returncode != 0
+
+
+def test_hook_blocks_export_pgdatabase_then_pg_dump() -> None:
+    """Same persistent-export hazard via pg_dump."""
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": "export PGDATABASE=cloglog_dev; pg_dump -U postgres --schema-only",
+        },
+    }
+    result = _run_hook(payload)
+    assert result.returncode != 0
+
+
 def test_hook_allows_unrelated_psql() -> None:
     """psql against a non-cloglog database is out of scope — the rule
     is specifically about the cloglog dev/prod DBs."""

@@ -257,6 +257,120 @@ def test_hook_blocks_docker_compose_exec_pg_dump() -> None:
     assert result.returncode != 0
 
 
+def test_hook_blocks_psql_d_cloglog_default() -> None:
+    """T-417 codex round 4: `psql -U postgres -d cloglog` opens a raw
+    session against the default cloglog board DB while authenticating
+    as `postgres` (sidestepping the -U cloglog rule). Round 3 only
+    matched cloglog_(dev|prod) on the DB target — bare `cloglog` was
+    unguarded."""
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "psql -U postgres -d cloglog -c 'select 1'"},
+    }
+    result = _run_hook(payload)
+    assert result.returncode != 0
+
+
+def test_hook_blocks_psql_postgresql_uri_cloglog() -> None:
+    """T-417 codex round 4: a postgresql:// URI ending in /cloglog is
+    equivalent to `-d cloglog`. Must block."""
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": "psql postgresql://postgres@127.0.0.1/cloglog -c 'select 1'",
+        },
+    }
+    result = _run_hook(payload)
+    assert result.returncode != 0
+
+
+def test_hook_blocks_psql_long_username_cloglog() -> None:
+    """T-417 codex round 4: the long --username spelling is equivalent
+    to -U for connection purposes but slipped past the regex."""
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "psql --username cloglog -c 'select 1'"},
+    }
+    result = _run_hook(payload)
+    assert result.returncode != 0
+
+
+def test_hook_blocks_psql_long_username_equals_cloglog() -> None:
+    """T-417 codex round 4: --username=cloglog form too."""
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "psql --username=cloglog -c 'select 1'"},
+    }
+    result = _run_hook(payload)
+    assert result.returncode != 0
+
+
+def test_hook_blocks_compound_admin_then_long_username() -> None:
+    """T-417 codex round 4: the round-3 statement-scoped allowlist must
+    cover the long --username spelling too. Lead with an allowed admin
+    call, then sneak `psql --username cloglog ...` — must still block."""
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": (
+                "psql --username cloglog -d postgres -c 'select 1' && "
+                "psql --username cloglog -c 'select 1'"
+            ),
+        },
+    }
+    result = _run_hook(payload)
+    assert result.returncode != 0
+
+
+def test_hook_blocks_pgdatabase_env_cloglog_dev() -> None:
+    """T-417 codex round 4: libpq env prefix `PGDATABASE=cloglog_dev`
+    targets the protected DB without any CLI flag. The original
+    regex only inspected args after the psql token, so this slipped
+    through."""
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": "PGDATABASE=cloglog_dev psql -U postgres -c 'select 1'",
+        },
+    }
+    result = _run_hook(payload)
+    assert result.returncode != 0
+
+
+def test_hook_blocks_pgdatabase_env_cloglog_default() -> None:
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": "PGDATABASE=cloglog psql -U postgres -c 'select 1'",
+        },
+    }
+    result = _run_hook(payload)
+    assert result.returncode != 0
+
+
+def test_hook_blocks_pguser_env_cloglog() -> None:
+    """T-417 codex round 4: PGUSER=cloglog as env prefix is equivalent
+    to -U cloglog for the default-DB shape."""
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "PGUSER=cloglog psql -c 'select 1'"},
+    }
+    result = _run_hook(payload)
+    assert result.returncode != 0
+
+
+def test_hook_blocks_pgdatabase_env_pg_dump() -> None:
+    """T-417 codex round 4: env prefix bypass via pg_dump too."""
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": "PGDATABASE=cloglog_dev pg_dump -U postgres --schema-only",
+        },
+    }
+    result = _run_hook(payload)
+    assert result.returncode != 0
+
+
 def test_hook_allows_unrelated_psql() -> None:
     """psql against a non-cloglog database is out of scope — the rule
     is specifically about the cloglog dev/prod DBs."""

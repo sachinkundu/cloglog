@@ -72,13 +72,20 @@ or free text), `mcp__cloglog__get_board` / `list_epics` / `list_features`
 for board state, and `mcp__cloglog__get_active_tasks` for non-done
 tasks.
 
-The `block-direct-db.sh` PreToolUse hook enforces this — `psql ...
-cloglog_dev|cloglog_prod` and `docker exec ... psql ... cloglog`
-calls are rejected. An inline `ALLOW_RAW_DB=1 ...` env prefix
-releases the call for genuine schema audits, but if you find yourself
-reaching for it, **file a task to add the missing MCP tool first** —
-the escape hatch exists so real audits aren't impossible, not as a
-back door around the rule. Pin: `tests/plugins/test_block_direct_db_hook.py`.
+The `block-direct-db.sh` PreToolUse hook enforces this — `psql` /
+`pg_dump` / `docker (compose )?exec ... psql|pg_dump` invocations
+that target `cloglog`, `cloglog_dev`, or `cloglog_prod` are rejected,
+along with the `make db-refresh-from-prod` wrapper. The hook evaluates
+each shell statement independently, so a compound command (e.g.,
+`psql -d postgres ...; psql -d cloglog_dev ...`) cannot launder a
+forbidden call behind an allowed admin probe. An explicit `-d postgres`
+target in the same statement is allowed (the Makefile's `dev-env`
+and `db-refresh-from-prod` recipes need this to bootstrap databases).
+Inline `ALLOW_RAW_DB=1 ...` env prefix releases the call for genuine
+schema audits, but if you find yourself reaching for it, **file a task
+to add the missing MCP tool first** — the escape hatch exists so real
+audits aren't impossible, not as a back door around the rule. Pin:
+`tests/plugins/test_block_direct_db_hook.py`.
 
 ## Silent-Failure Invariants → `docs/invariants.md`
 

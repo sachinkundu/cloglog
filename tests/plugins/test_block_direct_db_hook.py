@@ -191,6 +191,72 @@ def test_hook_allows_docker_compose_exec_psql_against_postgres_db() -> None:
     assert result.returncode == 0
 
 
+def test_hook_blocks_compound_admin_then_board() -> None:
+    """T-417 codex round 3: a compound command that leads with an
+    allowed admin probe and then opens a forbidden board-DB session
+    must still be rejected. Previously the `-d postgres` allowlist
+    was evaluated against the whole flattened command, so prepending
+    a maintenance call slipped a `psql -d cloglog_dev` past the gate.
+    The hook now evaluates statements independently."""
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": (
+                "psql -U cloglog -d postgres -c 'select 1'; "
+                "psql -U cloglog -d cloglog_dev -c 'select 1'"
+            ),
+        },
+    }
+    result = _run_hook(payload)
+    assert result.returncode != 0, (
+        "Statement-scoped admin allowlist: an allowed `-d postgres` "
+        "statement must not whitewash a sibling cloglog_dev statement "
+        "on the same line. Round-3 regression."
+    )
+
+
+def test_hook_blocks_pg_dump_against_cloglog_dev() -> None:
+    """T-417 codex round 3: `pg_dump` is a raw read path against the
+    board DB. The earlier hook only matched `psql`, leaving
+    `pg_dump -d cloglog_dev` as an unguarded bypass."""
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": "pg_dump -h 127.0.0.1 -U cloglog -d cloglog_dev --schema-only > /tmp/x.sql",
+        },
+    }
+    result = _run_hook(payload)
+    assert result.returncode != 0
+
+
+def test_hook_blocks_pg_dump_against_cloglog_default() -> None:
+    """pg_dump against the default `cloglog` DB (POSTGRES_DB default
+    per docker-compose.yml) is the same raw-read shape as the dev/prod
+    forms — the Makefile's db-refresh-from-prod recipe uses exactly
+    this command."""
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": "pg_dump -h 127.0.0.1 -U cloglog -d cloglog --no-owner",
+        },
+    }
+    result = _run_hook(payload)
+    assert result.returncode != 0
+
+
+def test_hook_blocks_docker_compose_exec_pg_dump() -> None:
+    """T-417 codex round 3: same pg_dump bypass under
+    `docker compose exec`."""
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": "docker compose exec -T postgres pg_dump -U cloglog -d cloglog_dev",
+        },
+    }
+    result = _run_hook(payload)
+    assert result.returncode != 0
+
+
 def test_hook_allows_unrelated_psql() -> None:
     """psql against a non-cloglog database is out of scope — the rule
     is specifically about the cloglog dev/prod DBs."""

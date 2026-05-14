@@ -81,6 +81,43 @@ def test_hook_blocks_docker_exec_psql() -> None:
     assert result.returncode != 0
 
 
+def test_hook_blocks_docker_compose_exec_psql() -> None:
+    """T-417 codex round 1: the project's actual access pattern is
+    ``docker compose exec -T postgres psql -U cloglog ...`` (see the
+    Makefile's `dev` target). The original `docker exec` regex missed
+    this two-word form. POSTGRES_DB in docker-compose.yml is ``cloglog``,
+    so a connection without an explicit ``-d`` lands on the cloglog DB
+    — the exact shape this hook is supposed to enforce against."""
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": "docker compose exec -T postgres psql -U cloglog -c 'select 1'",
+        },
+    }
+    result = _run_hook(payload)
+    assert result.returncode != 0, (
+        "block-direct-db.sh must reject `docker compose exec ... psql "
+        "-U cloglog`. POSTGRES_DB defaults to `cloglog`, so this shape "
+        "opens a raw session against the cloglog DB even without "
+        "-d cloglog_dev / cloglog_prod."
+    )
+
+
+def test_hook_blocks_bare_psql_with_cloglog_user() -> None:
+    """T-417 codex round 1: ``psql -U cloglog`` with no explicit -d
+    connects to the default DB, which is ``cloglog`` per
+    docker-compose.yml. The connection bypasses MCP and the audit log
+    just like the dev/prod-named forms."""
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": "psql -h 127.0.0.1 -U cloglog -c 'select 1'",
+        },
+    }
+    result = _run_hook(payload)
+    assert result.returncode != 0
+
+
 def test_hook_allows_with_allow_raw_db_env_prefix() -> None:
     """Inline ``ALLOW_RAW_DB=1`` releases the call — the rare schema
     audit escape hatch."""

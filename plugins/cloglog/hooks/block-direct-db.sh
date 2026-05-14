@@ -9,9 +9,17 @@
 #   held; this hook turns the rule into an enforced invariant.
 #
 # Surface covered:
-#   - psql ... cloglog_dev  (dev DB connection target)
-#   - psql ... cloglog_prod (prod DB connection target)
-#   - docker exec ... psql ... cloglog   (containerised entry)
+#   - psql ... cloglog_dev   (dev DB connection target)
+#   - psql ... cloglog_prod  (prod DB connection target)
+#   - psql -U cloglog        (default-DB form — docker-compose.yml's
+#                             POSTGRES_DB is `cloglog`, so a connection
+#                             that names the user without an explicit
+#                             `-d` lands on the cloglog DB)
+#   - docker exec ... psql ... cloglog          (containerised entry)
+#   - docker compose exec ... psql ... cloglog  (the project's normal
+#                             container-side Postgres access — covered
+#                             explicitly because `docker exec` alone
+#                             missed this shape (T-417 codex round 1)).
 #
 # Escape hatch:
 #   Inline env prefix `ALLOW_RAW_DB=1 ...` releases the call. Same
@@ -39,19 +47,28 @@ if echo "$COMMAND_FLAT" | grep -qE '(^|[[:space:];&|(])ALLOW_RAW_DB=1(\b|[[:spac
 fi
 
 # --- Detect psql / docker-exec-psql against the cloglog DB --------------
-# Two shapes are blocked:
+# Three shapes are blocked:
 #   1. A `psql` invocation that names cloglog_dev or cloglog_prod
 #      anywhere in the same statement (covers both `psql -d cloglog_dev`
 #      and `psql "postgresql://.../cloglog_prod"`).
-#   2. A `docker exec ... psql ...` pipeline that names a cloglog DB
-#      (covers `docker exec ... psql -U cloglog -d cloglog_dev ...`).
+#   2. A `psql -U cloglog` invocation with no other DB hint — the
+#      docker-compose.yml default `POSTGRES_DB: cloglog` means the
+#      connection lands on the cloglog DB even without an explicit
+#      `-d`. Matched by the `-U cloglog` flag alone.
+#   3. A `docker (compose )?exec ... psql ...` pipeline that names a
+#      cloglog DB (covers both `docker exec ... psql -U cloglog
+#      -d cloglog_dev ...` and the project's normal `docker compose
+#      exec -T postgres psql -U cloglog ...` access pattern from the
+#      Makefile).
 #
 # Statement boundary `[^;&|]*` keeps an unrelated earlier command on
 # the same line from pairing with a later cloglog reference.
 PSQL_DB_PAT='\<psql\>[^;&|]*\<cloglog_(dev|prod)\>'
-DOCKER_PSQL_PAT='\<docker[[:space:]]+exec\>[^;&|]*\<psql\>[^;&|]*\<cloglog'
+PSQL_USER_PAT='\<psql\>[^;&|]*-U[[:space:]]+cloglog\>'
+DOCKER_PSQL_PAT='\<docker\>([[:space:]]+compose)?[[:space:]]+exec\>[^;&|]*\<psql\>[^;&|]*\<cloglog'
 
 if echo "$COMMAND_FLAT" | grep -qE "$PSQL_DB_PAT" \
+   || echo "$COMMAND_FLAT" | grep -qE "$PSQL_USER_PAT" \
    || echo "$COMMAND_FLAT" | grep -qE "$DOCKER_PSQL_PAT"; then
   cat >&2 <<'EOF'
 Blocked: direct psql / DB access to the cloglog dev or prod database is prohibited.

@@ -20,6 +20,21 @@
 #                             container-side Postgres access — covered
 #                             explicitly because `docker exec` alone
 #                             missed this shape (T-417 codex round 1)).
+#   - make db-refresh-from-prod                  (Makefile wrapper that
+#                             internally pg_dumps cloglog into cloglog_dev
+#                             — a shipped bypass of the direct-psql guard
+#                             since the outer command is `make ...`, not
+#                             `psql ...` (T-417 codex round 2)).
+#
+# Documented admin commands targeting the `postgres` maintenance DB are
+# allowed even when they authenticate as user `cloglog`: the Makefile's
+# `dev-env` and `db-refresh-from-prod` recipes run
+# `psql -U cloglog -d postgres -c "...DATABASE cloglog_dev..."` to
+# bootstrap/drop databases. The `-U cloglog` rule below skips rejection
+# when the same statement carries an explicit `-d postgres` / postgresql
+# URI to postgres (T-417 codex round 2). The cloglog_(dev|prod) and
+# docker-cloglog patterns still fire regardless — those are about the
+# destination DB, not the user.
 #
 # Escape hatch:
 #   Inline env prefix `ALLOW_RAW_DB=1 ...` releases the call. Same
@@ -66,11 +81,37 @@ fi
 PSQL_DB_PAT='\<psql\>[^;&|]*\<cloglog_(dev|prod)\>'
 PSQL_USER_PAT='\<psql\>[^;&|]*-U[[:space:]]+cloglog\>'
 DOCKER_PSQL_PAT='\<docker\>([[:space:]]+compose)?[[:space:]]+exec\>[^;&|]*\<psql\>[^;&|]*\<cloglog'
+MAKE_WRAPPER_PAT='\<make\>[^;&|]*\<db-refresh-from-prod\>'
+# Admin-DB allowlist: a statement that explicitly targets the `postgres`
+# maintenance DB (via `-d postgres`, `--dbname postgres`, or a
+# postgresql URI ending in `/postgres`) is allowed even when it
+# authenticates as user `cloglog` — those are bootstrap/admin commands,
+# not board-DB access.
+POSTGRES_DB_PAT='(-d[[:space:]]+postgres\>|--dbname[[:space:]]+postgres\>|--dbname=postgres\>|postgresql://[^[:space:]]*/postgres(\>|[[:space:]?]))'
 
-if echo "$COMMAND_FLAT" | grep -qE "$PSQL_DB_PAT" \
-   || echo "$COMMAND_FLAT" | grep -qE "$PSQL_USER_PAT" \
-   || echo "$COMMAND_FLAT" | grep -qE "$DOCKER_PSQL_PAT"; then
-  cat >&2 <<'EOF'
+# Wrapper Makefile target — match before the psql/docker regex block.
+# (The wrapper recipe internally pg_dumps cloglog into cloglog_dev; the
+# `-d postgres` admin skip below does NOT apply because the recipe also
+# runs board-DB-targeted psql lines.)
+if echo "$COMMAND_FLAT" | grep -qE "$MAKE_WRAPPER_PAT"; then
+  : # fall through to the block message below
+elif echo "$COMMAND_FLAT" | grep -qE "$POSTGRES_DB_PAT"; then
+  # Explicit `-d postgres` admin command — allowed even when it
+  # authenticates as user `cloglog` or mentions cloglog_dev/prod in
+  # a SQL literal. The connection target is the maintenance DB, which
+  # has no access to board tables.
+  exit 0
+elif echo "$COMMAND_FLAT" | grep -qE "$PSQL_DB_PAT"; then
+  :
+elif echo "$COMMAND_FLAT" | grep -qE "$PSQL_USER_PAT"; then
+  :
+elif echo "$COMMAND_FLAT" | grep -qE "$DOCKER_PSQL_PAT"; then
+  :
+else
+  exit 0
+fi
+
+cat >&2 <<'EOF'
 Blocked: direct psql / DB access to the cloglog dev or prod database is prohibited.
 
 Use MCP tools for board state — every shortcut around MCP weakens the
@@ -90,7 +131,6 @@ Escape hatch (rare schema audits only): prefix with `ALLOW_RAW_DB=1 ...`.
 If you find yourself reaching for it, file a task to add the missing
 MCP tool first.
 EOF
-  exit 2
-fi
+exit 2
 
 exit 0

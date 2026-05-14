@@ -134,6 +134,63 @@ def test_hook_allows_with_allow_raw_db_env_prefix() -> None:
     )
 
 
+def test_hook_blocks_make_db_refresh_from_prod() -> None:
+    """T-417 codex round 2: `make db-refresh-from-prod` is a Makefile
+    wrapper that internally pg_dumps cloglog into cloglog_dev. The
+    direct-psql regex only sees the outer `make ...` command and would
+    let the wrapper through, opening a built-in bypass. Block the
+    wrapper target by name."""
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "make db-refresh-from-prod"},
+    }
+    result = _run_hook(payload)
+    assert result.returncode != 0, (
+        "block-direct-db.sh must reject `make db-refresh-from-prod`. "
+        "The recipe internally runs psql against cloglog and "
+        "cloglog_dev — a shipped bypass of the direct-psql guard."
+    )
+
+
+def test_hook_allows_admin_psql_against_postgres_db() -> None:
+    """T-417 codex round 2: documented admin commands like
+    `psql -U cloglog -d postgres -c "CREATE DATABASE cloglog_dev ..."`
+    target the `postgres` maintenance DB, not the cloglog board DB.
+    The -U cloglog rule must NOT false-positive on these — they're
+    bootstrap/admin operations, not board-DB access."""
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": (
+                "psql -h 127.0.0.1 -U cloglog -d postgres "
+                "-tAc \"SELECT 1 FROM pg_database WHERE datname='cloglog_dev'\""
+            ),
+        },
+    }
+    result = _run_hook(payload)
+    assert result.returncode == 0, (
+        "psql -U cloglog targeting -d postgres (admin DB) must be "
+        "allowed. The Makefile's dev-env and db-refresh-from-prod "
+        "recipes rely on this shape."
+    )
+
+
+def test_hook_allows_docker_compose_exec_psql_against_postgres_db() -> None:
+    """T-417 codex round 2: same allowlist applies under `docker compose
+    exec` — the `-d postgres` target is administrative, not board DB."""
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": (
+                "docker compose exec -T postgres psql -U cloglog -d postgres "
+                '-c "CREATE DATABASE cloglog_dev OWNER cloglog;"'
+            ),
+        },
+    }
+    result = _run_hook(payload)
+    assert result.returncode == 0
+
+
 def test_hook_allows_unrelated_psql() -> None:
     """psql against a non-cloglog database is out of scope — the rule
     is specifically about the cloglog dev/prod DBs."""
